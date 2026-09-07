@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy } from 'lucide-react';
+import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, Layers, Search } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
-import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch, limit } from 'firebase/firestore';
 import { Language, TRANSLATIONS, Student, UserProfile } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { hashPassword } from '../lib/hash';
@@ -14,6 +14,8 @@ import { canManageGroups } from '../lib/permissions';
 import { apiUrl } from '../lib/apiBase';
 import RosterImport from './RosterImport';
 import { nameKeyFor, normalizeName } from '../../shared/rosterIdentity';
+import { completedProgressionFields } from '../../shared/progression';
+import { useAcademicPhase } from '../hooks/useAcademicPhase';
 
 interface StudentManagementProps {
   isOpen: boolean;
@@ -35,7 +37,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const isMasterAdmin = ['almdrydyl335@gmail.com', 'jempe.kn@gmail.com'].includes(user?.email?.toLowerCase() || '') || user?.isMasterAdmin;
-  const { effectiveStageId, groupConfig } = useStageContext();
+  const { effectiveStageId, groupConfig, stages } = useStageContext();
+  const { yearLabel } = useAcademicPhase();
   const [showGroupSettings, setShowGroupSettings] = useState(false);
 
   // Group/subgroup options come from the stage config, not a hardcoded A-D list.
@@ -89,7 +92,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
    * student list meant scrolling past four tools, and the importer - the one
    * that needs room for a preview table - had the least of it.
    */
-  const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'codes'>('roster');
+  const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'codes' | 'orphans'>('roster');
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
   const [isFetchingProfile, setIsFetchingProfile] = useState(false);
   
@@ -257,6 +260,84 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       setError('Error fetching profile');
     } finally {
       setIsFetchingProfile(false);
+    }
+  };
+
+  /**
+   * Students the stage-scoped roster can never show.
+   *
+   * fetchStudents filters both collections on `stageId == effectiveStageId`, so
+   * a row whose stageId is missing - or points at a stage document that no
+   * longer exists - belongs to no stage and appears under none of them. That is
+   * how a student ends up with a blank المرحلة that nobody can fix: they are
+   * invisible to the very screen that would fix it.
+   *
+   * Firestore cannot query for an absent field, so this is an unfiltered read
+   * of the whole collection, capped and behind an explicit button rather than
+   * running with the roster. Master admin only, and not merely as a UI
+   * preference: canManageStudentsOn() in firestore.rules short-circuits for the
+   * master admin regardless of a document's stageId, while for a representative
+   * a row with no stageId evaluates canManageStudentsOn('') and fails - there
+   * is no rules-legal way for them to read these at all.
+   */
+  const ORPHAN_SCAN_LIMIT = 500;
+  const [orphans, setOrphans] = useState<Student[] | null>(null);
+  const [isScanningOrphans, setIsScanningOrphans] = useState(false);
+  const [orphanAssignments, setOrphanAssignments] = useState<Record<string, string>>({});
+  const [assigningOrphan, setAssigningOrphan] = useState<string | null>(null);
+
+  const scanForOrphans = async () => {
+    setIsScanningOrphans(true);
+    setError(null);
+    try {
+      const knownStageIds = new Set(stages.map(st => st.id));
+      const snapshot = await getDocs(query(collection(db, 'students'), limit(ORPHAN_SCAN_LIMIT)));
+      const rows = snapshot.docs
+        .map(d => ({ ...(d.data() as any), id: d.id } as Student))
+        .filter(row => !row.stageId || !knownStageIds.has(row.stageId));
+      setOrphans(rows);
+    } catch (err: any) {
+      console.error('Error scanning for students without a stage:', err);
+      setOrphans(null);
+      setError(isRtl ? 'تعذّر البحث عن الطلاب بدون مرحلة' : 'Could not scan for students without a stage');
+    } finally {
+      setIsScanningOrphans(false);
+    }
+  };
+
+  const assignStage = async (student: Student, stageId: string) => {
+    if (!stageId) return;
+    setAssigningOrphan(student.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      // completedProgressionFields stamps them as already handled for this
+      // year. Without it, giving a student a stageId mid-progression-season
+      // drops them straight onto the blocking ProgressionScreen with a question
+      // about a year they have no result to report for. RosterImport and the
+      // CLI promotion stamp it for the same reason.
+      const patch = { stageId, ...completedProgressionFields(yearLabel) };
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'students', student.id), patch, { merge: true });
+
+      // Both copies, always: syncUserStage copies the students value onto the
+      // user document at every login, so a users-only write is reverted, and a
+      // students-only write leaves the live session showing the old value.
+      const emailLower = (student.email || student.id).toLowerCase().trim();
+      const userDocs = await getDocs(query(collection(db, 'users'), where('email', '==', emailLower)));
+      userDocs.docs.forEach(d => batch.set(d.ref, patch, { merge: true }));
+
+      await batch.commit();
+      await logAdminAction('ASSIGN_STAGE', `Assigned ${student.id} to ${stageId}`);
+      setSuccess(isRtl ? 'تم تعيين المرحلة' : 'Stage assigned');
+      setOrphans(prev => (prev || []).filter(row => row.id !== student.id));
+      if (stageId === effectiveStageId) fetchStudents();
+    } catch (err: any) {
+      console.error('Error assigning a stage:', err);
+      setError(stageAwareMessage(err, isRtl ? 'فشل تعيين المرحلة' : 'Failed to assign the stage'));
+    } finally {
+      setAssigningOrphan(null);
     }
   };
 
@@ -1134,6 +1215,11 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     ['import',   Upload,    isRtl ? 'استيراد' : 'Import', null],
                     ['requests', Mail,      isRtl ? 'الطلبات' : 'Requests', null],
                     ['codes',    BookOpen,  isRtl ? 'الأكواد' : 'Codes', null],
+                    // Master admin only - see scanForOrphans; the rules give a
+                    // representative no way to read a stageless row at all.
+                    ...(isMasterAdmin
+                      ? [['orphans', Layers, isRtl ? 'بدون مرحلة' : 'No stage', null] as const]
+                      : []),
                   ] as const).map(([id, Icon, label, count]) => (
                     <button
                       key={id}
@@ -1335,6 +1421,92 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     groupConfig={groupConfig}
                     onImported={fetchStudents}
                   />
+                )}
+
+                {panel === 'orphans' && isMasterAdmin && (
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
+                        {isRtl ? 'طلاب بدون مرحلة' : 'Students without a stage'}
+                      </h3>
+                      <p className="text-xs font-bold text-slate-400 dark:text-slate-500 leading-relaxed">
+                        {isRtl
+                          ? 'هؤلاء لا يظهرون في أي مرحلة، فالقائمة تُفلتر حسب المرحلة. عيّن لكل واحد مرحلته ليظهر بشكل طبيعي.'
+                          : 'These students appear under no stage, because the roster is filtered by stage. Assign each one so they show up normally.'}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={scanForOrphans}
+                      disabled={isScanningOrphans}
+                      className="w-full py-2.5 bg-sky-50 dark:bg-sky-900/20 text-sky-600 dark:text-sky-400 rounded-xl font-bold hover:bg-sky-100 dark:hover:bg-sky-900/40 transition-all flex items-center justify-center gap-2 border border-sky-200 dark:border-sky-800/50 disabled:opacity-50"
+                    >
+                      {isScanningOrphans ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
+                      {isRtl ? 'ابحث عن طلاب بدون مرحلة' : 'Scan for students without a stage'}
+                    </button>
+
+                    {orphans !== null && orphans.length === 0 && (
+                      <div className="flex items-center gap-2 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-sm font-bold">
+                        <CheckCircle2 className="w-5 h-5 shrink-0" />
+                        {isRtl ? 'كل الطلاب لديهم مرحلة.' : 'Every student has a stage.'}
+                      </div>
+                    )}
+
+                    {orphans !== null && orphans.length > 0 && (
+                      <div className="space-y-2">
+                        {orphans.map(student => (
+                          <div
+                            key={student.id}
+                            className="p-3.5 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+                                {student.name || student.id}
+                              </div>
+                              <div className="text-xs font-bold text-slate-400 truncate" dir="ltr">
+                                {student.email || student.id}
+                              </div>
+                              {student.stageId && (
+                                <div className="mt-1 text-xs font-bold text-amber-600 dark:text-amber-400 truncate" dir="ltr">
+                                  {isRtl ? 'مرحلة غير معروفة: ' : 'Unknown stage: '}{student.stageId}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={orphanAssignments[student.id] || ''}
+                                onChange={e => setOrphanAssignments(prev => ({ ...prev, [student.id]: e.target.value }))}
+                                className="flex-1 min-w-0 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:border-sky-500 dark:text-stone-100"
+                              >
+                                <option value="">{isRtl ? 'اختر المرحلة' : 'Select a stage'}</option>
+                                {stages.map(st => (
+                                  <option key={st.id} value={st.id}>
+                                    {isRtl ? st.nameAr : st.nameEn}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => assignStage(student, orphanAssignments[student.id] || '')}
+                                disabled={!orphanAssignments[student.id] || assigningOrphan === student.id}
+                                className="shrink-0 px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-bold hover:bg-sky-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                              >
+                                {assigningOrphan === student.id && <Loader2 className="w-4 h-4 animate-spin" />}
+                                {isRtl ? 'تعيين' : 'Assign'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        <p className="pt-1 px-1 text-xs font-bold text-slate-400 dark:text-slate-500">
+                          {isRtl
+                            ? `يفحص أول ${ORPHAN_SCAN_LIMIT} سجل. أعد البحث بعد التعيين إن كان العدد أكبر.`
+                            : `Scans the first ${ORPHAN_SCAN_LIMIT} records. Re-run after assigning if there are more.`}
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {panel === 'codes' && (

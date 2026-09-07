@@ -145,6 +145,12 @@ check('users.stageId moved', plainUser?.stageId === 'stage_4', String(plainUser?
 check('students.subgroup got the new group', plainStudent?.subgroup === 'B1', String(plainStudent?.subgroup));
 check('users.group got the new group too (this is what gates the app)',
   plainUser?.group === 'B1', String(plainUser?.group));
+// Same rule as submitProgression: the number belongs to the year just finished,
+// and leaving it in place makes setOwnExamCode refuse the new one for ever.
+// The exam-code CSV importer refills these in bulk afterwards.
+check('the exam number is cleared on both copies so the new one can be recorded',
+  plainStudent?.examCode === '' && plainUser?.examCode === '',
+  `${JSON.stringify(plainStudent?.examCode)}/${JSON.stringify(plainUser?.examCode)}`);
 // Imported students must never be asked the end-of-year question: their stage
 // came from the sheet, not from a result they reported. nextProgressionStep
 // reads progressionYear/progressionState, so stamping only the legacy pair
@@ -179,6 +185,8 @@ const stayingStudent = (await db.doc('students/staying@x.com').get()).data();
 const stayingUser = (await db.doc('users/staying@x.com').get()).data();
 check('a student left out of the sheet keeps their stage',
   stayingStudent?.stageId === 'stage_3' && stayingUser?.stageId === 'stage_3');
+check('and keeps their exam number - they did not move up a year',
+  stayingStudent?.examCode === '1234', JSON.stringify(stayingStudent?.examCode));
 check('and keeps their old group', stayingStudent?.subgroup === 'D4' && stayingUser?.group === 'D4');
 
 check('mcq stats were refiled under the new stage',

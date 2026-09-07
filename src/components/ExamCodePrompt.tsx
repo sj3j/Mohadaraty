@@ -6,7 +6,35 @@ import { Language, UserProfile } from '../types';
 import { submitExamCode } from '../services/accountService';
 
 /** How long "ask me later" holds. Long enough not to nag, short enough to land. */
-const SNOOZE_DAYS = 7;
+export const SNOOZE_DAYS = 7;
+
+/**
+ * How long a skip on the onboarding screen holds.
+ *
+ * Much shorter than the banner's week: skipping there is one tap in the middle
+ * of a flow the student is trying to get through, not a considered "not yet",
+ * and a promoted student is being asked for a number that was probably issued
+ * the same week. A week of silence would land them in the app with the tile
+ * still empty and nothing to remind them.
+ */
+export const ONBOARDING_SNOOZE_DAYS = 1;
+
+/**
+ * Postpones the prompt for `days`.
+ *
+ * An ordinary client write, unlike the code itself: examCodePromptSnoozedUntil
+ * is not in the firestore.rules freeze list, and it is nobody's business but
+ * the student's. Never throws - losing a snooze only means being asked again,
+ * which must not be allowed to block whatever the caller was doing.
+ */
+export async function snoozeExamCodePrompt(uid: string, days = SNOOZE_DAYS): Promise<void> {
+  try {
+    const until = new Date(Date.now() + days * 86400000).toISOString();
+    await updateDoc(doc(db, 'users', uid), { examCodePromptSnoozedUntil: until });
+  } catch (err) {
+    console.error('Failed to snooze the exam-code prompt:', err);
+  }
+}
 
 /**
  * True when this student should be asked for their exam code.
@@ -72,16 +100,9 @@ export default function ExamCodePrompt({
 
   const snooze = async () => {
     setBusy(true);
-    try {
-      const until = new Date(Date.now() + SNOOZE_DAYS * 86400000).toISOString();
-      await updateDoc(doc(db, 'users', user.uid), { examCodePromptSnoozedUntil: until });
-    } catch (err) {
-      // Losing the snooze only means being asked again - never block on it.
-      console.error('Failed to snooze the exam-code prompt:', err);
-    } finally {
-      setBusy(false);
-      onResolved();
-    }
+    await snoozeExamCodePrompt(user.uid);
+    setBusy(false);
+    onResolved();
   };
 
   if (variant === 'dialog') {

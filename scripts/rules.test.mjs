@@ -76,6 +76,15 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
     email: 'stu@x.com', name: 'Student', isActive: true, stageId: 'stage_3', password: 'HASH',
   });
 
+  // A student with NO stageId at all. These exist - a row created before stages,
+  // or one whose stage document was deleted - and they belong to no stage, so
+  // the stage-scoped roster in StudentManagement can never show them. Repairing
+  // one is master-admin-only, and not by choice: see the assertions below.
+  await setDoc(doc(db, 'users/orphan_uid'), { role: 'student', email: 'orphan@x.com' });
+  await setDoc(doc(db, 'students/orphan@x.com'), {
+    email: 'orphan@x.com', name: 'Orphan', isActive: true, password: 'HASH',
+  });
+
   // A student on ANOTHER stage. The stage_3 representative must not be able to
   // see or touch this one - before the students rules were scoped they could
   // read the hash and overwrite the whole document.
@@ -533,6 +542,25 @@ await check('the master admin CAN read any stage',
   assertSucceeds(getDoc(doc(master, 'students/other@x.com'))));
 await check('the master admin CAN list every student',
   assertSucceeds(getDocs(collection(master, 'students'))));
+
+// The repair path for a student who belongs to no stage. canManageStudentsOn()
+// short-circuits for the master admin whatever the row's stageId, so the
+// unfiltered scan the orphan panel needs is legal for them and only them: for a
+// representative a row with no stageId evaluates canManageStudentsOn(''), which
+// is false, so there is no rules-legal query that could reach it.
+// Checked BEFORE the assignment below, while the row genuinely has no stage.
+await check('a representative CANNOT read a student with no stage',
+  assertFails(getDoc(doc(rep, 'students/orphan@x.com'))));
+await check('the master admin CAN read a student with no stage',
+  assertSucceeds(getDoc(doc(master, 'students/orphan@x.com'))));
+await check('the master admin CAN assign that student a stage',
+  assertSucceeds(updateDoc(doc(master, 'students/orphan@x.com'), {
+    stageId: 'stage_3', progressionYear: '2026-2027', progressionState: 'completed',
+  })));
+await check('and CAN write the matching users doc, which syncUserStage reads back',
+  assertSucceeds(updateDoc(doc(master, 'users/orphan_uid'), { stageId: 'stage_3' })));
+await check('a student CANNOT hand themselves a stage',
+  assertFails(updateDoc(doc(student, 'users/stu_uid'), { stageId: 'stage_4' })));
 
 // The arm every student depends on at login must survive the scoping.
 await check('a student CAN still read their OWN record',

@@ -171,6 +171,17 @@ check('students.stageId moved (syncUserStage reads this at every login)',
 check('users.group is cleared so they re-pick for the new stage',
   passUser?.group === undefined, String(passUser?.group));
 check('students.subgroup is cleared too', passStudent?.subgroup === undefined, String(passStudent?.subgroup));
+// The exam number is issued per year. Leaving last year's behind keeps
+// shouldAskForExamCode shut AND makes setOwnExamCode throw ALREADY_SET, so the
+// student can never record the new one. Empty string, not deleted:
+// Student.examCode is a required string.
+check('users.examCode is cleared so the new year\'s number can be asked for',
+  passUser?.examCode === '', JSON.stringify(passUser?.examCode));
+check('students.examCode is cleared too - App.tsx reads that copy first',
+  passStudent?.examCode === '', JSON.stringify(passStudent?.examCode));
+check('and any snooze from last year is dropped',
+  passUser?.examCodePromptSnoozedUntil === undefined,
+  String(passUser?.examCodePromptSnoozedUntil));
 check('marked completed for this year',
   passUser?.progressionState === 'completed' && passUser?.progressionYear === '2026-2027');
 check('and is not asked again',
@@ -244,6 +255,8 @@ const failRes = await submitProgression(db, FieldValue as any, resitOpen, {
 check('stays put', failRes.promoted === false && failRes.stageId === 'stage_3');
 const failUser = (await db.doc('users/u_fail').get()).data();
 check('keeps their group', failUser?.group === 'B2', String(failUser?.group));
+check('keeps their exam number - they did not move up a year',
+  (await db.doc('students/fail@x.com').get()).data()?.examCode === '1');
 check('but is done for the year', failUser?.progressionState === 'completed');
 check('and is not asked again', step('resit_round', failUser) === 'none');
 
@@ -257,6 +270,8 @@ const gradUser = (await db.doc('users/u_final').get()).data();
 check('stays in the final stage for content access', gradUser?.stageId === 'stage_5');
 check('flagged graduated', gradUser?.graduated === true);
 check('never asked again', step('resit_round', gradUser) === 'none');
+check('a graduate keeps their exam number - there is no next year to issue one',
+  (await db.doc('students/final@x.com').get()).data()?.examCode === '1');
 
 console.log('\nGuards:');
 let wrongRound = false;
@@ -296,6 +311,60 @@ try {
 check('a completed student cannot answer again', twice);
 check('so they cannot climb two stages in one year',
   (await db.doc('users/u_pass').get()).data()?.stageId === 'stage_4');
+
+// ---------------------------------------------------------------------------
+// A malformed stage document must not read as the top of the ladder.
+//
+// Every stage reader used to query orderBy('order'), which EXCLUDES a document
+// that lacks the field - so a stage_6 with no `order` was invisible, nextStageOf
+// found no successor above stage_5, and passing stage_5 silently graduated the
+// student. Same for a gap in the ladder, which the old `order + 1` match could
+// not step over. Both are data defects nobody would notice until a whole cohort
+// had been marked graduated a year early.
+// ---------------------------------------------------------------------------
+console.log('\nMalformed and gapped ladders:');
+
+// order 7, with 6 skipped entirely: a gap the old `order + 1` could not cross.
+await db.collection('stages').doc('stage_7').set(
+  { id: 'stage_7', order: 7, nameAr: 'السابعة', nameEn: 'Seventh' });
+await seedStudent('u_gap', 'gap@x.com', 'stage_5');
+const gapRes = await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_gap', round: 'first', answer: 'passed',
+});
+check('a gap in the ladder promotes to the next stage above, not to graduation',
+  gapRes.promoted === true && gapRes.stageId === 'stage_7', JSON.stringify(gapRes));
+
+// A stage whose `id` FIELD is wrong. The doc id is what user.stageId holds and
+// what every other reader addresses, so that is the one to trust.
+await db.collection('stages').doc('stage_8').set(
+  { id: 'wrong_id', order: 8, nameAr: 'الثامنة', nameEn: 'Eighth' });
+await seedStudent('u_wrongid', 'wrongid@x.com', 'stage_7');
+const wrongIdRes = await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_wrongid', round: 'first', answer: 'passed',
+});
+check('the stage document id wins over a wrong `id` field',
+  wrongIdRes.promoted === true && wrongIdRes.stageId === 'stage_8', JSON.stringify(wrongIdRes));
+
+// A stage with NO order at all. It cannot be placed on the ladder, so a student
+// below the top must not be graduated just because it is unplaceable.
+await db.collection('stages').doc('stage_9').set(
+  { id: 'stage_9', nameAr: 'التاسعة', nameEn: 'Ninth' });
+await seedStudent('u_noorder', 'noorder@x.com', 'stage_8');
+let noOrderRejected = false;
+try {
+  await submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_noorder', round: 'first', answer: 'passed',
+  });
+} catch (e) { noOrderRejected = e instanceof ProgressionError; }
+check('a stage above with no `order` is refused, not read as graduation', noOrderRejected);
+check('and that student is NOT marked graduated',
+  (await db.doc('users/u_noorder').get()).data()?.graduated !== true);
+check('nor moved', (await db.doc('users/u_noorder').get()).data()?.stageId === 'stage_8');
+
+// Clean up so the ladder assertions above do not leak into later sections.
+for (const id of ['stage_7', 'stage_8', 'stage_9']) {
+  await db.collection('stages').doc(id).delete();
+}
 
 let ghostRejected = false;
 try {

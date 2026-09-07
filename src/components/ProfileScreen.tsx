@@ -13,7 +13,7 @@ import {
 import ProfileStreakCalendar from './ProfileStreakCalendar';
 import SemesterHistoryList from './SemesterHistoryList';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
-import { useStageContext } from '../contexts/StageContext';
+import { DEFAULT_STAGES, useStageContext } from '../contexts/StageContext';
 import { STAT_ICONS } from '../lib/profileIcons';
 import { StatCard, ProfileGroup, ProfileRow } from './profile/ProfilePrimitives';
 import ExamCodePrompt from './ExamCodePrompt';
@@ -56,7 +56,7 @@ export default function ProfileScreen({
 }: ProfileScreenProps) {
   const isRtl = lang === 'ar';
   const { phase } = useAcademicPhase();
-  const { stages, effectiveStageId } = useStageContext();
+  const { stages, effectiveStageId, isLoadingStages } = useStageContext();
 
   /** '2027-01-31' -> '2027/1/31'. */
   const formatCalendarDate = (iso: string) => {
@@ -148,10 +148,21 @@ export default function ProfileScreen({
   if (!user) return null;
 
   const isMasterAdminUser = user.isMasterAdmin;
+  /**
+   * Four states, not two. A bare '—' used to cover all of them, which is why a
+   * student who HAD been promoted still read as having no stage at all:
+   * mid-fetch and stage-document-missing both looked like never-assigned.
+   * DEFAULT_STAGES covers a stages collection that failed to load or is missing
+   * a document; the raw id is the last resort, so the student has something
+   * concrete to quote to an admin instead of a dash.
+   */
   const stageName = (() => {
-    const stage = stages.find(s => s.id === user.stageId);
-    if (!stage) return '—';
-    return isRtl ? stage.nameAr : stage.nameEn;
+    if (!user.stageId) return '—';
+    const stage = stages.find(s => s.id === user.stageId)
+      || DEFAULT_STAGES.find(s => s.id === user.stageId);
+    if (stage) return isRtl ? stage.nameAr : stage.nameEn;
+    if (isLoadingStages) return '...';
+    return user.stageId;
   })();
 
   // While editing, the freshly picked file wins; otherwise the saved photo. Never

@@ -228,6 +228,15 @@ console.log('\nExam code:');
   const again = await caught(() => setOwnExamCode(db, { uid: ROSTER, email: ROSTER },
     { examCode: '9999' }));
   check('overwriting an existing code is refused', again?.code === 'ALREADY_SET');
+
+  // What a promotion leaves behind. submitProgression blanks both copies to ''
+  // precisely so the student can record next year's number; if ALREADY_SET
+  // still fired on an empty string, the prompt would ask for something that
+  // could never be saved.
+  await db.collection('students').doc(ROSTER).update({ examCode: '' });
+  await setOwnExamCode(db, { uid: ROSTER, email: ROSTER }, { examCode: '2024' });
+  check('a code cleared by a promotion can be set again',
+    (await db.collection('students').doc(ROSTER).get()).data()!.examCode === '2024');
 }
 
 console.log('\nLink Google:');

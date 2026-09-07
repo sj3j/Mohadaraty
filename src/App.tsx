@@ -211,6 +211,10 @@ export default function App() {
         const isMasterAdmin = tokenResult.claims.role === 'master_admin' || adminEmails.includes(userEmail?.toLowerCase() || '');
         
         let studentData: any = null;
+        // Bumped on every users snapshot. The handler below awaits a refetch,
+        // so a slow one could otherwise land after a newer snapshot and put a
+        // stale profile back on screen.
+        let snapshotSeq = 0;
 
         if (adminEmails.includes(userEmail?.toLowerCase() || '') && tokenResult.claims.role !== 'master_admin') {
           try {
@@ -292,7 +296,29 @@ export default function App() {
             return;
           }
 
+          const seq = ++snapshotSeq;
+
           if (userDoc.exists()) {
+            // `studentData` is read once at sign-in and then closed over for the
+            // whole session, but a promotion rewrites students/{email} underneath
+            // it - clearing examCode and subgroup, moving stageId. Since examCode
+            // below reads the students copy FIRST, a stale one puts last year's
+            // number back on screen and keeps shouldAskForExamCode shut for
+            // exactly the students the prompt exists for. The user doc's stageId
+            // moving away from the cached one is the precise signal that this
+            // happened, so the extra read costs nothing until it does.
+            const liveStageId = userDoc.data().stageId;
+            if (liveStageId && studentData?.id && studentData?.stageId && liveStageId !== studentData.stageId) {
+              try {
+                const fresh = await getDoc(doc(db, 'students', studentData.id));
+                if (fresh.exists()) studentData = { ...studentData, ...fresh.data(), id: fresh.id };
+              } catch (err) {
+                // Never block the profile on it; the next login re-reads anyway.
+                console.warn('Could not refresh the student record after a stage change:', err);
+              }
+              if (seq !== snapshotSeq) return;
+            }
+
             const whitelistRole = ['admin', 'moderator'].includes(studentData?.role) ? studentData.role : null;
             
             const defaultEmailName = firebaseUser.email ? firebaseUser.email.split('@')[0] : '';

@@ -146,8 +146,8 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
                   ? 'أكملت مراحل الدراسة كلها. يبقى حسابك مفتوحاً للاطلاع على المحتوى.'
                   : 'You have completed every stage. Your account stays open for reading the content.')
               : (isRtl
-                  ? `تم نقلك إلى ${result.stageName || 'المرحلة التالية'}. اختر شعبتك الجديدة للمتابعة.`
-                  : `You have moved up to ${result.stageName || 'the next stage'}. Pick your new group to continue.`)}
+                  ? `تم نقلك إلى ${result.stageName || 'المرحلة التالية'}. اختر شعبتك الجديدة، وأضف رقمك الامتحاني الجديد إن توفّر.`
+                  : `You have moved up to ${result.stageName || 'the next stage'}. Pick your new group, and add your new exam number if you have it.`)}
           </p>
           <button
             onClick={onDone}

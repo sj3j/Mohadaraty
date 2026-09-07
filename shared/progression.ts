@@ -107,11 +107,56 @@ export interface ProgressionOutcome {
   nextStage: StageLike | null;
 }
 
-/** The stage after this one, or null at the top of the ladder. */
+/** `order` as a number, or NaN for a stage whose order is missing or junk. */
+export function stageOrder(stage: StageLike | undefined | null): number {
+  const raw = Number(stage?.order);
+  return Number.isFinite(raw) ? raw : NaN;
+}
+
+/**
+ * The ladder in order, lowest first.
+ *
+ * Sorted here rather than by Firestore, because `orderBy('order')` silently
+ * DROPS any document that lacks the field - and a dropped stage is invisible
+ * to `nextStageOf`, which is how a student promoting into it got graduated
+ * instead. Reading the collection unordered and sorting here keeps a
+ * malformed stage in the list, where the rest of the code can see and report
+ * it. Stages with no usable `order` sort last, in id order.
+ */
+export function sortStages<T extends StageLike>(stages: T[]): T[] {
+  return stages.slice().sort((a, b) => {
+    const oa = stageOrder(a);
+    const ob = stageOrder(b);
+    if (Number.isNaN(oa) && Number.isNaN(ob)) return a.id.localeCompare(b.id);
+    if (Number.isNaN(oa)) return 1;
+    if (Number.isNaN(ob)) return -1;
+    return oa - ob || a.id.localeCompare(b.id);
+  });
+}
+
+/**
+ * The stage after this one, or null at the top of the ladder.
+ *
+ * The successor is the LOWEST order strictly above this one, not `order + 1`.
+ * An exact match made every gap in the ladder - orders 1,2,3,5, or a stage
+ * document the query dropped - look identical to the top of it, and the top of
+ * the ladder is what graduates a student: a third-year would have been marked
+ * graduated because stage 4 was one step further away than the arithmetic
+ * assumed. A stage with no usable `order` is not a candidate; it cannot be
+ * placed on the ladder at all.
+ */
 export function nextStageOf(stages: StageLike[], stageId?: string): StageLike | null {
   const current = stages.find(s => s.id === stageId);
-  if (!current) return null;
-  return stages.find(s => s.order === current.order + 1) || null;
+  const currentOrder = stageOrder(current);
+  if (!current || Number.isNaN(currentOrder)) return null;
+
+  let best: StageLike | null = null;
+  for (const stage of stages) {
+    const order = stageOrder(stage);
+    if (Number.isNaN(order) || order <= currentOrder) continue;
+    if (!best || order < stageOrder(best)) best = stage;
+  }
+  return best;
 }
 
 /**

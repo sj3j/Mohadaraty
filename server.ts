@@ -11,6 +11,7 @@ import crypto from "crypto";
 import { startNewSeason } from "./shared/seasonReset.js";
 import { runSeasonRollover, resolveCurrentPhase, syncPhaseMirror, loadCalendar } from "./shared/seasonRollover.js";
 import { submitProgression, ProgressionError } from "./shared/progressionSubmit.js";
+import { sortStages } from "./shared/progression.js";
 import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError } from "./shared/googleLogin.js";
 import {
   resolveStudentLogin,
@@ -595,18 +596,23 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.get("/api/signup/stages", async (req, res) => {
     try {
       const db = admin.firestore();
-      const snap = await db.collection("stages").orderBy("order", "asc").get();
+      // Unordered on purpose: orderBy("order") drops a stage document that has
+      // no `order` field, which took the whole document out before the mapper
+      // below could default it - so the defence here only ever looked like it
+      // covered that case. Sorted in JS instead, by the same helper the
+      // progression ladder uses.
+      const snap = await db.collection("stages").get();
       return res.json({
-        stages: snap.docs.map(d => {
+        stages: sortStages(snap.docs.map(d => {
           const s = d.data() as any;
           return {
-            id: s.id || d.id,
+            id: d.id,
             nameAr: s.nameAr || null,
             nameEn: s.nameEn || null,
-            order: s.order ?? 0,
+            order: Number(s.order),
             groupConfig: s.groupConfig || null,
           };
-        }),
+        })).map(s => ({ ...s, order: Number.isFinite(s.order) ? s.order : 0 })),
       });
     } catch (error) {
       console.error("Signup stages failed:", error);

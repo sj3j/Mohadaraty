@@ -241,6 +241,13 @@ export async function applyPromotion(
     batch.set(db.collection('students').doc(m.email), {
       stageId: plan.to,
       subgroup: m.subgroup,
+      // The exam number is issued per year, so the one on file belongs to the
+      // year they just finished. Same rule as submitProgression: clearing it is
+      // what lets the student be asked for the new one at all, since
+      // setOwnExamCode refuses to overwrite a code that is already set. Empty
+      // string, not a delete - Student.examCode is a required string. The
+      // exam-code CSV importer in StudentManagement refills these in bulk.
+      examCode: '',
     }, { merge: true });
     ops++;
     result.studentsUpdated++;
@@ -251,6 +258,8 @@ export async function applyPromotion(
         stageId: plan.to,
         group: m.subgroup,          // what App.tsx actually gates on
         tahmeelSubjects: [],        // ids from the old stage; stale after a move
+        examCode: '',               // cleared on the students doc too; see above
+        examCodePromptSnoozedUntil: FieldValue.delete(),
         ...completedProgressionFields(opts.progressionYear),
       };
       // Same rule as submitProgression: a representative or moderator represents

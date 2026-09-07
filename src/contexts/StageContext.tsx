@@ -4,7 +4,8 @@ import {
   CourseId, COURSE_IDS, DEFAULT_COURSE_ID,
 } from '../types';
 import { db } from '../lib/firebase';
-import { collection, getDocs, orderBy, query, setDoc, doc, updateDoc } from 'firebase/firestore';
+import { sortStages } from '../../shared/progression';
+import { collection, getDocs, setDoc, doc, updateDoc } from 'firebase/firestore';
 
 // Canonical stage list. Kept in sync with scripts/migrateToStages.js so that
 // seeding from either side produces identical documents.
@@ -59,22 +60,36 @@ export function StageProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const fetchStages = async () => {
       try {
-        const stagesRef = collection(db, 'stages');
-        const q = query(stagesRef, orderBy('order', 'asc'));
-        const snapshot = await getDocs(q);
+        // Deliberately unordered. `orderBy('order')` excludes any stage document
+        // that lacks the field, and a stage missing from this list renders as
+        // "—" on every student in it. Sorting in JS keeps it visible instead.
+        const snapshot = await getDocs(collection(db, 'stages'));
 
         if (snapshot.empty) {
           console.log("No stages found. Seeding default stages...");
-          for (const s of DEFAULT_STAGES) {
-            await setDoc(doc(db, 'stages', s.id), s);
-          }
-
+          // Set state FIRST. Seeding is master-admin-only (firestore.rules),
+          // so for anyone else the very first setDoc throws, and this used to
+          // sit after the loop - the catch swallowed it and the provider was
+          // left with no stages at all, which is the same blank "—" symptom.
           setStages(DEFAULT_STAGES);
           if (!currentAppStage) {
             setCurrentAppStage('stage_3');
           }
+
+          try {
+            for (const s of DEFAULT_STAGES) {
+              await setDoc(doc(db, 'stages', s.id), s);
+            }
+          } catch (seedError) {
+            console.warn("Not permitted to seed stages; using the defaults locally.", seedError);
+          }
         } else {
-          const stagesData = snapshot.docs.map(doc => doc.data() as Stage);
+          // `id` from the document, not from the field inside it: a wrong or
+          // missing inner id never matches user.stageId, and every other reader
+          // (stagePromotion, signupRequest) already addresses stages by doc id.
+          const stagesData = sortStages(
+            snapshot.docs.map(d => ({ ...(d.data() as Stage), id: d.id })),
+          );
           setStages(stagesData);
           if (!currentAppStage && stagesData.length > 0) {
             setCurrentAppStage(stagesData[2]?.id || stagesData[0].id); // default to stage 3 or first

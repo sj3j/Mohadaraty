@@ -16,7 +16,7 @@
 import { AcademicCalendar, baghdadToday, progressionGate } from './academicCalendar.js';
 import {
   ProgressionRound, ProgressionAnswer, StageLike,
-  nextProgressionStep, progressionOutcome, isAnswerValid,
+  nextProgressionStep, progressionOutcome, isAnswerValid, sortStages, stageOrder,
 } from './progression.js';
 
 export interface SubmitResult {
@@ -63,13 +63,21 @@ export async function submitProgression(
   if (due === 'none') throw new ProgressionError('No progression question is open for you', 409);
   if (due !== round) throw new ProgressionError(`Expected the "${due}" question, not "${round}"`, 409);
 
-  const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
-  const stages: StageLike[] = stagesSnap.docs.map(d => d.data() as StageLike);
+  // Deliberately unordered: `orderBy('order')` drops a stage document that has
+  // no `order` field, and a dropped stage is one the ladder cannot see. The id
+  // comes from the document, not the `id` field inside it - a wrong inner id
+  // breaks the match against user.stageId exactly like a missing one, and
+  // stagePromotion and signupRequest already address stages by document id.
+  const stagesSnap = await db.collection('stages').get();
+  const stages: StageLike[] = sortStages(
+    stagesSnap.docs.map(d => ({ ...(d.data() as StageLike), id: d.id })),
+  );
 
   // "No successor" is how the top of the ladder is detected, and an unknown
   // stage looks exactly the same - so without this check a student on a stale
   // or mistyped stageId would be silently marked graduated.
-  if (!stages.some(st => st.id === user.stageId)) {
+  const currentStage = stages.find(st => st.id === user.stageId);
+  if (!currentStage) {
     throw new ProgressionError('Your stage is not recognised. Contact an admin.', 409);
   }
 
@@ -96,6 +104,27 @@ export async function submitProgression(
 
   const outcome = progressionOutcome({ round, answer, user, stages, tahmeelSubjects: tahmeel });
 
+  // Graduating is inferred from "there is no stage above this one", so a data
+  // defect that hides the stage above - no `order` on it, a broken ladder -
+  // reads as a degree. Refuse rather than write it: graduation is one-way,
+  // nextProgressionStep never asks a graduate anything again, and the student
+  // would be frozen a year below where they belong with no way to say so. A
+  // 409 they can report is recoverable; a silent graduation is not.
+  if (outcome.graduated) {
+    const orders = stages.map(stageOrder);
+    const order = stageOrder(currentStage);
+    const top = Math.max(...orders.filter(o => !Number.isNaN(o)));
+    // A stage with no usable `order` cannot be placed on the ladder, so there is
+    // no way to tell whether it sits above this student. While one exists, "no
+    // stage above me" is not a fact - it is a gap in the data - and graduating
+    // on it would be a guess. Refusing costs a graduate a day; guessing wrong
+    // costs a whole cohort their final year.
+    if (Number.isNaN(order) || order < top || orders.some(o => Number.isNaN(o))) {
+      throw new ProgressionError(
+        'تعذّر تحديد مرحلتك التالية. راجع الإدارة قبل تسجيل نتيجتك.', 409);
+    }
+  }
+
   const batch = db.batch();
 
   const userPatch: Record<string, any> = {
@@ -111,7 +140,22 @@ export async function submitProgression(
 
   // A group from the stage they are leaving may not even exist in the new one.
   // Clearing it drops them onto the existing onboarding screen to pick again.
-  if (outcome.promoted) userPatch.group = FieldValue.delete();
+  //
+  // The exam number goes with it, for the same reason and by the same route:
+  // it is issued per year, so the one on file belongs to the year they just
+  // finished. Clearing is also what makes re-asking POSSIBLE - setOwnExamCode
+  // refuses to overwrite a code that is already set, and shouldAskForExamCode
+  // never fires while one is present. Empty string rather than a delete:
+  // Student.examCode is a required string and firestore.rules asserts
+  // `examCode is string` on the user document. The snooze goes too, or a
+  // student who postponed last year's prompt would silently skip this year's.
+  //
+  // Graduates keep theirs: they are not promoted, and there is no next year.
+  if (outcome.promoted) {
+    userPatch.group = FieldValue.delete();
+    userPatch.examCode = '';
+    userPatch.examCodePromptSnoozedUntil = FieldValue.delete();
+  }
 
   // Leaving the stage vacates the seat.
   //
@@ -139,7 +183,12 @@ export async function submitProgression(
     const studentRef = db.collection('students').doc(email);
     if ((await studentRef.get()).exists) {
       const studentPatch: Record<string, any> = { stageId: outcome.stageId };
-      if (outcome.promoted) studentPatch.subgroup = FieldValue.delete();
+      if (outcome.promoted) {
+        studentPatch.subgroup = FieldValue.delete();
+        // App.tsx reads examCode from students FIRST, so clearing only the user
+        // document would leave last year's number on screen and the prompt shut.
+        studentPatch.examCode = '';
+      }
       batch.set(studentRef, studentPatch, { merge: true });
     }
 
