@@ -30,11 +30,13 @@
     "test:anchor": "npx tsx scripts/pdfAnchor.test.ts",
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
     "test:roster": "npx tsx scripts/roster.test.ts",
+    "streak:audit": "npx tsx scripts/streakAudit.ts",
     "roster:passwords": "npx tsx scripts/generateRosterPasswords.ts",
     "roster:backfill": "npx tsx scripts/backfillNameKeys.ts",
     "degrees:backfill": "npx tsx scripts/backfillDegreeYears.ts",
     "test:account": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/account.test.ts\"",
-    "test:wipe": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/wipe.test.ts\""
+    "test:wipe": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/wipe.test.ts\"",
+    "test:simosan": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/simosan.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",

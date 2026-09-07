@@ -160,12 +160,26 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     const archived: any[] = archiveDoc.data()[field] || [];
     const profiles = await fetchProfiles(archived.map(s => s.userId || s.uid).filter(Boolean));
 
-    // Archives written before stages existed carry no stageId, so fall back to
-    // the student's live stage. Without this every stage renders the same list.
+    // Rows carry the stage they were RANKED IN, captured at archive time. That is
+    // the only correct key for a finished season: a student who has since been
+    // promoted still belongs to the board they actually played in.
+    //
+    // Never fall back to the viewer's live stage. Doing so filtered a past season
+    // by a stage that did not exist when it was played, which empties the board
+    // for every promoted student - and the renumbering below then crowned
+    // whoever survived the filter as rank 1.
+    //
+    // Archives predating stage scoping carry no stageId on any row. Those were a
+    // single cohort, so they are shown whole rather than filtered at all.
+    // scripts/streakAudit.ts backfills stageId onto them; this is the guard for
+    // any that have not been backfilled yet.
+    const archiveHasStages = archived.some(s => s.stageId);
     const rows = archived
-      .filter(s => (s.stageId || profiles.get(s.userId || s.uid)?.stageId) === effectiveStageId)
+      .filter(s => !archiveHasStages || s.stageId === effectiveStageId)
       .sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999))
-      .map((s, i) => ({ ...s, _rank: i + 1 }));
+      // Keep the rank the season actually awarded. Renumbering a filtered subset
+      // invents a podium that nobody finished on.
+      .map((s, i) => ({ ...s, _rank: s.rank ?? i + 1 }));
 
     return { rows, profiles };
   };

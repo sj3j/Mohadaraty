@@ -4,6 +4,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { Language, UserProfile } from '../../types';
 import { SETTINGS_ICONS } from '../../lib/settingsIcons';
+import { IS_STORE_BUILD } from '../../lib/platform';
 import SettingsGroup from './SettingsGroup';
 import SettingsRow from './SettingsRow';
 import SettingsToggle from './SettingsToggle';
@@ -36,7 +37,8 @@ export interface SettingsScreenProps {
   hasUnreadInbox?: boolean;
   onOpen: (what:
     | 'adminManage' | 'studentManage' | 'streakManage' | 'adminGrades'
-    | 'studentGrades' | 'adminLogs' | 'subManage' | 'calendar' | 'subscription') => void;
+    | 'studentGrades' | 'adminLogs' | 'subManage' | 'calendar' | 'subscription'
+    | 'simosanAdmin') => void;
   onLogout: () => void;
 }
 
@@ -266,9 +268,19 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                 label={isRtl ? 'السعيّات والدرجات' : 'Grades'}
                 onClick={() => onOpen('studentGrades')}
               />
+              {/* Store builds cannot sell anything, so this row must not read
+                  as a shop. It becomes an access-status row - same destination,
+                  no purchase language and no card iconography - because a
+                  student still needs to see whether their account is active
+                  and until when. */}
               <SettingsRow
-                isRtl={isRtl} icon={SETTINGS_ICONS.subscription}
-                label={isRtl ? 'الاشتراك' : 'Subscription'}
+                isRtl={isRtl}
+                icon={IS_STORE_BUILD ? SETTINGS_ICONS.access : SETTINGS_ICONS.subscription}
+                label={
+                  IS_STORE_BUILD
+                    ? (isRtl ? 'حالة الوصول' : 'Access')
+                    : (isRtl ? 'الاشتراك' : 'Subscription')
+                }
                 onClick={() => onOpen('subscription')}
               />
             </SettingsGroup>
@@ -330,7 +342,9 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     onClick={() => onOpen('adminGrades')}
                   />
                 )}
-                {isMasterAdmin(user) && (
+                {/* Web only: SubscriptionManagement is build-time stubbed for
+                    native, so on a store build this row would open nothing. */}
+                {!IS_STORE_BUILD && isMasterAdmin(user) && (
                   <SettingsRow
                     isRtl={isRtl} icon={SETTINGS_ICONS.subsAdmin}
                     label={isRtl ? 'إدارة الاشتراكات' : 'Manage subscriptions'}
@@ -342,6 +356,16 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     isRtl={isRtl} icon={SETTINGS_ICONS.logs}
                     label={isRtl ? 'سجل الإدارة' : 'Admin log'}
                     onClick={() => onOpen('adminLogs')}
+                  />
+                )}
+                {/* Web only. The dashboard reports spend in dollars and is
+                    build-time stubbed out of the native bundle, so the row
+                    would otherwise open a screen that renders nothing. */}
+                {!IS_STORE_BUILD && canViewAdminLogs(user) && (
+                  <SettingsRow
+                    isRtl={isRtl} icon={SETTINGS_ICONS.simosan}
+                    label={isRtl ? 'استخدام سيموسان' : 'Simosan usage'}
+                    onClick={() => onOpen('simosanAdmin')}
                   />
                 )}
               </SettingsGroup>

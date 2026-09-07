@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Copy, StickyNote, X } from 'lucide-react';
+import { Copy, Sparkles, StickyNote, X } from 'lucide-react';
 import { HIGHLIGHT_COLORS, type HighlightColor } from '../../types/pdfAnnotation.types';
 
 interface Props {
@@ -8,6 +8,9 @@ interface Props {
   onNote: () => void;
   onCopy: () => void;
   onDismiss: () => void;
+  /** Omitted when the student has no Simosan access, or the lecture has no
+   *  readable PDF - the action is hidden rather than shown and refused. */
+  onAskSimosan?: () => void;
 }
 
 const ORDER: HighlightColor[] = ['yellow', 'green', 'blue', 'pink', 'orange'];
@@ -24,7 +27,9 @@ const ORDER: HighlightColor[] = ['yellow', 'green', 'blue', 'pink', 'orange'];
  * menus visible and reachable, and puts the controls in the same place every
  * time rather than wherever the text happened to be.
  */
-export default function SelectionToolbar({ isRtl, onPick, onNote, onCopy, onDismiss }: Props) {
+export default function SelectionToolbar({
+  isRtl, onPick, onNote, onCopy, onDismiss, onAskSimosan,
+}: Props) {
   return (
     <motion.div
       initial={{ y: '100%', opacity: 0 }}
@@ -51,6 +56,16 @@ export default function SelectionToolbar({ isRtl, onPick, onNote, onCopy, onDism
         </div>
 
         <div className="flex items-center gap-1">
+          {onAskSimosan && (
+            <button
+              onClick={onAskSimosan}
+              aria-label={isRtl ? 'اسأل سيموسان' : 'Ask Simosan'}
+              className="h-10 px-3 rounded-full flex items-center gap-1.5 bg-gradient-to-br from-violet-500 to-sky-500 text-white text-xs font-black active:scale-90 transition"
+            >
+              <Sparkles className="w-4 h-4" strokeWidth={2.5} />
+              {isRtl ? 'سيموسان' : 'Simosan'}
+            </button>
+          )}
           <button
             onClick={onNote}
             aria-label={isRtl ? 'إضافة ملاحظة' : 'Add note'}

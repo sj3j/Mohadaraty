@@ -38,6 +38,7 @@ import {
 import { createSignupRequest, reviewSignupRequest, SignupError } from "./shared/signupRequest.js";
 import { deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
+import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
 import { OAuth2Client } from "google-auth-library";
@@ -1341,7 +1342,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       const userRef = db.collection('users').doc(user.uid);
       
-      await db.runTransaction(async (t) => {
+      const txResult = await db.runTransaction(async (t) => {
         const appSettingsDoc = await t.get(db.collection('app_settings').doc('streak'));
         const gracePeriodHours = appSettingsDoc.exists ? (appSettingsDoc.data()?.gracePeriodHours ?? 2) : 2;
         
@@ -1364,12 +1365,15 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
              t.update(historyRef, { freezeUsed: false });
           }
           t.update(userRef, { lastActiveAt: admin.firestore.FieldValue.serverTimestamp() });
-          return;
+          return { freezeUsed: false };
         }
 
         const data = userDoc.data()!;
         let streakCount = data.streakCount || 0;
         let longestStreak = data.longestStreak || 0;
+        // Declared inside the transaction, not outside: a retried transaction has
+        // to recompute this, or a replay reports a freeze that did not happen.
+        let hasUsedFreeze = false;
         let freezeTokens = data.freezeTokens ?? 1; // Default 1
         const lastActiveDate = data.lastActiveDate; // format 'YYYY-MM-DD'
         
@@ -1395,6 +1399,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
             if (freezeTokens >= missedDays) {
               freezeTokens -= missedDays;
               streakCount += 1; // It continues from before + effectively covers gap
+              hasUsedFreeze = true;
 
               // Log the missed LIVE days as frozen. Walking raw calendar days
               // here would mark break days as covered by a freeze token.
@@ -1452,10 +1457,14 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         }
         
         longestStreak = Math.max(longestStreak, streakCount);
-        
+        // Per-season peak (longestStreak) is zeroed by startNewSeason; this one is
+        // not, and is what the profile's "الأطول" reads.
+        const bestStreakAllTime = Math.max(data.bestStreakAllTime || 0, streakCount);
+
         const updateData: any = {
           streakCount,
           longestStreak,
+          bestStreakAllTime,
           freezeTokens,
           lastActiveDate: effectiveDate,
           lastActiveAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1474,10 +1483,16 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
           freezeUsed: false,
           timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
+
+        return { freezeUsed: hasUsedFreeze };
       });
       
       const updatedUser = await userRef.get();
-      res.json({ success: true, streakCount: updatedUser.data()?.streakCount, freezeUsed: updatedUser.data()?.freezeTokens < (updatedUser.data()?.freezeTokens ?? 1) });
+      // Reported from the transaction. This used to read
+      // `freezeTokens < (freezeTokens ?? 1)` off the post-commit document - the
+      // same value compared to itself, so the client was told `false` every time
+      // even when a shield had just been spent.
+      res.json({ success: true, streakCount: updatedUser.data()?.streakCount, freezeUsed: txResult?.freezeUsed === true });
     } catch (error) {
       console.error("Error recording activity:", error);
       res.status(500).json({ error: "Failed to record activity" });
@@ -1768,6 +1783,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
           t.update(userRef, {
             streakCount: newStreakCount,
             longestStreak,
+            bestStreakAllTime: Math.max(userDoc.data()?.bestStreakAllTime || 0, newStreakCount),
             hasPendingStreakReset: admin.firestore.FieldValue.delete()
           });
         } else {
@@ -1797,7 +1813,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         
         t.update(userRef, {
           streakCount: newStreak,
-          longestStreak: Math.max(doc.data()?.longestStreak || 0, newStreak)
+          longestStreak: Math.max(doc.data()?.longestStreak || 0, newStreak),
+          bestStreakAllTime: Math.max(doc.data()?.bestStreakAllTime || 0, newStreak)
         });
         
         const recoveryRef = db.collection('streak_recoveries').doc();
@@ -2451,6 +2468,18 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       res.status(500).json({ error: 'Failed to cancel subscription' });
     }
   });
+
+  /* ---------------------------------------------------------------- *
+   * Simosan — AI lecture tutor
+   *
+   * Handlers live in shared/simosanApi.ts and are mounted identically in
+   * api/index.ts. Keep these four lines in step across both files.
+   * ---------------------------------------------------------------- */
+  const simosan = createSimosanHandlers({ admin });
+  app.post("/api/ai/ask", verifyAuth, simosan.ask);
+  app.get("/api/ai/state", verifyAuth, simosan.state);
+  app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
+  app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
 
   // --- Vite Middleware for Development / Static Serving for Production ---
   if (process.env.NODE_ENV !== "production") {

@@ -53,6 +53,7 @@ import {
   NotifyFn,
   SubscriptionCtx,
 } from "../shared/subscriptions.js";
+import { createSimosanHandlers } from "../shared/simosanApi.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -1356,10 +1357,14 @@ app.post("/api/record-activity", verifyAuth, async (req, res) => {
       }
       
       longestStreak = Math.max(longestStreak, streakCount);
-      
+      // Per-season peak (longestStreak) is zeroed by startNewSeason; this one is
+      // not, and is what the profile's "الأطول" reads.
+      const bestStreakAllTime = Math.max(data.bestStreakAllTime || 0, streakCount);
+
       const updateData: any = {
         streakCount,
         longestStreak,
+        bestStreakAllTime,
         freezeTokens,
         lastActiveDate: effectiveDate,
         lastActiveAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1768,7 +1773,8 @@ app.post("/api/admin/streak-recovery", verifyAuth, verifyAdmin, async (req, res)
       
       t.update(userRef, {
         streakCount: newStreak,
-        longestStreak: Math.max(doc.data()?.longestStreak || 0, newStreak)
+        longestStreak: Math.max(doc.data()?.longestStreak || 0, newStreak),
+        bestStreakAllTime: Math.max(doc.data()?.bestStreakAllTime || 0, newStreak)
       });
       
       const recoveryRef = db.collection('streak_recoveries').doc();
@@ -1843,6 +1849,7 @@ app.post("/api/admin/resolve-pending-streak", verifyAuth, verifyAdmin, async (re
         t.update(userRef, {
           streakCount: newStreakCount,
           longestStreak,
+          bestStreakAllTime: Math.max(userDoc.data()?.bestStreakAllTime || 0, newStreakCount),
           hasPendingStreakReset: admin.firestore.FieldValue.delete()
         });
       } else {
@@ -2344,5 +2351,17 @@ app.post('/api/subscriptions/:id/cancel', verifyAuth, verifyAdmin, async (req, r
     res.status(500).json({ error: 'Failed to cancel subscription' });
   }
 });
+
+/* ------------------------------------------------------------------ *
+ * Simosan — AI lecture tutor
+ *
+ * Handlers live in shared/simosanApi.ts and are mounted identically in
+ * server.ts. Keep these four lines in step across both files.
+ * ------------------------------------------------------------------ */
+const simosan = createSimosanHandlers({ admin });
+app.post("/api/ai/ask", verifyAuth, simosan.ask);
+app.get("/api/ai/state", verifyAuth, simosan.state);
+app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
+app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
 
 export default app;

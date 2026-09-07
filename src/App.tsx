@@ -21,6 +21,9 @@ import AdminQuestionBankScreen from './components/questionBank/AdminQuestionBank
 import StudentGradesScreen from './components/grades/StudentGradesScreen';
 import AntiCheatDashboard from './components/AntiCheatDashboard';
 import AdminLogsScreen from './components/AdminLogsScreen';
+// Aliased to a null stub for mode === 'native' in vite.config.ts - it renders
+// dollar amounts, which must not enter the artefact the Play scanner reads.
+import SimosanAdminScreen from './components/SimosanAdminScreen';
 import BottomNav, { Tab } from './components/BottomNav';
 import { canManage } from './lib/permissions';
 import AnnouncementsScreen from './components/AnnouncementsScreen';
@@ -136,6 +139,7 @@ export default function App() {
   const [showAdminBank, setShowAdminBank] = useState(false);
   const [showAntiCheat, setShowAntiCheat] = useState(false);
   const [showAdminLogs, setShowAdminLogs] = useState(false);
+  const [showSimosanAdmin, setShowSimosanAdmin] = useState(false);
   const [showStudentGrades, setShowStudentGrades] = useState(false);
   const [showSubManage, setShowSubManage] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
@@ -326,8 +330,16 @@ export default function App() {
               isMasterAdmin,
               photoUrl: userDoc.data().photoUrl || firebaseUser.photoURL || undefined,
               streakCount: userDoc.data().streakCount || 0,
-
-              lastStreakDate: userDoc.data().lastStreakDate || undefined,
+              // streakCount used to be the ONLY streak field hydrated here, so the
+              // profile modal read undefined for every other one: "الأطول" fell
+              // through ProfileScreen's Math.max to just re-display the current
+              // streak, and "الدروع" rendered a permanent 1/3 out of
+              // `freezeTokens ?? 1` on accounts that actually held 3.
+              longestStreak: userDoc.data().longestStreak || 0,
+              bestStreakAllTime: userDoc.data().bestStreakAllTime || 0,
+              freezeTokens: userDoc.data().freezeTokens ?? 3,
+              hasPendingStreakReset: userDoc.data().hasPendingStreakReset === true,
+              lastActiveDate: userDoc.data().lastActiveDate ?? null,
               examCode: studentData?.examCode || userDoc.data().examCode || undefined,
               // students/ is the authority for both: it is server-write-only,
               // so a student cannot clear their own forced password change or
@@ -719,7 +731,7 @@ export default function App() {
   // Students are unaffected: they never mount the composer, and keep the nav.
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
-  const isAnyOverlayOpen = showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null);
+  const isAnyOverlayOpen = showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null);
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the
@@ -844,6 +856,7 @@ export default function App() {
             else if (what === 'adminGrades') setShowAdminGrades(true);
             else if (what === 'studentGrades') setShowStudentGrades(true);
             else if (what === 'adminLogs') setShowAdminLogs(true);
+            else if (what === 'simosanAdmin') setShowSimosanAdmin(true);
             else if (what === 'subManage') setShowSubManage(true);
             else if (what === 'calendar') setShowCalendarSettings(true);
             else if (what === 'subscription') setCurrentTab('subscription');
@@ -866,6 +879,7 @@ export default function App() {
       <AdminQuestionBankScreen isOpen={showAdminBank} onClose={() => setShowAdminBank(false)} lang={lang} />
       <AntiCheatDashboard isOpen={showAntiCheat} onClose={() => setShowAntiCheat(false)} lang={lang} />
       <AdminLogsScreen isOpen={showAdminLogs} onClose={() => setShowAdminLogs(false)} lang={lang} />
+      <SimosanAdminScreen isOpen={showSimosanAdmin} onClose={() => setShowSimosanAdmin(false)} lang={lang} />
       <StudentGradesScreen isOpen={showStudentGrades} onClose={() => setShowStudentGrades(false)} />
       {showSubManage && <SubscriptionManagement user={user!} lang={lang} onClose={() => setShowSubManage(false)} />}
       

@@ -102,11 +102,35 @@ function extractJson(text: string): any {
   }
 }
 
+/**
+ * Failure the student is not responsible for and cannot act on: an exhausted
+ * quota, a missing key, an unreachable provider.
+ *
+ * Tagged rather than described, because the message shown on screen must not
+ * name the vendor, the key, or anything about a payment plan - the previous
+ * text told a pharmacy student to "check your payment plan in your Google
+ * account", which is both useless to them and a real-money string in a bundle
+ * that scripts/assert-no-payment-surface.mjs scans for exactly that.
+ *
+ * `code` lets the caller record the real cause on the mcqs document and alert
+ * an admin, so an exhausted key is visible in seconds rather than looking
+ * identical to every other generation failure.
+ */
+export class AIUnavailableError extends Error {
+  constructor(public code: 'quota' | 'not_configured' | 'provider') {
+    super('AI_UNAVAILABLE');
+  }
+}
+
+/** Neutral, student-facing. No vendor, no key, no billing. */
+export const AI_UNAVAILABLE_MESSAGE = 'الخدمة غير متاحة حالياً. يرجى المحاولة لاحقاً.';
+
 async function callGeminiWithBackoff(contents: any, maxRetries = 3) {
   let attempt = 0;
   while (attempt < maxRetries) {
     if (!ai) {
-      throw new Error('الرجاء التأكد من إضافة المفتاح VITE_GEMINI_API_KEY في إعدادات البيئة (Environment Variables) على Vercel وإعادة بناء المشروع (Redeploy).');
+      console.error('[mcq] GEMINI_API_KEY is not present in this build.');
+      throw new AIUnavailableError('not_configured');
     }
     try {
       const response = await ai.models.generateContent({
@@ -119,9 +143,12 @@ async function callGeminiWithBackoff(contents: any, maxRetries = 3) {
       return response;
     } catch (error: any) {
       const isQuotaExceeded = error?.message?.toLowerCase().includes('quota') || error?.status === 'RESOURCE_EXHAUSTED' || error?.message?.includes('RESOURCE_EXHAUSTED');
-      
+
       if (isQuotaExceeded) {
-         throw new Error('لقد تجاوزت الحد المسموح للاستخدام من الذكاء الاصطناعي (Quota Exceeded). يرجى التحقق من خطة الدفع الخاصة بك في حسابك على Google.');
+        // Logged with the real cause so an exhausted key is diagnosable, thrown
+        // with none of it so the student never reads about a billing plan.
+        console.error('[mcq] Gemini quota exhausted for the deployed key.');
+        throw new AIUnavailableError('quota');
       }
 
       if ((error?.status === 429 || error?.message?.includes('429')) && attempt < maxRetries - 1) {
@@ -314,7 +341,14 @@ Instructions:
   return updatedQuestion;
 }
 
-export function generateMCQsForLecture(lectureId: string, subjectId: string, pdfUrl: string): Promise<MCQQuestion[]> {
+/**
+ * `subjectId` is optional because callers genuinely may not have one: `category`
+ * is legacy and absent on curriculum-era lectures, and tsconfig sets neither
+ * `strict` nor `strictNullChecks`, so a caller passing `undefined` into a
+ * `string` parameter compiles clean. It is normalised in doGenerate rather than
+ * trusted - see the note there.
+ */
+export function generateMCQsForLecture(lectureId: string, subjectId: string | undefined, pdfUrl: string): Promise<MCQQuestion[]> {
   if (pendingGenerations.has(lectureId)) {
     return pendingGenerations.get(lectureId)!;
   }
@@ -327,7 +361,14 @@ export function generateMCQsForLecture(lectureId: string, subjectId: string, pdf
   return promise;
 }
 
-async function doGenerateMCQsForLecture(lectureId: string, subjectId: string, pdfUrl: string): Promise<MCQQuestion[]> {
+async function doGenerateMCQsForLecture(lectureId: string, rawSubjectId: string | undefined, pdfUrl: string): Promise<MCQQuestion[]> {
+  // Normalised ONCE, here, because subjectId reaches three separate Firestore
+  // writes below (the `generating` marker, the adminAlerts row, and finalData).
+  // Firestore rejects `undefined` outright - "Unsupported field value: undefined"
+  // - so a single bad caller took down the whole quiz with a raw SDK error on
+  // screen. Fixing only the caller would leave the next one free to repeat it.
+  const subjectId = rawSubjectId || '';
+
   try {
     if (!navigator.onLine) {
       const cacheKey = `mcq_cache_${lectureId}`;
@@ -491,13 +532,40 @@ async function doGenerateMCQsForLecture(lectureId: string, subjectId: string, pd
     return parsedQuestions;
 
   } catch (error: any) {
-    trackEvent('mcq_generation_failed', { lectureId, error: error?.message });
+    const unavailable = error instanceof AIUnavailableError ? error.code : null;
+    trackEvent('mcq_generation_failed', { lectureId, error: unavailable || error?.message });
+
     // Revert status to failed if something goes wrong
     try {
       const mcqRef = doc(db, 'mcqs', lectureId);
-      await setDoc(mcqRef, { status: 'failed' }, { merge: true });
+      // failureReason survives on the document. Without it an exhausted API key
+      // and a malformed PDF look identical - which is why a dead key went
+      // unnoticed while every generation quietly failed.
+      await setDoc(
+        mcqRef,
+        { status: 'failed', failureReason: unavailable || 'error' },
+        { merge: true },
+      );
     } catch (fallbackError) {
       console.warn('Could not update status to failed (likely permissions / offline):', fallbackError);
+    }
+
+    // A provider-level outage is an operations problem, not a content problem:
+    // it affects every lecture at once and no admin would otherwise learn of it.
+    // adminAlerts is the channel incomplete_mcq_generation already uses.
+    if (unavailable) {
+      try {
+        await addDoc(collection(db, 'adminAlerts'), {
+          type: 'ai_quota_exhausted',
+          reason: unavailable,
+          source: 'mcq',
+          lectureId,
+          createdAt: serverTimestamp(),
+          resolved: false,
+        });
+      } catch (alertError) {
+        console.warn('Could not raise admin alert:', alertError);
+      }
     }
     
     console.error('Error generating MCQs:', error);

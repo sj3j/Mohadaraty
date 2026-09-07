@@ -72,6 +72,21 @@ await db.collection('userMCQAnswers').doc('s3_top').collection('lectures').doc('
   firstAttemptCorrect: 18, firstAttemptTotal: 20, totalAttempts: 2,
 });
 
+// A student mid-way through a pending streak loss when the season closes. The
+// reset archives and zeroes the streak the flag guards, so the flag and its
+// queue doc must go with it - 325 accounts were stranded on a permanent
+// "about to lose your streak" banner because they used to survive.
+await db.collection('users').doc('s3_mid').update({ hasPendingStreakReset: true });
+await db.collection('pending_streak_resets').doc('s3_mid').set({
+  userId: 's3_mid', email: 's3_mid@x.com', name: 's3_mid',
+  missedDays: 3, streakAtRisk: 16, dateRecorded: '2026-08-02',
+  createdAt: FieldValue.serverTimestamp(),
+});
+
+// An all-time record earned in an EARLIER season, higher than anything this
+// season produced. The reset must never lower it.
+await db.collection('users').doc('s3_low').update({ bestStreakAllTime: 40 });
+
 await db.collection('app_settings').doc('streak').set({ vacationMode: true, lastArchiveId: 'old' });
 
 console.log('Seeded. Running season reset...\n');
@@ -116,6 +131,24 @@ check('streak zeroed', topUser?.streakCount === 0 && topUser?.longestStreak === 
   `${topUser?.streakCount}/${topUser?.longestStreak}`);
 check('freeze tokens restored', topUser?.freezeTokens === 3, String(topUser?.freezeTokens));
 check('lastActiveDate cleared', topUser?.lastActiveDate === null, String(topUser?.lastActiveDate));
+
+// ---- the all-time record survives the reset -------------------------------
+// longestStreak is per-season and is zeroed above; bestStreakAllTime is the
+// only number that carries across. Without it "الأطول" can never read higher
+// than the running season, and shows 0 for the whole vacation.
+check('all-time best captured from the closing season before it is zeroed',
+  topUser?.bestStreakAllTime === 30, String(topUser?.bestStreakAllTime));
+
+const lowUser = (await db.doc('users/s3_low').get()).data();
+check('all-time best is never lowered by a weaker season',
+  lowUser?.bestStreakAllTime === 40, `${lowUser?.bestStreakAllTime} (season peak was 5)`);
+
+// ---- the pending-reset queue is drained -----------------------------------
+const midUser = (await db.doc('users/s3_mid').get()).data();
+check('hasPendingStreakReset cleared by the reset',
+  midUser?.hasPendingStreakReset === undefined, String(midUser?.hasPendingStreakReset));
+check('pending_streak_resets doc deleted by the reset',
+  !(await db.doc('pending_streak_resets/s3_mid').get()).exists);
 
 const topStats = (await db.doc('userMCQStats/s3_top').get()).data();
 check('mcq totals zeroed',

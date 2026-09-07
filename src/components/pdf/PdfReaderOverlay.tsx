@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
 import {
-  AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw, X,
+  AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw,
+  Sparkles, X,
 } from 'lucide-react';
 import PdfPage, { type PageHandle } from './PdfPage';
 import SelectionToolbar from './SelectionToolbar';
@@ -13,7 +14,9 @@ import { readStoredPdf } from '../../hooks/useOfflinePDF';
 import { buildAnchor, canonicalOffsetWithin, rectsToQuads } from '../../lib/pdfAnchor';
 import { useLectureAnnotations } from '../../hooks/useLectureAnnotations';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
+import SimosanDrawer from './SimosanDrawer';
 import { exportLecture, getDocMeta, setDocMeta } from '../../services/pdfAnnotationService';
+import { fetchSimosanState } from '../../services/simosanService';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language } from '../../types';
 import '../../styles/pdf-text-layer.css';
@@ -66,6 +69,12 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   const [flashId, setFlashId] = useState<string | null>(null);
   const [orphanIds, setOrphanIds] = useState<Set<string>>(new Set());
 
+  const [simosanOpen, setSimosanOpen] = useState(false);
+  const [simosanSeed, setSimosanSeed] = useState<string | null>(null);
+  /** Null until the access probe returns. The entry points stay hidden rather
+   *  than rendering an action that would only be refused. */
+  const [simosanReady, setSimosanReady] = useState(false);
+
   /** Gesture state for the active pinch, or null. Declared before paintZoom,
    *  which reads it inside a rAF callback. */
   const pinch = useRef<{ startDist: number; startScale: number; focalY: number } | null>(null);
@@ -113,6 +122,22 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   useBackDismiss(true, onClose, 'pdfReader');
   useBackDismiss(drawerOpen, () => setDrawerOpen(false), 'pdfNotes');
   useBackDismiss(!!editing, () => setEditing(null), 'pdfNote');
+  // Registered last so it sits on top of the shared layer stack - a back press
+  // while Simosan is open must close Simosan, not the notes drawer beneath it.
+  useBackDismiss(simosanOpen, () => setSimosanOpen(false), 'pdfSimosan');
+
+  // One probe per open. The server is the authority on both subscription and
+  // the global kill switch, so this only decides whether to draw the button.
+  useEffect(() => {
+    let alive = true;
+    fetchSimosanState().then((s) => { if (alive) setSimosanReady(!!s?.available); });
+    return () => { alive = false; };
+  }, []);
+
+  const openSimosan = useCallback((seed?: string) => {
+    setSimosanSeed(seed ?? null);
+    setSimosanOpen(true);
+  }, []);
 
   const registerPage = useCallback((n: number, h: PageHandle | null) => {
     if (h) pages.current.set(n, h);
@@ -572,6 +597,16 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           {lectureTitle}
         </h1>
 
+        {simosanReady && (
+          <button
+            onClick={() => openSimosan()}
+            aria-label={isRtl ? 'اسأل سيموسان' : 'Ask Simosan'}
+            className="p-2 rounded-full text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-950/40 transition-colors"
+          >
+            <Sparkles className="w-6 h-6" />
+          </button>
+        )}
+
         <button
           onClick={() => setDrawerOpen(true)}
           aria-label={isRtl ? 'ملاحظاتي' : 'My notes'}
@@ -732,6 +767,11 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               clearSelection();
             }}
             onDismiss={clearSelection}
+            onAskSimosan={simosanReady ? () => {
+              const seed = selection.text;
+              clearSelection();
+              openSimosan(seed);
+            } : undefined}
           />
         )}
       </AnimatePresence>
@@ -759,6 +799,18 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
             onExport={doExport}
             onDeleteAll={() => setConfirmWipe(true)}
             onClose={() => setDrawerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {simosanOpen && (
+          <SimosanDrawer
+            isRtl={isRtl}
+            lectureId={lectureId}
+            seedSelection={simosanSeed}
+            onJumpToPage={scrollToPage}
+            onClose={() => setSimosanOpen(false)}
           />
         )}
       </AnimatePresence>

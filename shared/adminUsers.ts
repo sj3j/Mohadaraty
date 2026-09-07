@@ -68,6 +68,12 @@ export async function mergeUserAccounts(
   if ((deleteUserData.longestStreak || 0) > (keepUserData.longestStreak || 0)) {
     updateData.longestStreak = deleteUserData.longestStreak;
   }
+  // Merging is exactly the case this field exists for: the same human holding two
+  // accounts (a Google uid and a roster email-as-uid) must not lose the record
+  // earned on whichever one is being discarded.
+  if ((deleteUserData.bestStreakAllTime || 0) > (keepUserData.bestStreakAllTime || 0)) {
+    updateData.bestStreakAllTime = deleteUserData.bestStreakAllTime;
+  }
   if ((deleteUserData.freezeTokens || 0) > (keepUserData.freezeTokens || 0)) {
     updateData.freezeTokens = deleteUserData.freezeTokens;
   }

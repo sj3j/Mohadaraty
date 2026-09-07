@@ -1,6 +1,20 @@
 {
   "indexes": [
     {
+      "collectionGroup": "aiUsage",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "day",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "unitsUsed",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "systemNotifications",
       "queryScope": "COLLECTION",
       "fields": [

@@ -11,14 +11,30 @@
  * vite.config.ts aliases this module to src/native-stubs/payments.ts when
  * mode === 'native', so the literals never enter the native graph at all.
  *
- * Only keys used SOLELY by the purchase UI belong here. Anything a store build
- * still needs to say - "subscription required", "ask your representative",
- * "subscription active" - stays in src/types.ts, because the native app still
- * has to explain why content is locked even though it cannot sell access.
+ * Only keys used SOLELY by the purchase UI belong here.
+ *
+ * That used to exclude "subscription required" / "ask your representative" /
+ * "subscription active", because the native stubs rendered them to explain why
+ * content was locked. They no longer do: the stubs were rewritten to speak in
+ * ACCESS terms (accessStatus / accessActive / accessManagedByRep, which live in
+ * src/types.ts) precisely so a store build never says "subscription" at all.
+ * With no native consumer left, the whole subscription vocabulary moved here
+ * and now leaves the native graph with everything else.
  */
 
 export const PAYMENT_STRINGS = {
   ar: {
+    subscription: 'اشتراك',
+    subscriptionPlans: 'خطط الاشتراك',
+    subscriptionActive: 'الاشتراك فعال',
+    subscriptionExpired: 'الاشتراك منتهي',
+    subscriptionPending: 'بانتظار التأكيد',
+    subscriptionRequired: 'يتطلب اشتراك',
+    mcqRequiresSubscription: 'ميزة الأسئلة تتطلب اشتراكاً فعالاً',
+    askRepresentative: 'اطلب من الممثل تفعيل الميزة',
+    subscriptionActivated: 'تم تفعيل الاشتراك!',
+    manageSubscriptions: 'إدارة الاشتراكات',
+    totalSubscribers: 'إجمالي المشتركين',
     pricePerMonth: 'دينار/شهر',
     choosePayment: 'اختر طريقة الدفع',
     zaincash: 'زين كاش',
@@ -35,6 +51,17 @@ export const PAYMENT_STRINGS = {
     paymentFailed: 'فشل الدفع',
   },
   en: {
+    subscription: 'Subscription',
+    subscriptionPlans: 'Subscription Plans',
+    subscriptionActive: 'Subscription Active',
+    subscriptionExpired: 'Subscription Expired',
+    subscriptionPending: 'Pending Confirmation',
+    subscriptionRequired: 'Subscription Required',
+    mcqRequiresSubscription: 'MCQ feature requires an active subscription',
+    askRepresentative: 'Ask your representative to activate this feature',
+    subscriptionActivated: 'Subscription Activated!',
+    manageSubscriptions: 'Manage Subscriptions',
+    totalSubscribers: 'Total Subscribers',
     pricePerMonth: 'IQD/mo',
     choosePayment: 'Choose Payment Method',
     zaincash: 'ZainCash',

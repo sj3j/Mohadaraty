@@ -133,13 +133,32 @@ export async function startNewSeason(
       ops++;
     }
 
+    // bestStreakAllTime is deliberately NOT in this patch - it is the only streak
+    // number that survives a rollover. Raise it from the season being closed here,
+    // before longestStreak is zeroed, or the peak dies with it and "الأطول" can
+    // never read higher than the running season (0 for the whole vacation).
+    const seasonPeak = Math.max(u.longestStreak || 0, u.streakCount || 0);
+
     batch.update(u.ref, {
       streakCount: 0,
       longestStreak: 0,
       lastActiveDate: null,
       freezeTokens: 3,
+      bestStreakAllTime: Math.max(u.bestStreakAllTime || 0, seasonPeak),
+      // The flag guards a streak this reset has just archived and zeroed, so it
+      // can no longer be forgiven into anything. Left behind it strands the
+      // student on a permanent "you are about to lose your streak" banner -
+      // 325 accounts sat that way for four months before this line existed.
+      hasPendingStreakReset: FieldValue.delete(),
     });
     ops++;
+
+    // Same reasoning, and nothing else ever drains this collection: the docs are
+    // written with an expiresAt that no code reads, and the only other clear is a
+    // manual per-student admin action. Deleting a missing doc is a no-op.
+    batch.delete(db.collection('pending_streak_resets').doc(u.uid));
+    ops++;
+
     await flush();
   }
   await flush(true);

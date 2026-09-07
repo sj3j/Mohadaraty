@@ -2,7 +2,7 @@ import React, { useState, useReducer, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Lecture, UserProfile, Language } from '../types';
 import { X, Loader2, ArrowRight } from 'lucide-react';
-import { getExistingMCQsForLecture, generateMCQsForLecture } from '../services/mcqGenerationService';
+import { getExistingMCQsForLecture, generateMCQsForLecture, AIUnavailableError, AI_UNAVAILABLE_MESSAGE } from '../services/mcqGenerationService';
 import { getFirstAttemptStatus, finalizeFirstAttempt, submitRetakeAttempt } from '../services/mcqAnswerService';
 import { checkMCQBanStatus } from '../services/antiCheatService';
 import { getQuestionsForLecture, bankLectureIdFor } from '../services/questionBankService';
@@ -94,12 +94,28 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
       setRoute('loading');
       setErrorMsg(null);
       try {
-        const generatedQuestions = await generateMCQsForLecture(lecture.id, lecture.category, lecture.pdfUrl);
+        // subjectId, NOT category - the same rule as the bank lookup above.
+        // `category` is legacy and absent on every lecture uploaded against the
+        // real curriculum, so passing it sent `undefined` into a Firestore write
+        // and the student got "Unsupported field value: undefined" instead of a
+        // quiz. The mcqs doc keys on subjectId; category is only a fallback for
+        // content that predates the migration.
+        const generatedQuestions = await generateMCQsForLecture(
+          lecture.id,
+          lecture.subjectId || lecture.category || '',
+          lecture.pdfUrl,
+        );
         setQuestions(generatedQuestions);
         setRoute('quiz');
       } catch (err: any) {
         console.error(err);
-        setErrorMsg(err.message || 'فشل التوليد. يرجى المحاولة مرة أخرى.'); // "Generation failed. Please try again."
+        // A provider outage (dead key, exhausted quota) is not something the
+        // student did or can fix, and its real cause must not reach the screen.
+        setErrorMsg(
+          err instanceof AIUnavailableError
+            ? AI_UNAVAILABLE_MESSAGE
+            : (err.message || 'فشل التوليد. يرجى المحاولة مرة أخرى.'),
+        );
       }
     } else {
       setRoute('quiz');

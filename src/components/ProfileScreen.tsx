@@ -385,10 +385,16 @@ export default function ProfileScreen({
               </span>
             ) : null}
 
+            {/* Store builds say ACTIVE, not SUBSCRIBED. The badge is the last
+                purchase-flavoured word left on a screen a reviewer will open,
+                and "active" states the same account fact without implying a
+                transaction the app is not allowed to offer. */}
             {user.isSubscribed && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-xs font-black">
                 <Crown className="w-3.5 h-3.5" strokeWidth={2.5} />
-                {isRtl ? 'مشترك' : 'SUBSCRIBED'}
+                {IS_STORE_BUILD
+                  ? (isRtl ? 'مفعّل' : 'ACTIVE')
+                  : (isRtl ? 'مشترك' : 'SUBSCRIBED')}
               </span>
             )}
           </div>
@@ -544,8 +550,16 @@ export default function ProfileScreen({
               </div>
               <div className="bg-white/80 dark:bg-zinc-800/80 p-3 rounded-2xl border border-orange-200/50 dark:border-orange-700/30 text-center">
                 <p className="text-[10px] text-amber-600 dark:text-amber-400 font-bold mb-1">{isRtl ? 'الأطول' : 'Longest'}</p>
+                {/* All-time, which is the only reading of "longest" a student
+                    expects. longestStreak is per-season and startNewSeason zeroes
+                    it, so on its own this tile read 0 for the whole vacation.
+                    The Math.max also covers accounts scripts/streakAudit.ts has
+                    not backfilled bestStreakAllTime onto yet. */}
                 <p className="text-xl font-black text-amber-700 dark:text-amber-400">
-                  {Math.max(user.longestStreak || 0, user.streakCount || 0)}
+                  {Math.max(user.bestStreakAllTime || 0, user.longestStreak || 0, user.streakCount || 0)}
+                </p>
+                <p className="text-[9px] text-amber-600/70 dark:text-amber-400/70 font-bold mt-0.5">
+                  {isRtl ? 'هذا الموسم' : 'season'} {Math.max(user.longestStreak || 0, user.streakCount || 0)}
                 </p>
               </div>
               <div className="bg-white/80 dark:bg-zinc-800/80 p-3 rounded-2xl border border-orange-200/50 dark:border-orange-700/30 text-center">
@@ -553,7 +567,10 @@ export default function ProfileScreen({
                   <Shield className="w-3 h-3" /> {isRtl ? 'الدروع' : 'Shields'}
                 </p>
                 <p className="text-xl font-black text-sky-700 dark:text-sky-400">
-                  <Ltr>{`${Math.min(user.freezeTokens ?? 1, 3)}/3`}</Ltr>
+                  {/* `?? 1` rendered a permanent 1/3 on every account, because
+                      App.tsx never hydrated freezeTokens at all. The grant paths
+                      and the season reset all issue 3. */}
+                  <Ltr>{`${Math.min(user.freezeTokens ?? 3, 3)}/3`}</Ltr>
                 </p>
               </div>
             </div>

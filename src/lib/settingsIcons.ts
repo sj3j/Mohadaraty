@@ -9,7 +9,7 @@
 import {
   Bell, Palette, Languages, ShieldCheck, User, Flame, Trophy, CreditCard,
   GraduationCap, CalendarDays, Users, FileText, HardDrive, Crown, LogOut,
-  Ban, Info, Shield, BookOpen, Inbox, Layers, type LucideIcon,
+  Ban, Info, Shield, BookOpen, Inbox, Layers, Sparkles, KeyRound, type LucideIcon,
 } from 'lucide-react';
 
 export interface SettingsIcon {
@@ -32,11 +32,15 @@ export const SETTINGS_ICONS: Record<string, SettingsIcon> = {
   streak:        { Icon: Flame,         className: 'text-orange-500',  tile: 'bg-orange-100 dark:bg-orange-900/30' },
   grades:        { Icon: Trophy,        className: 'text-emerald-500', tile: 'bg-emerald-100 dark:bg-emerald-900/30' },
   subscription:  { Icon: CreditCard,    className: 'text-fuchsia-500', tile: 'bg-fuchsia-100 dark:bg-fuchsia-900/30' },
+  // Store builds show this instead of `subscription`. A credit-card glyph is
+  // payment iconography on a screen that must not offer a payment.
+  access:        { Icon: KeyRound,      className: 'text-fuchsia-500', tile: 'bg-fuchsia-100 dark:bg-fuchsia-900/30' },
   about:         { Icon: Info,          className: 'text-slate-500',   tile: 'bg-slate-100 dark:bg-zinc-800' },
   logout:        { Icon: LogOut,        className: 'text-rose-500',    tile: 'bg-rose-100 dark:bg-rose-900/30' },
 
   // --- staff ----------------------------------------------------------------
   calendar:      { Icon: CalendarDays,  className: 'text-sky-500',     tile: 'bg-sky-100 dark:bg-sky-900/30' },
+  simosan:       { Icon: Sparkles,      className: 'text-violet-500',  tile: 'bg-violet-100 dark:bg-violet-900/30' },
   students:      { Icon: Users,         className: 'text-emerald-500', tile: 'bg-emerald-100 dark:bg-emerald-900/30' },
   assistants:    { Icon: Shield,        className: 'text-indigo-500',  tile: 'bg-indigo-100 dark:bg-indigo-900/30' },
   streakAdmin:   { Icon: Flame,         className: 'text-orange-500',  tile: 'bg-orange-100 dark:bg-orange-900/30' },

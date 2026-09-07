@@ -175,10 +175,22 @@ export interface UserProfile {
   favorites?: string[];
   studied?: string[];
   streakCount?: number;
+  /** Peak of the CURRENT season only - startNewSeason zeroes this. */
   longestStreak?: number;
+  /**
+   * Peak across every season. Deliberately left out of the reset patch in
+   * shared/seasonReset.ts so a student's record survives a rollover; without it
+   * "الأطول" could never exceed the running season and read 0 every vacation.
+   */
+  bestStreakAllTime?: number;
   freezeTokens?: number;
 
-  lastStreakDate?: string;
+  /**
+   * Baghdad 'YYYY-MM-DD' of the last credited day; null after a season reset.
+   * This is what record-activity actually writes. A `lastStreakDate` was declared
+   * here and read by App.tsx for a long time, but no server code ever wrote it.
+   */
+  lastActiveDate?: string | null;
   examCode?: string;
   group?: string;
   notificationPreferences?: {
@@ -415,9 +427,7 @@ export const TRANSLATIONS = {
     removeFromFavorites: 'إزالة من المفضلة',
     youtubeTag: 'شرح يوتيوب',
     // Subscription
-    subscription: 'اشتراك',
     subscribNow: 'اشترك الآن',
-    subscriptionPlans: 'خطط الاشتراك',
     monthly: 'شهري',
     seasonal: 'فصلي',
     semiAnnual: 'نصف سنوي',
@@ -425,19 +435,23 @@ export const TRANSLATIONS = {
     bestValue: 'الأفضل قيمة',
     popular: 'الأكثر شيوعاً',
     pendingApproval: 'بانتظار الموافقة',
-    subscriptionActive: 'الاشتراك فعال',
-    subscriptionExpired: 'الاشتراك منتهي',
-    subscriptionPending: 'بانتظار التأكيد',
     daysRemaining: 'يوم متبقي',
     expiresOn: 'ينتهي في',
     renewSubscription: 'تجديد الاشتراك',
     transactionHistory: 'سجل المعاملات',
     noTransactions: 'لا توجد معاملات سابقة',
-    subscriptionRequired: 'يتطلب اشتراك',
-    mcqRequiresSubscription: 'ميزة الأسئلة تتطلب اشتراكاً فعالاً',
-    askRepresentative: 'اطلب من الممثل تفعيل الميزة',
-    manageSubscriptions: 'إدارة الاشتراكات',
-    totalSubscribers: 'إجمالي المشتركين',
+    // Access framing, used INSTEAD of the subscription strings in store builds.
+    // Purchases happen entirely outside the app: a stage representative
+    // activates an account. Saying "subscription" on a Play build invites a
+    // reviewer to look for a purchase flow that must not exist there, and any
+    // wording that points a user somewhere to pay is steering. These say only
+    // what the account's state is and who changes it.
+    accessStatus: 'حالة الوصول',
+    accessActive: 'الوصول مفعّل',
+    accessInactive: 'الوصول غير مفعّل',
+    accessUntil: 'مفعّل حتى',
+    accessManagedByRep: 'يتم تفعيل الوصول من قِبل ممثل مرحلتك.',
+    accessFeatureLocked: 'هذه الميزة غير مفعّلة على حسابك.',
     activeSubscribers: 'المشتركون الفعالون',
     pendingPayments: 'مدفوعات معلقة',
     subscriberBreakdown: 'توزيع المشتركين',
@@ -448,7 +462,6 @@ export const TRANSLATIONS = {
     grantSubscription: 'منح اشتراك',
     extendDays: 'عدد أيام التمديد',
     adminGrant: 'منحة إدارية',
-    subscriptionActivated: 'تم تفعيل الاشتراك!',
   },
   en: {
     ...PAYMENT_STRINGS.en,
@@ -561,9 +574,7 @@ export const TRANSLATIONS = {
     removeFromFavorites: 'Remove from Favorites',
     youtubeTag: 'YouTube Video',
     // Subscription
-    subscription: 'Subscription',
     subscribNow: 'Subscribe Now',
-    subscriptionPlans: 'Subscription Plans',
     monthly: 'Monthly',
     seasonal: 'Seasonal',
     semiAnnual: 'Semi-Annual',
@@ -571,19 +582,17 @@ export const TRANSLATIONS = {
     bestValue: 'Best Value',
     popular: 'Popular',
     pendingApproval: 'Pending Approval',
-    subscriptionActive: 'Subscription Active',
-    subscriptionExpired: 'Subscription Expired',
-    subscriptionPending: 'Pending Confirmation',
     daysRemaining: 'days remaining',
     expiresOn: 'Expires on',
     renewSubscription: 'Renew Subscription',
     transactionHistory: 'Transaction History',
     noTransactions: 'No previous transactions',
-    subscriptionRequired: 'Subscription Required',
-    mcqRequiresSubscription: 'MCQ feature requires an active subscription',
-    askRepresentative: 'Ask your representative to activate this feature',
-    manageSubscriptions: 'Manage Subscriptions',
-    totalSubscribers: 'Total Subscribers',
+    accessStatus: 'Access',
+    accessActive: 'Access active',
+    accessInactive: 'Access not active',
+    accessUntil: 'Active until',
+    accessManagedByRep: 'Access is activated by your stage representative.',
+    accessFeatureLocked: 'This feature is not active on your account.',
     activeSubscribers: 'Active Subscribers',
     pendingPayments: 'Pending Payments',
     subscriberBreakdown: 'Subscriber Breakdown',
@@ -594,7 +603,6 @@ export const TRANSLATIONS = {
     grantSubscription: 'Grant Subscription',
     extendDays: 'Extension Days',
     adminGrant: 'Admin Grant',
-    subscriptionActivated: 'Subscription Activated!',
   }
 };
 

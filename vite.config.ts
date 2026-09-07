@@ -196,6 +196,13 @@ export default defineConfig(({mode}) => {
             find: /^.*\/i18n\/payments$/,
             replacement: path.resolve(__dirname, 'src/native-stubs/payments.ts'),
           },
+          // Simosan's spend dashboard reports dollars against a monthly
+          // ceiling. Same hazard as the screens above: admin-only React is
+          // still in the artefact the scanner reads.
+          {
+            find: /^.*\/components\/SimosanAdminScreen$/,
+            replacement: path.resolve(__dirname, 'src/native-stubs/SimosanAdminScreen.tsx'),
+          },
         ] : []),
       ],
     },

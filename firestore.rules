@@ -184,6 +184,7 @@ service cloud.firestore {
              (!('studied' in data) || data.studied is list) &&
              (!('streakCount' in data) || data.streakCount is number) &&
              (!('longestStreak' in data) || data.longestStreak is number) &&
+             (!('bestStreakAllTime' in data) || data.bestStreakAllTime is number) &&
              (!('freezeTokens' in data) || data.freezeTokens is number) &&
              // Both of these are nulled, not removed, by the season reset
              // (shared/seasonReset.ts sets lastActiveDate: null for EVERY user).
@@ -282,9 +283,17 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Archived streak season results shown on the student's own profile.
+    // Written only by the Admin SDK during a season reset, which bypasses rules.
+    //
+    // This was `isAdmin()`, which let any admin CLIENT rewrite a finished season.
+    // One card was overwritten that way three weeks after its archive run
+    // (finalStreak 15 -> 2) while every peer card still matched semesterArchives,
+    // and there is no legitimate client writer. Matches mcqHistory and
+    // yearHistory below, which were already write:false.
     match /users/{userId}/streakHistory/{document=**} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin();
+      allow write: if false;
     }
 
     // Archived MCQ season results shown on the student's own profile.
@@ -372,6 +381,7 @@ service cloud.firestore {
                         && request.resource.data.get('streakCount', 0) == resource.data.get('streakCount', 0)
                         && request.resource.data.get('freezeTokens', 1) == resource.data.get('freezeTokens', 1)
                         && request.resource.data.get('longestStreak', 0) == resource.data.get('longestStreak', 0)
+                        && request.resource.data.get('bestStreakAllTime', 0) == resource.data.get('bestStreakAllTime', 0)
                         && request.resource.data.get('lastActiveDate', '') == resource.data.get('lastActiveDate', '')
                         // Stage and progression are server-owned. The generic
                         // self-edit branch never froze these, so a student could
@@ -411,8 +421,12 @@ service cloud.firestore {
       allow write: if false; // Only via API
     }
 
+    // The doc id IS the uid, but ownership is checked against the stored field to
+    // match streak_history above. HomeScreen reads this to render the student's
+    // own "about to lose your streak" banner; while it was admin-only that read
+    // was permission-denied for every student and the banner never appeared.
     match /pending_streak_resets/{docId} {
-      allow read: if isAdmin();
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow write: if false; // Only via API
     }
 
@@ -602,6 +616,43 @@ service cloud.firestore {
         isAuthenticated() && request.auth.uid == userId &&
         request.resource.data.get('stageId', userStage()) == userStage()
       );
+    }
+
+    // --- Simosan (AI lecture tutor) ------------------------------------
+    //
+    // Every one of these is server-written. The daily energy allowance and the
+    // monthly ceiling only mean something because a student cannot reach the
+    // documents that record them - the existing client-side Gemini path in
+    // mcqGenerationService has no such guarantee, which is exactly the problem
+    // Simosan was built server-side to avoid.
+
+    // Chat threads. Readable by their owner so the drawer can render history
+    // and an admin can investigate a report; written only by the API, so a
+    // student cannot forge an assistant turn or trim history to underpay.
+    match /aiChats/{userId}/{document=**} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if false;
+    }
+
+    // Energy ledger. Readable by its owner for the energy bar; never writable
+    // from a client - this document IS the limit.
+    //
+    // Ownership is read from the stored `uid` field, NOT parsed out of the
+    // document id. The id is `{uid}_{YYYY-MM-DD}` and a uid may itself contain
+    // an underscore, so splitting on "_" can yield a prefix rather than the
+    // real uid - which denies a student their own row and, worse, would match
+    // whoever happens to own that prefix.
+    match /aiUsage/{usageId} {
+      allow read: if isAuthenticated() &&
+                     (isAdmin() ||
+                      (resource != null && resource.data.uid == request.auth.uid));
+      allow write: if false;
+    }
+
+    // Gemini Files API URI cache. Server-only in both directions: a leaked file
+    // URI is a readable copy of the lecture that bypasses hasAccess().
+    match /aiFiles/{lectureId} {
+      allow read, write: if false;
     }
 
     match /systemNotifications/{notificationId} {
