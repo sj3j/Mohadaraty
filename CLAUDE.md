@@ -347,6 +347,43 @@ network while the stale bytes and the `pdf_${id}` marker both persist. Keying by
 id instead would serve the OLD file after a re-upload, which is why it has not simply
 been swapped - it needs a migration that drops superseded bytes.
 
+## Master admins: one list, and the copies that cannot import it
+
+`shared/masterAdmins.ts` is the source of truth. Everything that can import does
+(`server.ts`, `api/index.ts`, `App.tsx`, `LoginScreen`, `ChatScreen`,
+`StudentManagement`, `AdminGradesScreen`). Four places cannot and hold a checked
+copy: `firestore.rules` and `storage.rules` (rules have no imports),
+`functions/index.js` (deploys as its own package, so `../shared` is not on disk)
+and the `.mjs` scripts. `npm run test:masters` parses all four and fails if any
+disagrees, and also fails if a new source file hardcodes an address instead of
+importing.
+
+It exists because the inline lists **had already drifted**. `LoginScreen`,
+`ChatScreen` and `AdminGradesScreen` carried one address while the two servers
+carried two. That is not cosmetic: `LoginScreen` decides the `role` written onto
+a brand-new `users` document, so a master admin whose first-ever sign-in was
+Google was created as a **student** and had to be repaired by hand.
+
+Adding an address takes effect on four independent paths, and it is worth
+knowing which does what:
+
+* **`shared/googleLogin.ts` bypasses the whitelist for a master admin.** They
+  have no `students/` doc and no `allowed_admins/` entry, so that bypass is the
+  *only* reason Google sign-in works for them at all - an address missing from
+  the list gets `NO_ACCOUNT` and is routed to the signup form.
+* **`isMasterAdmin()` in both rules files has an email arm**, which is what
+  admits a new master admin before they have any document at all.
+* **`functions/index.js`'s `syncRole` rewrites the custom claim on EVERY
+  `users/{uid}` write**, and `App.tsx` stores `role: 'admin'` for a master admin.
+  An address missing from *that* copy has its `master_admin` claim stripped again
+  by the next profile write, which is why the functions copy is not optional.
+* `/api/bootstrap-admin` mints the claim on first load and is what `App.tsx`
+  calls when the email matches but the claim does not.
+
+The `isMasterAdmin` boolean on `users/` is a UI convenience
+(`src/lib/permissions.ts`) set by `scripts/assignStageRepresentatives.mjs`; it is
+never the authority. Nothing security-relevant reads it.
+
 ## Known hazard: two identity spaces
 
 Roster students sign in with a **custom token whose UID is their college email**

@@ -29,6 +29,7 @@
     "test:richtext": "npx tsx scripts/richText.test.ts",
     "test:anchor": "npx tsx scripts/pdfAnchor.test.ts",
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
+    "test:masters": "npx tsx scripts/masterAdmins.test.ts",
     "test:roster": "npx tsx scripts/roster.test.ts",
     "streak:audit": "npx tsx scripts/streakAudit.ts",
     "roster:passwords": "npx tsx scripts/generateRosterPasswords.ts",

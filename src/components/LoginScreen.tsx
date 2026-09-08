@@ -7,6 +7,7 @@ import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
 import { apiUrl } from '../lib/apiBase';
 import { getGoogleCustomToken, NoAccountError } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
+import { isMasterAdminEmail } from '../../shared/masterAdmins';
 import SignupScreen from './SignupScreen';
 
 interface LoginScreenProps {
@@ -181,8 +182,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
       if (resolvedId) {
         const emailLower = resolvedId;
         
-        const adminEmails = ["almdrydyl335@gmail.com"];
-        const isMasterAdmin = adminEmails.includes(emailLower);
+        const isMasterAdmin = isMasterAdminEmail(emailLower);
         
         if (isMasterAdmin) {
            userRole = 'admin'; // Will become master_admin by cloud function
@@ -304,8 +304,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
       
       const allowedDoc = await getDoc(doc(db, 'allowed_admins', emailLower));
       
-      const adminEmails = ["almdrydyl335@gmail.com"];
-      const isMasterAdmin = adminEmails.includes(emailLower);
+      const isMasterAdmin = isMasterAdminEmail(emailLower);
       
       if (isMasterAdmin) {
         userRole = 'admin';

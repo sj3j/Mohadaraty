@@ -17,6 +17,7 @@ import 'dotenv/config';
 import {
   verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError,
 } from '../shared/googleLogin';
+import { MASTER_ADMIN_EMAILS } from '../shared/masterAdmins';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   console.error('Refusing to run: FIRESTORE_EMULATOR_HOST is not set.');
@@ -49,7 +50,7 @@ const fakeAdminAuth = (payload: any) => ({
 const fakeOAuth = (payload: any) => ({
   verifyIdToken: async () => ({ getPayload: () => payload }),
 });
-const MASTERS = ['almdrydyl335@gmail.com'];
+const MASTERS = [...MASTER_ADMIN_EMAILS];
 const noopSync = async () => {};
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,21 @@ const master = await resolveGoogleLogin(db, fakeAdminAuth({}) as any,
     masterAdminEmails: MASTERS, fallbackUid: 'master-uid', syncUserStage: noopSync,
   });
 check('the master admin bypasses the student whitelist', master.uid === 'master-uid');
+
+// EVERY master admin, not just the first. A master admin has no students doc and
+// no allowed_admins entry, so this bypass is the only thing that lets them sign
+// in with Google at all - an address missing from the list is handed NO_ACCOUNT
+// and routed to the signup form.
+for (const email of MASTER_ADMIN_EMAILS) {
+  const uid = `uid-of-${email}`;
+  const r = await resolveGoogleLogin(db, fakeAdminAuth({}) as any,
+    { email, name: 'Master', emailVerified: true }, {
+      masterAdminEmails: MASTERS, fallbackUid: uid, syncUserStage: noopSync,
+    }).catch(e => e);
+  check(`${email} can sign in with Google without a students doc`,
+    !(r instanceof Error) && r.uid === uid,
+    r instanceof GoogleLoginError ? r.code : undefined);
+}
 
 // A student who has NEVER signed in has no users doc: the fallback uid is used,
 // and syncUserStage is what later reconciles them.

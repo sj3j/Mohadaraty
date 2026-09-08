@@ -145,7 +145,16 @@ const mod = ctxFor('mod_uid', 'mod@x.com');
 const legacy = ctxFor('legacy_uid', 'legacy@x.com');
 const student = ctxFor('stu_uid', 'stu@x.com');
 const student2 = ctxFor('stu2_uid', 'stu2@x.com');
-const master = ctxFor('master_uid', 'almdrydyl335@gmail.com');
+// Both hardcoded master addresses, so a rules change that widens or narrows the
+// list is caught here and not in production. Kept in step with
+// shared/masterAdmins.ts by `npm run test:masters`.
+const MASTER_ADMIN_EMAILS = [
+  'almdrydyl335@gmail.com',
+  'dra016go@gmail.com',
+  'jempe.kn@gmail.com',
+];
+const master = ctxFor('master_uid', MASTER_ADMIN_EMAILS[0]);
+const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 
 console.log('\nModerator is walled off from student data');
 await check('moderator CANNOT read students',
@@ -533,6 +542,20 @@ await check('the master admin CAN read any stage',
   assertSucceeds(getDoc(doc(master, 'students/other@x.com'))));
 await check('the master admin CAN list every student',
   assertSucceeds(getDocs(collection(master, 'students'))));
+
+// The SECOND hardcoded address, holding nothing but the email claim: no users
+// doc, no allowed_admins entry, no custom claim. This is the state a newly
+// added master admin is in before their first sign-in, and the email arm of
+// isMasterAdmin() is the only thing admitting them.
+await check('a second master admin, with no users doc, CAN read any stage',
+  assertSucceeds(getDoc(doc(master2, 'students/other@x.com'))));
+await check('a second master admin CAN write the academic calendar',
+  assertSucceeds(setDoc(doc(master2, 'app_settings/academicCalendar'), {
+    yearLabel: '2026-2027', timezone: 'Asia/Baghdad',
+    terms: [{ id: 't1', nameAr: 'x', nameEn: 'x', startDate: '2026-09-20', endDate: '2026-12-31', examsStart: null, examsEnd: null }],
+  })));
+await check('an ordinary address is still NOT a master admin',
+  assertFails(getDoc(doc(ctxFor('nobody_uid', 'nobody@gmail.com'), 'students/other@x.com'))));
 
 // The arm every student depends on at login must survive the scoping.
 await check('a student CAN still read their OWN record',

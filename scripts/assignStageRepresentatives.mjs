@@ -47,10 +47,16 @@ const REPRESENTATIVES = {
   stage_5: null,
 };
 
-// The one account that may switch stages and reach the master-only surfaces
-// (streak system, MCQ bank, admin log, subscriptions). firestore.rules also
-// hardcodes this address as a break-glass fallback, so the two must agree.
-const MASTER_ADMIN_EMAIL = 'almdrydyl335@gmail.com';
+// The accounts that may switch stages and reach the master-only surfaces
+// (streak system, MCQ bank, admin log, subscriptions). The list is
+// shared/masterAdmins.ts; firestore.rules repeats it as a break-glass fallback.
+// This is a .mjs script and cannot import the .ts module, so it re-states the
+// addresses and `npm run test:masters` fails if they drift.
+const MASTER_ADMIN_EMAILS = [
+  'almdrydyl335@gmail.com',
+  'dra016go@gmail.com',
+  'jempe.kn@gmail.com',
+];
 
 // Admin accounts that are NOT in REPRESENTATIVES and NOT the master admin.
 // 'report'  - list them and do nothing (default; safe)
@@ -200,22 +206,26 @@ async function main() {
 
   console.log('\nMaster admin');
   console.log('------------');
-  const masterKey = MASTER_ADMIN_EMAIL.toLowerCase();
-  const masterDocs = byEmail.get(masterKey) || [];
-  if (masterDocs.length === 0) {
-    console.log(`  ${MASTER_ADMIN_EMAIL}  NOT FOUND - the master-admin surfaces stay unreachable in the UI`);
-    problems++;
-  }
-  for (const doc of masterDocs) {
-    claimedUids.add(doc.id);
-    if (doc.data().isMasterAdmin === true) {
-      console.log(`  ${MASTER_ADMIN_EMAIL}  already set  (${doc.id})`);
+  for (const masterEmail of MASTER_ADMIN_EMAILS) {
+    const masterDocs = byEmail.get(masterEmail.toLowerCase()) || [];
+    if (masterDocs.length === 0) {
+      // Not a hard failure any more: a master admin who has never signed in has
+      // no users doc yet, and the email arm in firestore.rules still lets them
+      // in. It is reported so a MISSING primary account is still visible.
+      console.log(`  ${masterEmail}  no users doc yet - rules still admit them by email`);
       continue;
     }
-    console.log(`  ${MASTER_ADMIN_EMAIL}  ${apply ? 'setting' : 'would set'} isMasterAdmin=true  (${doc.id})`);
-    if (apply) {
-      await doc.ref.update({ isMasterAdmin: true });
-      writes++;
+    for (const doc of masterDocs) {
+      claimedUids.add(doc.id);
+      if (doc.data().isMasterAdmin === true) {
+        console.log(`  ${masterEmail}  already set  (${doc.id})`);
+        continue;
+      }
+      console.log(`  ${masterEmail}  ${apply ? 'setting' : 'would set'} isMasterAdmin=true  (${doc.id})`);
+      if (apply) {
+        await doc.ref.update({ isMasterAdmin: true });
+        writes++;
+      }
     }
   }
 

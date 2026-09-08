@@ -11,6 +11,23 @@ admin.initializeApp();
 const db = admin.firestore();
 db.settings({ databaseId: '(default)' });
 
+// A COPY of shared/masterAdmins.ts. functions/ deploys as its own package and
+// cannot reach the repo's TypeScript, so the list is repeated here and pinned
+// by `npm run test:masters`, which fails if the two disagree.
+//
+// syncRole below is the reason this matters more than it looks: it rewrites the
+// custom claim on EVERY users/{uid} write, and App.tsx stores role 'admin' for a
+// master admin. An address missing from this list therefore has its
+// master_admin claim stripped again by the next profile write.
+const MASTER_ADMIN_EMAILS = [
+  'almdrydyl335@gmail.com',
+  'dra016go@gmail.com',
+  'jempe.kn@gmail.com',
+];
+
+const isMasterAdminEmail = (email) =>
+  !!email && MASTER_ADMIN_EMAILS.includes(String(email).toLowerCase());
+
 /**
  * Device tokens for everyone who wants `preferenceKey` notifications.
  *
@@ -619,7 +636,7 @@ exports.confirmDegreeBatch = onCall(async (request) => {
     const userRoleDoc = await db.collection('users').doc(request.auth.uid).get();
     const role = userRoleDoc.exists ? userRoleDoc.data().role : null;
     const email = request.auth.token.email;
-    const isMasterAdmin = email === 'almdrydyl335@gmail.com';
+    const isMasterAdmin = isMasterAdminEmail(email);
 
     if (!isMasterAdmin && role !== 'admin' && role !== 'moderator') {
       throw new HttpsError('permission-denied', 'Only admins can confirm batches.');
@@ -735,7 +752,7 @@ exports.migrateOriginalNames = onCall(async (request) => {
   const userRoleDoc = await db.collection('users').doc(request.auth.uid).get();
   const role = userRoleDoc.exists ? userRoleDoc.data().role : null;
   const email = request.auth.token.email;
-  const isMasterAdmin = email === 'almdrydyl335@gmail.com';
+  const isMasterAdmin = isMasterAdminEmail(email);
 
   if (!isMasterAdmin && role !== 'admin') {
     throw new HttpsError('permission-denied', 'Only admins can run migration.');
@@ -787,11 +804,10 @@ exports.syncRole = onDocumentWritten({
   const uid = event.params.uid;
   const newData = event.data.after.data();
 
-  const adminEmails = ["almdrydyl335@gmail.com"];
   const email = newData.email || "";
   let role = newData.role ?? 'student';
-  
-  if (adminEmails.includes(email.toLowerCase())) {
+
+  if (isMasterAdminEmail(email)) {
     role = 'master_admin';
   }
 

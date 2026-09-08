@@ -23,9 +23,15 @@ service firebase.storage {
     // and a master admin's user document carries role 'master_admin'. The one
     // account with authority over every stage was therefore the one account
     // that could not attach a file to an announcement.
+    // KEEP IN SYNC WITH shared/masterAdmins.ts and firestore.rules.
     function isMasterAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email != null && request.auth.token.email.lower() == 'almdrydyl335@gmail.com') ||
+        (request.auth.token.email != null &&
+          request.auth.token.email.lower() in [
+            'almdrydyl335@gmail.com',
+            'dra016go@gmail.com',
+            'jempe.kn@gmail.com'
+          ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'master_admin') ||
         (hasUserDoc() && userDoc().role == 'master_admin')
       );

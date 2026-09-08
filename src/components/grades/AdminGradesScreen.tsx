@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../../contexts/StageContext';
 import { useAcademicPhase } from '../../hooks/useAcademicPhase';
 import { canManage } from '../../lib/permissions';
+import { isMasterAdminEmail } from '../../../shared/masterAdmins';
 
 export interface AdminGradesScreenProps {
   isOpen: boolean;
@@ -115,7 +116,7 @@ const SearchableStudentSelect = ({
 };
 
 export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGradesScreenProps) {
-  const isMasterAdmin = auth.currentUser?.email === 'almdrydyl335@gmail.com';
+  const isMasterAdmin = isMasterAdminEmail(auth.currentUser?.email);
   const canManageGrades = canManage(user, 'manageGrades');
   const { effectiveStageId } = useStageContext();
   // Stamped onto every degree this upload writes. Taken from the calendar, not

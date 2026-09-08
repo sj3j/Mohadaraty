@@ -26,7 +26,10 @@ The component implements strict UI-level role checks based on the `user` object.
   * Can delete **any** message in the chat.
 
 ### Master Admin
-* **Definition**: Hardcoded email whitelist: `["almdrydyl335@gmail.com"]`.
+* **Definition**: Hardcoded email whitelist. The list lives in
+  `shared/masterAdmins.ts` and is repeated only where an import is impossible
+  (`firestore.rules`, `storage.rules`, `functions/index.js`, the `.mjs`
+  scripts); `npm run test:masters` fails if those copies drift.
 * **Privileges**: 
   * Inherits all Admin/Moderator privileges.
   * **Anonymity Override**: Can click on anonymous messages to reveal the actual sender's email/ID (which is secretly stored in the document payload).

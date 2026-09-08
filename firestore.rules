@@ -39,9 +39,16 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // KEEP IN SYNC WITH shared/masterAdmins.ts. Rules cannot import, so the
+    // addresses are repeated here; `npm run test:masters` fails if they drift.
     function isMasterAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email != null && request.auth.token.email.lower() == 'almdrydyl335@gmail.com') ||
+        (request.auth.token.email != null &&
+          request.auth.token.email.lower() in [
+            'almdrydyl335@gmail.com',
+            'dra016go@gmail.com',
+            'jempe.kn@gmail.com'
+          ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'master_admin') ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'master_admin')
       );
@@ -110,8 +117,8 @@ service cloud.firestore {
     // because no account has been given a managedStageId for the stage that
     // actually holds the content (every lecture, record and student is stage_3,
     // and the only assigned accounts point at stage_4). Turning it on today
-    // would leave almdrydyl335@ - the one address hardcoded as master admin
-    // above - as the only account able to upload anything.
+    // would leave the hardcoded master admins above as the only accounts able
+    // to upload anything.
     //
     // TO FINISH THE ROLLOUT: run scripts/assignStageRepresentatives.mjs, confirm
     // every representative has a managedStageId, then delete the
@@ -133,8 +140,8 @@ service cloud.firestore {
     // nowhere would be the odd one out.
     // Carries the SAME temporary grace as canWriteStage, and is removed at the
     // same time. Production today lets any isAdmin() write any student; going
-    // straight to the strict form would leave almdrydyl335@ as the only account
-    // able to manage the stage_3 roster, which is every student there is.
+    // straight to the strict form would leave the master admins as the only
+    // accounts able to manage the stage_3 roster, which is every student there is.
     function canManageStudentsOn(stageId) {
       return isMasterAdmin() || (
         isAdmin() && (myManagedStage() == '' || myManagedStage() == stageId)

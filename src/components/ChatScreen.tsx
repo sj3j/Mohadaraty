@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Language, TRANSLATIONS, UserProfile } from "../types";
+import { isMasterAdminEmail } from "../../shared/masterAdmins";
 import {
   Send,
   Settings,
@@ -204,7 +205,7 @@ const MessageBubble = React.memo(
                     ? "أنت (مجهول)"
                     : "You (Anonymous)"
                   : msg.senderName}
-                {msg.senderEmail === "almdrydyl335@gmail.com" &&
+                {isMasterAdminEmail(msg.senderEmail) &&
                   !msg.isAnonymous && (
                     <span className="text-sky-500 text-[10px] bg-sky-100 dark:bg-sky-900/40 px-1.5 py-0.5 rounded ml-1">
                       Admin

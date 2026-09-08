@@ -16,6 +16,7 @@ import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
+import { isMasterAdminEmail } from '../shared/masterAdmins';
 import AdminGradesScreen from './components/grades/AdminGradesScreen';
 import AdminQuestionBankScreen from './components/questionBank/AdminQuestionBankScreen';
 import StudentGradesScreen from './components/grades/StudentGradesScreen';
@@ -239,12 +240,11 @@ export default function App() {
         } catch (err) {
           console.warn('Could not read ID token claims (likely offline); continuing without them.', err);
         }
-        const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-        const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || adminEmails.includes(userEmail?.toLowerCase() || '');
+        const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || isMasterAdminEmail(userEmail);
         
         let studentData: any = null;
 
-        if (adminEmails.includes(userEmail?.toLowerCase() || '') && tokenResult?.claims.role !== 'master_admin') {
+        if (isMasterAdminEmail(userEmail) && tokenResult?.claims.role !== 'master_admin') {
           try {
              const token = await firebaseUser.getIdToken();
              await fetch(apiUrl('/api/bootstrap-admin'), {

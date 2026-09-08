@@ -14,6 +14,7 @@ import { canManageGroups } from '../lib/permissions';
 import { apiUrl } from '../lib/apiBase';
 import RosterImport from './RosterImport';
 import { nameKeyFor, normalizeName } from '../../shared/rosterIdentity';
+import { isMasterAdminEmail } from '../../shared/masterAdmins';
 
 interface StudentManagementProps {
   isOpen: boolean;
@@ -34,7 +35,7 @@ interface ExamCodeMatch {
 export default function StudentManagement({ isOpen, onClose, lang, user }: StudentManagementProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
-  const isMasterAdmin = ['almdrydyl335@gmail.com', 'jempe.kn@gmail.com'].includes(user?.email?.toLowerCase() || '') || user?.isMasterAdmin;
+  const isMasterAdmin = isMasterAdminEmail(user?.email) || user?.isMasterAdmin;
   const { effectiveStageId, groupConfig } = useStageContext();
   const [showGroupSettings, setShowGroupSettings] = useState(false);
 

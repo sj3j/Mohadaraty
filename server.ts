@@ -40,6 +40,7 @@ import { deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { createMcqHandlers } from "./shared/mcqApi.js";
+import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
 import { OAuth2Client } from "google-auth-library";
@@ -183,9 +184,9 @@ const GOOGLE_WEB_CLIENT_ID =
   "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com";
 const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 
-// Kept identical to api/index.ts. A master admin bypasses the stage checks
-// below; firestore.rules hardcodes the same first address.
-const MASTER_ADMIN_EMAILS = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
+// The list itself lives in shared/masterAdmins.ts so api/index.ts, the client
+// and this file cannot drift. A master admin bypasses the stage checks below;
+// firestore.rules repeats the same addresses because rules cannot import.
 
 /**
  * The stage the caller is allowed to act on, as decided by the server.
@@ -207,7 +208,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     try {
       const db = admin.firestore();
       const email = (user.email || '').toLowerCase();
-      const isMaster = MASTER_ADMIN_EMAILS.includes(email);
+      const isMaster = isMasterAdminEmail(email);
 
       const userDoc = await db.collection('users').doc(user.uid).get();
 
@@ -244,8 +245,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     const user = (req as any).user;
     if (!user || (!user.email)) return res.status(401).json({ error: 'Unauthorized' });
 
-    const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-    if (!adminEmails.includes(user.email.toLowerCase())) {
+    if (!isMasterAdminEmail(user.email)) {
         return res.status(403).json({ error: 'Not an admin email' });
     }
 
@@ -352,8 +352,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.get("/api/admin-logs", verifyAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-      const isMasterAdmin = adminEmails.includes(user.email?.toLowerCase()) || user.role === 'master_admin';
+      const isMasterAdmin = isMasterAdminEmail(user.email) || user.role === 'master_admin';
       
       if (!isMasterAdmin) {
         return res.status(403).json({ error: "Forbidden: Requires master admin privileges" });
@@ -627,8 +626,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       const reviewerDoc = await db.collection("users").doc(user.uid).get();
       const reviewer = reviewerDoc.data() || {};
-      const masters = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-      const isMaster = !!user.email && masters.includes(String(user.email).toLowerCase());
+      const isMaster = isMasterAdminEmail(user.email);
 
       const result = await reviewSignupRequest(db, admin.firestore.FieldValue as any, {
         email: req.params.email,
@@ -662,7 +660,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       });
 
       const result = await resolveGoogleLogin(db, admin.auth(), identity, {
-        masterAdminEmails: ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"],
+        masterAdminEmails: [...MASTER_ADMIN_EMAILS],
         fallbackUid: identity.email,
         syncUserStage: (uid, source) => syncUserStage(db, uid, source),
       });
@@ -1155,7 +1153,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.delete("/api/admin/users/:uid", verifyAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const isMasterAdmin = MASTER_ADMIN_EMAILS.includes(user.email?.toLowerCase()) || user.role === 'master_admin';
+      const isMasterAdmin = isMasterAdminEmail(user.email) || user.role === 'master_admin';
 
       if (!isMasterAdmin) {
         return res.status(403).json({ error: "Forbidden: Requires master admin privileges to delete Auth accounts" });
@@ -1179,7 +1177,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.post("/api/admin/users/merge", verifyAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const isMasterAdmin = MASTER_ADMIN_EMAILS.includes(user.email?.toLowerCase()) || user.role === 'master_admin';
+      const isMasterAdmin = isMasterAdminEmail(user.email) || user.role === 'master_admin';
 
       if (!isMasterAdmin) {
         return res.status(403).json({ error: "Forbidden: Requires master admin privileges" });
@@ -1544,7 +1542,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.post("/api/admin/wipe-year", verifyAuth, verifyAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).user;
-      if (!adminUser.email || !MASTER_ADMIN_EMAILS.includes(adminUser.email.toLowerCase())) {
+      if (!isMasterAdminEmail(adminUser.email)) {
         return res.status(403).json({ error: "Master Admin only" });
       }
 
@@ -1941,8 +1939,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       const { seasonName } = req.body;
       const adminUser = (req as any).user;
 
-      const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-      if (!adminUser.email || !adminEmails.includes(adminUser.email.toLowerCase())) {
+      if (!isMasterAdminEmail(adminUser.email)) {
         return res.status(403).json({ error: "Master Admin only" });
       }
       if (!seasonName || !String(seasonName).trim()) {
@@ -2008,8 +2005,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.post("/api/admin/run-season-rollover", verifyAuth, verifyAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).user;
-      const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-      if (!adminUser.email || !adminEmails.includes(adminUser.email.toLowerCase())) {
+      if (!isMasterAdminEmail(adminUser.email)) {
         return res.status(403).json({ error: "Master Admin only" });
       }
 
