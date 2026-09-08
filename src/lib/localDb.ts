@@ -21,11 +21,21 @@
  */
 
 const DB_NAME = 'mylecture-local';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORE_ANNOTATIONS = 'pdfAnnotations';
 export const STORE_BLOBS = 'pdfBlobs';
 export const STORE_META = 'meta';
+/**
+ * Metadata for lectures the student downloaded, so a saved PDF stays reachable
+ * with no network.
+ *
+ * The bytes alone were never enough: the lecture LIST comes from a Firestore
+ * listener, and the Downloads tab filtered that array. Offline the array was
+ * empty, so a student with a dozen saved PDFs saw "no saved downloads" - the
+ * bytes were on the device with no title or id to reach them by.
+ */
+export const STORE_OFFLINE_LECTURES = 'offlineLectures';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -66,6 +76,11 @@ export function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
       }
+      // v2. Keyed by lecture id, not by URL: an admin re-upload mints a new
+      // pdfUrl, and anything keyed on the URL silently stops matching.
+      if (!db.objectStoreNames.contains(STORE_OFFLINE_LECTURES)) {
+        db.createObjectStore(STORE_OFFLINE_LECTURES, { keyPath: 'id' });
+      }
     };
 
     req.onsuccess = () => {
@@ -104,6 +119,42 @@ export const dbDelete = (store: string, key: IDBValidKey) =>
 
 export const dbGetAllByIndex = <T>(store: string, index: string, query: IDBValidKey | IDBKeyRange) =>
   run<T[]>(store, 'readonly', s => s.index(index).getAll(query));
+
+/**
+ * Every record in a store.
+ *
+ * Only safe on small stores - never call it on STORE_BLOBS, which holds whole
+ * PDFs and would pull every downloaded lecture into memory at once.
+ */
+export const dbGetAll = <T>(store: string) =>
+  run<T[]>(store, 'readonly', s => s.getAll());
+
+/**
+ * The snapshot of a lecture taken when its PDF was downloaded.
+ *
+ * Only what the Downloads tab needs to render a row and open the reader. It is a
+ * COPY, deliberately: the point is to survive the Firestore listener returning
+ * nothing, so it cannot depend on that listener.
+ */
+export interface OfflineLecture {
+  id: string;
+  title: string;
+  pdfUrl: string;
+  subjectId?: string | null;
+  stageId?: string | null;
+  number?: number | null;
+  type?: string | null;
+  savedAt: number;
+}
+
+export const saveOfflineLecture = (rec: OfflineLecture) =>
+  dbPut<OfflineLecture>(STORE_OFFLINE_LECTURES, rec);
+
+export const listOfflineLectures = () =>
+  dbGetAll<OfflineLecture>(STORE_OFFLINE_LECTURES);
+
+export const removeOfflineLecture = (id: string) =>
+  dbDelete(STORE_OFFLINE_LECTURES, id);
 
 /** Deletes every record matching an index query, in one transaction. */
 export function dbDeleteByIndex(store: string, index: string, query: IDBValidKey | IDBKeyRange): Promise<number> {

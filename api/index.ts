@@ -54,6 +54,7 @@ import {
   SubscriptionCtx,
 } from "../shared/subscriptions.js";
 import { createSimosanHandlers } from "../shared/simosanApi.js";
+import { createMcqHandlers } from "../shared/mcqApi.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -2363,5 +2364,13 @@ app.post("/api/ai/ask", verifyAuth, simosan.ask);
 app.get("/api/ai/state", verifyAuth, simosan.state);
 app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
 app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
+
+/* MCQ generation. Staff-only, on the free-tier key - see shared/mcqGeneration.ts
+ * for why it is a second key. Mirrored in server.ts. */
+const mcq = createMcqHandlers({ admin });
+app.post("/api/mcq/generate", verifyAuth, verifyAdmin, mcq.generate);
+app.post("/api/mcq/request", verifyAuth, mcq.request);
+app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);
+app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
 
 export default app;

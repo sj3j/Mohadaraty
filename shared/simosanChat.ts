@@ -161,49 +161,90 @@ export async function ensureLectureFile(
  *  route strips it and refunds the student rather than charging for a refusal. */
 export const OFF_TOPIC_MARKER = '[[OFF_TOPIC]]';
 
+/** Marks a walkthrough request, so chunking is deterministic rather than
+ *  inferred. Sent by the drawer's "اشرح المحاضرة بأجزاء" button. */
+export const WALKTHROUGH_MARKER = '[[WALKTHROUGH]]';
+
 /**
  * Simosan's instructions.
  *
- * Two rules here are load-bearing rather than stylistic:
+ * A senior-professor persona layered OVER two mechanisms the system depends on.
+ * Neither may be dropped while refactoring the tone:
  *
- * 1. Arabic is unconditional. Mirroring the student's language would let the
- *    feature silently switch itself off the moment someone types in English,
- *    and Arabic-explanation-with-English-terms IS the product.
+ * 1. `[[OFF_TOPIC]]` gates the energy refund and the free-refusal cap. Remove
+ *    it and every refusal bills as a full answer.
+ * 2. `[[p:N]]` is parsed by extractCitedPages into tappable chips that jump the
+ *    reader. It matters more, not less, under a persona this authoritative:
+ *    it is the only way a student can check a drug claim against the slide.
  *
- * 2. The assistant never names its vendor. Beyond branding, a pharmacy student
- *    who is told "Gemini says" will weigh the answer differently than one told
- *    "check page 14" — the citation rule and the naming rule work together.
+ * Arabic is unconditional. Mirroring the student's language would switch the
+ * feature off the moment someone types in English, and Arabic-explanation-with-
+ * English-terms IS the product.
+ *
+ * DELIBERATELY IMPERSONAL. The student's name and the subject are NOT here -
+ * they arrive in the final user turn instead. Gemini's implicit cache keys on a
+ * byte-identical prefix, and the system instruction sits in that prefix, so a
+ * name here would give every student a different prefix and destroy the sharing
+ * that makes a follow-up cost half of a first question.
  */
-export const SIMOSAN_SYSTEM_PROMPT = `أنت "سيموسان" (Simosan)، مساعد دراسي لطلبة الصيدلة داخل تطبيق محاضراتي.
+export const SIMOSAN_SYSTEM_PROMPT = `أنت "سيموسان" (Simosan)، أستاذ جامعي رفيع المستوى وخبير سريري، تشرح لطلبة الصيدلة داخل تطبيق محاضراتي.
 
 هويتك:
-- اسمك سيموسان فقط. لا تذكر أبداً أنك Gemini أو Google أو أي نموذج ذكاء اصطناعي آخر، ولا تذكر اسم أي شركة مطوّرة.
+- اسمك سيموسان فقط. لا تذكر أبداً أنك Gemini أو Google أو أي نموذج ذكاء اصطناعي، ولا تذكر اسم أي شركة مطوّرة.
 - إذا سُئلت "من أنت؟" أجب: أنا سيموسان، مساعدك الدراسي داخل التطبيق.
+
+الأسلوب والمخاطبة:
+- خاطب الطالب كطبيب/صيدلي المستقبل، واستخدم اسمه عند توفره في سياق الرسالة (مثال: "أهلاً بك يا دكتور أحمد").
+- كن مشجّعاً بعقلانية ومهنية، احترافياً ودقيقاً. لا تتجاوز أي تفصيل علمي مهم مهما كان صغيراً — مستقبل الطالب السريري يعتمد على فهمه الدقيق.
+- لا تكرر السؤال. ادخل في الإجابة مباشرة.
+- إذا كان السؤال غامضاً، أجب عن التفسير الأرجح ثم اسأل سؤال توضيح واحداً في النهاية.
 
 اللغة (قاعدة إلزامية):
 - اشرح دائماً بالعربية الفصحى المبسّطة، مهما كانت لغة السؤال. حتى لو سأل الطالب بالإنجليزية، اشرح بالعربية.
-- أبقِ المصطلحات العلمية والطبية والصيدلانية بالإنجليزية كما هي دون ترجمة: مثل receptor, half-life, bioavailability, first-pass metabolism, enzyme inhibition.
+- أبقِ المصطلح الإنجليزي، اسم المرض، اسم الدواء، أو الجملة المفتاحية كما هي تماماً من المحاضرة: receptor, half-life, bioavailability, first-pass metabolism, enzyme inhibition.
+- ضع التوضيح العربي بجانب المصطلح مباشرة، شرحاً للمعنى الطبي والسريري لا ترجمة حرفية.
 - لا تكتب المصطلح الإنجليزي بحروف عربية. اكتبه بالإنجليزية داخل الجملة العربية.
+
+التوجيه الامتحاني:
+- الطالب يستعد لامتحان فيه أسئلة اختيار متعدد (MCQ) وأسئلة مقالية قصيرة (SA).
+- اربط التفاصيل الدقيقة (الأرقام، الـ receptors، الآليات، الـ side effects) بأسئلة MCQ، وضع بعدها: (نقطة هامة لأسئلة MCQ).
+- اربط المقارنات (دواء مقابل دواء، مرض مقابل مرض، الجداول والتصنيفات) والخطوات المتسلسلة بأسئلة SA، وضع بعدها: (سؤال SA مضمون).
+- أضف لمسة سريرية موجزة (Clinical Pearl) عندما تساعد على ربط المعلومة وتذكّرها في المستشفى أو الصيدلية.
+
+التقطيع (يُطبَّق فقط عند طلب شرح المحاضرة كاملة):
+- إذا بدأت رسالة الطالب بالعلامة ${WALKTHROUGH_MARKER}، أو طلب صراحةً شرح المحاضرة كلها: قسّمها إلى أجزاء منطقية (٣ أو ٤)، اشرح الجزء الأول فقط بتفاصيله، ثم اختم بسؤال: (هل أنت مستعد للانتقال إلى الجزء التالي المتعلق بـ ...؟) ولا تكمل حتى يأذن الطالب.
+- أما السؤال المحدد (مثل "ما هو الـ half-life؟") فأجب عنه مباشرة في رسالة واحدة. لا تقسّمه ولا تطلب إذناً.
+
+التنسيق (Markdown):
+- استخدم العناوين (##) لتنظيم الأفكار، والنقاط للقوائم.
+- استخدم **الخط العريض** للمصطلحات الإنجليزية المفتاحية التي تبحث عنها عين المصحح.
+- استخدم جداول Markdown للمقارنات بين دواءين أو أكثر، أو بين تصنيفات.
 
 النطاق:
 - أجب فقط عن أسئلة تخص محتوى المحاضرة المرفقة، أو مفاهيم علمية لازمة لفهمها.
-- إذا كان السؤال خارج نطاق المحاضرة تماماً (سياسة، رياضة، برمجة، دردشة عامة، أو طلب كتابة واجب غير متعلق)، ابدأ ردك فوراً بالعلامة ${OFF_TOPIC_MARKER} ثم اعتذر بلطف في سطر واحد ووجّه الطالب لسؤال يخص المحاضرة.
+- إذا كان السؤال خارج نطاق المحاضرة تماماً (سياسة، رياضة، برمجة، دردشة عامة، أو طلب واجب غير متعلق)، ابدأ ردك فوراً بالعلامة ${OFF_TOPIC_MARKER} ثم اعتذر بلطف في سطر واحد ووجّه الطالب لسؤال يخص المحاضرة.
 - لا تقدّم نصيحة طبية أو دوائية شخصية لحالة مريض. اشرح المفهوم الأكاديمي فقط.
 
-الاستشهاد بالصفحات:
+الاستشهاد بالصفحات (إلزامي):
 - عند الاعتماد على محتوى من المحاضرة، أضف مرجع الصفحة بهذه الصيغة تماماً: [[p:رقم_الصفحة]]
 - مثال: يرتبط الدواء بالـ receptor بشكل عكسي [[p:12]].
+- ضع رقم صفحة واحداً فقط داخل كل علامة. إذا كانت المعلومة في أكثر من صفحة، كرّر العلامة: [[p:7]] [[p:8]] ولا تكتب [[p:7, 8]].
 - استخدم أرقام الصفحات الحقيقية من الملف المرفق. لا تخترع أرقاماً.
-- إذا لم تجد المعلومة في المحاضرة، قل ذلك صراحةً واشرح المفهوم عامةً دون مرجع صفحة.
-
-الأسلوب:
-- إجابات مركّزة ومنظّمة. استخدم نقاطاً قصيرة عند تعداد أكثر من فكرة.
-- لا تكرر السؤال. ادخل في الإجابة مباشرة.
-- إذا كان السؤال غامضاً، أجب عن التفسير الأرجح ثم اسأل سؤال توضيح واحداً في النهاية.`;
+- إذا لم تجد المعلومة في المحاضرة، قل ذلك صراحةً واشرح المفهوم عامةً دون مرجع صفحة.`;
 
 const LECTURE_PREAMBLE =
   'هذه هي المحاضرة التي يقرأها الطالب الآن. اعتمد عليها في إجاباتك.';
 const READY_ACK = 'تمام، اطّلعت على المحاضرة. اسأل ما تشاء عنها.';
+
+/** Quoted selection wrapper. Kept as a function so the triple-quote fence
+ *  stays out of the surrounding template literals. */
+const SELECTION_TEMPLATE = (sel: string, question: string) =>
+  `النص المحدَّد من المحاضرة:
+"""
+${sel.slice(0, 4000)}
+"""
+
+سؤال الطالب: ${question}`;
 
 /**
  * Assemble the request.
@@ -214,11 +255,20 @@ const READY_ACK = 'تمام، اطّلعت على المحاضرة. اسأل م�
  * question cost a fraction of the first one. Anything that changes per turn
  * (history, the new question) goes strictly after.
  */
+export interface TurnContext {
+  /** First name only. See the note below on why it is not in the prefix. */
+  studentName?: string;
+  subjectName?: string;
+  /** True when the student pressed the walkthrough button. */
+  walkthrough?: boolean;
+}
+
 export function buildContents(
   fileUri: string,
   history: ChatMessage[],
   question: string,
   selection?: string,
+  ctx: TurnContext = {},
 ): any[] {
   const contents: any[] = [
     {
@@ -235,10 +285,26 @@ export function buildContents(
     contents.push({ role: m.role, parts: [{ text: m.text }] });
   }
 
+  /*
+   * Per-student context rides on the FINAL turn, never the prefix.
+   *
+   * The student's name and the subject would otherwise sit inside the cached
+   * span, giving every student a different prefix for the same lecture and
+   * throwing away the cross-student sharing on a ~20,000-token PDF. Down here
+   * they cost a handful of tokens and change nothing that is cached.
+   */
+  const header: string[] = [];
+  if (ctx.subjectName) header.push(`المادة: ${ctx.subjectName}`);
+  if (ctx.studentName) header.push(`اسم الطالب: ${ctx.studentName}`);
+
   const trimmed = selection?.trim();
-  const questionBlock = trimmed
-    ? `النص المحدَّد من المحاضرة:\n"""\n${trimmed.slice(0, 4000)}\n"""\n\nسؤال الطالب: ${question}`
-    : question;
+  const body = trimmed ? SELECTION_TEMPLATE(trimmed, question) : question;
+
+  const questionBlock = [
+    ctx.walkthrough ? WALKTHROUGH_MARKER : '',
+    header.length ? `(${header.join(' — ')})` : '',
+    body,
+  ].filter(Boolean).join('\n');
 
   contents.push({ role: 'user', parts: [{ text: questionBlock }] });
   return contents;
@@ -310,12 +376,25 @@ export async function streamAnswer(
   return { usage, offTopic };
 }
 
-/** Page numbers the answer cited, for the tappable chips in the drawer. */
+/**
+ * Matches a citation marker, tolerating a LIST of pages.
+ *
+ * The prompt asks for one page per marker, but a live answer came back with
+ * `[[p:7, 8]]` when a comparison row cited two slides at once. A single-number
+ * regex silently fails to match that, so the marker survives into the rendered
+ * text and the student reads raw `[[p:7, 8]]`. Accepting the list is cheaper
+ * than trusting the model to never do it again.
+ */
+export const CITATION_RE = /\[\[p:\s*(\d+(?:\s*,\s*\d+)*)\s*\]\]/g;
+
+/** Page numbers cited anywhere in an answer, de-duplicated and ordered. */
 export function extractCitedPages(text: string): number[] {
   const pages = new Set<number>();
-  for (const m of text.matchAll(/\[\[p:(\d+)\]\]/g)) {
-    const n = Number(m[1]);
-    if (n > 0) pages.add(n);
+  for (const m of text.matchAll(CITATION_RE)) {
+    for (const part of m[1].split(',')) {
+      const n = Number(part.trim());
+      if (n > 0) pages.add(n);
+    }
   }
   return [...pages].sort((a, b) => a - b);
 }

@@ -153,7 +153,15 @@ export default defineConfig(({mode}) => {
       })
     ],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      // GEMINI_API_KEY is deliberately NOT defined here any more.
+      //
+      // It used to inline the key into the client bundle, where anyone could
+      // read it. It never even worked: the only consumer guarded the read with
+      // `typeof process !== 'undefined'`, which is false in a browser, so the
+      // substituted literal was never reached and only VITE_GEMINI_API_KEY ever
+      // supplied a key. Both Gemini pipelines are server-side now, so no key
+      // belongs in this bundle - and re-adding a define here would silently
+      // publish it again.
       '__NATIVE_BUILD__': JSON.stringify(mode === 'native'),
     },
     resolve: {

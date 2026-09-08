@@ -9,7 +9,7 @@ import {
   type CanonicalPage,
   type TextItemLike,
 } from '../../lib/pdfAnchor';
-import { safeCanvasScale } from '../../lib/pdfjs';
+import { safeCanvasScale, MAX_CANVAS_AREA } from '../../lib/pdfjs';
 import { HIGHLIGHT_COLORS, type PdfAnnotation } from '../../types/pdfAnnotation.types';
 
 /**
@@ -32,7 +32,16 @@ export interface PageHandle {
 interface Props {
   pdfDoc: any;
   pageNumber: number;
+  /** Layout scale: the size the page is laid out, selected and anchored at. */
   scale: number;
+  /**
+   * Scale the canvas bitmap is rasterised at.
+   *
+   * Lags `scale` by a debounce so a pinch does not drive pdf.js on every
+   * committed step. In between the two the bitmap is simply stretched over the
+   * layout-sized box, which is what replaced the blank frame on each zoom.
+   */
+  rasterScale: number;
   rotation: number;
   annotations: PdfAnnotation[];
   /**
@@ -75,15 +84,20 @@ interface PaintedRect {
  * would re-run its canvas render on both.
  */
 export default React.memo(function PdfPage({
-  pdfDoc, pageNumber, scale, rotation, annotations, boxW, boxH,
+  pdfDoc, pageNumber, scale, rasterScale, rotation, annotations, boxW, boxH,
   registerPage, onHighlightTap, onOrphan, onPinPoint, flashId,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<PageHandle | null>(null);
+  const pageRef = useRef<any>(null);
+  const textLayerRef = useRef<any>(null);
 
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  /** Latest layout scale, readable inside the render effect without being a dep. */
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+
   const [rects, setRects] = useState<PaintedRect[]>([]);
   const [ready, setReady] = useState(false);
 
@@ -188,21 +202,28 @@ export default React.memo(function PdfPage({
     (async () => {
       page = await pdfDoc.getPage(pageNumber);
       if (cancelled) return;
+      pageRef.current = page;
 
-      const viewport = page.getViewport({ scale, rotation });
       const base = page.getViewport({ scale: 1, rotation: 0 });
+
+      // Stop climbing once a page cannot get any sharper inside the canvas
+      // budget. Past that point the CSS stretch takes over, which is the whole
+      // point of the split - rastering higher only thrashes memory for nothing.
+      const cappedDpr = Math.min(window.devicePixelRatio || 1, 2);
+      const ceiling = Math.sqrt(MAX_CANVAS_AREA / (base.width * base.height)) / cappedDpr;
+      const viewport = page.getViewport({ scale: Math.min(rasterScale, ceiling), rotation });
+
       const canvas = canvasRef.current;
       const textEl = textRef.current;
       if (!canvas || !textEl) return;
-
-      setSize({ width: viewport.width, height: viewport.height });
 
       const dpr = window.devicePixelRatio || 1;
       const q = safeCanvasScale(viewport.width, viewport.height, dpr);
       canvas.width = Math.floor(viewport.width * q);
       canvas.height = Math.floor(viewport.height * q);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
+      // No canvas.style.width/height here on purpose. The CSS box is sized from
+      // boxW/boxH - the LAYOUT scale - so this bitmap stretches to fill it while
+      // rasterScale is still catching up.
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -218,17 +239,33 @@ export default React.memo(function PdfPage({
       }
       if (cancelled) return;
 
-      // Text layer
+      // Text layer.
+      //
+      // Built at the LAYOUT scale, not the raster scale. Its spans are what
+      // selection and anchor resolution measure, so they have to match the box
+      // on screen rather than whatever the bitmap was last drawn at.
       const { TextLayer } = await import('pdfjs-dist');
       if (cancelled) return;
+
+      const layoutVp = page.getViewport({ scale: scaleRef.current, rotation });
 
       textEl.innerHTML = '';
       const textContent = await page.getTextContent();
       if (cancelled) return;
 
       const items = (textContent.items ?? []).filter((i: any) => typeof i.str === 'string') as TextItemLike[];
-      const layer = new TextLayer({ textContentSource: textContent, container: textEl, viewport });
-      await layer.render();
+      const layer = new TextLayer({ textContentSource: textContent, container: textEl, viewport: layoutVp });
+      // Published before the await so the cleanup can cancel a render that is
+      // still streaming. That is the only way to stop an outgoing layer from
+      // appending into a container the incoming one has already cleared.
+      textLayerRef.current = layer;
+      try {
+        await layer.render();
+      } catch (e: any) {
+        // cancel() rejects this promise, and cancelling on a zoom is routine.
+        if (!cancelled) console.error('text layer failed', e);
+        return;
+      }
       if (cancelled) return;
 
       const spans = Array.from(textEl.querySelectorAll('span')) as HTMLElement[];
@@ -248,7 +285,7 @@ export default React.memo(function PdfPage({
         el: wrapRef.current!,
         textLayerEl: textEl,
         canonical: canonicalizePage(items),
-        viewport,
+        viewport: layoutVp,
         spanByItem,
         pageW: base.width,
         pageH: base.height,
@@ -262,26 +299,65 @@ export default React.memo(function PdfPage({
     return () => {
       cancelled = true;
       try { renderTask?.cancel(); } catch { /* already settled */ }
+      // Cancel the text layer too. Without this the outgoing layer carries on
+      // appending spans into the container the incoming one has just cleared,
+      // leaving duplicates positioned for the old viewport.
+      try { textLayerRef.current?.cancel(); } catch { /* already settled */ }
+      textLayerRef.current = null;
       // Deliberately NOT page.cleanup(). pdfDoc.getPage() hands back a CACHED
       // proxy, so on a rapid zoom the outgoing effect's teardown would wipe the
       // very object the incoming render is drawing from - the canvas then paints
       // nothing and the page shows as blank white. Page data is released when
       // the document is destroyed on unmount, and only three pages are ever
       // mounted, so nothing leaks by leaving it alone.
-      // Release the backing store rather than waiting for GC - this is what
-      // keeps memory flat while scrolling a long lecture.
-      const c = canvasRef.current;
-      if (c) { c.width = 0; c.height = 0; }
+      // The backing store is NOT released here - see the unmount effect below.
+      // Blanking it on every raster change is what flashed each zoom white.
       handleRef.current = null;
       registerPage(pageNumber, null);
       setReady(false);
     };
-  }, [pdfDoc, pageNumber, scale, rotation, registerPage]);
+  }, [pdfDoc, pageNumber, rasterScale, rotation, registerPage]);
 
-  // Repaint highlights whenever the page or the annotation set changes.
+  /**
+   * Release the backing store, on unmount only.
+   *
+   * The element is captured here rather than read in the cleanup because React
+   * detaches refs before passive cleanups run - by then canvasRef.current is
+   * already null and the blanking silently did nothing. This is what keeps
+   * memory flat while scrolling a long lecture.
+   */
   useEffect(() => {
-    if (ready) paint();
-  }, [ready, paint]);
+    const c = canvasRef.current;
+    return () => { if (c) { c.width = 0; c.height = 0; } };
+  }, []);
+
+  /**
+   * Follow the layout scale without re-rastering, then repaint highlights.
+   *
+   * pdf.js can reposition an already-rendered text layer: update() walks the
+   * SAME span elements and rewrites only their scale variables, so
+   * data-item-index, spanByItem and canonical all survive and stored anchors
+   * keep resolving against them.
+   *
+   * Rotation is deliberately not handled here. update() passes a bare object to
+   * setLayerDimensions, which never swaps width for height, so a rotation has to
+   * go through the full rebuild in the render effect above - it does, because
+   * rotation is one of that effect's deps and its cleanup nulls the handle,
+   * which is what the guard below waits on.
+   */
+  useEffect(() => {
+    const page = pageRef.current;
+    const layer = textLayerRef.current;
+    const h = handleRef.current;
+    if (!ready || !page || !layer || !h) return;
+
+    const layoutVp = page.getViewport({ scale, rotation });
+    layer.update({ viewport: layoutVp });
+    // The handle is a live view shared by reference with the overlay's page map
+    // and read synchronously by every consumer, so mutating it in place is safe.
+    h.viewport = layoutVp;
+    paint();
+  }, [scale, rotation, ready, paint]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     const h = handleRef.current;
@@ -301,12 +377,19 @@ export default React.memo(function PdfPage({
       onDoubleClick={handlePointerDown}
       className="relative mx-auto my-3 bg-white shadow-lg shadow-black/20"
       style={{
-        width: size.width || boxW || undefined,
-        height: size.height || boxH || undefined,
+        width: boxW || undefined,
+        height: boxH || undefined,
         ['--total-scale-factor' as any]: scale,
       }}
     >
-      <canvas ref={canvasRef} className="block" />
+      {/* Sized from the layout scale, not from the bitmap. Between a zoom
+          commit and the debounced re-raster this stretches the old bitmap over
+          the new box, which is what replaced the blank white frame. */}
+      <canvas
+        ref={canvasRef}
+        className="block"
+        style={{ width: boxW || undefined, height: boxH || undefined }}
+      />
 
       <div className="pdfHighlightLayer">
         {rects.map((r, i) => (

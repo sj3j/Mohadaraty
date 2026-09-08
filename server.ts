@@ -39,6 +39,7 @@ import { createSignupRequest, reviewSignupRequest, SignupError } from "./shared/
 import { deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
+import { createMcqHandlers } from "./shared/mcqApi.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
 import { OAuth2Client } from "google-auth-library";
@@ -2480,6 +2481,14 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.get("/api/ai/state", verifyAuth, simosan.state);
   app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
   app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
+
+  /* MCQ generation. Staff-only, on the free-tier key - see
+   * shared/mcqGeneration.ts for why it is a second key. Mirrored in api/index.ts. */
+  const mcq = createMcqHandlers({ admin });
+  app.post("/api/mcq/generate", verifyAuth, verifyAdmin, mcq.generate);
+  app.post("/api/mcq/request", verifyAuth, mcq.request);
+  app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);
+  app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
 
   // --- Vite Middleware for Development / Static Serving for Production ---
   if (process.env.NODE_ENV !== "production") {

@@ -182,7 +182,7 @@ export interface AskCallbacks {
  * EventSource cannot send an Authorization header or a POST body.
  */
 export async function askSimosan(
-  input: { lectureId: string; question: string; selection?: string; newThread?: boolean },
+  input: { lectureId: string; question: string; selection?: string; newThread?: boolean; walkthrough?: boolean },
   cbs: AskCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {

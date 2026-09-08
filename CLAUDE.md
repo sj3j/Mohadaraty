@@ -192,14 +192,11 @@ pre-existing errors, so treat a green `lint` as weak evidence for `.tsx` changes
 `api/index.ts` and `server.ts` as four one-line `app.*` calls, so the handlers
 cannot drift the way the other 14 routes did.
 
-**The app already had a Gemini integration, and it leaks the key.**
-`src/services/mcqGenerationService.ts` calls Gemini from the browser;
-`vite.config.ts` inlines `GEMINI_API_KEY` into the bundle and students trigger
-generation directly. Any "daily limit" written on top of that lives in code the
-student controls. Simosan is server-only for exactly this reason - the key,
-the allowance and the ceiling are all somewhere the browser cannot reach.
-**The MCQ path is still leaking.** Migrating it is a named follow-up; rotate the
-key only *after* that lands, or MCQ generation breaks.
+**No Gemini key reaches the browser any more.** MCQ generation used to call
+Gemini from the client with the key inlined by `vite.config.ts`; it is now
+server-side too, and that `define` has been removed. The build is verified to
+carry exactly one `AIza` string - the Firebase web key, which is public by
+design.
 
 **Grounding is the whole PDF, via the Files API - and that is the cheap option.**
 Gemini bills PDF pages as images and does not charge for natively embedded text
@@ -303,6 +300,53 @@ docs carry an `expiresAt` that nothing reads, and the only other clear is a manu
 admin action, so 325 accounts once sat flagged for four months. The reset now deletes
 the doc and the `hasPendingStreakReset` flag together.
 
+## Offline: absence is only meaningful from the server
+
+Firestore runs with `persistentLocalCache` + `persistentMultipleTabManager`
+(`src/lib/firebase.ts`). It was on the default MEMORY cache, which is empty at every
+cold start, while Auth persistence was durable - so an offline launch restored a
+signed-in session and then entered a boot path whose reads could not succeed.
+
+Three SDK behaviours drove every bug here, and they are not the same:
+
+| call | offline, not in cache |
+| --- | --- |
+| `getDoc` (document) | **rejects** with `unavailable` |
+| `getDocs` (query) | resolves **empty**, `metadata.fromCache` true |
+| `onSnapshot` (document) | fires with `exists() === false`, `fromCache` true |
+
+So a failed read and an absent document are indistinguishable unless you check.
+`App.tsx` used to sign the user out on both - the catch around the whitelist `getDoc`,
+and the `users/{uid}` listener reading a cached miss as a deleted account. `signOut`
+wipes the refresh token, so reconnecting could not recover it and `LoginScreen` refuses
+to submit offline. **Never call `signOut` on a thrown error**; discriminate with
+`isTransientNetworkError()` (`src/lib/firebase.ts`), and gate any "record is missing"
+conclusion on `!snapshot.metadata.fromCache`.
+
+**The persistent cache also makes the offline MUTATION queue durable.** A write issued
+offline now survives the tab and flushes on reconnect. `StageContext` seeded
+`DEFAULT_STAGES` whenever `snapshot.empty` - true offline - which would now overwrite
+five real `stages/*` documents, `groupConfig` included. It is guarded on
+`!snapshot.metadata.fromCache`. Check any other write that keys off an "empty" read
+before adding one.
+
+Also: `await setDoc` does not settle until the server acks, so awaiting one in a boot
+path hangs forever offline. `StageContext` stalled on `stage_1` that way and never
+cleared `isLoadingStages`.
+
+**Downloaded lectures need metadata, not just bytes.** `PdfReaderOverlay` already
+resolved bytes as `local ?? await fetchPdfBytes(...)`, but the Downloads tab listed
+lectures from the Firestore listener, which yields nothing offline - so saved PDFs were
+invisible. `downloadPDF()` now snapshots `{id, title, pdfUrl, ...}` into the
+`offlineLectures` store (`src/lib/localDb.ts`, db version 2) and the tab merges that with
+the live array.
+
+`pdfBlobs` is still keyed by `pdfUrl`. An admin re-upload mints a new URL
+(`AdminUpload.tsx`), so the key stops matching and the reader silently falls back to the
+network while the stale bytes and the `pdf_${id}` marker both persist. Keying by lecture
+id instead would serve the OLD file after a re-upload, which is why it has not simply
+been swapped - it needs a migration that drops superseded bytes.
+
 ## Known hazard: two identity spaces
 
 Roster students sign in with a **custom token whose UID is their college email**
@@ -349,3 +393,90 @@ the first side of that line.
 `npm run check:payment-surface` only flags gateway names, currency codes and
 price fields, so it passing is **necessary but not sufficient** - it would not
 have caught a "Subscription" row with a credit-card icon.
+
+
+## Two Gemini keys, and which pipeline uses which
+
+| | Simosan | MCQ generation |
+| --- | --- | --- |
+| Key | `GEMINI_API_KEY` (paid) | `GEMINI_FREE_TIER_API_KEY` (free) |
+| Model | `gemini-3.1-flash-lite` (**paid-only**) | `gemini-3.5-flash` (**has a free tier**) |
+| PDF delivery | Files API, cached in `aiFiles` | inline base64, downloaded server-side |
+| Metering | energy bar + $50 monthly ceiling | none - it is free |
+
+The models are not interchangeable: flash-lite has no free tier, so it cannot run
+on the free key, and that mismatch is what stops the two pipelines being silently
+swapped.
+
+**The free tier means Google trains on what it is sent.** Its terms say unpaid
+content is used "to provide, improve, and develop Google products" and may be
+read by human reviewers. That was accepted deliberately: *these lectures are
+already public material*. Student questions are not, which is why Simosan stays
+on the paid key - do not "simplify" by pointing it at the free one.
+
+### Why MCQ moved server-side
+
+The client read the key as
+
+    import.meta.env.VITE_GEMINI_API_KEY
+      || (typeof process !== 'undefined' && process.env ? process.env.GEMINI_API_KEY : undefined)
+
+and `process` does not exist in a browser, so the second branch short-circuited
+**before** Vite's `define` substitution was reached. `process.env.GEMINI_API_KEY`
+was always dead code client-side; only `VITE_GEMINI_API_KEY` ever worked. Setting
+the server key alone therefore reported `not_configured` on every generation,
+which looks like a billing fault and is not.
+
+### Rules that changed with it
+
+`mcqs` was `allow create, update: if hasAccess()` because the student's own
+browser wrote the generated result. Nothing legitimate creates it from a client
+now, so create is `false` and update is `isAdmin()` - the old rule let any
+student with access forge a lecture's whole answer key.
+
+### Operational notes
+
+Generation is **staff-only**; students press "اطلب تحضير الأسئلة", which writes
+`mcqRequests` and notifies staff with stage, subject and lecture named in the
+message. Serialisation is a **Firestore lock** (`mcqs.status` + `startedAt`, 90s)
+because Vercel invocations share no process and an in-memory queue would
+serialise nothing. `failureCount` caps retries at 3 so an unprocessable PDF
+cannot drain the daily free quota. Alerts distinguish `free_tier_limit` from
+`not_configured` - the remedies are unrelated.
+
+Endpoints take **`lectureId`, never a URL**: Vercel caps request bodies near
+4.5MB, and a caller-supplied URL would let anyone make the server fetch arbitrary
+hosts. Bank imports pass a Cloud Storage **path**, resolved through the Admin SDK
+against this project's own bucket.
+
+## Simosan: persona, markdown and the split view
+
+The system prompt merges a clinical-professor persona over two mechanisms that
+must survive any tone rewrite: `[[OFF_TOPIC]]` gates the energy refund and the
+free-refusal cap, and `[[p:N]]` becomes the tappable page chips.
+
+**Citation markers may carry a list.** A live answer emitted `[[p:7, 8]]`; a
+single-number regex fails to match that and the marker reaches the student as raw
+text. `CITATION_RE` accepts a comma-separated list and the renderer draws one
+chip per page. Pinned by a test.
+
+**The prompt is deliberately impersonal.** The student's first name and the
+subject are injected into the FINAL user turn, never the system instruction,
+because the system instruction sits inside Gemini's cached prefix - a name there
+would give every student a different prefix for the same lecture and destroy the
+cross-student sharing on a ~20,000-token PDF.
+
+Chunked walkthroughs are opt-in via the "اشرح المحاضرة بأجزاء" button, which
+sends `[[WALKTHROUGH]]`. Applying chunking to every question would turn a
+one-line answer into a three-turn negotiation, each turn billed in full.
+
+**The drawer has no scrim**, so the lecture stays visible *and* interactive
+behind it. On phones it is a bottom sheet with two snap points (~55% / ~92%);
+tablets and up keep the side drawer. The sheet must remain a SIBLING of the PDF
+scroll container - as a child, its transform becomes the reader's containing
+block and pinch-zoom breaks. Losing the scrim also loses tap-outside dismissal,
+so the close button and `useBackDismiss('pdfSimosan')` are the only exits.
+
+`react-markdown` + `remark-gfm` render answers. The repo's no-`dangerouslySetInnerHTML`
+rule survives - react-markdown builds React elements, and `rehype-raw` is
+deliberately absent, so HTML in a reply is escaped rather than parsed.

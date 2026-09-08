@@ -129,20 +129,15 @@ ${questionText}`;
     }
     setIsAiEditing(true);
     try {
-      let pdfUrl = undefined;
-      if (editPromptQuestion.lectureId && grantAiAccess) {
-        const { getDoc, doc } = await import('firebase/firestore');
-        const { db } = await import('../../lib/firebase');
-        const lectureDoc = await getDoc(doc(db, 'lectures', editPromptQuestion.lectureId));
-        if (lectureDoc.exists() && lectureDoc.data().pdfUrl) {
-          pdfUrl = lectureDoc.data().pdfUrl;
-        }
-      }
+      // This used to fetch the lecture just to read its pdfUrl and pass it on.
+      // The server now resolves the PDF from the id, so the round trip is gone
+      // and there is no URL for a caller to substitute.
+      const groundingLectureId = grantAiAccess ? editPromptQuestion.lectureId : undefined;
 
       const { modifyQuestionWithAI } = await import('../../services/mcqGenerationService');
       const { editBankQuestion } = await import('../../services/questionBankService');
-      
-      const newQuestionData = await modifyQuestionWithAI(editPromptQuestion, finalPrompt, pdfUrl);
+
+      const newQuestionData = await modifyQuestionWithAI(editPromptQuestion, finalPrompt, groundingLectureId);
       await editBankQuestion(editPromptQuestion.id, newQuestionData);
       
       const newQuestions = questions.map(q => q.id === editPromptQuestion.id ? { ...q, ...newQuestionData } : q);

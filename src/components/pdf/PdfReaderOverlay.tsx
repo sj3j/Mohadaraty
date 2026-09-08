@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { AnimatePresence } from 'motion/react';
 import {
   AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw,
@@ -50,6 +51,58 @@ const NO_ANNOTATIONS: PdfAnnotation[] = [];
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 
+/**
+ * Pinch physics.
+ *
+ * RESIST is a power law in LOG space, which is why one constant serves both
+ * ends: an additive band tuned to feel right at MAX 3 feels like nothing at
+ * MIN 0.5. It cannot run away either - 16x past the limit still only reads 6.
+ *
+ * RUBBER is the translate band, where a hard asymptote IS what is wanted:
+ * overscroll approaches RUBBER x the viewport and never passes it.
+ *
+ * SPRING is quoted per 60Hz frame and normalised by real dt at the point of
+ * use. 90/120Hz Android panels are common, and a raw per-frame factor would
+ * settle twice as fast on a Pixel as on a budget phone.
+ */
+const RESIST = 0.25;
+const RUBBER = 0.55;
+const SPRING = 0.2;
+/** Past this the spring is force-committed rather than chasing an epsilon. */
+const SPRING_TIMEOUT_MS = 600;
+/** How far the canvas raster trails the layout scale. */
+const RASTER_DEBOUNCE_MS = 200;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Elastic resistance past the scale limits. Continuous at the boundary. */
+function elasticScale(s: number): number {
+  const out =
+    s > MAX_SCALE ? MAX_SCALE * Math.pow(s / MAX_SCALE, RESIST) :
+    s < MIN_SCALE ? MIN_SCALE * Math.pow(s / MIN_SCALE, RESIST) : s;
+  // Belt and braces, so a wild pointer reading can never reach the bounds maths.
+  return clamp(out, MIN_SCALE / 1.8, MAX_SCALE * 1.8);
+}
+
+/** Asymptotic overscroll: approaches span * RUBBER, never passes it. */
+function rubber(d: number, span: number): number {
+  return (d * RUBBER) / (1 + (Math.abs(d) * RUBBER) / Math.max(1, span));
+}
+
+/**
+ * Clamp with elastic give.
+ *
+ * When lo > hi the content is smaller than the window, so there is no valid
+ * range at all - centre it rather than pinning it to an edge, which is what
+ * left a zoomed-out page stuck against the left margin.
+ */
+function band(v: number, lo: number, hi: number, span: number): number {
+  if (lo > hi) { const m = (lo + hi) / 2; return m + rubber(v - m, span); }
+  if (v > hi) return hi + rubber(v - hi, span);
+  if (v < lo) return lo - rubber(lo - v, span);
+  return v;
+}
+
 export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose }: Props) {
   const isRtl = lang === 'ar';
 
@@ -57,6 +110,16 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   const [pageCount, setPageCount] = useState(0);
   const [pageSizes, setPageSizes] = useState<{ w: number; h: number }[]>([]);
   const [scale, setScale] = useState(1);
+  /**
+   * Scale the page canvases are rasterised at, trailing `scale` by a debounce.
+   *
+   * Committing both together meant every zoom step tore down three canvases and
+   * three text layers at once, and PdfPage blanked each canvas synchronously
+   * while the replacement was still awaiting - which is what flashed the reader
+   * white on every pinch. Now the layout resizes immediately and the existing
+   * bitmap stretches to fill it until the sharp one lands.
+   */
+  const [rasterScale, setRasterScale] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [current, setCurrent] = useState(1);
   const [error, setError] = useState<string | null>(null);
@@ -75,12 +138,33 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
    *  than rendering an action that would only be refused. */
   const [simosanReady, setSimosanReady] = useState(false);
 
-  /** Gesture state for the active pinch, or null. Declared before paintZoom,
-   *  which reads it inside a rAF callback. */
-  const pinch = useRef<{ startDist: number; startScale: number; focalY: number } | null>(null);
+  /**
+   * The active pinch, or null.
+   *
+   * `O` is the zoom layer's UNTRANSFORMED top-left in client coordinates and
+   * `p0` the anchor point in layer-local coordinates. Together they are what
+   * keeps content under the fingers: with transform-origin at 0 0 the visual
+   * position of `p0` is O + t + k*p0, so solving that for the live focal point
+   * gives the translate directly - at any scale, however far the fingers drift.
+   *
+   * The container metrics are snapshotted once here and never re-read mid
+   * gesture. The CSS scrollable overflow region takes transformed descendant
+   * boxes into account, so scrollWidth/scrollHeight stop meaning anything the
+   * moment the transform goes live.
+   */
+  const gesture = useRef<{
+    idA: number; idB: number;
+    startDist: number; sBase: number;
+    O: { x: number; y: number };
+    p0: { x: number; y: number };
+    F: { x: number; y: number };
+    S0x: number; S0y: number;
+    sw: number; sh: number; w: number; h: number;
+    rectLeft: number; rectTop: number;
+  } | null>(null);
 
   /**
-   * The live pinch factor is deliberately NOT React state.
+   * The live transform is deliberately NOT React state.
    *
    * It used to be, and a setState on every pointermove re-rendered this whole
    * component - which maps over `layout` and mounts canvas-backed PdfPages. On a
@@ -88,24 +172,45 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
    * transform landed at a low, irregular rate and the zoom read as jumping in
    * steps rather than gliding. Writing the transform straight to the node inside
    * a rAF keeps the gesture at display rate and renders nothing.
+   *
+   * `s` is an ABSOLUTE scale rather than a factor, so a pinch that begins while
+   * the release spring is still running composes with what is already applied
+   * instead of snapping back to 1 first.
    */
-  const liveZoomRef = useRef(1);
+  const live = useRef({ s: 1, tx: 0, ty: 0 });
+  const spring = useRef<number | null>(null);
   const zoomLayerRef = useRef<HTMLDivElement>(null);
   const zoomLabelRef = useRef<HTMLSpanElement>(null);
   const zoomRaf = useRef<number | null>(null);
+  /** Committed scale, readable from rAF callbacks without re-binding them. */
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
 
-  /** Paints the pending pinch factor once per frame. */
+  /** Paints the live transform once per frame. */
   const paintZoom = useCallback(() => {
     zoomRaf.current = null;
-    const k = liveZoomRef.current;
     const layer = zoomLayerRef.current;
-    if (layer) layer.style.transform = k === 1 ? '' : `scale(${k})`;
+    const { s, tx, ty } = live.current;
+    const k = s / scaleRef.current;
+
+    if (import.meta.env.DEV && !(Number.isFinite(k) && Number.isFinite(tx) && Number.isFinite(ty))) {
+      // A transform containing NaN is dropped by CSS silently, so without this
+      // the gesture would simply stop moving with nothing logged anywhere. There
+      // are no React types in this project, so a typo'd ref field reaches here
+      // as undefined rather than as a compile error.
+      console.error('[pdf] non-finite transform', { s, tx, ty, scale: scaleRef.current });
+      return;
+    }
+
+    if (layer) {
+      layer.style.transform = k === 1 && tx === 0 && ty === 0
+        ? ''
+        : `translate3d(${tx}px, ${ty}px, 0) scale(${k})`;
+    }
     // The readout tracked the committed scale only, so during a pinch the number
     // sat frozen and then snapped on release. Written here it counts smoothly.
     const label = zoomLabelRef.current;
-    if (label && pinch.current) {
-      label.textContent = `${Math.round(pinch.current.startScale * k * 100)}%`;
-    }
+    if (label) label.textContent = `${Math.round(s * 100)}%`;
   }, []);
 
   const scheduleZoomPaint = useCallback(() => {
@@ -208,7 +313,12 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         const avail = (scrollRef.current?.clientWidth ?? window.innerWidth) - 16;
         const widest = Math.max(...sizes.map(z => z.w));
         if (widest > 0) {
-          setScale(+Math.max(MIN_SCALE, Math.min(MAX_SCALE, avail / widest)).toFixed(2));
+          const fit = +Math.max(MIN_SCALE, Math.min(MAX_SCALE, avail / widest)).toFixed(2);
+          setScale(fit);
+          // Prime the raster with it as well. Left to the debounce, opening a
+          // lecture would rasterise three canvases at scale 1 and throw them
+          // away 200ms later - the fit scale is not a gesture and needs no lag.
+          setRasterScale(fit);
         }
 
         await setDocMeta(lectureId, {
@@ -257,9 +367,27 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     });
   }, [pageSizes, scale, rotation]);
 
+  /**
+   * Let the raster catch up once the zoom stops moving.
+   *
+   * Rotation needs no special case here. It is a raster dep of PdfPage in its
+   * own right, so a rotation rebuilds the canvas and the text layer immediately
+   * whatever this holds - and special-casing it here only had the effect of
+   * disabling the debounce for good once the reader was rotated.
+   */
+  useEffect(() => {
+    const id = setTimeout(() => setRasterScale(scale), RASTER_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [scale]);
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || layout.length === 0) return;
+    // A pinch pins scrollTop and writes a transform instead, so anything firing
+    // here mid-gesture is the browser clamping, not the user moving. Acting on
+    // it would setCurrent every frame - the exact re-render storm the live
+    // transform exists to avoid.
+    if (gesture.current) return;
     const mid = el.scrollTop + el.clientHeight / 2;
     let n = 1;
     for (let i = 0; i < layout.length; i++) {
@@ -269,87 +397,323 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   }, [layout]);
 
   /**
-   * Two-finger pinch zoom.
+   * Two-finger pinch zoom, with focal tracking, two-finger pan and elastic
+   * limits on both scale and translate.
    *
    * The live gesture only sets a CSS transform on the page column - re-rendering
    * canvases on every pointermove would drop frames badly on a mid-range phone.
-   * The real `scale` is committed once on release, which is also when the pages
-   * re-rasterise crisply.
+   * The real `scale` is committed once the release spring settles, which is also
+   * when the pages re-rasterise crisply.
    *
    * The page viewport meta sets user-scalable=no, so the browser's own pinch is
    * off and these gestures arrive as plain pointer events with nothing to fight.
+   *
+   * Note there is deliberately no preventDefault() in here. Per the Pointer
+   * Events spec it has no defined effect on panning and Chrome ignores it;
+   * touch-action is the only thing that suppresses the WebView's own scroll.
    */
   const pointers = useRef(new Map<number, { x: number; y: number }>());
 
+  /** Anchor to hold still across a committed scale or rotation change. */
+  const zoomAnchor = useRef<
+    { el: HTMLElement; relX: number; relY: number; wantX: number; wantY: number } | null
+  >(null);
+  const prevScale = useRef(scale);
+  const prevRotation = useRef(rotation);
+
+  /** Midpoint of the two PINNED pointers, in client coordinates. */
+  const focal = () => {
+    const g = gesture.current!;
+    const a = pointers.current.get(g.idA)!;
+    const b = pointers.current.get(g.idB)!;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
+
   const dist = () => {
-    const [a, b] = [...pointers.current.values()];
+    const g = gesture.current!;
+    const a = pointers.current.get(g.idA)!;
+    const b = pointers.current.get(g.idB)!;
     return Math.hypot(a.x - b.x, a.y - b.y);
   };
 
+  /**
+   * Translate limits for a given live factor.
+   *
+   * The usable span is k*scrollWidth - clientWidth: the SCALED SCROLLABLE
+   * extent, meaning every mounted page and placeholder, not the viewport box. A
+   * single-element formula like rect.width * (k - 1) is right for one
+   * transformed div and out by orders of magnitude down a 100-page lecture.
+   */
+  const bounds = (g: NonNullable<typeof gesture.current>, k: number) => {
+    const cMinX = (g.rectLeft - g.S0x) - g.O.x;
+    const cMinY = (g.rectTop - g.S0y) - g.O.y;
+    return {
+      txMax: g.rectLeft - g.O.x - k * cMinX,
+      txMin: g.rectLeft + g.w - g.O.x - k * (cMinX + g.sw),
+      tyMax: g.rectTop - g.O.y - k * cMinY,
+      tyMin: g.rectTop + g.h - g.O.y - k * (cMinY + g.sh),
+    };
+  };
+
+  /** The mounted page under a client point, or the nearest one. */
+  const pageAt = (x: number, y: number) => {
+    let nearest: { el: HTMLElement; pr: DOMRect; d: number } | null = null;
+    for (const h of pages.current.values()) {
+      const pr = h.el.getBoundingClientRect();
+      if (pr.height <= 0 || pr.width <= 0) continue;
+      if (y >= pr.top && y <= pr.bottom) return { el: h.el, pr };
+      const d = Math.abs((pr.top + pr.bottom) / 2 - y);
+      if (!nearest || d < nearest.d) nearest = { el: h.el, pr, d };
+    }
+    return nearest ? { el: nearest.el, pr: nearest.pr } : null;
+  };
+
+  const anchorAt = (x: number, y: number) => {
+    const hit = pageAt(x, y);
+    if (!hit) return null;
+    return {
+      el: hit.el,
+      relX: (x - hit.pr.left) / hit.pr.width,
+      relY: (y - hit.pr.top) / hit.pr.height,
+      wantX: x, wantY: y,
+    };
+  };
+
+  /** Anchor on the viewport centre - what the +/- and rotate buttons use. */
+  const captureCentreAnchor = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const R = el.getBoundingClientRect();
+    zoomAnchor.current = anchorAt(R.left + el.clientWidth / 2, R.top + el.clientHeight / 2);
+  }, []);
+
+  /**
+   * Fold the live transform into the committed scale and native scroll.
+   *
+   * The transform is cleared BEFORE the commit, not in a layout effect here.
+   * React runs a child's effects before its parent's, so deferring the clear
+   * would let PdfPage's paint() measure getClientRects() through a live
+   * transform - and every highlight would land k times too far out.
+   */
+  const commitGesture = useCallback((g: NonNullable<typeof gesture.current>) => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+
+    const { s, tx, ty } = live.current;
+    const committed = scaleRef.current;
+
+    // Pure two-finger pan: the scale never really moved, so no render is needed
+    // at all. Fold the translate into scroll and drop the transform in one tick.
+    if (Math.abs(s - committed) < 0.005) {
+      layer.style.transform = '';
+      layer.style.willChange = '';
+      live.current = { s: committed, tx: 0, ty: 0 };
+      // Content sits at +t; scrolling by -t leaves it exactly where it looks.
+      el.scrollLeft = clamp(g.S0x - tx, 0, el.scrollWidth - el.clientWidth);
+      el.scrollTop = clamp(g.S0y - ty, 0, el.scrollHeight - el.clientHeight);
+      onScroll();
+      return;
+    }
+
+    zoomAnchor.current = anchorAt(g.F.x, g.F.y);
+    layer.style.transform = '';
+    live.current = { s, tx: 0, ty: 0 };
+
+    // flushSync so React commits the new scale and lays the pages out before the
+    // browser paints. The scroll correction in the layout effect below then runs
+    // in the same frame, and no intermediate position is ever shown.
+    flushSync(() => setScale(+clamp(s, MIN_SCALE, MAX_SCALE).toFixed(3)));
+    layer.style.willChange = '';
+  }, [onScroll]);
+
+  /**
+   * Settle scale and translate back into range, then commit.
+   *
+   * Both are sprung in one loop because the translate limits are a function of
+   * the live scale: a target computed once at release would be out of bounds
+   * again by the time the scale finished moving.
+   */
+  const startSpring = useCallback((g: NonNullable<typeof gesture.current>) => {
+    const sEnd = clamp(live.current.s, MIN_SCALE, MAX_SCALE);
+    const t0 = performance.now();
+    let last = t0;
+
+    const step = (now: number) => {
+      // Clamped so a backgrounded tab does not resume with one enormous step.
+      const dt = Math.min(64, Math.max(1, now - last));
+      last = now;
+      const f = 1 - Math.pow(1 - SPRING, dt / 16.667);
+
+      live.current.s += (sEnd - live.current.s) * f;
+      const k = live.current.s / scaleRef.current;
+      const b = bounds(g, k);
+      const tEndX = b.txMin > b.txMax
+        ? (b.txMin + b.txMax) / 2
+        : clamp(live.current.tx, b.txMin, b.txMax);
+      const tEndY = b.tyMin > b.tyMax
+        ? (b.tyMin + b.tyMax) / 2
+        : clamp(live.current.ty, b.tyMin, b.tyMax);
+      live.current.tx += (tEndX - live.current.tx) * f;
+      live.current.ty += (tEndY - live.current.ty) * f;
+      paintZoom();
+
+      const settled =
+        Math.abs(live.current.s - sEnd) < 0.002 &&
+        Math.abs(tEndX - live.current.tx) < 0.5 &&
+        Math.abs(tEndY - live.current.ty) < 0.5;
+
+      if (settled || now - t0 > SPRING_TIMEOUT_MS) {
+        live.current.s = sEnd;
+        live.current.tx = tEndX;
+        live.current.ty = tEndY;
+        spring.current = null;
+        commitGesture(g);
+        return;
+      }
+      spring.current = requestAnimationFrame(step);
+    };
+    spring.current = requestAnimationFrame(step);
+  }, [paintZoom, commitGesture]);
+
+  /**
+   * Drop everything the gesture owns.
+   *
+   * Backgrounding mid-pinch is routine on Android, and without this the
+   * touch-action override stayed on the node - which killed panning for the
+   * rest of the session.
+   */
+  const abortGesture = useCallback(() => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+    const g = gesture.current;
+    if (g && el) {
+      try { el.releasePointerCapture(g.idA); el.releasePointerCapture(g.idB); } catch { /* already gone */ }
+    }
+    gesture.current = null;
+    pointers.current.clear();
+    if (el) el.style.touchAction = '';
+    if (layer) { layer.style.transform = ''; layer.style.willChange = ''; }
+    live.current = { s: scaleRef.current, tx: 0, ty: 0 };
+    const label = zoomLabelRef.current;
+    if (label) label.textContent = `${Math.round(scaleRef.current * 100)}%`;
+  }, []);
+
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') abortGesture(); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', abortGesture);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', abortGesture);
+      abortGesture();
+    };
+  }, [abortGesture]);
+
   const onPointerDown = (e: React.PointerEvent) => {
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.current.size === 2) {
-      const el = scrollRef.current;
-      const box = el?.getBoundingClientRect();
-      const [a, b] = [...pointers.current.values()];
-      pinch.current = {
-        startDist: dist() || 1,
-        startScale: scale,
-        focalY: (a.y + b.y) / 2 - (box?.top ?? 0),
-      };
-      liveZoomRef.current = 1;
-      // Set on the node rather than through a render: touch-action is read when
-      // the gesture starts, so flipping it via state on the NEXT frame is already
-      // too late and the WebView keeps panning underneath the pinch.
-      if (el) el.style.touchAction = 'none';
-      if (zoomLayerRef.current) zoomLayerRef.current.style.willChange = 'transform';
-    }
+    // A third finger is tracked but never joins the gesture. The old code took
+    // the first two in map order, so lifting a middle finger silently swapped
+    // which pair was measured against the same startDist and the scale jumped.
+    if (pointers.current.size !== 2 || gesture.current) return;
+
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+
+    // Stop any spring first, so O and p0 below are measured against a transform
+    // that is not still moving under them.
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+
+    const [idA, idB] = [...pointers.current.keys()];
+    const a = pointers.current.get(idA)!;
+    const b = pointers.current.get(idB)!;
+    const F0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+
+    const { tx, ty, s } = live.current;
+    const kPrev = s / scale;
+    const lr = layer.getBoundingClientRect();
+    // With transform-origin at 0 0 the rect's top-left is the untransformed
+    // top-left plus the translate, so the origin comes back exactly - which is
+    // what lets a pinch start from a transform that is already applied.
+    const O = { x: lr.left - tx, y: lr.top - ty };
+    const R = el.getBoundingClientRect();
+
+    gesture.current = {
+      idA, idB,
+      startDist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      sBase: s,
+      O,
+      p0: { x: (F0.x - O.x - tx) / kPrev, y: (F0.y - O.y - ty) / kPrev },
+      F: F0,
+      S0x: el.scrollLeft, S0y: el.scrollTop,
+      sw: el.scrollWidth, sh: el.scrollHeight,
+      w: el.clientWidth, h: el.clientHeight,
+      rectLeft: R.left, rectTop: R.top,
+    };
+
+    // Set on the node rather than through a render: touch-action is read when
+    // the gesture starts, so flipping it via state on the NEXT frame is already
+    // too late and the WebView keeps panning underneath the pinch.
+    el.style.touchAction = 'none';
+    layer.style.willChange = 'transform';
+    // Capture both, so a release that lands outside the element still reaches
+    // us. Capturing the FIRST pointer instead would swallow long-press text
+    // selection and the highlight taps, so it deliberately waits for the second.
+    try { el.setPointerCapture(idA); el.setPointerCapture(idB); } catch { /* not captureable */ }
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.current.size !== 2 || !pinch.current) return;
-    e.preventDefault();
 
-    const raw = dist() / pinch.current.startDist;
-    // Clamp against the absolute limits, not just the gesture, or the rubber
-    // band keeps growing after the scale can no longer follow it.
-    const target = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinch.current.startScale * raw));
-    liveZoomRef.current = target / pinch.current.startScale;
+    const g = gesture.current;
+    if (!g || (e.pointerId !== g.idA && e.pointerId !== g.idB)) return;
+
+    const F = focal();
+    g.F = F;
+    live.current.s = elasticScale(g.sBase * (dist() / g.startDist));
+
+    const k = live.current.s / scaleRef.current;
+    const b = bounds(g, k);
+    // The ideal translate keeps p0 exactly under the focal point; the band then
+    // pulls it back toward the legal range, which is what gives at the edges.
+    live.current.tx = band(F.x - g.O.x - k * g.p0.x, b.txMin, b.txMax, g.w);
+    live.current.ty = band(F.y - g.O.y - k * g.p0.y, b.tyMin, b.tyMax, g.h);
+
+    // A live transform changes the scrollable overflow region, and shrinking it
+    // makes the browser clamp scroll - which would slide the content out from
+    // under the fingers even though touch scrolling is off. Pin it instead.
+    const el = scrollRef.current;
+    if (el) {
+      if (el.scrollLeft !== g.S0x) el.scrollLeft = g.S0x;
+      if (el.scrollTop !== g.S0y) el.scrollTop = g.S0y;
+    }
+
     scheduleZoomPaint();
   };
 
   const endPointer = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
-    if (pointers.current.size >= 2 || !pinch.current) return;
+    const g = gesture.current;
+    if (!g) return;
+    // End on either PINNED id. Waiting for the map to fall below two kept the
+    // gesture alive when a third finger lifted, measuring a different pair.
+    if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
 
-    const { startScale, focalY } = pinch.current;
-    const k = liveZoomRef.current;
-    pinch.current = null;
-
-    // Drop the transient transform before committing: the pages are about to
-    // re-rasterise at the real scale, and leaving a stale transform on the layer
-    // would double-apply the zoom for a frame.
-    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
-    liveZoomRef.current = 1;
-    const el2 = scrollRef.current;
-    if (el2) el2.style.touchAction = '';
-    if (zoomLayerRef.current) {
-      zoomLayerRef.current.style.transform = '';
-      zoomLayerRef.current.style.willChange = '';
+    // Cleared before the release, because releasePointerCapture fires
+    // lostpointercapture - which is wired to this same handler - and a
+    // re-entrant call would start a second spring for the same gesture.
+    gesture.current = null;
+    const el = scrollRef.current;
+    if (el) {
+      try { el.releasePointerCapture(g.idA); el.releasePointerCapture(g.idB); } catch { /* already gone */ }
+      el.style.touchAction = '';
     }
-
-    if (Math.abs(k - 1) < 0.01) {
-      // Nothing committed, so React will not re-render and restore the readout.
-      if (zoomLabelRef.current) zoomLabelRef.current.textContent = `${Math.round(startScale * 100)}%`;
-      return;
-    }
-
-    // Keep whatever was under the fingers under the fingers. The scroll fix-up
-    // itself lives in the scale effect below, which every zoom path shares.
-    zoomAnchorY.current = focalY;
-    setScale(+Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale * k)).toFixed(3));
+    startSpring(g);
   };
 
   const scrollToPage = useCallback((n: number) => {
@@ -359,38 +723,57 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   }, [layout]);
 
   /**
-   * Hold position across a zoom.
+   * Hold position across a zoom or rotation.
    *
    * Changing scale makes every page taller but does not move scrollTop and does
    * not fire a scroll event - so the viewport silently lands on a different page
    * while `current` still points at the old one, and the pages actually on
    * screen fall outside the mounted window and render as blank placeholders.
    *
-   * Rescaling scrollTop around an anchor keeps the same content in view, and the
-   * explicit onScroll() re-derives `current` so virtualization follows.
+   * The anchor is a RATIO inside a real page element, measured before the change
+   * and re-measured after. Ratios are transform-invariant, so this is exact by
+   * construction - where the factor arithmetic it replaces was wrong three ways:
+   * it centred horizontally on the viewport rather than on the gesture, it
+   * assumed scrollHeight scales with the zoom when the 24px page gaps do not,
+   * and it leaned on a `layout` that over-counts those gaps because adjacent
+   * my-3 margins collapse to 12px rather than summing to 24.
+   *
+   * useLayoutEffect, not useEffect: this runs inside the commit's flushSync and
+   * has to land before the browser paints, or the correction is visible as a jump.
    */
-  const prevScale = useRef(scale);
-  const zoomAnchorY = useRef<number | null>(null);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || prevScale.current === scale) return;
-    const factor = scale / prevScale.current;
+    if (!el) return;
+    if (prevScale.current === scale && prevRotation.current === rotation) return;
     prevScale.current = scale;
+    prevRotation.current = rotation;
+
+    // Idle state has to track the committed scale, or the next pinch would start
+    // from a stale absolute and jump on the first frame.
+    if (!gesture.current && spring.current == null) live.current = { s: scale, tx: 0, ty: 0 };
+
+    const a = zoomAnchor.current;
+    zoomAnchor.current = null;
     if (layout.length === 0) return;
 
-    // Default to the middle of the viewport; a pinch supplies its focal point.
-    const anchor = zoomAnchorY.current ?? el.clientHeight / 2;
-    zoomAnchorY.current = null;
-    el.scrollTop = Math.max(0, (el.scrollTop + anchor) * factor - anchor);
-
-    // Horizontally too, or zooming past the viewport width leaves the reader
-    // pinned to scrollLeft 0 - which is the page's blank margin, not its text.
-    const halfW = el.clientWidth / 2;
-    el.scrollLeft = Math.max(0, (el.scrollLeft + halfW) * factor - halfW);
+    if (a) {
+      const pr = a.el.getBoundingClientRect();
+      if (pr.height > 0 && pr.width > 0) {
+        // have - want is how far the anchor moved down/right; scrolling by that
+        // much puts it back exactly where the fingers left it.
+        el.scrollTop = clamp(
+          el.scrollTop + (pr.top + a.relY * pr.height) - a.wantY,
+          0, el.scrollHeight - el.clientHeight,
+        );
+        el.scrollLeft = clamp(
+          el.scrollLeft + (pr.left + a.relX * pr.width) - a.wantX,
+          0, el.scrollWidth - el.clientWidth,
+        );
+      }
+    }
 
     onScroll();
-  }, [scale, layout, onScroll]);
+  }, [scale, rotation, layout, onScroll]);
 
   // Once the page boxes exist, honour a remembered page.
   useEffect(() => {
@@ -489,7 +872,17 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
 
   useEffect(() => {
     let t: ReturnType<typeof setTimeout>;
-    const onChange = () => { clearTimeout(t); t = setTimeout(captureSelection, 140); };
+    const onChange = () => {
+      clearTimeout(t);
+      // Never snapshot mid-gesture. captureSelection measures getClientRects()
+      // and stores the result as PDF-space quads, so a snapshot taken through a
+      // live transform would be persisted wrong by the live factor. Re-arm
+      // instead of dropping it, so a selection made just before a pinch is not lost.
+      t = setTimeout(function run() {
+        if (gesture.current || spring.current != null) { t = setTimeout(run, 140); return; }
+        captureSelection();
+      }, 140);
+    };
     document.addEventListener('selectionchange', onChange);
     return () => { document.removeEventListener('selectionchange', onChange); clearTimeout(t); };
   }, [captureSelection]);
@@ -538,6 +931,10 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   };
 
   const addPin = async (pageNumber: number, point: { x: number; y: number }) => {
+    // Same reason as captureSelection: convertToPdfPoint reads a rect measured
+    // through the live transform, so a pin dropped during the release spring
+    // would be stored at a completely different point on the page.
+    if (gesture.current || spring.current != null) return;
     const now = Date.now();
     const a: PdfAnnotation = {
       id: crypto.randomUUID(),
@@ -639,12 +1036,16 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
+        onLostPointerCapture={endPointer}
         dir="ltr"
         // touch-action is switched to 'none' imperatively on the second
         // pointerdown and cleared on release - see onPointerDown. It cannot be
         // driven from state: the browser latches touch-action when the gesture
         // begins, so a value arriving on the next render is already too late.
-        style={{ touchAction: 'auto' }}
+        // overscroll-behavior stops the Android overscroll glow and stops a
+        // pinch at the top of the document chaining a scroll to the fixed
+        // surface behind this one.
+        style={{ touchAction: 'auto', overscrollBehavior: 'contain' }}
         className="flex-1 overflow-y-auto overflow-x-auto bg-slate-200 dark:bg-zinc-950 px-2"
       >
         {error && (
@@ -666,7 +1067,12 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           // transform and willChange are written directly to this node during a
           // pinch; only the origin is declarative. Once the gesture commits, the
           // pages re-render at the real scale so text stays crisp.
-          style={{ transformOrigin: '50% 0' }}
+          //
+          // The origin MUST stay at 0 0. The focal maths solves O + t + k*p0 for
+          // the translate, which only holds when scaling happens about the
+          // layer's own top-left; at 50% 0 the content slid out from under the
+          // fingers as it grew.
+          style={{ transformOrigin: '0 0' }}
         >
         {layout.map((box, i) => {
           const n = i + 1;
@@ -676,6 +1082,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               pdfDoc={pdfDoc}
               pageNumber={n}
               scale={scale}
+              rasterScale={rasterScale}
               rotation={rotation}
               boxW={box.w}
               boxH={box.h}
@@ -726,7 +1133,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         <span className="w-px h-6 bg-slate-200 dark:bg-zinc-700 mx-2" />
 
         <button
-          onClick={() => setScale(s => Math.max(MIN_SCALE, +(s - 0.25).toFixed(2)))}
+          onClick={() => { captureCentreAnchor(); setScale(s => Math.max(MIN_SCALE, +(s - 0.25).toFixed(2))); }}
           disabled={scale <= MIN_SCALE}
           aria-label={isRtl ? 'تصغير' : 'Zoom out'}
           className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
@@ -740,7 +1147,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           {Math.round(scale * 100)}%
         </span>
         <button
-          onClick={() => setScale(s => Math.min(MAX_SCALE, +(s + 0.25).toFixed(2)))}
+          onClick={() => { captureCentreAnchor(); setScale(s => Math.min(MAX_SCALE, +(s + 0.25).toFixed(2))); }}
           disabled={scale >= MAX_SCALE}
           aria-label={isRtl ? 'تكبير' : 'Zoom in'}
           className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
@@ -748,7 +1155,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           <Plus className="w-5 h-5" />
         </button>
         <button
-          onClick={() => setRotation(r => (r + 90) % 360)}
+          onClick={() => { captureCentreAnchor(); setRotation(r => (r + 90) % 360); }}
           aria-label={isRtl ? 'تدوير' : 'Rotate'}
           className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
         >

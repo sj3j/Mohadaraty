@@ -85,9 +85,25 @@ export function freshBytes(buf: ArrayBuffer): Uint8Array {
  */
 export const MAX_CANVAS_AREA = 4_000_000;
 
+/**
+ * Longest side a single canvas may have.
+ *
+ * Plenty of Android GPUs cap one texture at 4096px, and the area budget alone
+ * does not catch it: an A4 page at MAX_SCALE with dpr 2 is 5052px tall but only
+ * 4.5M px, so it passes the area check and still comes back blank.
+ */
+export const MAX_CANVAS_DIM = 4096;
+
 export function safeCanvasScale(cssWidth: number, cssHeight: number, dpr: number): number {
   const capped = Math.min(dpr, 2);
   const area = cssWidth * cssHeight * capped * capped;
-  if (area <= MAX_CANVAS_AREA) return capped;
-  return Math.max(1, capped * Math.sqrt(MAX_CANVAS_AREA / area));
+  const byArea = area <= MAX_CANVAS_AREA
+    ? capped
+    : capped * Math.sqrt(MAX_CANVAS_AREA / area);
+  const byDim = Math.min(MAX_CANVAS_DIM / cssWidth, MAX_CANVAS_DIM / cssHeight);
+  // Floored at a degenerate guard rather than at 1. Flooring at 1 meant that
+  // once the CSS area alone passed the budget - which an A4 page reaches at
+  // MAX_SCALE, 4.51M px - the cap silently stopped applying and the process
+  // died anyway. A blurry page beats a dead WebView.
+  return Math.max(0.05, Math.min(byArea, byDim));
 }

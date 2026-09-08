@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { STORE_BLOBS, dbGet, dbPut, dbDelete, isLocalDbAvailable } from '../lib/localDb';
+import {
+  STORE_BLOBS, dbGet, dbPut, dbDelete, isLocalDbAvailable,
+  saveOfflineLecture, removeOfflineLecture, type OfflineLecture,
+} from '../lib/localDb';
 
 /**
  * Downloaded lecture PDFs, kept on the device.
@@ -55,7 +58,17 @@ export async function readStoredPdf(url: string): Promise<ArrayBuffer | null> {
   }
 }
 
-export function useOfflinePDF(pdfUrl: string | undefined, lectureId?: string) {
+/**
+ * @param meta Snapshot of the lecture, stored alongside the bytes so the
+ *   Downloads tab can list it when the Firestore listener has nothing.
+ *   Omitting it still downloads, but the lecture is only reachable while
+ *   the lecture list itself is available.
+ */
+export function useOfflinePDF(
+  pdfUrl: string | undefined,
+  lectureId?: string,
+  meta?: Omit<OfflineLecture, 'savedAt'>,
+) {
   const [isDownloaded, setIsDownloaded] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -152,6 +165,17 @@ export function useOfflinePDF(pdfUrl: string | undefined, lectureId?: string) {
       await dbPut<StoredPdf>(STORE_BLOBS, { url: pdfUrl, blob, savedAt: Date.now() });
       if (lectureId) localStorage.setItem(`pdf_${lectureId}`, Date.now().toString());
 
+      // Without this the bytes are unreachable offline: the Downloads tab lists
+      // lectures from the Firestore listener, which yields nothing with no
+      // network. Best-effort - a failure here must not undo a good download.
+      if (meta?.id) {
+        try {
+          await saveOfflineLecture({ ...meta, savedAt: Date.now() });
+        } catch (err) {
+          console.error('Saved the PDF but failed to record its metadata:', err);
+        }
+      }
+
       await checkIsDownloaded();
     } catch (error) {
       console.error('Error downloading PDF:', error);
@@ -190,7 +214,10 @@ export function useOfflinePDF(pdfUrl: string | undefined, lectureId?: string) {
       await dbDelete(STORE_BLOBS, pdfUrl);
       setIsDownloaded(false);
       setObjectUrl(null);
-      if (lectureId) localStorage.removeItem(`pdf_${lectureId}`);
+      if (lectureId) {
+        localStorage.removeItem(`pdf_${lectureId}`);
+        await removeOfflineLecture(lectureId).catch(() => {});
+      }
     } catch (error) {
       console.error('Error removing offline PDF:', error);
     }

@@ -63,12 +63,34 @@ export function StageProvider({ children }: { children: ReactNode }) {
         const q = query(stagesRef, orderBy('order', 'asc'));
         const snapshot = await getDocs(q);
 
-        if (snapshot.empty) {
+        // A COLLECTION query does not reject offline the way a document get does -
+        // it resolves EMPTY from cache. So `snapshot.empty` alone is not evidence
+        // that the collection is empty on the server, and acting on it offline
+        // seeded DEFAULT_STAGES over five real documents, `groupConfig` included.
+        //
+        // It also hung: `await setDoc` does not settle until the server acks, so
+        // the loop stalled on stage_1 and `isLoadingStages` never cleared. That
+        // used to be self-limiting because the mutation queue died with the tab;
+        // now that firebase.ts enables a persistent cache the queue SURVIVES and
+        // flushes on reconnect, so this guard is what stops it destroying data.
+        if (snapshot.empty && !snapshot.metadata.fromCache) {
           console.log("No stages found. Seeding default stages...");
-          for (const s of DEFAULT_STAGES) {
-            await setDoc(doc(db, 'stages', s.id), s);
-          }
+          // Not awaited: setDoc resolves on server ack, and blocking the boot on
+          // it is what stalled this loop. The writes still land.
+          await Promise.all(
+            DEFAULT_STAGES.map(s => setDoc(doc(db, 'stages', s.id), s).catch(err => {
+              console.error(`Failed to seed stage ${s.id}:`, err);
+            })),
+          );
 
+          setStages(DEFAULT_STAGES);
+          if (!currentAppStage) {
+            setCurrentAppStage('stage_3');
+          }
+        } else if (snapshot.empty) {
+          // Offline with nothing cached. Render the known stage shape so the app
+          // is navigable, but write NOTHING.
+          console.warn('Stages unavailable offline; using defaults locally without seeding.');
           setStages(DEFAULT_STAGES);
           if (!currentAppStage) {
             setCurrentAppStage('stage_3');

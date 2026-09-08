@@ -71,7 +71,21 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
     || '';
   const date = lecture.createdAt?.toDate ? lecture.createdAt.toDate().toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-US') : t.recently;
 
-  const { isDownloaded, isDownloading, downloadProgress, offlineUrl, downloadPDF, removePDF } = useOfflinePDF(lecture.pdfUrl, lecture.id);
+  const { isDownloaded, isDownloading, downloadProgress, offlineUrl, downloadPDF, removePDF } = useOfflinePDF(
+    lecture.pdfUrl,
+    lecture.id,
+    // Snapshotted with the bytes so the Downloads tab can still list this
+    // lecture when the Firestore listener returns nothing offline.
+    {
+      id: lecture.id,
+      title: lecture.title,
+      pdfUrl: lecture.pdfUrl,
+      subjectId: lecture.subjectId ?? null,
+      stageId: lecture.stageId ?? null,
+      number: lecture.number ?? null,
+      type: lecture.type ?? null,
+    },
+  );
 
   const isStudied = user?.studied?.includes(lecture.id) || false;
   const mcqStatusItem = useMCQStatus(lecture.id, user);

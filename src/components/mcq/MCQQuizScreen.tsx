@@ -236,7 +236,9 @@ ${questionText}`;
     try {
       const { modifyQuestionWithAI, updateLectureMCQSet } = await import('../../services/mcqGenerationService');
       
-      const newQuestionData = await modifyQuestionWithAI(editPromptQuestion, finalPrompt, grantAiAccess ? lecture.pdfUrl : undefined);
+      // lecture.id, not lecture.pdfUrl - the server resolves the PDF itself so
+      // no caller can hand it an arbitrary URL to fetch.
+      const newQuestionData = await modifyQuestionWithAI(editPromptQuestion, finalPrompt, grantAiAccess ? lecture.id : undefined);
       const updatedQuestions = localQuestions.map(q => q.id === editPromptQuestion.id ? { ...q, ...newQuestionData } : q);
       
       await updateLectureMCQSet(lecture.id, updatedQuestions);

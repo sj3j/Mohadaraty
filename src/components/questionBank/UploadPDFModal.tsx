@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs } from 'firebase/firestore';
 import { addBankQuestion } from '../../services/questionBankService';
-import { extractMCQsFromPDFFile } from '../../services/mcqGenerationService';
+import { extractMCQsFromStoragePath } from '../../services/mcqGenerationService';
+import { storage } from '../../lib/firebase';
+import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
 import { X, Upload, Loader2, Edit3, Save, CheckCircle, FileText, ChevronDown, ChevronUp } from 'lucide-react';
 import { QuestionScope, QuestionTag, QuestionType, Difficulty } from '../../types/questionBank.types';
 import { motion, AnimatePresence } from 'motion/react';
@@ -127,18 +129,21 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
     setStage('processing');
     setError(null);
 
+    // Uploaded to Storage, then extracted server-side from the PATH.
+    //
+    // The old flow base64'd the file in the browser and called Gemini directly,
+    // which only worked because the API key was in the bundle. Posting those
+    // bytes to our own endpoint instead is not an option: Vercel caps request
+    // bodies near 4.5MB and these are scans that regularly exceed it. A path
+    // also means the server resolves the file against its own bucket and can
+    // never be pointed at another host.
+    let uploadedPath: string | null = null;
     try {
-      const reader = new FileReader();
-      const base64Data = await new Promise<string>((resolve, reject) => {
-        reader.onloadend = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1] || result);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      uploadedPath = `bank-imports/${Date.now()}_${safeName}`;
+      await uploadBytes(storageRef(storage, uploadedPath), file);
 
-      const parsedQuestions = await extractMCQsFromPDFFile(base64Data, PDF_EXTRACTION_PROMPT);
+      const parsedQuestions = await extractMCQsFromStoragePath(uploadedPath);
 
       if (parsedQuestions.length === 0) {
         throw new Error('لم يتم العثور على أسئلة في الملف. حاول التأكد من محتوى الملف أو صيغته.');
@@ -150,6 +155,13 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
       console.error(err);
       setError(err.message || 'فشل استخراج الأسئلة من الملف');
       setStage('upload');
+    } finally {
+      // The upload is a courier, not a record. Questions are stored in
+      // Firestore, so leaving scans in the bucket would accumulate the
+      // college's exam papers for no one to read.
+      if (uploadedPath) {
+        deleteObject(storageRef(storage, uploadedPath)).catch(() => { /* orphan, not a failure */ });
+      }
     }
   };
 

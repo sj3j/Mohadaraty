@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'motion/react';
-import { AlertTriangle, ArrowUp, BatteryLow, Plus, Sparkles, WifiOff, X } from 'lucide-react';
+import { motion, useMotionValue } from 'motion/react';
+import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X } from 'lucide-react';
 import {
   AskError, askSimosan, fetchSimosanState, formatReset, parseCitations,
   watchLecture, watchMessages,
   type SimosanMessage, type SimosanState,
 } from '../../services/simosanService';
+import SimosanMarkdown from './SimosanMarkdown';
 
 interface Props {
   isRtl: boolean;
@@ -44,6 +45,29 @@ export default function SimosanDrawer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  /*
+   * Phones get a bottom sheet; tablets and up keep the side drawer.
+   *
+   * This is a JS check rather than a CSS breakpoint because the two layouts
+   * animate on different axes (y vs x) and Framer needs to know which before
+   * it mounts. On a ~400px phone the side drawer is 384px wide, so narrowing
+   * it would still leave a sliver of lecture - only a sheet actually shows the
+   * slide and the tutor at once, which is the whole point of the change.
+   */
+  const [isPhone, setIsPhone] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const on = () => setIsPhone(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+
+  /** 'half' keeps the slide readable; 'full' is for tables and walkthroughs. */
+  const [snap, setSnap] = useState<'half' | 'full'>('half');
+  const sheetHeight = snap === 'full' ? '92vh' : '55vh';
+
   useEffect(() => { fetchSimosanState().then(setState); }, []);
   useEffect(() => watchLecture(lectureId, setThreadId), [lectureId]);
   useEffect(() => {
@@ -74,8 +98,10 @@ export default function SimosanDrawer({
     ? Math.max(0, Math.min(100, Math.round((state.remaining / state.dailyBudget) * 100)))
     : 100;
 
-  const send = useCallback(async (newThread = false) => {
-    const text = draft.trim();
+  const send = useCallback(async (
+    opts: { newThread?: boolean; walkthrough?: boolean; overrideText?: string } = {},
+  ) => {
+    const text = (opts.overrideText ?? draft).trim();
     if (!text || busy) return;
 
     setBusy(true);
@@ -91,7 +117,13 @@ export default function SimosanDrawer({
 
     try {
       await askSimosan(
-        { lectureId, question: text, selection: usedSelection || undefined, newThread },
+        {
+          lectureId,
+          question: text,
+          selection: usedSelection || undefined,
+          newThread: opts.newThread,
+          walkthrough: opts.walkthrough,
+        },
         {
           onMeta: (meta) => {
             setThreadId(meta.threadId);
@@ -139,19 +171,80 @@ export default function SimosanDrawer({
 
   return (
     <>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="fixed inset-0 z-[170] bg-black/50 backdrop-blur-sm"
-      />
-      <motion.aside
-        initial={{ x: isRtl ? '-100%' : '100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: isRtl ? '-100%' : '100%' }}
-        transition={{ type: 'spring', damping: 32, stiffness: 320 }}
-        dir={isRtl ? 'rtl' : 'ltr'}
-        className={`fixed inset-y-0 ${isRtl ? 'start-0' : 'end-0'} z-[171] w-full max-w-sm bg-white dark:bg-zinc-900 shadow-2xl flex flex-col`}
-      >
+      {/*
+        NO SCRIM, deliberately.
+
+        A dimmed backdrop was hiding the lecture behind a modal - the thing
+        students asked to have back. Without it the reader stays fully visible
+        AND interactive: it can be scrolled and pinch-zoomed while the chat is
+        open, which is what makes a page citation useful.
+
+        Two consequences that had to be accepted: there is no tap-outside to
+        dismiss, so the close button and Android back (useBackDismiss
+        'pdfSimosan') are the only exits; and this element must stay a SIBLING
+        of the PDF scroll container, never a child, or its transform would
+        become the reader's containing block and break pinch-zoom.
+      */}
+      {isPhone ? (
+        <motion.aside
+          initial={{ y: '100%' }}
+          animate={{ y: 0, height: sheetHeight }}
+          exit={{ y: '100%' }}
+          transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+          dir={isRtl ? 'rtl' : 'ltr'}
+          className="fixed inset-x-0 bottom-0 z-[171] rounded-t-3xl bg-white dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-800 shadow-[0_-8px_32px_rgba(0,0,0,0.28)] flex flex-col"
+        >
+          {/*
+            Drag lives on the HANDLE, not the panel. Dragging the panel would
+            fight the message list for the same vertical gesture and make
+            scrolling a coin toss.
+          */}
+          <motion.div
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={0.35}
+            dragMomentum={false}
+            onDragEnd={(_, info) => {
+              if (info.offset.y < -40) setSnap('full');
+              else if (info.offset.y > 40) {
+                if (snap === 'half') onClose(); else setSnap('half');
+              }
+            }}
+            onClick={() => setSnap((v) => (v === 'half' ? 'full' : 'half'))}
+            className="shrink-0 pt-2.5 pb-1 flex items-center justify-center cursor-grab active:cursor-grabbing touch-none"
+            aria-label={isRtl ? 'تغيير ارتفاع اللوحة' : 'Resize panel'}
+          >
+            <div className="w-10 h-1.5 rounded-full bg-slate-300 dark:bg-zinc-600" />
+          </motion.div>
+          {renderBody()}
+        </motion.aside>
+      ) : (
+        <motion.aside
+          initial={{ x: isRtl ? '-100%' : '100%' }}
+          animate={{ x: 0 }}
+          exit={{ x: isRtl ? '-100%' : '100%' }}
+          transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+          dir={isRtl ? 'rtl' : 'ltr'}
+          className={`fixed inset-y-0 ${isRtl ? 'start-0' : 'end-0'} z-[171] w-full max-w-sm bg-white dark:bg-zinc-900 shadow-2xl flex flex-col border-s border-slate-200 dark:border-zinc-800`}
+        >
+          {renderBody()}
+        </motion.aside>
+      )}
+    </>
+  );
+
+  /**
+   * Invoked as {renderBody()}, never mounted as <SheetBody />.
+   *
+   * A function declared inside the component body is a new function identity
+   * on every render. Used as a JSX element that makes it a new component TYPE
+   * each time, so React tears the subtree down and rebuilds it on every
+   * keystroke - the textarea loses focus and the message list jumps to the top.
+   * Calling it just splices the JSX in place.
+   */
+  function renderBody() {
+    return (
+      <>
         {/* header */}
         <div className="shrink-0 px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)] border-b border-slate-100 dark:border-zinc-800">
           <div className="flex items-center gap-3">
@@ -235,6 +328,20 @@ export default function SimosanDrawer({
 
         {/* composer */}
         <div className="shrink-0 border-t border-slate-100 dark:border-zinc-800 px-3 pt-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+          {/* A guided walkthrough is several billed turns, so it is offered
+              explicitly rather than inferred - and only at the start of a
+              thread, where it makes sense. The marker it sends is what makes
+              chunking deterministic instead of a guess about wording. */}
+          {!atCap && messages.length === 0 && !busy && (
+            <button
+              onClick={() => send({ walkthrough: true, overrideText: 'اشرح لي هذه المحاضرة بالكامل، جزءاً جزءاً.' })}
+              className="w-full mb-2 h-10 rounded-2xl border-2 border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-300 text-xs font-black flex items-center justify-center gap-2 active:scale-[0.98] transition"
+            >
+              <ListOrdered className="w-4 h-4" />
+              {isRtl ? 'اشرح المحاضرة بأجزاء' : 'Explain the lecture in parts'}
+            </button>
+          )}
+
           {selection && (
             <div className="mb-2 rounded-xl bg-violet-50 dark:bg-violet-950/30 border-s-4 border-violet-400 px-3 py-2 flex items-start gap-2">
               <p className="flex-1 text-[11px] font-bold text-slate-600 dark:text-slate-300 line-clamp-2" dir="auto">
@@ -292,9 +399,9 @@ export default function SimosanDrawer({
             </p>
           )}
         </div>
-      </motion.aside>
-    </>
-  );
+      </>
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -331,20 +438,14 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
               />
             ))}
           </span>
-        ) : (
+        ) : mine ? (
+          // The student's own text is never markdown - rendering it as such
+          // would let a stray asterisk silently restyle what they typed.
           parseCitations(m.text).map((part, i) =>
-            'page' in part ? (
-              <button
-                key={i}
-                onClick={() => onJumpToPage(part.page)}
-                className="mx-1 inline-flex items-center rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-black text-violet-600 dark:text-violet-300 align-middle active:scale-95 transition"
-              >
-                {isRtl ? `ص ${part.page}` : `p.${part.page}`}
-              </button>
-            ) : (
-              <span key={i} className="whitespace-pre-wrap">{part.text}</span>
-            ),
+            'page' in part ? null : <span key={i} className="whitespace-pre-wrap">{part.text}</span>,
           )
+        ) : (
+          <SimosanMarkdown text={m.text} isRtl={isRtl} onJumpToPage={onJumpToPage} />
         )}
       </div>
     </div>

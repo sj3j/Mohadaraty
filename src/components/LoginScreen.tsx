@@ -152,6 +152,10 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
     if (onClearError) onClearError();
     try {
       sessionStorage.setItem('googleLoginInProgress', 'true');
+      // Timestamped so App.tsx can expire a flag left behind by an interrupted
+      // sign-in. Without it a dropped network mid-handshake pins the app on the
+      // boot spinner for the rest of the session.
+      sessionStorage.setItem('googleLoginStartedAt', String(Date.now()));
 
       // Native uses the OS account picker and sends a raw Google token; web
       // keeps the popup and sends a Firebase token. Both come back as our own
@@ -267,6 +271,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
       }
     } finally {
       sessionStorage.removeItem('googleLoginInProgress');
+      sessionStorage.removeItem('googleLoginStartedAt');
       if (!externalError) {
         setIsLoading(false);
       }

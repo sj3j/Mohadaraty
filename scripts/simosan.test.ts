@@ -157,6 +157,13 @@ async function main() {
 
   check('citations are parsed and de-duplicated',
     JSON.stringify(extractCitedPages('a [[p:14]] b [[p:3]] c [[p:14]]')) === '[3,14]');
+
+  // A live answer really did emit `[[p:7, 8]]` for a table row citing two
+  // slides. A single-number pattern silently fails to match it, and the marker
+  // then reaches the student as raw text instead of a pair of tappable chips.
+  check('a multi-page citation marker yields every page',
+    JSON.stringify(extractCitedPages('x [[p:7, 8]] y [[p: 3 ]]')) === '[3,7,8]',
+    JSON.stringify(extractCitedPages('x [[p:7, 8]] y [[p: 3 ]]')));
   check('page estimate never returns zero', estimatePageCount(Buffer.from('not a pdf')) >= 1);
 
   // -----------------------------------------------------------------------

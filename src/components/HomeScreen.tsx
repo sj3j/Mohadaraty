@@ -10,16 +10,43 @@ import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
 import { db } from '../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
+import { listOfflineLectures, type OfflineLecture } from '../lib/localDb';
 
 function DownloadsTab({ lectures, lang, user, onNavigateToChat, onEdit, onOpenMCQ, onOpenReader }: any) {
   const [trigger, setTrigger] = useState(0);
+  const [storedLectures, setStoredLectures] = useState<OfflineLecture[]>([]);
   const isRtl = lang === 'ar';
 
-  const downloadedLectures = lectures
-    .filter((l: Lecture) => Boolean(localStorage.getItem(`pdf_${l.id}`)))
-    .map((l: Lecture) => ({ 
-      lecture: l, 
-      downloadedAt: parseInt(localStorage.getItem(`pdf_${l.id}`) || '0', 10) || 0 
+  // The Firestore-backed `lectures` array is empty on an offline cold start, and
+  // this tab used to filter only that - so a student with saved PDFs was told
+  // they had no downloads. IndexedDB holds a snapshot of each downloaded
+  // lecture, which is the copy that survives having no network.
+  useEffect(() => {
+    let cancelled = false;
+    listOfflineLectures()
+      .then(rows => { if (!cancelled) setStoredLectures(rows); })
+      .catch(() => { if (!cancelled) setStoredLectures([]); });
+    return () => { cancelled = true; };
+  }, [trigger]);
+
+  // Live documents win where both exist - a title edited since the download
+  // should show its current text - with the stored snapshot filling the rest.
+  const liveById = new Map<string, Lecture>(lectures.map((l: Lecture) => [l.id, l]));
+  const merged = new Map<string, Lecture>();
+  for (const stored of storedLectures) {
+    merged.set(stored.id, (liveById.get(stored.id) ?? stored) as Lecture);
+  }
+  for (const l of lectures as Lecture[]) {
+    if (localStorage.getItem(`pdf_${l.id}`)) merged.set(l.id, l);
+  }
+
+  const downloadedLectures = Array.from(merged.values())
+    .map((l: Lecture) => ({
+      lecture: l,
+      downloadedAt:
+        parseInt(localStorage.getItem(`pdf_${l.id}`) || '0', 10)
+        || storedLectures.find(s => s.id === l.id)?.savedAt
+        || 0,
     }))
     .sort((a: any, b: any) => b.downloadedAt - a.downloadedAt);
 

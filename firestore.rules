@@ -590,9 +590,28 @@ service cloud.firestore {
     
     match /mcqs/{lectureId} {
       allow read: if hasAccess();
-      // Allow Generation (Creation & Write) updates from regular users if permitted
-      allow create, update: if hasAccess();
+
+      // create was `hasAccess()` because generation ran in the STUDENT's browser
+      // and the student's own client wrote the result. Generation is server-side
+      // now, so nothing legitimate creates this document from a client - and the
+      // old rule let any student with access forge a whole lecture's answer key.
+      allow create: if false;
+
+      // Updates stay client-writable for staff only: an admin editing a single
+      // question with AI writes the amended set back through
+      // updateLectureMCQSet. Students never write here.
+      allow update: if isAdmin();
+
       allow delete: if isAdmin();
+    }
+
+    // Student "please generate questions for this lecture" requests. Written by
+    // the API, which also notifies staff; readable by staff so the queue can be
+    // worked through. A client-writable version would be a spam channel into
+    // every admin's inbox.
+    match /mcqRequests/{requestId} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     match /userMCQAnswers/{userId}/lectures/{document=**} {

@@ -132,7 +132,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   async function ask(req: any, res: any) {
     const db = admin.firestore();
     const uid = req.user.uid;
-    const { lectureId, question, selection, newThread } = req.body || {};
+    const { lectureId, question, selection, newThread, walkthrough } = req.body || {};
 
     if (!ai) return res.status(503).json({ error: 'not_configured' });
     if (!lectureId || typeof question !== 'string' || !question.trim()) {
@@ -256,12 +256,62 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         })}\n\n`,
       );
 
-      const contents = buildContents(file.fileUri, history, question.trim(), selection);
+      // First name only: warmth at a fraction of the exposure, and a stable
+      // string so it does not disturb the cache the way a varying one would.
+      const firstName = String(caller.data?.name || '').trim().split(/[ 	]+/)[0] || undefined;
+
+      let subjectName: string | undefined;
+      const subjectId = lecture.subjectId || lecture.category;
+      if (subjectId) {
+        try {
+          const subj = await db.collection('subjects').doc(subjectId).get();
+          subjectName = subj.exists ? (subj.data()?.name || subj.data()?.nameAr || subjectId) : subjectId;
+        } catch { subjectName = subjectId; }
+      }
+
+      const turnCtx = { studentName: firstName, subjectName, walkthrough: walkthrough === true };
       let answer = '';
-      const { usage, offTopic } = await streamAnswer(ai, settings.model, contents, (delta) => {
+      const onDelta = (delta: string) => {
         answer += delta;
-        res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
-      });
+        res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}
+
+`);
+      };
+
+      /*
+       * Files API expiry failsafe.
+       *
+       * ensureLectureFile refreshes on a 44h clock, which trusts the cached
+       * uploadedAtMs. Google can delete a file earlier than that, and the
+       * cached URI then 403s and the student gets nothing. Drop the stale row,
+       * re-upload, and retry ONCE.
+       *
+       * The reservation is deliberately still held across the retry - it is the
+       * same logical question, and releasing then re-reserving would let a
+       * parallel request slip into the gap. Only a second failure gives up, and
+       * the outer catch releases the hold in full.
+       *
+       * Retried only if nothing has streamed yet: once bytes are on the wire
+       * the student is already reading an answer, and starting a second one
+       * would splice two replies together.
+       */
+      let usage: any, offTopic = false;
+      try {
+        const contents = buildContents(file.fileUri, history, question.trim(), selection, turnCtx);
+        ({ usage, offTopic } = await streamAnswer(ai, settings.model, contents, onDelta));
+      } catch (streamErr: any) {
+        const raw = String(streamErr?.message || '');
+        const expired = /not found|PERMISSION_DENIED|403|404/i.test(raw) && /file/i.test(raw);
+        if (!expired || answer.length > 0) throw streamErr;
+
+        console.warn('[simosan] file URI stale, re-uploading', lectureId);
+        await db.collection('aiFiles').doc(lectureId).delete().catch(() => {});
+        const rebuilt = await ensureLectureFile(
+          ai, db, admin.firestore.FieldValue, lectureId, lecture.pdfUrl,
+        );
+        const retry = buildContents(rebuilt.fileUri, history, question.trim(), selection, turnCtx);
+        ({ usage, offTopic } = await streamAnswer(ai, settings.model, retry, onDelta));
+      }
 
       // --- settle ------------------------------------------------------------
       const actual = unitsFromUsage(usage) || estimated;

@@ -2,7 +2,7 @@ import React, { useState, useReducer, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Lecture, UserProfile, Language } from '../types';
 import { X, Loader2, ArrowRight } from 'lucide-react';
-import { getExistingMCQsForLecture, generateMCQsForLecture, AIUnavailableError, AI_UNAVAILABLE_MESSAGE } from '../services/mcqGenerationService';
+import { getExistingMCQsForLecture, requestMCQGeneration } from '../services/mcqGenerationService';
 import { getFirstAttemptStatus, finalizeFirstAttempt, submitRetakeAttempt } from '../services/mcqAnswerService';
 import { checkMCQBanStatus } from '../services/antiCheatService';
 import { getQuestionsForLecture, bankLectureIdFor } from '../services/questionBankService';
@@ -35,6 +35,8 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   const [firstAttemptStatus, setFirstAttemptStatus] = useState<{hasCompleted: boolean, score: number | null}>({hasCompleted: false, score: null});
   const [finalResult, setFinalResult] = useState<any>(null); // from submitting
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [requestState, setRequestState] = useState<'idle' | 'sent' | 'already' | 'error'>('idle');
 
   useEffect(() => {
     let active = true;
@@ -84,42 +86,34 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
     return () => { active = false; };
   }, [lecture, user.uid]);
 
+  /**
+   * Students no longer trigger generation.
+   *
+   * It used to run in their browser on a bundled API key - the leak that is now
+   * closed. Generation is staff-only and server-side, so a student who opens a
+   * lecture with no questions can only ask for them.
+   */
+  const handleRequestGeneration = async () => {
+    if (lecture.version === 'translated') return;
+    setRequesting(true);
+    try {
+      const r = await requestMCQGeneration(lecture.id);
+      setRequestState(r.alreadyRequested ? 'already' : 'sent');
+    } catch (err) {
+      console.error(err);
+      setRequestState('error');
+    } finally {
+      setRequesting(false);
+    }
+  };
+
   const handleStartQuiz = async () => {
     // A translated lecture is raw source material and never gets AI questions.
     // The intro screen hides the AI card for them, so this is unreachable
     // through the UI - it exists so the rule cannot be lost to a later UI edit.
     if (lecture.version === 'translated') return;
-
-    if (questions.length === 0) {
-      setRoute('loading');
-      setErrorMsg(null);
-      try {
-        // subjectId, NOT category - the same rule as the bank lookup above.
-        // `category` is legacy and absent on every lecture uploaded against the
-        // real curriculum, so passing it sent `undefined` into a Firestore write
-        // and the student got "Unsupported field value: undefined" instead of a
-        // quiz. The mcqs doc keys on subjectId; category is only a fallback for
-        // content that predates the migration.
-        const generatedQuestions = await generateMCQsForLecture(
-          lecture.id,
-          lecture.subjectId || lecture.category || '',
-          lecture.pdfUrl,
-        );
-        setQuestions(generatedQuestions);
-        setRoute('quiz');
-      } catch (err: any) {
-        console.error(err);
-        // A provider outage (dead key, exhausted quota) is not something the
-        // student did or can fix, and its real cause must not reach the screen.
-        setErrorMsg(
-          err instanceof AIUnavailableError
-            ? AI_UNAVAILABLE_MESSAGE
-            : (err.message || 'فشل التوليد. يرجى المحاولة مرة أخرى.'),
-        );
-      }
-    } else {
-      setRoute('quiz');
-    }
+    if (questions.length === 0) return;
+    setRoute('quiz');
   };
   
   const handleFinishQuiz = async (answersState: any, correctCount: number, score: number) => {
@@ -225,6 +219,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             bankQuestions={bankQuestions}
             firstAttemptStatus={firstAttemptStatus}
             onStart={handleStartQuiz}
+            onRequestGeneration={handleRequestGeneration}
+            requesting={requesting}
+            requestState={requestState}
             onClose={onClose}
             user={user}
             userId={user.uid}

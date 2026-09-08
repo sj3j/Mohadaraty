@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Lecture, UserProfile } from '../../types';
-import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText } from 'lucide-react';
+import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
 import { canManageMcqSystem } from '../../lib/permissions';
@@ -15,9 +15,13 @@ interface Props {
   onClose: () => void;
   user: UserProfile | null;
   userId: string;
+  /** Students cannot generate; they ask staff to. */
+  onRequestGeneration: () => void;
+  requesting: boolean;
+  requestState: 'idle' | 'sent' | 'already' | 'error';
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId }: Props) {
+export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState }: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
@@ -66,7 +70,9 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
             <h2 className="text-lg font-bold text-slate-900 dark:text-white">أسئلة الذكاء الاصطناعي</h2>
           </div>
           <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-            {questionsCount > 0 ? `${questionsCount} سؤال مولّد من محتوى المحاضرة` : 'سيتم توليد ٢٠ سؤال بالذكاء الاصطناعي من محتوى المحاضرة'}
+            {questionsCount > 0
+              ? `${questionsCount} سؤال مولّد من محتوى المحاضرة`
+              : 'لم تُحضَّر أسئلة هذه المحاضرة بعد.'}
           </p>
           
           <div className="space-y-4 mb-4">
@@ -106,13 +112,40 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
             </div>
           )}
           
-          <button 
-            onClick={onStart}
-            className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2"
-          >
-            {lockedCount > 0 && !isRetake ? 'أكمل اختبار AI' : 'ابدأ اختبار AI'}
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          {/* Generation is staff-only and server-side now - it used to run in
+              the student's browser on a bundled API key. With no questions yet
+              the student can ask for them; the mcqs listener flips this card to
+              the start button the moment staff finish, with no refresh. */}
+          {questionsCount > 0 ? (
+            <button
+              onClick={onStart}
+              className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2"
+            >
+              {lockedCount > 0 && !isRetake ? 'أكمل اختبار AI' : 'ابدأ اختبار AI'}
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          ) : requestState === 'sent' || requestState === 'already' ? (
+            <div className="w-full py-3 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 font-bold rounded-xl flex items-center justify-center gap-2 mt-2 text-sm">
+              <Check className="w-4 h-4" />
+              {requestState === 'already' ? 'طلبك مُسجَّل بالفعل' : 'تم إرسال الطلب للإدارة'}
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={onRequestGeneration}
+                disabled={requesting}
+                className="w-full py-3 bg-slate-900 dark:bg-stone-100 text-white dark:text-zinc-900 font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2 disabled:opacity-50"
+              >
+                {requesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                اطلب تحضير الأسئلة
+              </button>
+              {requestState === 'error' && (
+                <p className="text-xs font-bold text-amber-600 dark:text-amber-400 text-center mt-2">
+                  تعذّر إرسال الطلب. حاول لاحقاً.
+                </p>
+              )}
+            </>
+          )}
         </div>
         )}
 

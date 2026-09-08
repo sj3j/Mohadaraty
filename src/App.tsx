@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc } from 'firebase/firestore';
 import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType } from './types';
@@ -204,19 +204,47 @@ export default function App() {
 
       // If we are in the middle of Google login, the user instance is the generic Google one.
       // We ignore it and wait for the custom token login to trigger onAuthStateChanged again.
+      //
+      // The flag is time-boxed because this return deliberately skips
+      // setIsAuthReady(true): if a Google sign-in dies between setting the flag
+      // and clearing it - the network dropping mid-handshake is enough - a stale
+      // flag pinned the app on the spinner for the rest of the session AND
+      // suppressed the whitelist error handling below.
+      const googleLoginStartedAt = Number(sessionStorage.getItem('googleLoginStartedAt') || 0);
+      const googleLoginIsFresh = googleLoginStartedAt > 0 && Date.now() - googleLoginStartedAt < 120_000;
       if (sessionStorage.getItem('googleLoginInProgress') === 'true') {
-        return;
+        if (googleLoginIsFresh) {
+          return;
+        }
+        console.warn('Stale googleLoginInProgress flag; clearing and continuing.');
+        sessionStorage.removeItem('googleLoginInProgress');
+        sessionStorage.removeItem('googleLoginStartedAt');
       }
 
       if (firebaseUser) {
         const userEmail = firebaseUser.email || firebaseUser.uid;
-        const tokenResult = await firebaseUser.getIdTokenResult();
+        // Offline this needs an STS round-trip whenever the cached token is more
+        // than an hour old, and the rejection used to escape the whole async
+        // callback - so setIsAuthReady(true) was never reached and the app sat on
+        // the spinner forever. Intermittent by nature, because it depends on how
+        // stale the token happens to be.
+        //
+        // `false` asks for the cached token rather than a refresh, so this
+        // resolves offline in the common case; if even that fails we carry on
+        // with no claims. Claims only decide master-admin, and a real master
+        // admin is still matched by the email list below.
+        let tokenResult: Awaited<ReturnType<typeof firebaseUser.getIdTokenResult>> | null = null;
+        try {
+          tokenResult = await firebaseUser.getIdTokenResult(false);
+        } catch (err) {
+          console.warn('Could not read ID token claims (likely offline); continuing without them.', err);
+        }
         const adminEmails = ["almdrydyl335@gmail.com", "jempe.kn@gmail.com"];
-        const isMasterAdmin = tokenResult.claims.role === 'master_admin' || adminEmails.includes(userEmail?.toLowerCase() || '');
+        const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || adminEmails.includes(userEmail?.toLowerCase() || '');
         
         let studentData: any = null;
 
-        if (adminEmails.includes(userEmail?.toLowerCase() || '') && tokenResult.claims.role !== 'master_admin') {
+        if (adminEmails.includes(userEmail?.toLowerCase() || '') && tokenResult?.claims.role !== 'master_admin') {
           try {
              const token = await firebaseUser.getIdToken();
              await fetch(apiUrl('/api/bootstrap-admin'), {
@@ -278,20 +306,49 @@ export default function App() {
             if (sessionStorage.getItem('googleLoginInProgress') === 'true') {
                return; // Ignore error during rapid sign-out for Google auth bypass
             }
-            await signOut(auth);
-            setLoginError(isRtl ? 'حدث خطأ أثناء التحقق من الحساب.' : 'Error verifying account.');
-            setUser(null);
-            setIsAuthReady(true);
-            return;
+
+            // A document getDoc REJECTS offline when it is not in cache, so this
+            // catch used to fire on every offline launch and sign the student
+            // out - which wipes the refresh token, making it unrecoverable even
+            // after reconnecting, while LoginScreen refuses to sign back in
+            // without a network. "Cannot reach the server" is not a verdict
+            // about the account; leave the session alone and let the users/{uid}
+            // listener below populate the profile from cache.
+            if (isTransientNetworkError(error)) {
+              console.warn('Whitelist check unavailable (offline); keeping the session.');
+            } else {
+              await signOut(auth);
+              setLoginError(isRtl ? 'حدث خطأ أثناء التحقق من الحساب.' : 'Error verifying account.');
+              setUser(null);
+              setIsAuthReady(true);
+              return;
+            }
           }
         }
 
         // Listen to user document
         userUnsubscribe = onSnapshot(doc(db, 'users', firebaseUser.uid), async (userDoc) => {
-          if (!userDoc.exists() && !firebaseUser.uid.includes('@')) {
+          // Read before the exists() guard: exists() is a type predicate, and in
+          // the negative branch it narrows the snapshot to `never`.
+          const servedFromCache = userDoc.metadata.fromCache;
+
+          // onSnapshot does NOT reject offline - it delivers a fromCache snapshot
+          // in which an uncached document reads as non-existent. Without this
+          // check the branch read that as "the account was deleted" and signed
+          // out every master admin and Google-uid account on an offline launch
+          // (roster students dodged it only because their uid contains an '@').
+          // Absence is only meaningful when it comes from the server.
+          if (!userDoc.exists() && !servedFromCache && !firebaseUser.uid.includes('@')) {
             await signOut(auth);
             setLoginError(isRtl ? 'يرجى إعادة تسجيل الدخول' : 'Please sign in again');
             setUser(null);
+            setIsAuthReady(true);
+            return;
+          }
+
+          // Cached miss: nothing to render a profile from, but the session is
+          // fine. Release the gate so the app boots instead of spinning.
+          if (!userDoc.exists() && servedFromCache) {
             setIsAuthReady(true);
             return;
           }

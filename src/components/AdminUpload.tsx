@@ -84,14 +84,11 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
     if (data.version === 'translated') return;
     if (!data.pdfUrl) return;
 
-    // subjectId, NOT category. The mcqs doc keys on subjectId, and passing a
-    // category slug writes a wrong value into it - which is the bug still live
-    // at MCQOverlay.tsx:89. The correct form is the one at MCQOverlay.tsx:58.
-    // Named `resolved-` to avoid shadowing the component's own subjectId state.
-    const resolvedSubjectId = data.subjectId || data.category || '';
-
+    // Only the id travels. The server reads subjectId and pdfUrl from the
+    // lecture document itself, which is both why the old undefined-subjectId
+    // crash cannot recur and why no caller can point it at another URL.
     setPendingMCQCount(n => n + 1);
-    generateMCQsForLecture(lectureId, resolvedSubjectId, data.pdfUrl)
+    generateMCQsForLecture(lectureId)
       .catch(err => {
         console.warn('[AdminUpload] MCQ generation failed for', lectureId, err);
       })
