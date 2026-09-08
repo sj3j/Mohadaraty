@@ -442,7 +442,27 @@ message. Serialisation is a **Firestore lock** (`mcqs.status` + `startedAt`, 90s
 because Vercel invocations share no process and an in-memory queue would
 serialise nothing. `failureCount` caps retries at 3 so an unprocessable PDF
 cannot drain the daily free quota. Alerts distinguish `free_tier_limit` from
-`not_configured` - the remedies are unrelated.
+`not_configured` from `bad_request` - the remedies are unrelated.
+
+**`MCQ_RESPONSE_SCHEMA` carries no `minItems`/`maxItems`, and must not.** With
+them (20/20 on `questions`, 2/5 on `choices`) Gemini answered *every* generate
+call with `400 INVALID_ARGUMENT` before reading a page of the PDF, so the
+server-side pipeline shipped and never produced one question set. The bounds are
+accepted on a smaller schema, which is what makes them look innocent - it is the
+combination with this nesting depth that is rejected. The count is asked for in
+the prompt and enforced by `validateQuestions()`, which also carries the 2..5
+choice bound that `maxItems` used to.
+
+That failure was invisible for a second reason worth keeping separate:
+`classifyFailure()` returned `'error'` for it, and only `free_tier_limit` /
+`not_configured` raised an alert. `INVALID_ARGUMENT` now maps to `bad_request`
+and alerts, because nothing a student or a PDF does can cause it - it is always
+a bug in the request we send.
+
+**A stale client is its own failure mode.** The pre-refactor browser generator
+read the removed `VITE_GEMINI_API_KEY` and reported `not_configured` from cache
+long after the server moved. Firestore tells them apart: server writes carry
+`failureCount` and `stageId`, and alerts carry `note`; the old client's never do.
 
 Endpoints take **`lectureId`, never a URL**: Vercel caps request bodies near
 4.5MB, and a caller-supplied URL would let anyone make the server fetch arbitrary

@@ -60,7 +60,11 @@ export function createMcqHandlers(deps: McqDeps) {
         ? 'Free-tier daily limit reached. Generation resumes after the quota resets.'
         : reason === 'not_configured'
           ? 'GEMINI_FREE_TIER_API_KEY is missing or invalid.'
-          : `MCQ generation failed (${reason}).`;
+          : reason === 'bad_request'
+            // Neither the key nor the quota - waiting or re-keying fixes nothing
+            // here, so the alert has to say so or it reads as the one above.
+            ? 'Gemini rejected the request itself (model, config or response schema). Needs a code fix, not a key or a quota.'
+            : `MCQ generation failed (${reason}).`;
     try {
       await admin.messaging().send({
         topic: 'admins',
@@ -223,7 +227,7 @@ export function createMcqHandlers(deps: McqDeps) {
 
       // Only provider-level problems are an operations alert. A malformed PDF
       // is one lecture's problem and would just be noise at scale.
-      if (specific === 'free_tier_limit' || specific === 'not_configured') {
+      if (specific === 'free_tier_limit' || specific === 'not_configured' || specific === 'bad_request') {
         await raiseAlert(specific, { lectureId, note: msg.slice(0, 200) });
       }
       res.status(500).json({ error: specific });
@@ -371,7 +375,7 @@ export function createMcqHandlers(deps: McqDeps) {
     } catch (e: any) {
       const reason = classifyFailure(e);
       console.error('[mcq] extract failed', String(e?.message || e).slice(0, 200));
-      if (reason === 'free_tier_limit' || reason === 'not_configured') {
+      if (reason === 'free_tier_limit' || reason === 'not_configured' || reason === 'bad_request') {
         await raiseAlert(reason, { lectureId: '(bank import)' });
       }
       res.status(500).json({ error: reason });

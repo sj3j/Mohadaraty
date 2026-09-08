@@ -2,7 +2,7 @@ import React, { useState, useReducer, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Lecture, UserProfile, Language } from '../types';
 import { X, Loader2, ArrowRight } from 'lucide-react';
-import { getExistingMCQsForLecture, requestMCQGeneration } from '../services/mcqGenerationService';
+import { getExistingMCQsForLecture, requestMCQGeneration, generateMCQsForLecture, AIUnavailableError, AI_UNAVAILABLE_MESSAGE } from '../services/mcqGenerationService';
 import { getFirstAttemptStatus, finalizeFirstAttempt, submitRetakeAttempt } from '../services/mcqAnswerService';
 import { checkMCQBanStatus } from '../services/antiCheatService';
 import { getQuestionsForLecture, bankLectureIdFor } from '../services/questionBankService';
@@ -37,6 +37,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [requestState, setRequestState] = useState<'idle' | 'sent' | 'already' | 'error'>('idle');
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -104,6 +105,35 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
       setRequestState('error');
     } finally {
       setRequesting(false);
+    }
+  };
+
+  /**
+   * Staff generate directly rather than queueing a request to themselves.
+   *
+   * This is the other half of the sentence above: generation became staff-only
+   * and server-side, but only the student's "ask for them" half was ever built,
+   * so a master admin looking at a lecture with no questions had the same dead
+   * end a student has. The server route already existed and already admitted
+   * admin / moderator / master_admin - nothing here widens access.
+   */
+  const handleGenerate = async () => {
+    if (lecture.version === 'translated') return;
+    setGenerateError(null);
+    setRoute('loading');
+    try {
+      const generated = await generateMCQsForLecture(lecture.id);
+      setQuestions(generated);
+      setRoute('intro');
+    } catch (err) {
+      console.error(err);
+      // Neutral for provider faults; the raw code would name the vendor.
+      setGenerateError(
+        err instanceof AIUnavailableError
+          ? AI_UNAVAILABLE_MESSAGE
+          : 'تعذّر توليد الأسئلة. حاول لاحقاً.',
+      );
+      setRoute('intro');
     }
   };
 
@@ -222,6 +252,8 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             onRequestGeneration={handleRequestGeneration}
             requesting={requesting}
             requestState={requestState}
+            onGenerate={handleGenerate}
+            generateError={generateError}
             onClose={onClose}
             user={user}
             userId={user.uid}

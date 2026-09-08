@@ -4,7 +4,7 @@ import { Lecture, UserProfile } from '../../types';
 import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
-import { canManageMcqSystem } from '../../lib/permissions';
+import { canManageMcqSystem, isMasterAdmin, isStaff } from '../../lib/permissions';
 
 interface Props {
   lecture: Lecture;
@@ -19,12 +19,24 @@ interface Props {
   onRequestGeneration: () => void;
   requesting: boolean;
   requestState: 'idle' | 'sent' | 'already' | 'error';
+  /** Staff generate directly. The server is the real gate - see canGenerate. */
+  onGenerate: () => void;
+  generateError: string | null;
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState }: Props) {
+export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError }: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
+
+  /*
+   * Master admin, representative (role 'admin') and assistant (role
+   * 'moderator') - exactly the three the server's verifyAdmin admits, so the
+   * button is never offered to someone /api/mcq/generate would then 403.
+   * `canManageMcqSystem` is NOT the right gate here: it is master-admin-only
+   * and guards the question bank and cheating monitor, not generation.
+   */
+  const canGenerate = !isTranslated && (isMasterAdmin(user) || isStaff(user));
 
   useEffect(() => {
     if (!isRetake && userId) {
@@ -124,6 +136,21 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
               {lockedCount > 0 && !isRetake ? 'أكمل اختبار AI' : 'ابدأ اختبار AI'}
               <ArrowLeft className="w-4 h-4" />
             </button>
+          ) : canGenerate ? (
+            <>
+              <button
+                onClick={onGenerate}
+                className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2"
+              >
+                <Bot className="w-4 h-4" />
+                أنشئ الأسئلة الآن
+              </button>
+              {generateError && (
+                <p className="text-xs font-bold text-amber-600 dark:text-amber-400 text-center mt-2">
+                  {generateError}
+                </p>
+              )}
+            </>
           ) : requestState === 'sent' || requestState === 'already' ? (
             <div className="w-full py-3 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 font-bold rounded-xl flex items-center justify-center gap-2 mt-2 text-sm">
               <Check className="w-4 h-4" />

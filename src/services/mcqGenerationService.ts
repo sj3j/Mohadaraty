@@ -35,7 +35,7 @@ import { trackEvent } from '../lib/analytics';
  * pharmacy student to "check your payment plan in your Google account".
  */
 export class AIUnavailableError extends Error {
-  constructor(public code: 'quota' | 'free_tier_limit' | 'not_configured' | 'provider') {
+  constructor(public code: 'quota' | 'free_tier_limit' | 'not_configured' | 'bad_request' | 'provider') {
     super('AI_UNAVAILABLE');
   }
 }
@@ -43,7 +43,10 @@ export class AIUnavailableError extends Error {
 /** Neutral, student-facing. No vendor, no key, no billing. */
 export const AI_UNAVAILABLE_MESSAGE = 'الخدمة غير متاحة حالياً. يرجى المحاولة لاحقاً.';
 
-const PROVIDER_CODES = ['quota', 'free_tier_limit', 'not_configured'];
+// 'bad_request' is ours, not the student's: Gemini refused the request shape.
+// It is listed here so it reaches the screen as the neutral message rather than
+// as a raw code, and is still distinguishable in a caught error's `.code`.
+const PROVIDER_CODES = ['quota', 'free_tier_limit', 'not_configured', 'bad_request'];
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await auth.currentUser?.getIdToken();

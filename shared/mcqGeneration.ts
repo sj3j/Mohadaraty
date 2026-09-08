@@ -47,6 +47,7 @@ export type McqFailureReason =
   | 'quota'
   | 'free_tier_limit'
   | 'not_configured'
+  | 'bad_request'
   | 'pdf_unreachable'
   | 'pdf_too_large'
   | 'invalid_response'
@@ -67,14 +68,31 @@ export type McqFailureReason =
  * The enums matter as much as the parsing: choice labels, difficulty and stem
  * format are now enforced by the API rather than requested in prose and hoped
  * for. `required` is what stops a half-formed question reaching Firestore.
+ *
+ * NO `minItems`/`maxItems` ANYWHERE IN HERE, deliberately.
+ *
+ * This schema once carried them on `questions` (20/20) and on `choices` (2/5),
+ * and Gemini answered every single generate call with
+ *
+ *     400 {"message":"Request contains an invalid argument.",
+ *          "status":"INVALID_ARGUMENT"}
+ *
+ * before reading a byte of the PDF - so the pipeline never produced one set of
+ * questions in production. Verified by replay against `gemini-3.5-flash`: this
+ * schema without the bounds succeeds, and with them fails; the same bounds on a
+ * SMALLER schema are accepted, so it is the combination with this nesting depth
+ * that is rejected, not the keywords on their own. That is why the failure
+ * looks like it cannot possibly be the bounds, and why they must not come back.
+ *
+ * Nothing is lost by dropping them. The count is requested in the prompt and
+ * enforced by validateQuestions(), which rejects a short set outright rather
+ * than storing it; the 2..5 choice bound is enforced there too.
  */
 export const MCQ_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
     questions: {
       type: 'array',
-      minItems: MCQ_QUESTION_COUNT,
-      maxItems: MCQ_QUESTION_COUNT,
       items: {
         type: 'object',
         properties: {
@@ -86,8 +104,6 @@ export const MCQ_RESPONSE_SCHEMA = {
           stem: { type: 'string' },
           choices: {
             type: 'array',
-            minItems: 2,
-            maxItems: 5,
             items: {
               type: 'object',
               properties: {
@@ -272,7 +288,11 @@ export function validateQuestions(raw: any): { ok: true; questions: any[] } | { 
     return { ok: false, reason: `got ${questions.length} of ${MCQ_QUESTION_COUNT}` };
   }
   for (const q of questions) {
-    if (!q?.stem || !Array.isArray(q.choices) || q.choices.length < 2) {
+    // The 2..5 bound used to live in the response schema as minItems/maxItems.
+    // Those had to go - see MCQ_RESPONSE_SCHEMA - so the upper bound is checked
+    // here instead. Without it a six-choice question would reach Firestore with
+    // a label outside A-E that smartShuffleChoices cannot place.
+    if (!q?.stem || !Array.isArray(q.choices) || q.choices.length < 2 || q.choices.length > 5) {
       return { ok: false, reason: 'a question is missing its stem or choices' };
     }
     if (!q.choices.some((c: any) => c.label === q.correctAnswer)
@@ -287,6 +307,12 @@ export function validateQuestions(raw: any): { ok: true; questions: any[] } | { 
 export function classifyFailure(err: any): McqFailureReason {
   const raw = String(err?.message || err || '');
   if (raw.includes('API key not valid') || raw.includes('API_KEY_INVALID')) return 'not_configured';
+  // Gemini rejected the request itself - model name, generation config or
+  // response schema. This used to fall through to 'error', which raises no
+  // alert, so a schema the API would not accept failed every generation
+  // silently for as long as it was deployed. It is an operations alert
+  // precisely because no PDF and no student can cause it: it is always a bug.
+  if (raw.includes('INVALID_ARGUMENT') || /invalid argument/i.test(raw)) return 'bad_request';
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429') || /quota/i.test(raw)) {
     // Free-tier exhaustion and a dead paid key both surface as 429s but need
     // completely different responses - wait for the daily reset, versus fix the
