@@ -17,8 +17,12 @@ android {
         applicationId "com.mohadaraty.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0"
+        // Play requires versionCode to be strictly greater than anything already
+        // uploaded; 1.0 (2) is live, so this is 3. versionName is the string users
+        // see and is not required to be unique - it is bumped anyway so two
+        // different builds are never both called "1.0".
+        versionCode 3
+        versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
