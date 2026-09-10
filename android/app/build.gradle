@@ -19,10 +19,17 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than anything already
         // uploaded; 1.0 (2) is live, so this is 3. versionName is the string users
-        // see and is not required to be unique - it is bumped anyway so two
-        // different builds are never both called "1.0".
+        // see and carries no uniqueness requirement, so 1.0 is deliberately held
+        // across this upload: it ships fixes to the 1.0 release rather than
+        // announcing a new one.
+        //
+        // The cost of that, so it is a choice and not a surprise: two different
+        // builds are now both called "1.0" in the wild, and a student reporting
+        // "I'm on 1.0" no longer identifies which. versionCode is the field that
+        // tells them apart - Settings shows neither, so ask for the Play "app
+        // version" or check the install date when triaging.
         versionCode 3
-        versionName "1.1"
+        versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
