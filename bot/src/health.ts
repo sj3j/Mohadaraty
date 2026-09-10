@@ -52,11 +52,26 @@ export function startHealthServer(): void {
     res.end(JSON.stringify(verbose ? { ...health, ...snapshot() } : health));
   });
 
-  // Bound to loopback only. The container publishes no ports, and this endpoint
-  // reports internal state that has no business being reachable off-host.
-  server.listen(env.healthPort, '127.0.0.1', () => {
-    log.info('health.listening', { port: env.healthPort });
+  // Bound to loopback only. This endpoint reports internal state - channel
+  // titles, error strings - that has no business being reachable off-host,
+  // which matters on a shared panel where the allocation IS public.
+  //
+  // A bind failure is logged and swallowed. The health endpoint is a
+  // convenience; the mirror itself does not need it, and taking the bot down
+  // because a port was busy would be a self-inflicted outage.
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    log.warn('health.listen_failed', { port: env.healthPort, code: error.code });
+    server = null;
   });
+
+  try {
+    server.listen(env.healthPort, '127.0.0.1', () => {
+      log.info('health.listening', { port: env.healthPort });
+    });
+  } catch (error) {
+    log.warn('health.listen_threw', { err: String(error) });
+    server = null;
+  }
 }
 
 export function startWatchdog(): void {

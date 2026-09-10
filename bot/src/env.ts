@@ -51,7 +51,10 @@ export const env = {
   },
 
   logLevel: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',
-  healthPort: Number(process.env.HEALTH_PORT ?? 8081),
+  // SERVER_PORT is what Pterodactyl-style panels (Wispbyte) inject for the
+  // container's allocation. Preferring it means the health server cannot
+  // collide with something the panel already bound.
+  healthPort: Number(process.env.HEALTH_PORT ?? process.env.SERVER_PORT ?? 8081),
   /** Identifies this container in the lease and the status document. */
   instanceId: process.env.INSTANCE_ID || `bot-${process.pid}-${Date.now().toString(36)}`,
   version: process.env.GIT_SHA || 'dev',

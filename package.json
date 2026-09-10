@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "node scripts/copyPdfjsAssets.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:native": "node scripts/copyPdfjsAssets.mjs && vite build --mode native && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "bot:bundle": "node scripts/bundleBot.mjs",
     "icons": "node scripts/generate-app-icons.mjs",
     "check:payment-surface": "node scripts/assert-no-payment-surface.mjs android/app/src/main/assets/public",
     "check:indexes": "node scripts/checkIndexDrift.mjs --verbose",

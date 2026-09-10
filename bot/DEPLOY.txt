@@ -1,0 +1,124 @@
+MyLecture Telegram mirror — Wispbyte deployment
+===============================================
+
+WHAT IS IN HERE
+  index.js       the whole bot, pre-bundled (no build step needed on the host)
+  package.json   the two runtime dependencies
+
+The bundle already contains the announcement schema, the entity codec and the
+link sanitiser that live in the main repo, so this folder is self-contained.
+
+
+HOW TO DEPLOY
+-------------
+1. Upload index.js and package.json to the server root (/home/container).
+   Unzip them at the TOP level, not inside a subfolder — the startup command
+   looks for index.js in the root.
+
+2. Startup command (Wispbyte → Startup):
+
+       node index.js
+
+   If the panel offers "Main File" / "JS File" instead, set it to:  index.js
+
+3. Make sure the panel runs `npm install`. Most Node eggs do this on
+   (Re)install. If yours does not, open the Console tab and run:
+
+       npm install
+
+4. Start the server.
+
+
+ENVIRONMENT VARIABLES  (you said these are already set — check them anyway)
+--------------------------------------------------------------------------
+REQUIRED. The bot exits immediately with a named error if any is missing.
+
+  TELEGRAM_BOT_TOKEN        from @BotFather
+  FIREBASE_PROJECT_ID       mylectures-app
+  FIREBASE_CLIENT_EMAIL     the service account address
+  FIREBASE_PRIVATE_KEY      the full PEM, ONE line, newlines as literal \n
+  FIREBASE_STORAGE_BUCKET   mylectures-app.firebasestorage.app
+
+  ^ Do not leave the bucket blank and do not guess
+    "mylectures-app.appspot.com" — that name does not exist for this project.
+
+OPTIONAL
+  LOG_LEVEL                 debug | info (default) | warn | error
+  MIRROR_MAX_AGE_MS         default 86400000 (24h). Announcements older than
+                            this are never mirrored outbound — the guard that
+                            stops a first boot re-posting the back catalogue.
+  GIT_SHA                   shown in the app's admin screen so you can tell
+                            what is actually running
+
+
+ABOUT FIREBASE_PRIVATE_KEY
+--------------------------
+This is the one that usually goes wrong. It must be a single line, with the
+newlines written as the two characters \ and n, like this:
+
+  -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n
+
+Do NOT paste a multi-line PEM into the panel field, and do NOT wrap it in
+quotes — most panels store the quotes as part of the value. The bot converts
+the literal \n back into real newlines itself.
+
+
+WHAT YOU SHOULD SEE IN THE CONSOLE
+----------------------------------
+  {"level":"info","event":"boot",...}
+  {"level":"info","event":"tg.identity","botUserId":...}
+  {"level":"info","event":"state.cold_start","backlogSkipped":N,...}
+  {"level":"info","event":"tg.channel_ok","stageId":"stage_3",...}
+  {"level":"info","event":"watcher.attached","stageId":"stage_3",...}
+
+The app's admin screen (Settings → Administration → مزامنة تيليجرام) will flip
+to "Bot is online" within about 30 seconds.
+
+
+BEFORE IT CAN WORK
+------------------
+* Map the channels in the app first: Settings → Administration →
+  مزامنة تيليجرام. The bot reads that map from Firestore and picks changes up
+  live, so you never redeploy for a channel change.
+
+* The bot must be an ADMINISTRATOR of every channel, with post, edit and
+  delete rights. A bot that is not an admin receives no channel posts at all,
+  silently — the admin screen will show that channel as "parked" and name the
+  missing right.
+
+* DELETE THE OLD CLOUD FUNCTION, or this bot will get 409 Conflict forever.
+  Telegram delivers updates to exactly one consumer per token. It was deployed
+  in TWO regions and a normal deploy removes neither:
+
+      firebase functions:delete telegramWebhookV3 --region me-west1
+      firebase functions:delete telegramWebhookV3 --region us-central1
+
+  The bot clears a registered *webhook* by itself at boot, but it cannot delete
+  the function.
+
+* RUN ONLY ONE COPY. A Firestore lease enforces this: a second instance exits
+  non-zero rather than double-posting every message. If the console shows
+  "lease.held_by_other", another copy is already running somewhere.
+
+
+TROUBLESHOOTING
+---------------
+"[env] X is required and is not set"
+    A variable is missing or blank in the panel. The message names it.
+
+409 Conflict
+    Something else holds the update stream — the old Cloud Function, a second
+    container, or `npm run dev` on someone's machine.
+
+"health.listen_failed"
+    Harmless. The health endpoint could not bind; the mirror runs regardless.
+
+Posts appear in the app but not in Telegram
+    Either the per-post toggle in the composer, or "Out" is off for that stage.
+
+Nothing arrives from Telegram
+    The bot is not an admin of that channel. Check the admin screen.
+
+A post is deleted in Telegram but is still in the app
+    Expected, and not fixable. Telegram's Bot API delivers no deletion events,
+    so deletes only travel app → Telegram.
