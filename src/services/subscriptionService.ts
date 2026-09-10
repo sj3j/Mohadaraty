@@ -26,19 +26,6 @@ export function onUserSubscriptions(
   });
 }
 
-/** Get the currently active subscription for a user (if any) */
-export async function getActiveSubscription(userId: string): Promise<Subscription | null> {
-  const q = query(
-    collection(db, SUBSCRIPTIONS_COL),
-    where('userId', '==', userId),
-    where('status', '==', 'active')
-  );
-  const snap = await getDocs(q);
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return { id: doc.id, ...doc.data() } as Subscription;
-}
-
 /** Create a pending subscription (SuperKey manual flow) */
 export async function createPendingSubscription(
   userId: string,

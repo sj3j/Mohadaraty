@@ -232,7 +232,6 @@ export interface UserProfile {
     // the streak system to every legacy doc that has no map.
     manageStreakSystem?: boolean;
     manageMcqSystem?: boolean;
-    manageAntiCheat?: boolean;
     // Master-admin-only surfaces. Present so Capability is indexable against
     // this map; they are stripped on save and hard-denied on read, so a stored
     // `true` grants nothing.

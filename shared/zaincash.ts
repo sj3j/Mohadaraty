@@ -24,9 +24,6 @@ export type ZainCashStatus =
   | "EXPIRED"
   | "REFUNDED";
 
-/** Terminal states — safe to stop polling once one is reached. */
-export const TERMINAL_STATUSES: ZainCashStatus[] = ["SUCCESS", "FAILED", "EXPIRED", "REFUNDED"];
-
 export interface ZainCashConfig {
   baseUrl: string;
   clientId: string;
@@ -316,12 +313,6 @@ export function resolveAppOrigin(): string {
 export const successUrlFor = (origin = resolveAppOrigin()) => `${origin}/api/zaincash/success`;
 /** Where the gateway sends the customer back on failure or cancel. */
 export const failureUrlFor = (origin = resolveAppOrigin()) => `${origin}/api/zaincash/failure`;
-/**
- * The URL ZainCash's business team registers. Must differ from the two above,
- * which the spec requires and which this naturally satisfies.
- */
-export const webhookUrlFor = (origin = resolveAppOrigin()) => `${origin}/api/zaincash/webhook`;
-
 // ─── Tenant tagging ─────────────────────────────────────────────────────────
 
 /**
@@ -537,18 +528,6 @@ export async function inquireTransaction(
     `/api/v2/payment-gateway/transaction/inquiry/${encodeURIComponent(transactionId)}`,
     { method: "GET" },
   )) as ZainCashInquiryResult;
-}
-
-/** POST /api/v2/payment-gateway/transaction/reverse — scope: reverse:write */
-export async function reverseTransaction(
-  cfg: ZainCashConfig,
-  transactionId: string,
-  reason: string,
-): Promise<any> {
-  return authedFetch(cfg, "/api/v2/payment-gateway/transaction/reverse", {
-    method: "POST",
-    body: JSON.stringify({ transactionId, reason }),
-  });
 }
 
 // ─── Callback verification ──────────────────────────────────────────────────

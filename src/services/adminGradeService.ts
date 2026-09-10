@@ -1,6 +1,5 @@
 import { db, auth } from '../lib/firebase';
 import { doc, writeBatch, collection, serverTimestamp, getDocs, query, where, getDoc } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import { GradeBatch, MatchedResult } from '../types/grades.types';
 
 export async function confirmDegreeBatchClient(

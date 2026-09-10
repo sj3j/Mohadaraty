@@ -1,6 +1,0 @@
-{
-  "name": "محاضراتي",
-  "description": "A centralized platform for students to access pharmacology, pharmacognosy, and chemistry lectures with admin upload capabilities.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

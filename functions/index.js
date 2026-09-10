@@ -683,54 +683,6 @@ exports.confirmDegreeBatch = onCall(async (request) => {
     throw new HttpsError('unknown', 'An internal error occurred: ' + (error.message || error.toString()));
   }
 });
-
-exports.migrateOriginalNames = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'User must be logged in.');
-  }
-
-  const userRoleDoc = await db.collection('users').doc(request.auth.uid).get();
-  const role = userRoleDoc.exists ? userRoleDoc.data().role : null;
-  const email = request.auth.token.email;
-  const isMasterAdmin = isMasterAdminEmail(email);
-
-  if (!isMasterAdmin && role !== 'admin') {
-    throw new HttpsError('permission-denied', 'Only admins can run migration.');
-  }
-
-  try {
-    const usersSnap = await db.collection('users').get();
-    let migratedCount = 0;
-    let batch = db.batch();
-    const batchSizeLimit = 400; // safe arbitrary margin below 500
-
-    for (const docSnap of usersSnap.docs) {
-      const data = docSnap.data();
-      if (!data.originalName) {
-        // Migration: set originalName to the current name (their real registered name initially or their current name)
-        batch.update(docSnap.ref, {
-          originalName: data.name || 'Unknown'
-        });
-        migratedCount++;
-
-        if (migratedCount % batchSizeLimit === 0) {
-          await batch.commit();
-          batch = db.batch();
-        }
-      }
-    }
-
-    if (migratedCount % batchSizeLimit !== 0) {
-      await batch.commit();
-    }
-
-    return { success: true, migratedCount };
-  } catch (err) {
-    console.error('Error during original name migration', err);
-    throw new HttpsError('internal', 'Migration failed: ' + err.message);
-  }
-});
-
 // onDocumentWritten is imported at the top of the file alongside
 // onDocumentCreated. It used to be re-required here, which stopped working the
 // moment a second trigger needed it: tallyPollVotes registers at module load,

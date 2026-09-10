@@ -41,15 +41,6 @@ function migrateRecord(rec: PdfAnnotation): PdfAnnotation {
   return { ...rec, schema: SCHEMA_VERSION };
 }
 
-/** Cheap, synchronous, and safe to call during render. 0 when unknown. */
-export function annotationCount(lectureId: string): number {
-  try {
-    return parseInt(localStorage.getItem(COUNT_KEY(lectureId)) || '0', 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
 function writeCountIndex(lectureId: string, n: number): void {
   try {
     if (n > 0) localStorage.setItem(COUNT_KEY(lectureId), String(n));

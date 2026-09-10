@@ -1,10 +1,3 @@
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
 export async function forceDownload(url: string, filename: string) {
   try {
     const response = await fetch(url);

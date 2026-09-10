@@ -37,7 +37,7 @@ const PERMISSION_LABELS = [
   { id: 'manageHomeworks', labelEn: 'Manage Homeworks', labelAr: 'إدارة الواجبات' },
   { id: 'manageStudents', labelEn: 'Manage Students', labelAr: 'إدارة الطلاب' },
   { id: 'manageGrades', labelEn: 'Manage Grades', labelAr: 'إدارة السعي والدرجات' },
-  // Offered to support only. A representative is hard-denied the three system
+  // Offered to support only. A representative is hard-denied the system
   // capabilities in permissions.ts whatever is stored, and already holds
   // manageGroups/manageAdmins by default, so showing them here would be a
   // checkbox that changes nothing.
@@ -45,7 +45,6 @@ const PERMISSION_LABELS = [
   { id: 'manageAdmins', labelEn: 'Manage Assistants', labelAr: 'إدارة المساعدين' },
   { id: 'manageStreakSystem', labelEn: 'Streak System', labelAr: 'إدارة الستريك' },
   { id: 'manageMcqSystem', labelEn: 'MCQ System', labelAr: 'إدارة بنك الأسئلة' },
-  { id: 'manageAntiCheat', labelEn: 'Anti-cheat', labelAr: 'مكافحة الغش' },
 ];
 
 const ROLE_LABELS: Record<AssistantRole, { ar: string; en: string }> = {
@@ -125,7 +124,6 @@ const defaultPermissionsFor = (role: AssistantRole): Record<string, boolean> =>
       manageAdmins: false,
       manageStreakSystem: false,
       manageMcqSystem: false,
-      manageAntiCheat: false,
     }
     : { ...ALL_CONTENT_TRUE };
 

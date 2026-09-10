@@ -1,3 +1,0 @@
-src/App.tsx:425:    if (!user || (!user.group && user.role === 'student')) return;
-src/App.tsx:454:    if (!user || (!user.group && user.role === 'student')) {
-src/App.tsx:524:  if (!user.group && user.role === 'student') {

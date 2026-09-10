@@ -79,7 +79,7 @@ Checked against the repo on 2026-08-29:
 - Capacitor 7; `android:aab` gated by `scripts/assert-no-payment-surface.mjs`
 - `npm run lint` is `tsc --noEmit`; no ESLint, no Prettier
 - Subject enum `pharmacology | pharmacognosy | organic_chemistry | biochemistry | cosmetics`
-  (`firestore.rules`, `firebase-blueprint.json`)
+  (`firestore.rules`)
 - **No 3D code**: zero matches for `three` / `babylon` / `webgl` / `gltf` as identifiers or
   dependencies
 - **Python is one file**: `scripts/sync_telegram.py`

@@ -45,7 +45,6 @@ export const ADMIN_ONLY_CAPABILITIES = ['manageStudents', 'manageGrades'] as con
 export const SYSTEM_CAPABILITIES = [
   'manageStreakSystem',
   'manageMcqSystem',
-  'manageAntiCheat',
 ] as const;
 
 /**
@@ -187,10 +186,6 @@ export function appointableRoles(
   return [];
 }
 
-export const canAppointRole = (
-  user: UserProfile | null | undefined,
-  role: 'admin' | 'moderator' | 'support',
-): boolean => appointableRoles(user).includes(role);
 
 /** System-wide surfaces. Master admin always; support when ticked. */
 export const canManageStreakSystem = (user?: UserProfile | null): boolean =>
@@ -199,8 +194,6 @@ export const canManageStreakSystem = (user?: UserProfile | null): boolean =>
 export const canManageMcqSystem = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageMcqSystem');
 
-export const canManageAntiCheat = (user?: UserProfile | null): boolean =>
-  canManage(user, 'manageAntiCheat');
 
 /** Master-admin-exclusive. Deliberately left as aliases rather than routed
  *  through canManage, so there is no stored key that could ever turn them on. */

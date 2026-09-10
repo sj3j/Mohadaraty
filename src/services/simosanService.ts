@@ -141,23 +141,6 @@ export function watchLecture(
   );
 }
 
-export async function listThreads(lectureId: string): Promise<SimosanThread[]> {
-  const uid = auth.currentUser?.uid;
-  if (!uid) return [];
-  try {
-    const snap = await getDocs(query(threadsRef(uid, lectureId), orderBy('updatedAt', 'desc'), limit(25)));
-    return snap.docs.map((d) => ({
-      id: d.id,
-      questionCount: d.data().questionCount || 0,
-      isReadOnly: !!d.data().isReadOnly,
-      updatedAt: d.data().updatedAt,
-    }));
-  } catch (e) {
-    console.warn('[simosan] listThreads failed', e);
-    return [];
-  }
-}
-
 /* ------------------------------------------------------------------ *
  * Ask
  * ------------------------------------------------------------------ */

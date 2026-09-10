@@ -169,27 +169,3 @@ export async function saveUserBankAnswer(userId: string, questionId: string, sel
     }
   } catch(e) {}
 }
-
-export async function bulkImportFromExcel(questions: any[]) {
-    // simplified for now, assuming array of pre-mapped questions
-    const batch = writeBatch(db);
-    const user = auth.currentUser;
-    if (!user) throw new Error("Not logged in");
-
-    for (const q of questions) {
-        const docRef = doc(collection(db, 'questionBank'));
-        batch.set(docRef, {
-            ...q,
-            addedBy: user.uid,
-            addedAt: serverTimestamp(),
-            lastEditedBy: null,
-            lastEditedAt: null,
-            viewCount: 0,
-            attemptCount: 0,
-            correctCount: 0,
-            accuracyRate: 0
-        });
-    }
-
-    await batch.commit();
-}

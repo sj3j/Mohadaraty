@@ -7,13 +7,14 @@ coverage/
 .env*
 !.env.example
 
-# graphify knowledge graph (regenerable; GRAPH_REPORT.md copied to docs/ instead)
+# graphify knowledge graph (regenerable via `graphify update .`)
 graphify-out/
 
 # Source dumps / grep snapshots pasted into AI tools. These go stale immediately
 # and pollute grep with duplicate hits of the real source.
 map*.txt
 *keys*.txt
+check.txt
 
 # Agent skills installed via `npx skills add` (re-installable; the install
 # commands are recorded in .claude/skills/ATTRIBUTION.md)
@@ -30,7 +31,6 @@ android/.gradle/
 build-output/
 
 .vercel
-.env*
 
 # Personal Claude Code settings: .claude/settings.json here pins an absolute
 # path to graphify.EXE on one machine, so committing it fires a broken hook for

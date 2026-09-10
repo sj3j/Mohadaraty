@@ -68,3 +68,36 @@ Finally, high-volume real-time chat inevitably degrades client render speeds. A 
 - **Trigger**: `onSchedule('every 24 hours')` 
 - **Logic**: Moves documents older than 30 days securely into a `/chat_archive` path.
 - **Optimization Strategy**: Batched sets (400 limit to respect Firestore transaction ceilings).
+
+---
+
+## 5. Data Models (Firestore)
+
+Merged here from the former `chat_architecture_and_roles.md`, which was deleted: its
+remaining sections were a list of backend design questions that this document is the
+answer to, and its role table predated both the `moderator` split and the cross-stage
+`support` role. `src/lib/permissions.ts` is the source of truth for who may do what.
+
+### `chat_messages` (Collection)
+* `id`: Document ID
+* `text`: String content of the message
+* `senderId` / `senderName`: Information about the sender. **`senderEmail` is NOT here for
+  an anonymous message** - it is split into the restricted `private/sender` subcollection
+  described in §3, which is what makes anonymity a property rather than a label.
+* `isAnonymous`: Boolean indicating if the message is anonymous
+* `reactions`: Object containing arrays of user emails who reacted (e.g. `like: []`, `heart: []`)
+* `createdAt`: Timestamp
+* `fileUrl` / `fileName` / `fileType`: Optional attachment metadata
+* `embeddedItem`: Optional metadata for linked lectures/announcements
+* `replyTo`: Optional reference to a parent message
+
+### `chat_settings/config` (Document)
+* `isChatOpen`: Boolean flag for global chat open/close state
+* `allowAttachments`: Boolean flag controlling Student file uploads
+* `pinnedMessage`: Object holding a globally pinned message
+
+### Send latency
+Students used to carry a client-side cooldown timer that admins bypassed, which read as the
+chat being slow for students specifically. The cooldown is gone and the optimistic update
+(`setMessages` before the network call) now applies to both, so sending is visually
+instantaneous for everyone. Rate limiting lives on the server route instead (§2).
