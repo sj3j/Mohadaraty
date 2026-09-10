@@ -18,6 +18,7 @@ import { useBackDismiss } from '../../hooks/useBackDismiss';
 import {
   canManageAssistants, canManageStudents, canManageGrades,
   canManageStreakSystem, canViewAdminLogs, canManageSimosanBilling,
+  canManageTelegramMirror,
   canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
 
@@ -39,7 +40,7 @@ export interface SettingsScreenProps {
   onOpen: (what:
     | 'adminManage' | 'studentManage' | 'streakManage' | 'adminGrades'
     | 'studentGrades' | 'adminLogs' | 'subManage' | 'calendar' | 'subscription'
-    | 'simosanAdmin') => void;
+    | 'simosanAdmin' | 'telegramMirror') => void;
   onLogout: () => void;
 }
 
@@ -371,6 +372,14 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     isRtl={isRtl} icon={SETTINGS_ICONS.simosan}
                     label={isRtl ? 'استخدام سيموسان' : 'Simosan usage'}
                     onClick={() => onOpen('simosanAdmin')}
+                  />
+                )}
+                {canManageTelegramMirror(user) && (
+                  <SettingsRow
+                    isRtl={isRtl} icon={SETTINGS_ICONS.telegram}
+                    label={isRtl ? 'مزامنة تيليجرام' : 'Telegram mirror'}
+                    sublabel={isRtl ? 'قناة لكل مرحلة، بالاتجاهين' : 'One channel per stage, both directions'}
+                    onClick={() => onOpen('telegramMirror')}
                   />
                 )}
               </SettingsGroup>

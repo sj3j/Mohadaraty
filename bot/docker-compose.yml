@@ -1,0 +1,51 @@
+# Run from the repo root so the build context includes src/ and shared/:
+#   docker compose -f bot/docker-compose.yml up -d --build
+
+services:
+  telegram-mirror:
+    build:
+      context: ..
+      dockerfile: bot/Dockerfile
+    container_name: mylecture-telegram-mirror
+
+    # A separate env file, NOT the repo's .env. That one holds ~6KB of
+    # unrelated production secrets (Gemini keys, ZainCash, R2); the container
+    # gets only what it needs, so a compromise has a smaller blast radius.
+    env_file:
+      - .env
+
+    # `unless-stopped`, not `always`: `always` resurrects a bot you deliberately
+    # stopped whenever the Docker daemon restarts.
+    restart: unless-stopped
+
+    # A Compose healthcheck only LABELS the container unhealthy - it restarts
+    # nothing. The in-process watchdog in src/health.ts is what actually exits
+    # non-zero so this restart policy fires; this check is for humans and for
+    # any orchestrator that does act on it.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8081/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    # Long enough for the queues to drain and the offset to be flushed.
+    stop_grace_period: 30s
+
+    # The bot logs one JSON line per update; the default driver grows unbounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # No published ports: the health endpoint binds to loopback inside the
+    # container and has no business being reachable off-host.
+    # No volumes: every piece of state (offset, lease, mappings) is in Firestore,
+    # which is deliberate - a lost volume must not silently reset the offset.
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true

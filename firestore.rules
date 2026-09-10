@@ -338,6 +338,26 @@ service cloud.firestore {
       allow write: if docId == 'academicCalendar' ? isMasterAdmin() : isAdmin();
     }
 
+    // Back-office configuration that is NOT safe to show every student.
+    //
+    // Separate from app_settings for one concrete reason: that block reads
+    // `allow read: if isAuthenticated()`, and admin_config/telegram enumerates
+    // the private Telegram channel ids of all five stages. A private channel's
+    // id is the one piece of data that makes it findable, so 400+ student
+    // accounts must not be able to list it.
+    //
+    //   telegram        - the channel map, edited by the master admin in-app.
+    //   telegram_status - written by the mirror bot (Admin SDK, bypasses these
+    //                     rules) and read by the admin UI to show health. No
+    //                     client may write it, or "the bot is healthy" would be
+    //                     forgeable.
+    //   telegram_state  - the bot's getUpdates offset and its single-instance
+    //                     lease. No client business at all, in either direction.
+    match /admin_config/{docId} {
+      allow read: if isMasterAdmin() && docId in ['telegram', 'telegram_status'];
+      allow write: if isMasterAdmin() && docId == 'telegram';
+    }
+
     // User-generated content reporting (Apple 1.2 / Play UGC policy).
     //
     // Anyone signed in may file a report, and only about themselves as

@@ -56,3 +56,17 @@ public/pdfjs/
 scripts/qaAccount.mjs
 scripts/qaPassword.mjs
 .firebase/
+
+# Telegram mirror bot.
+# The `!.env.example` negation near the top of this file is undone by the
+# second `.env*` rule below it, and a negation without a path prefix would not
+# reach a subdirectory anyway - so the example is re-allowed explicitly here.
+bot/.env
+!bot/.env.example
+bot/bot.cjs
+bot/node_modules
+
+# Service-account credentials. THIS REPO IS PUBLIC.
+*serviceAccount*.json
+*service-account*.json
+firebase-adminsdk*.json

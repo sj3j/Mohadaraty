@@ -1,0 +1,46 @@
+# Docker does NOT read .gitignore. Without this file a build context rooted at
+# the repo would bake every production secret into an image layer: .env and its
+# timestamped backups, service-account JSON (for which .gitignore has no
+# pattern at all), the Android keystore, and full git history.
+#
+# The Dockerfile's runtime stage copies only the bundled entrypoint, so this is
+# the second line of defence rather than the only one - but a leaked builder
+# layer is recoverable from a pushed image, so both matter.
+
+.git
+.github
+.claude
+.agents
+
+node_modules
+**/node_modules
+dist
+build-output
+bot/bot.cjs
+
+android
+.firebase
+.vercel
+graphify-out
+public/pdfjs
+
+# Secrets
+.env
+.env.*
+!.env.example
+*serviceAccount*.json
+*service-account*.json
+firebase-adminsdk*.json
+*.jks
+*.keystore
+keystore.properties
+*keys*.txt
+map*.txt
+
+# Rosters and student data
+*.csv
+*.xlsx
+*.log
+
+scripts/qaAccount.mjs
+scripts/qaPassword.mjs

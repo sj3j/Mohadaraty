@@ -54,9 +54,13 @@ interface Props {
   /** Non-null when an existing post is being edited. */
   editing: Announcement | null;
   onCancelEdit: () => void;
+  /** True when the mirror bot is live for this stage. Drives whether the
+   *  Telegram toggle is offered at all - a switch that provably does nothing is
+   *  worse than no switch. */
+  telegramEnabled?: boolean;
 }
 
-export default function Composer({ user, stageId, lang, lectures, editing, onCancelEdit }: Props) {
+export default function Composer({ user, stageId, lang, lectures, editing, onCancelEdit, telegramEnabled }: Props) {
   const isRtl = lang === 'ar';
 
   const [blocks, setBlocks] = useState<RichBlock[]>([]);
@@ -66,6 +70,11 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
   const [linkUrl, setLinkUrl] = useState('');
   const [linkTitle, setLinkTitle] = useState('');
   const [selectedLectures, setSelectedLectures] = useState<string[]>([]);
+  // Intent, not capability: the composer says whether this post SHOULD reach
+  // the channel, and the bot decides whether one is configured. Defaults on,
+  // matching the "automatic with a per-post opt-out" behaviour that was chosen
+  // over opt-in - staff forget to tick, and a stale channel is the failure.
+  const [mirrorToTelegram, setMirrorToTelegram] = useState(true);
 
   const [expanded, setExpanded] = useState(false);
   const [showExtras, setShowExtras] = useState(false);
@@ -88,6 +97,7 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
     setLinkUrl('');
     setLinkTitle('');
     setSelectedLectures([]);
+    setMirrorToTelegram(true);
     setExpanded(false);
     setShowExtras(false);
     setError(null);
@@ -155,6 +165,7 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
     setLinkUrl(editing.linkUrl ?? '');
     setLinkTitle(editing.linkTitle ?? '');
     setSelectedLectures(editing.embeddedLectures ?? []);
+    setMirrorToTelegram((editing as any).telegramMirror?.enabled !== false);
     setExpanded(true);
     setEditorKey(k => k + 1);
   }, [editing]);
@@ -263,6 +274,13 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
         linkTitle: linkTitle.trim() || null,
         stageId,
       };
+
+      // Only ever the `enabled` flag from here. Every other field under
+      // telegramMirror (chatId, messageIds, appliedHash) is bot-owned
+      // bookkeeping, and a client write would desynchronise the mirror - so an
+      // edit merges the flag in rather than replacing the map.
+      if (editing) payload['telegramMirror.enabled'] = mirrorToTelegram;
+      else payload.telegramMirror = { enabled: mirrorToTelegram };
 
       if (poll) {
         const options = poll.options.filter(o => o.text.trim());
@@ -497,6 +515,29 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
           >
             {selectedLectures.length ? <BookOpen className="w-5 h-5" strokeWidth={2.5} /> : <LinkIcon className="w-5 h-5" strokeWidth={2.5} />}
           </button>
+
+          {/* Offered only where the mirror is actually live for this stage.
+              Lit means "this post also goes to the channel", which is the
+              default - tapping it keeps the post inside the app. */}
+          {telegramEnabled && (
+            <button
+              type="button"
+              onClick={() => setMirrorToTelegram(v => !v)}
+              disabled={busy}
+              aria-label={isRtl ? 'نشر في قناة تيليجرام' : 'Post to the Telegram channel'}
+              aria-pressed={mirrorToTelegram}
+              title={mirrorToTelegram
+                ? (isRtl ? 'سيُنشر في قناة تيليجرام' : 'Will post to the Telegram channel')
+                : (isRtl ? 'داخل التطبيق فقط' : 'App only')}
+              className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors disabled:opacity-40 ${
+                mirrorToTelegram
+                  ? 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-600 dark:text-cyan-400'
+                  : 'text-slate-400 dark:text-slate-600 hover:bg-slate-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              <Send className={`w-[18px] h-[18px] ${isRtl ? 'rotate-180' : ''}`} strokeWidth={2.5} />
+            </button>
+          )}
 
           {!expanded && (
             <button

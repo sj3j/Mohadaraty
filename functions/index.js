@@ -2,7 +2,6 @@ const { setGlobalOptions } = require('firebase-functions/v2');
 const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onRequest } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
-const axios = require('axios');
 
 setGlobalOptions({ region: 'me-west1' });
 
@@ -329,90 +328,31 @@ exports.tallyPollVotes = onDocumentWritten({
   }
 });
 
-exports.telegramWebhookV3 = onRequest(async (req, res) => {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const channelId = process.env.TELEGRAM_CHANNEL_ID;
-
-  const update = req.body;
-  
-  // Telegram sends channel posts as 'channel_post'
-  if (!update || !update.channel_post) {
-    return res.status(200).send('Not a channel post');
-  }
-
-  const post = update.channel_post;
-  
-  // Filter by channel ID or username
-  if (channelId) {
-    const chat = post.chat;
-    const isMatch = String(chat.id) === String(channelId) || 
-                    (chat.username && chat.username === channelId.replace('@', ''));
-    
-    if (!isMatch) {
-      console.log('Message from unauthorized channel:', chat.id, chat.username);
-      return res.status(200).send('Unauthorized channel');
-    }
-  }
-
-  let announcement = {
-    date: admin.firestore.FieldValue.serverTimestamp(),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(), // For backward compatibility
-    type: 'text',
-    text: '',
-    content: '', // For backward compatibility
-    createdBy: 'telegram_bot',
-    authorName: 'Telegram Channel',
-  };
-
-  try {
-    if (post.text) {
-      announcement.type = 'text';
-      announcement.text = post.text;
-      announcement.content = post.text;
-    } else if (post.photo || post.video) {
-      const isVideo = !!post.video;
-      announcement.type = isVideo ? 'video' : 'image';
-      announcement.text = post.caption || '';
-      announcement.content = post.caption || '';
-      
-      const fileId = isVideo ? post.video.file_id : post.photo[post.photo.length - 1].file_id;
-      
-      const fileResponse = await axios.get(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
-      const filePath = fileResponse.data.result.file_path;
-      const telegramFileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-      
-      // CRITICAL SECURITY FIX: Never expose the bot token to the frontend.
-      // Download the file and upload it to Firebase Storage.
-      const fileData = await axios.get(telegramFileUrl, { responseType: 'arraybuffer' });
-      const buffer = Buffer.from(fileData.data, 'binary');
-      
-      const bucket = admin.storage().bucket();
-      const fileName = `announcements/${Date.now()}_${filePath.split('/').pop()}`;
-      const file = bucket.file(fileName);
-      
-      await file.save(buffer, {
-        metadata: { contentType: fileData.headers['content-type'] }
-      });
-      
-      // Construct public URL
-      const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(fileName)}?alt=media`;
-      
-      if (isVideo) {
-        announcement.videoUrl = publicUrl;
-      } else {
-        announcement.imageUrl = publicUrl;
-      }
-    } else {
-      return res.status(200).send('Unsupported message type');
-    }
-
-    await db.collection('announcements').add(announcement);
-    return res.status(200).send('OK');
-  } catch (error) {
-    console.error('Error processing Telegram update:', error.response?.data || error.message);
-    return res.status(200).send('Error but acknowledged'); // Acknowledge to Telegram to stop retries
-  }
-});
+// REMOVED: telegramWebhookV3.
+//
+// Telegram posts are now mirrored by the standalone bot in bot/, which
+// long-polls getUpdates instead of receiving a webhook. Three things made the
+// webhook untenable rather than merely redundant:
+//
+//   1. It took a SINGLE TELEGRAM_CHANNEL_ID. The mirror maps five channels to
+//      five stages, which that shape cannot express.
+//   2. It never set `stageId`, so every announcement it wrote was invisible to
+//      the stage-filtered feed - while still waking all five stages' phones,
+//      because getTokensWithPreferences fans out to everyone when stageId is
+//      null. A push for a post nobody could open.
+//   3. It wrote the pre-redesign attachment shape (type/imageUrl/videoUrl) and
+//      built Storage URLs with no download token, so its images 403'd for the
+//      unauthenticated <img> in AttachmentGrid.
+//
+// A webhook and getUpdates are mutually exclusive on one bot token, so this
+// had to go for the bot to receive anything at all. The bot clears any
+// registered webhook at boot.
+//
+// IMPORTANT: this function was deployed in TWO regions - me-west1 and an
+// orphaned us-central1 from before setGlobalOptions pinned the region.
+// Deleting it here removes neither. Run BOTH:
+//   firebase functions:delete telegramWebhookV3 --region me-west1
+//   firebase functions:delete telegramWebhookV3 --region us-central1
 
 exports.sendHomeworkNotificationV3 = onDocumentCreated({
   document: 'homeworks/{homeworkId}',

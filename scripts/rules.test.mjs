@@ -147,6 +147,17 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
 
   await setDoc(doc(db, 'adminLogs/log1'), { action: 'X', adminEmail: 'rep@x.com' });
 
+  // Back-office config. Names private channel ids - the reason this lives in
+  // admin_config rather than app_settings, which every signed-in user can read.
+  await setDoc(doc(db, 'admin_config/telegram'), {
+    enabled: true,
+    channels: { stage_3: { chatId: -1002345678901, enabled: true, mirrorIn: true, mirrorOut: true } },
+    defaultMirrorOut: true,
+  });
+  await setDoc(doc(db, 'admin_config/telegram_status'), { pollState: 'polling' });
+  await setDoc(doc(db, 'admin_config/telegram_state'), { offset: 42 });
+  await setDoc(doc(db, 'settings/announcements'), { allowedReactions: ['x'], telegramStages: ['stage_3'] });
+
   await setDoc(doc(db, 'stages/stage_3'), { id: 'stage_3', nameEn: 'Third Stage', order: 3 });
   await setDoc(doc(db, 'stages/stage_4'), { id: 'stage_4', nameEn: 'Fourth Stage', order: 4 });
   await setDoc(doc(db, 'lectures/lec1'), { title: 'L1', stageId: 'stage_3', category: 'biochemistry' });
@@ -377,6 +388,51 @@ await check('a student CANNOT smuggle a tally edit alongside a reaction',
   })));
 await check('a student CAN still react, which the poll rules must not have broken',
   assertSucceeds(updateDoc(doc(student, 'announcements/ann_poll'), { 'reactions.👍': ['stu_uid'] })));
+
+// ---------------------------------------------------------------------------
+// Telegram mirror configuration.
+//
+// The point of this block is that admin_config is master-admin READ, not just
+// master-admin write. The document enumerates the private Telegram channel ids
+// of all five stages, and a private channel's id is the one piece of data that
+// makes it findable - so if the 'CANNOT read' assertions below ever start
+// passing, 400+ student accounts can enumerate the channels.
+// ---------------------------------------------------------------------------
+console.log('\nTelegram channel ids are master-admin only, to read as well as write');
+
+await check('master admin CAN read the channel map',
+  assertSucceeds(getDoc(doc(master, 'admin_config/telegram'))));
+await check('master admin CAN write the channel map',
+  assertSucceeds(setDoc(doc(master, 'admin_config/telegram'), {
+    enabled: true, channels: {}, defaultMirrorOut: true,
+  })));
+
+await check('a student CANNOT read the channel map',
+  assertFails(getDoc(doc(student, 'admin_config/telegram'))));
+await check('a representative CANNOT read the channel map',
+  assertFails(getDoc(doc(rep, 'admin_config/telegram'))));
+await check('a moderator CANNOT read the channel map',
+  assertFails(getDoc(doc(mod, 'admin_config/telegram'))));
+
+await check('a representative CANNOT write the channel map',
+  assertFails(setDoc(doc(rep, 'admin_config/telegram'), { enabled: false, channels: {} })));
+await check('a student CANNOT write the channel map',
+  assertFails(setDoc(doc(student, 'admin_config/telegram'), { enabled: false, channels: {} })));
+
+await check('master admin CAN read the bot status',
+  assertSucceeds(getDoc(doc(master, 'admin_config/telegram_status'))));
+await check('NOBODY may write the bot status, not even the master admin',
+  assertFails(setDoc(doc(master, 'admin_config/telegram_status'), { pollState: 'x' })));
+await check('a student CANNOT read the bot status',
+  assertFails(getDoc(doc(student, 'admin_config/telegram_status'))));
+
+await check('the bot offset and lease are not client-readable at all',
+  assertFails(getDoc(doc(master, 'admin_config/telegram_state'))));
+await check('the bot offset and lease are not client-writable at all',
+  assertFails(setDoc(doc(master, 'admin_config/telegram_state'), { offset: 1 })));
+
+await check('a student CAN still read settings/announcements, which carries the mirror stage list',
+  assertSucceeds(getDoc(doc(student, 'settings/announcements'))));
 
 console.log('\nLeaderboard stats cannot be moved to another stage');
 await check('student CAN write their own stats on their own stage',

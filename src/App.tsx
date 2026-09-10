@@ -25,6 +25,7 @@ import AdminLogsScreen from './components/AdminLogsScreen';
 // Aliased to a null stub for mode === 'native' in vite.config.ts - it renders
 // dollar amounts, which must not enter the artefact the Play scanner reads.
 import SimosanAdminScreen from './components/SimosanAdminScreen';
+import TelegramMirrorModal from './components/TelegramMirrorModal';
 import BottomNav, { Tab } from './components/BottomNav';
 import { canManage } from './lib/permissions';
 import AnnouncementsScreen from './components/AnnouncementsScreen';
@@ -141,6 +142,7 @@ export default function App() {
   const [showAntiCheat, setShowAntiCheat] = useState(false);
   const [showAdminLogs, setShowAdminLogs] = useState(false);
   const [showSimosanAdmin, setShowSimosanAdmin] = useState(false);
+  const [showTelegramMirror, setShowTelegramMirror] = useState(false);
   const [showStudentGrades, setShowStudentGrades] = useState(false);
   const [showSubManage, setShowSubManage] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
@@ -914,6 +916,7 @@ export default function App() {
             else if (what === 'studentGrades') setShowStudentGrades(true);
             else if (what === 'adminLogs') setShowAdminLogs(true);
             else if (what === 'simosanAdmin') setShowSimosanAdmin(true);
+              else if (what === 'telegramMirror') setShowTelegramMirror(true);
             else if (what === 'subManage') setShowSubManage(true);
             else if (what === 'calendar') setShowCalendarSettings(true);
             else if (what === 'subscription') setCurrentTab('subscription');
@@ -937,6 +940,7 @@ export default function App() {
       <AntiCheatDashboard isOpen={showAntiCheat} onClose={() => setShowAntiCheat(false)} lang={lang} />
       <AdminLogsScreen isOpen={showAdminLogs} onClose={() => setShowAdminLogs(false)} lang={lang} />
       <SimosanAdminScreen isOpen={showSimosanAdmin} onClose={() => setShowSimosanAdmin(false)} lang={lang} />
+      <TelegramMirrorModal isOpen={showTelegramMirror} onClose={() => setShowTelegramMirror(false)} lang={lang} user={user} />
       <StudentGradesScreen isOpen={showStudentGrades} onClose={() => setShowStudentGrades(false)} />
       {showSubManage && <SubscriptionManagement user={user!} lang={lang} onClose={() => setShowSubManage(false)} />}
       

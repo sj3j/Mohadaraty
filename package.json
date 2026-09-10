@@ -78,7 +78,6 @@
     "react-router-dom": "^7.14.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0",
-    "telegraf": "^4.16.3",
     "vite": "^6.2.0",
     "xlsx": "^0.18.5"
   },

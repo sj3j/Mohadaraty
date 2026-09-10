@@ -51,6 +51,11 @@ export default function AnnouncementsScreen({
   const canPost = canManage(user, 'manageAnnouncements');
 
   const [allowedReactions, setAllowedReactions] = useState<string[]>(['👍', '❤️', '🙏', '🔥']);
+  /** Which stages the Telegram mirror is live for. Written by the bot into the
+   *  same settings doc, deliberately as bare stage ids: the channel map itself
+   *  is master-admin-read-only, but a moderator still needs to know whether the
+   *  "post to Telegram" toggle on their composer will do anything. */
+  const [telegramStages, setTelegramStages] = useState<string[]>([]);
   const [showReactionsConfig, setShowReactionsConfig] = useState(false);
   const [showReactionPickerForPost, setShowReactionPickerForPost] = useState<string | null>(null);
 
@@ -71,6 +76,7 @@ export default function AnnouncementsScreen({
 
     const unsubscribeReactions = onSnapshot(doc(db, 'settings', 'announcements'), snap => {
       if (snap.exists() && snap.data().allowedReactions) setAllowedReactions(snap.data().allowedReactions);
+      setTelegramStages(snap.exists() && Array.isArray(snap.data().telegramStages) ? snap.data().telegramStages : []);
     }, error => handleFirestoreError(error, OperationType.GET, 'settings/announcements'));
 
     // An unresolved stage used to fall through to an unfiltered query, showing
@@ -470,6 +476,7 @@ export default function AnnouncementsScreen({
         <Composer
           user={user}
           stageId={effectiveStageId}
+          telegramEnabled={telegramStages.includes(effectiveStageId)}
           lang={lang}
           lectures={lectures}
           editing={editing}

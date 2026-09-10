@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { Telegraf } from "telegraf";
 import dotenv from "dotenv";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -129,34 +128,12 @@ app.use((req, res, next) => {
   // we would answer 400 to every retry forever.
   app.use(express.urlencoded({ extended: true }));
 
-  // --- Telegram Bot Setup ---
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (botToken) {
-    const bot = new Telegraf(botToken);
-    
-    // Basic handler for all text messages
-    bot.on("text", (ctx) => {
-      console.log(`Received message from ${ctx.from.username || ctx.from.id}: ${ctx.message.text}`);
-      ctx.reply(`I received your message: "${ctx.message.text}"`);
-    });
-
-    // Launch the bot
-    bot.launch({ dropPendingUpdates: true }).then(() => {
-      console.log("Telegram bot successfully launched!");
-    }).catch((err: any) => {
-      if (err?.response?.error_code === 409) {
-        console.warn("Telegram bot 409 Conflict: Another instance is polling. This is normal during hot-reloads.");
-      } else {
-        console.error("Failed to launch Telegram bot:", err);
-      }
-    });
-
-    // Enable graceful stop
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
-  } else {
-    console.warn("TELEGRAM_BOT_TOKEN is not set. Telegram bot will not be started.");
-  }
+  // REMOVED: the Telegraf echo bot.
+  //
+  // It replied to DMs with their own text and wrote nothing anywhere - but it
+  // called bot.launch(), which LONG-POLLS. Telegram delivers updates to exactly
+  // one consumer per token, so every `npm run dev` silently stole the update
+  // stream from the mirror bot in bot/. Telegram work lives there now.
 
   // --- Middleware ---
   const verifyAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {

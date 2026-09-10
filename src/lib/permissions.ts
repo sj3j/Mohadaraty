@@ -207,3 +207,4 @@ export const canManageAntiCheat = (user?: UserProfile | null): boolean =>
 export const canViewAdminLogs = isMasterAdmin;
 export const canManageCalendar = isMasterAdmin;
 export const canManageSimosanBilling = isMasterAdmin;
+export const canManageTelegramMirror = isMasterAdmin;

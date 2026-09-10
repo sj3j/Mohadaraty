@@ -9,7 +9,7 @@
 import {
   Bell, Palette, Languages, ShieldCheck, User, Flame, Trophy, CreditCard,
   GraduationCap, CalendarDays, Users, FileText, HardDrive, Crown, LogOut,
-  Ban, Info, Shield, BookOpen, Inbox, Layers, Sparkles, KeyRound, type LucideIcon,
+  Ban, Info, Shield, BookOpen, Inbox, Layers, Sparkles, KeyRound, Send, type LucideIcon,
 } from 'lucide-react';
 
 export interface SettingsIcon {
@@ -50,4 +50,5 @@ export const SETTINGS_ICONS: Record<string, SettingsIcon> = {
   progression:   { Icon: GraduationCap, className: 'text-violet-500',  tile: 'bg-violet-100 dark:bg-violet-900/30' },
   subjects:      { Icon: BookOpen,      className: 'text-teal-500',    tile: 'bg-teal-100 dark:bg-teal-900/30' },
   stage:         { Icon: Layers,        className: 'text-sky-500',     tile: 'bg-sky-100 dark:bg-sky-900/30' },
+  telegram:      { Icon: Send,          className: 'text-cyan-500',    tile: 'bg-cyan-100 dark:bg-cyan-900/30' },
 };
