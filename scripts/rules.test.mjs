@@ -119,6 +119,34 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'announcements/ann_poll/votes/stu2_uid'), { optionIds: ['sat'] });
   await setDoc(doc(db, 'announcements/ann_stage4/votes/stu2_uid'), { optionIds: ['x'] });
 
+  // A SUPPORT account promoted from the stage_4 representative. It keeps
+  // managedStageId as a home stage, which is exactly the shape that breaks if
+  // any rule reads that field as a scope - every assertion below acts on
+  // stage_3, the stage it does NOT manage.
+  await setDoc(doc(db, 'users/sup_uid'), {
+    role: 'support', email: 'sup@x.com', managedStageId: 'stage_4',
+    permissions: {
+      manageLectures: true, manageAnnouncements: true, manageRecords: true,
+      manageChat: true, manageHomeworks: true, manageStudents: true,
+      manageGrades: true, manageAdmins: true, manageGroups: true,
+    },
+  });
+  await setDoc(doc(db, 'allowed_admins/sup@x.com'), {
+    email: 'sup@x.com', role: 'support', managedStageId: 'stage_4',
+  });
+
+  // A support account with an EMPTY permissions map. Support resolves an absent
+  // key as denied, so this one holds nothing - the assertion that the arm was
+  // not written with representative semantics (`!== false`).
+  await setDoc(doc(db, 'users/sup_bare_uid'), {
+    role: 'support', email: 'supbare@x.com', permissions: {},
+  });
+  await setDoc(doc(db, 'allowed_admins/supbare@x.com'), {
+    email: 'supbare@x.com', role: 'support',
+  });
+
+  await setDoc(doc(db, 'adminLogs/log1'), { action: 'X', adminEmail: 'rep@x.com' });
+
   await setDoc(doc(db, 'stages/stage_3'), { id: 'stage_3', nameEn: 'Third Stage', order: 3 });
   await setDoc(doc(db, 'stages/stage_4'), { id: 'stage_4', nameEn: 'Fourth Stage', order: 4 });
   await setDoc(doc(db, 'lectures/lec1'), { title: 'L1', stageId: 'stage_3', category: 'biochemistry' });
@@ -155,6 +183,8 @@ const MASTER_ADMIN_EMAILS = [
 ];
 const master = ctxFor('master_uid', MASTER_ADMIN_EMAILS[0]);
 const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
+const support = ctxFor('sup_uid', 'sup@x.com');
+const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 
 console.log('\nModerator is walled off from student data');
 await check('moderator CANNOT read students',
@@ -696,6 +726,69 @@ await check('a representative CAN read a pending streak reset',
   assertSucceeds(getDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
 await check('nobody can clear a pending streak reset from the client',
   assertFails(deleteDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
+
+
+// ---------------------------------------------------------------------------
+// The cross-stage `support` role.
+//
+// `support` holds a home stage (stage_4) it was promoted from, so every
+// assertion here deliberately acts on stage_3 - the stage it does NOT manage.
+// If any rule falls through to `isStaff() && myManagedStage() == stageId` these
+// fail, which is the ordering mistake they exist to catch.
+// ---------------------------------------------------------------------------
+console.log('\nSupport reaches every stage, not the one it came from');
+await check('support CAN write a lecture on a stage it does not manage',
+  assertSucceeds(setDoc(doc(support, 'lectures/lec_sup'), { title: 'S', stageId: 'stage_3' })));
+await check('support CAN read another stage content',
+  assertSucceeds(getDoc(doc(support, 'lectures/lec1'))));
+await check('support CAN write a record on another stage',
+  assertSucceeds(setDoc(doc(support, 'records/rec_sup'), { title: 'RS', stageId: 'stage_3' })));
+await check('support CAN read students on a stage it does not manage',
+  assertSucceeds(getDoc(doc(support, 'students/stu@x.com'))));
+await check('support CAN edit its own user doc (isValidUser accepts the role)',
+  assertSucceeds(updateDoc(doc(support, 'users/sup_uid'), {
+    notificationPreferences: { lectures: false, announcements: true },
+  })));
+
+console.log('\nSupport holds nothing it was not ticked for');
+await check('bare support CANNOT read students',
+  assertFails(getDoc(doc(supportBare, 'students/stu@x.com'))));
+await check('bare support CANNOT seat a representative',
+  assertFails(setDoc(doc(supportBare, 'allowed_admins/new@x.com'), {
+    email: 'new@x.com', role: 'admin', managedStageId: 'stage_3',
+  })));
+
+console.log('\nSupport cannot reach the master-only surfaces');
+await check('support CANNOT read adminLogs',
+  assertFails(getDoc(doc(support, 'adminLogs/log1'))));
+await check('support CAN create an adminLog (its own actions are recorded)',
+  assertSucceeds(setDoc(doc(support, 'adminLogs/log_sup'), {
+    action: 'CREATE_ADMIN', adminEmail: 'sup@x.com',
+  })));
+await check('support CANNOT write the academic calendar',
+  assertFails(setDoc(doc(support, 'app_settings/academicCalendar'), { seasons: [] })));
+
+console.log('\nSupport cannot escalate');
+await check('support CANNOT create another support account',
+  assertFails(setDoc(doc(support, 'allowed_admins/new_sup@x.com'), {
+    email: 'new_sup@x.com', role: 'support',
+  })));
+await check('support CANNOT create a master_admin row',
+  assertFails(setDoc(doc(support, 'allowed_admins/new_master@x.com'), {
+    email: 'new_master@x.com', role: 'master_admin',
+  })));
+await check('support CAN seat a representative on any stage',
+  assertSucceeds(setDoc(doc(support, 'allowed_admins/newrep@x.com'), {
+    email: 'newrep@x.com', role: 'admin', managedStageId: 'stage_3',
+  })));
+await check('support CANNOT promote a user doc to support',
+  assertFails(updateDoc(doc(support, 'users/stu2_uid'), {
+    role: 'support', managedStageId: 'stage_3', permissions: { manageLectures: true },
+  })));
+await check('support CAN appoint a moderator on a stage it does not manage',
+  assertSucceeds(updateDoc(doc(support, 'users/stu2_uid'), {
+    role: 'moderator', managedStageId: 'stage_3', permissions: { manageLectures: true },
+  })));
 
 await testEnv.cleanup();
 

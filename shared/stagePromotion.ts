@@ -177,7 +177,11 @@ export async function planPromotion(
       vacatingStaffIds: userDocs
         .filter(d => {
           const u = d.data() as any;
-          return !u.isMasterAdmin && (u.role === 'admin' || u.role === 'moderator');
+          // Mirrors submitProgression's wasStaff. 'support' is included for the
+          // same reason: the seat is vacated on leaving the stage, and a role
+          // this filter does not name is a role nothing ever releases.
+          return !u.isMasterAdmin
+            && (u.role === 'admin' || u.role === 'moderator' || u.role === 'support');
         })
         .map(d => d.id),
       alreadyPromoted,

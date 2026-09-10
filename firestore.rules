@@ -103,8 +103,45 @@ service cloud.firestore {
       );
     }
 
+    // A cross-stage support account. Reaches every stage, capability by
+    // capability, minus the master-only surfaces (adminLogs, the academic
+    // calendar, Simosan billing) which are left gated on isMasterAdmin() alone.
+    //
+    // Deliberately says nothing about myManagedStage(): a support account
+    // promoted from a representative KEEPS that field as a home stage, and
+    // reading it as a scope here would pin them to the stage they used to
+    // represent - see the ordering note in canWriteStage.
+    //
+    // Reads users/{uid} ONLY, unlike isAdmin()/isModerator() which also consult
+    // allowed_admins. Two reasons, and the second is load-bearing:
+    //
+    //  1. There are no legacy support docs. The allowed_admins arm exists for
+    //     roles that predate the role field; 'support' is new, and
+    //     AdminManagement writes both documents, so users/{uid} is always set.
+    //  2. ACCESS BUDGET. This is called from hasAccess(), isStaff() and
+    //     canWriteStage(), which the announcements update rule evaluates on
+    //     both of its branches. An allowed_admins arm here pushed that
+    //     evaluation past the per-request document-access limit and denied an
+    //     ordinary student's reaction - a rule with nothing to do with support.
+    //     users/{uid} is already read by userRole() for isAdmin(), so reading
+    //     only that costs nothing extra.
+    function isSupport() {
+      return isAuthenticated() && userRole() == 'support';
+    }
+
+    // What the caller was ticked for in إدارة المساعدين, off users/{uid}.
+    // Absent means DENIED for a support account, matching canManage() in
+    // src/lib/permissions.ts - never `!= false`, which is representative
+    // semantics and would grant a support doc with no map everything.
+    function supportCan(capability) {
+      return isSupport() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid))
+          .data.get('permissions', {}).get(capability, false) == true;
+    }
+
     function isStaff() {
-      return isAdmin() || isModerator();
+      return isAdmin() || isModerator() || isSupport();
     }
 
     // Content-write scope for a stage. Master admin writes anywhere; every other
@@ -124,9 +161,29 @@ service cloud.firestore {
     // every representative has a managedStageId, then delete the
     // `myManagedStage() == '' ||` line below and redeploy. scripts/rules.test.mjs
     // already asserts the strict behaviour, so flip the expectation there too.
+    //
+    // The isSupport() arm sits INSIDE the isStaff() branch, ahead of the
+    // managedStageId comparison, and both halves of that placement matter.
+    //
+    // Ahead of the comparison, because a support account promoted from a
+    // representative still carries a managedStageId: reached second, the
+    // comparison would match only their old stage and deny every other one, so
+    // the role would look broken rather than misconfigured.
+    //
+    // Inside isStaff(), because as a separate top-level arm it is evaluated for
+    // EVERY caller, and the extra document reads pushed the announcements
+    // update rule past the per-request access limit - which denied an ordinary
+    // student's reaction. Support is staff, so the meaning is unchanged and a
+    // non-staff caller now short-circuits before reaching it.
+    //
+    // Role and stage only, no capability: that is the granularity these rules
+    // have always had (a moderator ticked for chat alone still passes here, and
+    // the per-capability gating lives in src/lib/permissions.ts). The capability
+    // IS checked below for the surfaces that read the students whitelist or
+    // change who holds a role, which is where it actually buys something.
     function canWriteStage(stageId) {
       return isMasterAdmin() || (
-        isStaff() && (myManagedStage() == '' || myManagedStage() == stageId)
+        isStaff() && (isSupport() || myManagedStage() == '' || myManagedStage() == stageId)
       );
     }
 
@@ -142,8 +199,15 @@ service cloud.firestore {
     // same time. Production today lets any isAdmin() write any student; going
     // straight to the strict form would leave the master admins as the only
     // accounts able to manage the stage_3 roster, which is every student there is.
+    //
+    // Support reaches any stage's roster, but only when actually ticked for it -
+    // this collection holds password hashes, so the capability is checked here
+    // rather than left to the UI. It has to be tested BEFORE the isAdmin() arm:
+    // a promoted representative still carries managedStageId, and reached
+    // second that comparison pins them to their old stage.
     function canManageStudentsOn(stageId) {
-      return isMasterAdmin() || (
+      return isMasterAdmin() ||
+        supportCan('manageStudents') || (
         isAdmin() && (myManagedStage() == '' || myManagedStage() == stageId)
       );
     }
@@ -155,6 +219,12 @@ service cloud.firestore {
     // A null stageId means the document predates the multi-stage migration; those
     // stay readable by anyone with access, matching the lectures rule, rather than
     // vanishing from every screen at once.
+    //
+    // The isSupport() arm inside the isStaff() branch is what decides whether
+    // the app looks EMPTY after a promotion: without it, the myManagedStage()
+    // comparison hides every stage but the one they used to represent, and a
+    // support account would read one stage's content while being able to write
+    // all five. Placed inside isStaff() for the access-budget reason above.
     function canReadStage(stageId, subjectId) {
       return hasAccess() && (
         stageId == null || stageId == '' ||
@@ -162,7 +232,7 @@ service cloud.firestore {
         // Assigned staff, representative or moderator. Not isRepresentativeFor():
         // that excludes moderators, and a moderator's own stageId is often not
         // the stage they were appointed to moderate.
-        (isStaff() && myManagedStage() == stageId) ||
+        (isStaff() && (isSupport() || myManagedStage() == stageId)) ||
         hasStageAccess(stageId, subjectId)
       );
     }
@@ -183,7 +253,12 @@ service cloud.firestore {
     function isValidUser(data) {
       return (!('name' in data) || data.name is string) &&
              (!('email' in data) || data.email is string) &&
-             (!('role' in data) || data.role in ['admin', 'moderator', 'student', 'master_admin']) &&
+             // 'support' MUST be listed here. isValidUser gates the whole
+             // self-edit branch below, so leaving it out does not merely block
+             // appointing a support account - it silently refuses every write
+             // that account makes to its OWN user doc afterwards: notification
+             // toggles, leaderboard privacy, saving a profile edit.
+             (!('role' in data) || data.role in ['admin', 'moderator', 'support', 'student', 'master_admin']) &&
              (!('originalName' in data) || data.originalName is string) &&
              (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string) &&
              (!('completedWeeklyTasks' in data) || data.completedWeeklyTasks is list) &&
@@ -223,12 +298,19 @@ service cloud.firestore {
       );
     }
 
+    // isSupport() is here for the same reason isAdmin() is: a support account
+    // appointed from outside the roster has no students/{email} doc, and
+    // without this canReadStage() would refuse them every stage including the
+    // one they came from.
     function hasAccess() {
-      return isAdmin() || isWhitelisted();
+      return isAdmin() || isWhitelisted() || isSupport();
     }
-    
+
+    // Gates `subjects` and stages/{id}.groupConfig. Support is granted the same
+    // on ANY stage, but only when ticked for manageGroups - inheriting this by
+    // accident through isStaff() is what the explicit arm avoids.
     function isRepresentativeFor(stageId) {
-      return isAdmin() && myManagedStage() == stageId;
+      return (isAdmin() && myManagedStage() == stageId) || supportCan('manageGroups');
     }
 
     function hasStageAccess(stageId, subjectId) {
@@ -323,13 +405,27 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       // A representative may only create/edit MODERATORS, and only on the stage
       // they themselves manage. Everything else is master-admin territory.
+      //
+      // Support, when ticked for manageAdmins, may seat representatives and
+      // moderators on ANY stage - but never another support account and never a
+      // master_admin. That ceiling is the escalation guard: the three
+      // master-only surfaces are unreachable to support directly, and a support
+      // account able to mint a second one could hand them out by proxy. The UI
+      // half is appointableRoles() in src/lib/permissions.ts; this is the half
+      // that actually holds.
       allow create, update: if isMasterAdmin() || (
+        supportCan('manageAdmins') &&
+        request.resource.data.get('role', '') in ['admin', 'moderator']
+      ) || (
         isAdmin() &&
         request.resource.data.get('role', '') == 'moderator' &&
         request.resource.data.get('managedStageId', '') == myManagedStage() &&
         myManagedStage() != ''
       );
       allow delete: if isMasterAdmin() || (
+        supportCan('manageAdmins') &&
+        resource.data.get('role', '') in ['admin', 'moderator']
+      ) || (
         isAdmin() &&
         resource.data.get('role', '') == 'moderator' &&
         resource.data.get('managedStageId', '') == myManagedStage() &&
@@ -379,7 +475,19 @@ service cloud.firestore {
                       (isAdmin() &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'managedStageId', 'permissions']) &&
                        request.resource.data.get('role', '') == 'moderator' &&
-                       request.resource.data.get('managedStageId', '') == myManagedStage()) || 
+                       request.resource.data.get('managedStageId', '') == myManagedStage()) ||
+                      // The support half of the same appointment write. No
+                      // managedStageId constraint - support seats staff on any
+                      // stage, and requiring it to match their own home stage
+                      // would reintroduce exactly the pin the role removes.
+                      // 'student' is in the list because that is what demotion
+                      // writes (revokeStaffRole); without it support could seat
+                      // staff and never unseat them. 'support' and
+                      // 'master_admin' are absent on purpose - see
+                      // allowed_admins above.
+                      (supportCan('manageAdmins') &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'managedStageId', 'permissions']) &&
+                       request.resource.data.get('role', '') in ['admin', 'moderator', 'student']) ||
                       (isOwner(userId) && isValidUser(request.resource.data) && (
                         (!('role' in request.resource.data) || request.resource.data.role == resource.data.get('role', 'student')) ||
                         (request.resource.data.role == assistantRole() && assistantRole() != '')
@@ -718,7 +826,12 @@ service cloud.firestore {
     }
     
     match /adminLogs/{logId} {
-      allow create: if isAdmin();
+      // Support WRITES here and cannot read: its actions - seating a
+      // representative, editing another stage's roster - are exactly what the
+      // master admin needs the trail for. Without create, logAdminAction()
+      // throws mid-appointment in AdminManagement, after the role write has
+      // already landed.
+      allow create: if isAdmin() || isSupport();
       allow read: if isMasterAdmin();
       allow update, delete: if false;
     }

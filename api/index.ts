@@ -160,10 +160,31 @@ const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
  * "assigned to no stage", which every stage-scoped route below treats as
  * "may act on nothing" - the same posture firestore.rules takes.
  */
-type CallerStage = { isMasterAdmin: boolean; role: string; managedStageId: string | null };
+type CallerStage = {
+  isMasterAdmin: boolean;
+  /**
+   * Cross-stage without being the master admin. Every `staff.managedStageId`
+   * comparison below has to admit this flag too, or a support caller is pinned
+   * to the stage they used to represent - the field is retained on promotion as
+   * a home stage and is deliberately NOT a scope.
+   */
+  isSupport: boolean;
+  role: string;
+  managedStageId: string | null;
+  /** What they were ticked for in إدارة المساعدين. Absent means DENIED for a
+   *  support caller, matching canManage() in src/lib/permissions.ts. */
+  permissions: Record<string, boolean>;
+};
+
+/** Support holds a capability only when it is explicitly true. */
+const staffCan = (staff: CallerStage, capability: string): boolean =>
+  staff.isMasterAdmin || (staff.isSupport && staff.permissions[capability] === true);
+
+const SUPPORT_NOT_GRANTED = 'Your support account is not granted this.';
 
 const callerStage = (req: express.Request): CallerStage =>
-  (req as any).staff || { isMasterAdmin: false, role: '', managedStageId: null };
+  (req as any).staff
+  || { isMasterAdmin: false, isSupport: false, role: '', managedStageId: null, permissions: {} };
 
 const verifyAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const user = (req as any).user;
@@ -186,14 +207,18 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
     const data = userDoc.data() || {};
     const role = data.role;
-    if (!isMaster && role !== 'admin' && role !== 'moderator' && role !== 'master_admin') {
+    // 'support' belongs in this list or EVERY admin route 403s for the role.
+    if (!isMaster && role !== 'admin' && role !== 'moderator'
+        && role !== 'support' && role !== 'master_admin') {
       return res.status(403).json({ error: 'Forbidden: Requires admin privileges' });
     }
 
     (req as any).staff = {
       isMasterAdmin: isMaster || role === 'master_admin' || data.isMasterAdmin === true,
+      isSupport: role === 'support',
       role: role || 'admin',
       managedStageId: data.managedStageId || null,
+      permissions: (data.permissions || {}) as Record<string, boolean>,
     } satisfies CallerStage;
 
     next();
@@ -756,7 +781,12 @@ app.get("/api/admin/deletion-requests", verifyAuth, verifyAdmin, async (req, res
     const db = admin.firestore();
     const staff = callerStage(req);
     let query = db.collection('deletion_requests').where('status', '==', 'pending');
-    if (!staff.isMasterAdmin) {
+    // staffCan, not isMasterAdmin: support reaches every stage, but only when
+    // ticked for it. Falling through to the managedStageId branch would scope a
+    // promoted representative to the stage they used to represent, which is a
+    // home stage and not a scope.
+    if (!staffCan(staff, 'manageStudents')) {
+      if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
       if (!staff.managedStageId) return res.json({ requests: [] });
       query = query.where('stageId', '==', staff.managedStageId);
     }
@@ -912,9 +942,15 @@ app.post("/api/admin/students", verifyAuth, verifyAdmin, async (req, res) => {
     // at login, granting them another stage's content.
     const staff = callerStage(req);
     let effectiveStage: string | null;
-    if (staff.isMasterAdmin) {
+    if (staffCan(staff, 'manageStudents')) {
+      // Cross-stage, so the stage must be stated rather than inferred. A
+      // support account's own managedStageId is a home stage and is NOT the
+      // right default here - silently filing students under it would be the
+      // same class of bug as trusting req.body.stageId.
       effectiveStage = stageId || null;
       if (!effectiveStage) return res.status(400).json({ error: "stageId is required." });
+    } else if (staff.isSupport) {
+      return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
     } else {
       if (!staff.managedStageId) {
         return res.status(403).json({ error: "You are not assigned to a stage." });
@@ -967,7 +1003,8 @@ app.get("/api/admin/students", verifyAuth, verifyAdmin, async (req, res) => {
     const staff = callerStage(req);
     const db = admin.firestore();
     let query: FirebaseFirestore.Query = db.collection('students');
-    if (!staff.isMasterAdmin) {
+    if (!staffCan(staff, 'manageStudents')) {
+      if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
       if (!staff.managedStageId) return res.json({ students: [] });
       query = query.where('stageId', '==', staff.managedStageId);
     }
@@ -1033,7 +1070,10 @@ app.delete("/api/admin/students", verifyAuth, verifyAdmin, async (req, res) => {
     const staff = callerStage(req);
     const db = admin.firestore();
     let victims: FirebaseFirestore.Query = db.collection('students');
-    if (!staff.isMasterAdmin) {
+    // Unscoped, this deletes every stage's whitelist. Support reaches that far
+    // only when ticked for manageStudents - the capability is the whole guard.
+    if (!staffCan(staff, 'manageStudents')) {
+      if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
       if (!staff.managedStageId) {
         return res.status(403).json({ error: "You are not assigned to a stage." });
       }

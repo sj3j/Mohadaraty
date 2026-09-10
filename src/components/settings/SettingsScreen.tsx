@@ -17,7 +17,8 @@ import { ThemeChoice } from '../../hooks/useTheme';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
 import {
   canManageAssistants, canManageStudents, canManageGrades,
-  canManageStreakSystem, canViewAdminLogs, isMasterAdmin,
+  canManageStreakSystem, canViewAdminLogs, canManageSimosanBilling,
+  canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
 
 type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage';
@@ -285,13 +286,17 @@ export default function SettingsScreen(props: SettingsScreenProps) {
               />
             </SettingsGroup>
 
+            {/* isCrossStage, not isMasterAdmin: a support account whose only
+                grants are content permissions still needs the viewing-stage
+                picker below, and without it here the whole group - picker
+                included - would not render for them. */}
             {(canManageAssistants(user) || canManageStudents(user) || canManageGrades(user)
-              || canManageStreakSystem(user) || canViewAdminLogs(user) || isMasterAdmin(user)) && (
+              || canManageStreakSystem(user) || canViewAdminLogs(user) || isCrossStage(user)) && (
               <SettingsGroup title={isRtl ? 'الإدارة' : 'Administration'}>
                 {/* Which stage the whole app is showing. Master admin only, and
                     first in the group because every row under it is scoped by it.
                     It used to be a <select> in the app header. */}
-                {isMasterAdmin(user) && (
+                {isCrossStage(user) && (
                   <SettingsRow
                     isRtl={isRtl} icon={SETTINGS_ICONS.stage}
                     label={isRtl ? 'المرحلة المعروضة' : 'Viewing stage'}
@@ -306,7 +311,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     canManageStreakSystem - this screen holds the year-end wipe
                     and the content export, and the two permissions coinciding
                     today is a coincidence, not a rule. */}
-                {isMasterAdmin(user) && (
+                {canManageCalendar(user) && (
                   <SettingsRow
                     isRtl={isRtl} icon={SETTINGS_ICONS.calendar}
                     label={isRtl ? 'التقويم الدراسي' : 'Academic calendar'}
@@ -361,7 +366,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                 {/* Web only. The dashboard reports spend in dollars and is
                     build-time stubbed out of the native bundle, so the row
                     would otherwise open a screen that renders nothing. */}
-                {!IS_STORE_BUILD && canViewAdminLogs(user) && (
+                {!IS_STORE_BUILD && canManageSimosanBilling(user) && (
                   <SettingsRow
                     isRtl={isRtl} icon={SETTINGS_ICONS.simosan}
                     label={isRtl ? 'استخدام سيموسان' : 'Simosan usage'}

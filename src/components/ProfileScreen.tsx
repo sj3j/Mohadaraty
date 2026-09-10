@@ -149,7 +149,12 @@ export default function ProfileScreen({
 
   const isMasterAdminUser = user.isMasterAdmin;
   const stageName = (() => {
-    const stage = stages.find(s => s.id === user.stageId);
+    // effectiveStageId first, user.stageId only as a fallback. Every other
+    // stage-scoped surface reads effectiveStageId; this tile keyed off the raw
+    // profile field, so a master admin (and now a support account) could move
+    // the viewing-stage picker and watch every screen follow it except this one.
+    // For a student the two are the same value, so nothing changes for them.
+    const stage = stages.find(s => s.id === (effectiveStageId || user.stageId));
     if (!stage) return '—';
     return isRtl ? stage.nameAr : stage.nameEn;
   })();

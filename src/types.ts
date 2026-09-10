@@ -168,7 +168,14 @@ export interface UserProfile {
   name: string;
   originalName?: string;
   email: string;
-  role: 'admin' | 'moderator' | 'student';
+  /**
+   * 'admin' is the STAGE REPRESENTATIVE, not the master admin - the master
+   * admin is identified by address (shared/masterAdmins.ts) and carries
+   * role 'admin' too. 'support' is cross-stage: it acts on every stage rather
+   * than the one in managedStageId, which for a promoted representative is
+   * retained as a presentational home stage. See src/lib/permissions.ts.
+   */
+  role: 'admin' | 'moderator' | 'support' | 'student';
   isMasterAdmin?: boolean;
   photoUrl?: string;
   completedWeeklyTasks?: string[];
@@ -200,6 +207,16 @@ export interface UserProfile {
     records?: boolean;
     homeworks?: boolean;
   };
+  /**
+   * What was ticked in إدارة المساعدين. Keyed by Capability in
+   * src/lib/permissions.ts, which is the only thing that should read it -
+   * a bare `permissions?.x` lookup misses the per-role hard denials.
+   *
+   * A missing key does NOT mean the same thing for every role: a
+   * representative holds a capability unless it is explicitly false (legacy
+   * docs carry no map at all), while a moderator or a support account holds
+   * nothing unless it is explicitly true.
+   */
   permissions?: {
     manageLectures: boolean;
     manageAnnouncements: boolean;
@@ -210,6 +227,18 @@ export interface UserProfile {
     manageGrades?: boolean;
     manageAdmins?: boolean;
     manageGroups?: boolean;
+    // System-wide, granted to support only. A representative is hard-denied
+    // these regardless of what is stored - `!== false` would otherwise hand
+    // the streak system to every legacy doc that has no map.
+    manageStreakSystem?: boolean;
+    manageMcqSystem?: boolean;
+    manageAntiCheat?: boolean;
+    // Master-admin-only surfaces. Present so Capability is indexable against
+    // this map; they are stripped on save and hard-denied on read, so a stored
+    // `true` grants nothing.
+    viewAdminLogs?: boolean;
+    manageCalendar?: boolean;
+    manageSimosanBilling?: boolean;
   };
   hasPendingStreakReset?: boolean;
   memberSince?: any;

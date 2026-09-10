@@ -131,3 +131,19 @@
 .pdfHighlightFlash {
   animation: pdfHighlightFlash 0.6s ease-in-out 2;
 }
+
+/**
+ * The active find-in-PDF hit.
+ *
+ * Outlined rather than filled: a match frequently lands on text the student has
+ * already highlighted, and a second multiply-blended fill on top of a yellow
+ * one is muddy and hard to spot. The ring reads clearly over any of the five
+ * highlight colours and over bare white.
+ */
+.pdfSearchRect {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+  background: rgba(56, 189, 248, 0.28);
+  box-shadow: 0 0 0 2px rgb(14, 165, 233);
+}

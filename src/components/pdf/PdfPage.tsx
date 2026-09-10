@@ -60,6 +60,14 @@ interface Props {
   onOrphan: (id: string, orphaned: boolean) => void;
   onPinPoint?: (pageNumber: number, point: { x: number; y: number }) => void;
   flashId?: string | null;
+  /**
+   * The active find-in-PDF hit on this page, in canonical offsets.
+   *
+   * Painted through the same rangeFor() path as a stored highlight, so it
+   * follows zoom and rotation identically. Never persisted - search results are
+   * not annotations.
+   */
+  searchMatch?: { start: number; end: number } | null;
 }
 
 interface PaintedRect {
@@ -85,7 +93,7 @@ interface PaintedRect {
  */
 export default React.memo(function PdfPage({
   pdfDoc, pageNumber, scale, rasterScale, rotation, annotations, boxW, boxH,
-  registerPage, onHighlightTap, onOrphan, onPinPoint, flashId,
+  registerPage, onHighlightTap, onOrphan, onPinPoint, flashId, searchMatch,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -99,6 +107,7 @@ export default React.memo(function PdfPage({
   scaleRef.current = scale;
 
   const [rects, setRects] = useState<PaintedRect[]>([]);
+  const [searchRects, setSearchRects] = useState<Omit<PaintedRect, 'id' | 'color'>[]>([]);
   const [ready, setReady] = useState(false);
 
   /**
@@ -191,7 +200,24 @@ export default React.memo(function PdfPage({
     }
 
     setRects(out);
-  }, [annotations, rangeFor, onOrphan]);
+
+    if (!searchMatch) {
+      setSearchRects([]);
+    } else {
+      const range = rangeFor(h, searchMatch.start, searchMatch.end);
+      const clientRects = range ? (Array.from(range.getClientRects()) as DOMRect[]) : [];
+      setSearchRects(
+        clientRects
+          .filter(r => r.width > 0.5 && r.height > 0.5)
+          .map(r => ({
+            left: r.left - box.left,
+            top: r.top - box.top,
+            width: r.width,
+            height: r.height,
+          })),
+      );
+    }
+  }, [annotations, rangeFor, onOrphan, searchMatch]);
 
   // Render the page, then its text layer.
   useEffect(() => {
@@ -408,6 +434,13 @@ export default React.memo(function PdfPage({
               const a = annotations.find(x => x.id === r.id);
               if (a) onHighlightTap(a);
             }}
+          />
+        ))}
+        {searchRects.map((r, i) => (
+          <div
+            key={`search-${i}`}
+            className="pdfSearchRect"
+            style={{ left: r.left, top: r.top, width: r.width, height: r.height }}
           />
         ))}
       </div>

@@ -1,18 +1,24 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw,
-  Sparkles, X,
+  Search, Sparkles, X,
 } from 'lucide-react';
 import PdfPage, { type PageHandle } from './PdfPage';
 import SelectionToolbar from './SelectionToolbar';
+import PdfSearchPanel from './PdfSearchPanel';
 import NoteEditorSheet from './NoteEditorSheet';
 import NotesDrawer from './NotesDrawer';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { loadPdfjs, fetchPdfBytes, freshBytes, PDFJS_DOC_OPTIONS } from '../../lib/pdfjs';
 import { readStoredPdf } from '../../hooks/useOfflinePDF';
 import { buildAnchor, canonicalOffsetWithin, rectsToQuads } from '../../lib/pdfAnchor';
+import { copyText, shareText, translateText, webSearchText } from '../../lib/textActions';
+import {
+  buildPageSearchIndex, searchPageIndex,
+  type PageSearchIndex, type SearchMatch,
+} from '../../lib/pdfSearch';
 import { useLectureAnnotations } from '../../hooks/useLectureAnnotations';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
 import SimosanDrawer from './SimosanDrawer';
@@ -47,6 +53,9 @@ interface SelectionSnapshot {
 
 // Stable identity so a page without annotations does not defeat PdfPage memo.
 const NO_ANNOTATIONS: PdfAnnotation[] = [];
+
+/** A query matching more than this is already unusable as a list. */
+const MAX_MATCHES = 500;
 
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
@@ -131,6 +140,10 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [orphanIds, setOrphanIds] = useState<Set<string>>(new Set());
+  /** Transient confirmation for the selection actions. It lives here rather
+   *  than inside SelectionToolbar because every one of those actions clears the
+   *  selection, which unmounts the toolbar before it could show anything. */
+  const [toast, setToast] = useState<string | null>(null);
 
   const [simosanOpen, setSimosanOpen] = useState(false);
   const [simosanSeed, setSimosanSeed] = useState<string | null>(null);
@@ -892,6 +905,158 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     setSelection(null);
   };
 
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  /**
+   * Run one selection action, then clear.
+   *
+   * The text is read BEFORE clearing for the same reason captureSelection
+   * exists: the selection is gone by the time an awaited call resolves.
+   */
+  const runSelectionAction = (
+    act: (text: string) => Promise<'ok' | 'copied' | 'failed'>,
+    messages: { ok: string; copied?: string; failed: string },
+  ) => {
+    const text = selection?.text;
+    if (!text) return;
+    clearSelection();
+    void act(text).then((r) => {
+      if (r === 'ok') setToast(messages.ok);
+      else if (r === 'copied') setToast(messages.copied ?? messages.ok);
+      else setToast(messages.failed);
+    });
+  };
+
+  /* ---------------------------------------------------------------- search */
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [matchIndex, setMatchIndex] = useState(0);
+  const [listOpen, setListOpen] = useState(false);
+  const [indexing, setIndexing] = useState(false);
+  const [indexed, setIndexed] = useState(0);
+  /** pageNumber -> its searchable text. Survives closing and reopening search. */
+  const searchIndex = useRef<Map<number, PageSearchIndex>>(new Map());
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery('');
+    setMatches([]);
+    setMatchIndex(0);
+    setListOpen(false);
+  }, []);
+
+  useBackDismiss(searchOpen, closeSearch, 'pdfSearch');
+
+  /**
+   * Pull every page's text once, in page order.
+   *
+   * It cannot come from the mounted text layers: only a window of three pages
+   * is mounted at a time, so the DOM knows nothing about page 40 while page 2
+   * is on screen. getTextContent() is the only source that sees the whole
+   * document, and it is cheap next to rendering - no canvas, no fonts.
+   *
+   * Results are published page by page rather than at the end, so a hit on page
+   * 2 is usable while page 200 is still being read.
+   */
+  useEffect(() => {
+    if (!searchOpen || !pdfDoc) return;
+
+    const total: number = pdfDoc.numPages;
+    if (searchIndex.current.size >= total) { setIndexed(total); return; }
+
+    let cancelled = false;
+    setIndexing(true);
+
+    void (async () => {
+      for (let n = 1; n <= total; n++) {
+        if (cancelled) return;
+        if (!searchIndex.current.has(n)) {
+          try {
+            const page = await pdfDoc.getPage(n);
+            const tc = await page.getTextContent();
+            searchIndex.current.set(n, buildPageSearchIndex(n, tc.items));
+          } catch {
+            // A page that will not yield text contributes no matches. Indexing
+            // the rest still beats failing the whole search.
+          }
+        }
+        if (cancelled) return;
+        setIndexed(n);
+      }
+      setIndexing(false);
+    })();
+
+    return () => { cancelled = true; setIndexing(false); };
+  }, [searchOpen, pdfDoc]);
+
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 180);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  /**
+   * Highest page already searched for the CURRENT query.
+   *
+   * Results extend as indexing advances rather than being recomputed from page
+   * one each time. Recomputing looked simpler but was wrong twice over: it made
+   * the whole search quadratic in a long lecture, and because the debounce
+   * restarted on every indexed page, a two-hundred-page PDF showed no results
+   * at all until indexing finished.
+   */
+  const searchedUpTo = useRef(0);
+
+  useEffect(() => {
+    searchedUpTo.current = 0;
+    setMatches([]);
+    setMatchIndex(0);
+  }, [debouncedQuery]);
+
+  useEffect(() => {
+    if (!searchOpen || searchedUpTo.current >= indexed) return;
+
+    const from = searchedUpTo.current + 1;
+    searchedUpTo.current = indexed;
+
+    const found: SearchMatch[] = [];
+    for (let n = from; n <= indexed; n++) {
+      const idx = searchIndex.current.get(n);
+      if (idx) found.push(...searchPageIndex(idx, debouncedQuery));
+    }
+    if (found.length === 0) return;
+
+    setMatches(prev => (prev.length >= MAX_MATCHES ? prev : [...prev, ...found].slice(0, MAX_MATCHES)));
+  }, [debouncedQuery, indexed, searchOpen]);
+
+  const activeHit = matches[matchIndex] ?? null;
+
+  /**
+   * Follow the active hit.
+   *
+   * Keyed on the hit's identity rather than on the index, so retyping a query
+   * that happens to keep the same index still scrolls, and a re-render that
+   * changes neither does not.
+   */
+  const jumpedTo = useRef('');
+  useEffect(() => {
+    if (!activeHit) { jumpedTo.current = ''; return; }
+    const key = `${activeHit.pageNumber}:${activeHit.start}`;
+    if (jumpedTo.current === key) return;
+    jumpedTo.current = key;
+    scrollToPage(activeHit.pageNumber);
+  }, [activeHit, scrollToPage]);
+
+  const stepMatch = (delta: number) => {
+    if (matches.length === 0) return;
+    setMatchIndex(i => (i + delta + matches.length) % matches.length);
+  };
+
   /** One annotation per page the selection touched, tied by a shared groupId. */
   const createHighlight = async (color: HighlightColor, openNote: boolean) => {
     const snap = selection;
@@ -994,6 +1159,14 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           {lectureTitle}
         </h1>
 
+        <button
+          onClick={() => setSearchOpen(true)}
+          aria-label={isRtl ? 'بحث في المحاضرة' : 'Search this lecture'}
+          className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+        >
+          <Search className="w-6 h-6" />
+        </button>
+
         {simosanReady && (
           <button
             onClick={() => openSimosan()}
@@ -1092,6 +1265,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               onOrphan={markOrphan}
               onPinPoint={addPin}
               flashId={flashId}
+              searchMatch={searchOpen && activeHit?.pageNumber === n ? activeHit : null}
             />
           ) : (
             // Placeholder keeps the scroll height honest while unmounted, so
@@ -1169,10 +1343,23 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
             isRtl={isRtl}
             onPick={(c) => createHighlight(c, false)}
             onNote={() => createHighlight('yellow', true)}
-            onCopy={() => {
-              navigator.clipboard?.writeText(selection.text).catch(() => { /* denied */ });
-              clearSelection();
-            }}
+            onCopy={() => runSelectionAction(copyText, {
+              ok: isRtl ? 'تم النسخ' : 'Copied',
+              failed: isRtl ? 'تعذّر النسخ' : 'Could not copy',
+            })}
+            onTranslate={() => runSelectionAction((t) => translateText(t, lang), {
+              ok: isRtl ? 'جارٍ فتح الترجمة' : 'Opening Translate',
+              failed: isRtl ? 'تعذّر فتح الترجمة' : 'Could not open Translate',
+            })}
+            onSearchWeb={() => runSelectionAction(webSearchText, {
+              ok: isRtl ? 'جارٍ فتح البحث' : 'Opening search',
+              failed: isRtl ? 'تعذّر فتح البحث' : 'Could not open search',
+            })}
+            onShare={() => runSelectionAction((t) => shareText(t, lectureTitle), {
+              ok: isRtl ? 'تمت المشاركة' : 'Shared',
+              copied: isRtl ? 'تم النسخ بدل المشاركة' : 'Copied instead',
+              failed: isRtl ? 'تعذّرت المشاركة' : 'Could not share',
+            })}
             onDismiss={clearSelection}
             onAskSimosan={simosanReady ? () => {
               const seed = selection.text;
@@ -1180,6 +1367,44 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               openSimosan(seed);
             } : undefined}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {searchOpen && (
+          <PdfSearchPanel
+            isRtl={isRtl}
+            query={query}
+            onQueryChange={setQuery}
+            indexing={indexing}
+            indexed={indexed}
+            total={pageCount}
+            matches={matches}
+            activeIndex={matchIndex}
+            listOpen={listOpen}
+            onToggleList={() => setListOpen(o => !o)}
+            onPrev={() => stepMatch(-1)}
+            onNext={() => stepMatch(1)}
+            onPick={(i) => { setMatchIndex(i); setListOpen(false); }}
+            onClose={closeSearch}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            dir={isRtl ? 'rtl' : 'ltr'}
+            role="status"
+            className="absolute inset-x-0 bottom-24 z-[6] flex justify-center pointer-events-none"
+          >
+            <span className="rounded-full bg-zinc-900/95 text-white text-xs font-bold px-4 py-2 shadow-lg backdrop-blur">
+              {toast}
+            </span>
+          </motion.div>
         )}
       </AnimatePresence>
 

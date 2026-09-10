@@ -122,7 +122,11 @@ export async function submitProgression(
   //
   // Moderators are appointed by a representative for one stage, so they are
   // released on the same rule.
-  const wasStaff = user.role === 'admin' || user.role === 'moderator';
+  // 'support' belongs here even though the role is cross-stage: the seat is
+  // still tied to a cohort, and a support account left holding the role after
+  // it has left the stage keeps a role this demotion path would no longer
+  // recognise on any later pass.
+  const wasStaff = user.role === 'admin' || user.role === 'moderator' || user.role === 'support';
   const leavingStage = outcome.promoted || outcome.graduated;
   if (wasStaff && leavingStage && !user.isMasterAdmin) {
     userPatch.role = 'student';

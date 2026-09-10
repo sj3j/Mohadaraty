@@ -7,7 +7,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { logAdminAction } from '../services/adminLogService';
 import { useStageContext } from '../contexts/StageContext';
 import StudentPicker, { StudentCandidate } from './StudentPicker';
-import { MODERATOR_CAPABILITIES, isMasterAdmin as isMaster } from '../lib/permissions';
+import {
+  MODERATOR_CAPABILITIES, SUPPORT_CAPABILITIES, MASTER_ONLY_CAPABILITIES,
+  SYSTEM_CAPABILITIES, appointableRoles, isMasterAdmin as isMaster,
+} from '../lib/permissions';
 
 interface AdminManagementProps {
   isOpen: boolean;
@@ -16,22 +19,14 @@ interface AdminManagementProps {
   user: UserProfile | null;
 }
 
-type AssistantRole = 'admin' | 'moderator';
+type AssistantRole = 'admin' | 'moderator' | 'support';
 
 interface AdminRole {
   id: string;
   email: string;
   role?: AssistantRole;
   managedStageId?: string;
-  permissions?: {
-    manageLectures?: boolean;
-    manageAnnouncements?: boolean;
-    manageRecords?: boolean;
-    manageChat?: boolean;
-    manageHomeworks?: boolean;
-    manageStudents?: boolean;
-    manageGrades?: boolean;
-  };
+  permissions?: Record<string, boolean | undefined>;
 }
 
 const PERMISSION_LABELS = [
@@ -42,20 +37,97 @@ const PERMISSION_LABELS = [
   { id: 'manageHomeworks', labelEn: 'Manage Homeworks', labelAr: 'إدارة الواجبات' },
   { id: 'manageStudents', labelEn: 'Manage Students', labelAr: 'إدارة الطلاب' },
   { id: 'manageGrades', labelEn: 'Manage Grades', labelAr: 'إدارة السعي والدرجات' },
+  // Offered to support only. A representative is hard-denied the three system
+  // capabilities in permissions.ts whatever is stored, and already holds
+  // manageGroups/manageAdmins by default, so showing them here would be a
+  // checkbox that changes nothing.
+  { id: 'manageGroups', labelEn: 'Manage Groups', labelAr: 'إدارة الشعب' },
+  { id: 'manageAdmins', labelEn: 'Manage Assistants', labelAr: 'إدارة المساعدين' },
+  { id: 'manageStreakSystem', labelEn: 'Streak System', labelAr: 'إدارة الستريك' },
+  { id: 'manageMcqSystem', labelEn: 'MCQ System', labelAr: 'إدارة بنك الأسئلة' },
+  { id: 'manageAntiCheat', labelEn: 'Anti-cheat', labelAr: 'مكافحة الغش' },
 ];
 
-/** Moderators are never offered manageStudents or manageGrades - both read the
- *  `students` collection, which they have no access to. */
-const permissionsForRole = (role: AssistantRole) =>
-  role === 'moderator'
-    ? PERMISSION_LABELS.filter(p => (MODERATOR_CAPABILITIES as readonly string[]).includes(p.id))
-    : PERMISSION_LABELS;
+const ROLE_LABELS: Record<AssistantRole, { ar: string; en: string }> = {
+  admin: { ar: 'ممثل مرحلة', en: 'Representative' },
+  moderator: { ar: 'مساعد', en: 'Moderator' },
+  support: { ar: 'دعم فني', en: 'Support' },
+};
 
-/** Strips admin-only grants so a moderator can never be persisted holding them. */
-const sanitizePermissions = (role: AssistantRole, perms: Record<string, boolean>) =>
-  role === 'moderator'
-    ? { ...perms, manageStudents: false, manageGrades: false }
-    : perms;
+/**
+ * Which checkboxes a role is offered.
+ *
+ * Moderators are never offered manageStudents or manageGrades - both read the
+ * `students` collection, which they have no access to. Support is offered the
+ * full set minus the three MASTER_ONLY_CAPABILITIES, which are not checkboxes
+ * anywhere because nothing but the master admin can ever hold them.
+ */
+const permissionsForRole = (role: AssistantRole) => {
+  const allowed: readonly string[] =
+    role === 'moderator' ? MODERATOR_CAPABILITIES
+      : role === 'support' ? SUPPORT_CAPABILITIES
+        : PERMISSION_LABELS
+          .map(p => p.id)
+          .filter(id => !(SYSTEM_CAPABILITIES as readonly string[]).includes(id)
+            && id !== 'manageAdmins' && id !== 'manageGroups');
+  return PERMISSION_LABELS.filter(p => allowed.includes(p.id));
+};
+
+/**
+ * Strips anything the role may not be persisted holding.
+ *
+ * The master-only strip is the one that matters: canManage() hard-denies those
+ * three regardless, but a stored `true` would read as a grant to anyone
+ * inspecting the document and would become one the moment someone "simplified"
+ * the lookup.
+ */
+const sanitizePermissions = (role: AssistantRole, perms: Record<string, boolean>) => {
+  const clean: Record<string, boolean> = { ...perms };
+  for (const cap of MASTER_ONLY_CAPABILITIES) delete clean[cap];
+
+  if (role === 'moderator') {
+    return { ...clean, manageStudents: false, manageGrades: false };
+  }
+  if (role === 'support') return clean;
+
+  // Representative. Hard-denied the system capabilities, so never store one.
+  for (const cap of SYSTEM_CAPABILITIES) delete clean[cap];
+  return clean;
+};
+
+const ALL_CONTENT_TRUE = {
+  manageLectures: true,
+  manageAnnouncements: true,
+  manageRecords: true,
+  manageChat: true,
+  manageHomeworks: true,
+  manageStudents: true,
+  manageGrades: true,
+};
+
+/**
+ * The ticks a freshly chosen role starts with.
+ *
+ * These are not cosmetic defaults. A representative resolves an absent key as
+ * GRANTED, while a moderator and a support account resolve it as DENIED, so the
+ * same map means opposite things across a role change - which is why switching
+ * role re-seeds this rather than carrying the previous ticks over.
+ *
+ * Support starts with content and roster reach on every stage, which is the
+ * point of the role, and WITHOUT the system-wide tools or the ability to seat
+ * other staff. Those are ticked deliberately or not at all.
+ */
+const defaultPermissionsFor = (role: AssistantRole): Record<string, boolean> =>
+  role === 'support'
+    ? {
+      ...ALL_CONTENT_TRUE,
+      manageGroups: true,
+      manageAdmins: false,
+      manageStreakSystem: false,
+      manageMcqSystem: false,
+      manageAntiCheat: false,
+    }
+    : { ...ALL_CONTENT_TRUE };
 
 export default function AdminManagement({ isOpen, onClose, lang, user }: AdminManagementProps) {
   const t = TRANSLATIONS[lang];
@@ -65,22 +137,28 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
   // A master admin manages every assistant on every stage. A representative may
   // only appoint moderators, and only inside the stage they manage.
   const viewerIsMaster = isMaster(user);
-  const [newRole, setNewRole] = useState<AssistantRole>(viewerIsMaster ? 'admin' : 'moderator');
+  /**
+   * The escalation guard, UI half. Support holds manageAdmins so it can seat and
+   * unseat representatives; a support account able to mint ANOTHER support could
+   * grant itself the master-only surfaces by proxy, so 'support' is master-admin
+   * territory. firestore.rules enforces the same list - this only hides it.
+   */
+  const roleChoices = appointableRoles(user);
+  const canOfferRoleChoice = roleChoices.length > 1;
+  /** The roles a standing appointment can be moved BETWEEN. Moderators are left
+   *  out: they are appointed by a representative for one stage, and turning one
+   *  into a cross-stage account should start from a deliberate appointment. */
+  const promotableRoles = roleChoices.filter(r => r !== 'moderator');
+  const [newRole, setNewRole] = useState<AssistantRole>(roleChoices[0] || 'moderator');
   const [newStageId, setNewStageId] = useState<string>('');
 
   const [email, setEmail] = useState('');
   // Chosen from the stage roster rather than typed: an imported student's
   // document id is a synthetic string nobody could reproduce from memory.
   const [picked, setPicked] = useState<StudentCandidate | null>(null);
-  const [permissions, setPermissions] = useState({
-    manageLectures: true,
-    manageAnnouncements: true,
-    manageRecords: true,
-    manageChat: true,
-    manageHomeworks: true,
-    manageStudents: true,
-    manageGrades: true,
-  });
+  const [permissions, setPermissions] = useState<Record<string, boolean>>(
+    defaultPermissionsFor(roleChoices[0] || 'moderator'),
+  );
   const [admins, setAdmins] = useState<AdminRole[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -88,15 +166,12 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editStageId, setEditStageId] = useState<string>('');
-  const [editPermissions, setEditPermissions] = useState({
-    manageLectures: true,
-    manageAnnouncements: true,
-    manageRecords: true,
-    manageChat: true,
-    manageHomeworks: true,
-    manageStudents: true,
-    manageGrades: true,
-  });
+  /** The role being saved, which may differ from the one on the row: the whole
+   *  point of the edit path is promoting a representative to support and back. */
+  const [editRole, setEditRole] = useState<AssistantRole>('admin');
+  const [editPermissions, setEditPermissions] = useState<Record<string, boolean>>(
+    defaultPermissionsFor('admin'),
+  );
 
   const fetchAdmins = async () => {
     setIsLoading(true);
@@ -109,22 +184,23 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
         // Docs created before assistants existed have no role field; they are admins.
         role: (doc.data().role as AssistantRole) || 'admin',
         managedStageId: doc.data().managedStageId,
-        permissions: doc.data().permissions || {
-          manageLectures: true,
-          manageAnnouncements: true,
-          manageRecords: true,
-          manageChat: true,
-          manageHomeworks: true,
-          manageStudents: true,
-          manageGrades: true,
-        }
+        permissions: doc.data().permissions || { ...ALL_CONTENT_TRUE }
       }));
 
       if (!viewerIsMaster) {
-        // A representative only ever sees the moderators they are responsible for.
-        adminList = adminList.filter(
-          a => a.role === 'moderator' && a.managedStageId === effectiveStageId
-        );
+        const editable = appointableRoles(user);
+        adminList = adminList.filter(a => {
+          const role = a.role || 'admin';
+          // Never list a role this viewer could not save - a row they can open
+          // and not persist is worse than one that is not there. For support
+          // that excludes other support accounts; for a representative it
+          // leaves only the moderators on their own stage.
+          if (!(editable as readonly string[]).includes(role)) return false;
+          if (role === 'moderator' && !editable.includes('admin')) {
+            return a.managedStageId === effectiveStageId;
+          }
+          return true;
+        });
       }
 
       setAdmins(adminList);
@@ -137,11 +213,22 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
 
   useEffect(() => {
     if (isOpen) {
-      setNewRole(viewerIsMaster ? 'admin' : 'moderator');
-      setNewStageId(viewerIsMaster ? (effectiveStageId || '') : (effectiveStageId || ''));
+      const first = roleChoices[0] || 'moderator';
+      setNewRole(first);
+      setPermissions(defaultPermissionsFor(first));
+      setNewStageId(effectiveStageId || '');
       fetchAdmins();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, viewerIsMaster, effectiveStageId]);
+
+  /** Switching role re-seeds the ticks. An absent key means GRANTED for a
+   *  representative and DENIED for a moderator or support account, so carrying
+   *  the previous map across a role change silently grants or revokes. */
+  const chooseNewRole = (role: AssistantRole) => {
+    setNewRole(role);
+    setPermissions(defaultPermissionsFor(role));
+  };
 
   // Which stages currently have nobody representing them. Seats fall vacant on
   // their own every year - a representative who moves up a stage is released -
@@ -162,12 +249,18 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
         return;
       }
 
-      // A representative can only ever create a moderator on their own stage.
-      const roleToSave: AssistantRole = viewerIsMaster ? newRole : 'moderator';
+      // Never trust newRole on its own: a representative can only ever create a
+      // moderator, and only on their own stage.
+      const roleToSave: AssistantRole = roleChoices.includes(newRole)
+        ? newRole
+        : (roleChoices[0] || 'moderator');
       const stageToSave = viewerIsMaster ? newStageId : (effectiveStageId || '');
       const permsToSave = sanitizePermissions(roleToSave, permissions);
 
-      if (!stageToSave) {
+      // Support is cross-stage, so its stage is a home stage and optional - a
+      // support account appointed from scratch need not represent anything.
+      // Every other role IS its stage, so it stays required.
+      if (!stageToSave && roleToSave !== 'support') {
         setError(isRtl ? 'يرجى اختيار المرحلة' : 'Please select a stage');
         setIsSubmitting(false);
         return;
@@ -208,7 +301,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
       await setDoc(doc(db, 'allowed_admins', email.toLowerCase()), {
         email: email.toLowerCase(),
         role: roleToSave,
-        managedStageId: stageToSave,
+        ...(stageToSave ? { managedStageId: stageToSave } : {}),
         permissions: permsToSave,
         createdAt: serverTimestamp(),
         createdBy: auth.currentUser?.uid
@@ -223,7 +316,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
          try {
             await setDoc(doc(db, 'users', userSnap.docs[0].id), {
                role: roleToSave,
-               managedStageId: stageToSave,
+               ...(stageToSave ? { managedStageId: stageToSave } : {}),
                permissions: permsToSave
             }, { merge: true });
          } catch (e) {
@@ -245,9 +338,25 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
   const handleSaveEdit = async (id: string, email: string) => {
     try {
       const existing = admins.find(a => a.id === id);
-      const roleToSave: AssistantRole = existing?.role || 'admin';
+      const previousRole: AssistantRole = existing?.role || 'admin';
+      // Promotion and demotion both run through here: 'admin' -> 'support' and
+      // back. Fall back to the row's own role when the viewer cannot set roles
+      // at all, so a representative editing a moderator cannot change one.
+      const roleToSave: AssistantRole = roleChoices.includes(editRole) ? editRole : previousRole;
+      // managedStageId is PRESERVED across the change in both directions. On a
+      // support account it is a home stage rather than a limit; on demotion back
+      // to representative it is the stage they return to representing, so
+      // clearing it here would strand them with authority over nothing.
       const stageToSave = editStageId || existing?.managedStageId || '';
       const permsToSave = sanitizePermissions(roleToSave, editPermissions);
+
+      if (roleToSave !== previousRole) {
+        await logAdminAction(
+          'UPDATE_ADMIN_ROLE',
+          `Changed ${email} from ${previousRole} to ${roleToSave}`,
+          id,
+        );
+      }
 
       await setDoc(doc(db, 'allowed_admins', id), {
         email: email,
@@ -383,31 +492,31 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                     onSelect={(c) => { setPicked(c); setEmail(c?.id || ''); }}
                   />
 
-                  {viewerIsMaster && (
+                  {canOfferRoleChoice && (
                     <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setNewRole('admin')}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
-                          newRole === 'admin'
-                            ? 'bg-sky-600 text-white shadow-lg shadow-sky-100 dark:shadow-none'
-                            : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
-                        }`}
-                      >
-                        {isRtl ? 'ممثل مرحلة' : 'Representative'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setNewRole('moderator')}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
-                          newRole === 'moderator'
-                            ? 'bg-sky-600 text-white shadow-lg shadow-sky-100 dark:shadow-none'
-                            : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
-                        }`}
-                      >
-                        {isRtl ? 'مساعد' : 'Moderator'}
-                      </button>
+                      {roleChoices.map(r => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => chooseNewRole(r)}
+                          className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                            newRole === r
+                              ? 'bg-sky-600 text-white shadow-lg shadow-sky-100 dark:shadow-none'
+                              : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          {isRtl ? ROLE_LABELS[r].ar : ROLE_LABELS[r].en}
+                        </button>
+                      ))}
                     </div>
+                  )}
+
+                  {viewerIsMaster && newRole === 'support' && (
+                    <p className="px-1 text-[11px] font-bold text-slate-400 dark:text-slate-500 leading-relaxed">
+                      {isRtl
+                        ? 'المرحلة أدناه هي المرحلة الأساسية فقط - تُستخدم لاختيار الشخص ولتحديد المرحلة التي يفتح عليها التطبيق. حساب الدعم يصل إلى كل المراحل.'
+                        : 'The stage below is a home stage only - it picks the person and decides which stage they open on. A support account reaches every stage.'}
+                    </p>
                   )}
 
                   {viewerIsMaster ? (
@@ -438,11 +547,11 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
 
                   <div className="bg-slate-50 dark:bg-zinc-800 p-4 rounded-xl border border-slate-200 dark:border-zinc-700 flex flex-col gap-2">
                     <h4 className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1">{isRtl ? 'الصلاحيات' : 'Permissions'}</h4>
-                    {permissionsForRole(viewerIsMaster ? newRole : 'moderator').map(perm => (
+                    {permissionsForRole(newRole).map(perm => (
                       <label key={perm.id} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={permissions[perm.id as keyof typeof permissions]}
+                          checked={!!permissions[perm.id]}
                           onChange={(e) => setPermissions({...permissions, [perm.id]: e.target.checked})}
                           className="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
                         />
@@ -481,28 +590,62 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                               <span className="font-semibold text-slate-700 dark:text-slate-300 leading-tight">{admin.email}</span>
                             </div>
 
-                            {viewerIsMaster && (
-                              <select
-                                value={editStageId}
-                                onChange={(e) => setEditStageId(e.target.value)}
-                                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-stone-100 rounded-lg text-sm outline-none focus:ring-2 focus:ring-sky-500"
-                              >
-                                <option value="">{isRtl ? 'بدون مرحلة' : 'No stage'}</option>
-                                {stages.map(stage => (
-                                  <option key={stage.id} value={stage.id}>
-                                    {isRtl ? stage.nameAr : stage.nameEn}
-                                  </option>
+                            {/* Promotion and demotion - see promotableRoles. */}
+                            {promotableRoles.length > 1 && admin.role !== 'moderator' && (
+                              <div className="flex gap-2">
+                                {promotableRoles.map(r => (
+                                  <button
+                                    key={r}
+                                    type="button"
+                                    onClick={() => {
+                                      setEditRole(r);
+                                      // Re-tick: the two roles read an absent key
+                                      // in opposite directions.
+                                      setEditPermissions(defaultPermissionsFor(r));
+                                    }}
+                                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                                      editRole === r
+                                        ? 'bg-sky-600 text-white'
+                                        : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-zinc-700'
+                                    }`}
+                                  >
+                                    {isRtl ? ROLE_LABELS[r].ar : ROLE_LABELS[r].en}
+                                  </button>
                                 ))}
-                              </select>
+                              </div>
+                            )}
+
+                            {viewerIsMaster && (
+                              <>
+                                <select
+                                  value={editStageId}
+                                  onChange={(e) => setEditStageId(e.target.value)}
+                                  className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-stone-100 rounded-lg text-sm outline-none focus:ring-2 focus:ring-sky-500"
+                                >
+                                  <option value="">{isRtl ? 'بدون مرحلة' : 'No stage'}</option>
+                                  {stages.map(stage => (
+                                    <option key={stage.id} value={stage.id}>
+                                      {isRtl ? stage.nameAr : stage.nameEn}
+                                    </option>
+                                  ))}
+                                </select>
+                                {editRole === 'support' && (
+                                  <p className="px-1 text-[11px] font-bold text-slate-400 dark:text-slate-500 leading-relaxed">
+                                    {isRtl
+                                      ? 'المرحلة الأساسية فقط: حساب الدعم يصل إلى كل المراحل ولا تحدّه هذه المرحلة.'
+                                      : 'Home stage only. A support account reaches every stage; this does not limit it.'}
+                                  </p>
+                                )}
+                              </>
                             )}
 
                             <div className="bg-white dark:bg-zinc-900 p-3 rounded-lg border border-slate-200 dark:border-zinc-700 flex flex-col gap-2">
                               <h4 className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1">{isRtl ? 'الصلاحيات' : 'Permissions'}</h4>
-                              {permissionsForRole(admin.role || 'admin').map(perm => (
+                              {permissionsForRole(editRole).map(perm => (
                                 <label key={perm.id} className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    checked={editPermissions[perm.id as keyof typeof editPermissions]}
+                                    checked={!!editPermissions[perm.id]}
                                     onChange={(e) => setEditPermissions({...editPermissions, [perm.id]: e.target.checked})}
                                     className="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
                                   />
@@ -534,10 +677,14 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                               </div>
                               <div className="flex flex-col">
                                 <span className="font-semibold text-slate-700 dark:text-slate-300 leading-tight">{admin.email}</span>
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">
-                                  {admin.role === 'moderator'
-                                    ? (isRtl ? 'مساعد' : 'Moderator')
-                                    : (isRtl ? 'ممثل مرحلة' : 'Representative')}
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                                  admin.role === 'support'
+                                    ? 'text-violet-600 dark:text-violet-400'
+                                    : 'text-sky-600 dark:text-sky-400'
+                                }`}>
+                                  {isRtl
+                                    ? ROLE_LABELS[admin.role || 'admin'].ar
+                                    : ROLE_LABELS[admin.role || 'admin'].en}
                                   {admin.managedStageId && (
                                     <span className="text-slate-400 dark:text-slate-500 normal-case">
                                       {' · '}
@@ -546,6 +693,9 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                                             ? stages.find(st => st.id === admin.managedStageId)!.nameAr
                                             : stages.find(st => st.id === admin.managedStageId)!.nameEn)
                                         : admin.managedStageId}
+                                      {/* A support account's stage is where they
+                                          came from, not what they may touch. */}
+                                      {admin.role === 'support' && (isRtl ? ' (أساسية)' : ' (home)')}
                                     </span>
                                   )}
                                 </span>
@@ -570,16 +720,13 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                               <div className="flex items-center gap-1">
                                 <button
                                   onClick={() => {
+                                    const role = admin.role || 'admin';
                                     setEditingId(admin.id);
+                                    setEditRole(role);
                                     setEditStageId(admin.managedStageId || '');
-                                    setEditPermissions(admin.permissions || {
-                                      manageLectures: true,
-                                      manageAnnouncements: true,
-                                      manageRecords: true,
-                                      manageChat: true,
-                                      manageHomeworks: true,
-                                      manageStudents: true,
-                                      manageGrades: true,
+                                    setEditPermissions({
+                                      ...defaultPermissionsFor(role),
+                                      ...(admin.permissions as Record<string, boolean> | undefined),
                                     });
                                   }}
                                   className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/30 rounded-lg transition-all"
