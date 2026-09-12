@@ -73,6 +73,14 @@ export interface Subscription {
   endDate: any;   // Firestore Timestamp
   paymentMethod: PaymentMethod;
   transactionId?: string;
+  /** Receipt screenshot for a manual (Super Qi / Qi Card) transfer. Either this
+   *  or transactionId is present on a manual request - see isProofSufficient()
+   *  in src/lib/paymentContact.ts. A download URL, so it carries its own access
+   *  token; the object itself lives at receiptPath. */
+  receiptUrl?: string;
+  /** Storage object name behind receiptUrl, kept so the file can be found (or
+   *  removed) without parsing the tokenised URL. */
+  receiptPath?: string;
   amount: number; // in IQD
   createdAt: any;
   updatedAt?: any;

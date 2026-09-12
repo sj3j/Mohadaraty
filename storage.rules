@@ -97,6 +97,33 @@ service firebase.storage {
       allow write: if isAuthenticated() && fileName.matches(request.auth.uid + ".*");
     }
 
+    // Proof of a manual Super Qi / Qi Card transfer, uploaded by the student
+    // who made it. Same uid-prefix contract as the two paths above, which is
+    // what receiptStoragePath() in src/lib/paymentContact.ts builds - the
+    // default fallback below grants write to STAFF only, so without this rule a
+    // student attaching a receipt gets a 403 and the form cannot be completed.
+    //
+    // Unlike those paths this one caps size and demands an image: it is the
+    // only student-writable prefix added since the app started taking money,
+    // and a 5MB image ceiling is what keeps an accidental video out of the
+    // bucket. A HEIC from an iPhone gallery can arrive with no contentType at
+    // all, so the check admits an absent one rather than rejecting the upload.
+    //
+    // Reads are NOT narrowed here, and cannot be: the fallback below already
+    // allows any authenticated read, and Storage grants access if ANY matching
+    // rule allows it, so a stricter rule alongside a permissive wildcard buys
+    // nothing. What actually keeps a receipt private is the download token in
+    // the getDownloadURL() link - the object name itself is unguessable anyway
+    // (uid + timestamp + salt).
+    match /payment_receipts/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && fileName.matches(request.auth.uid + ".*")
+                   && request.resource.size < 5 * 1024 * 1024
+                   && (request.resource.contentType == null ||
+                       request.resource.contentType.matches('image/.*'));
+    }
+
     // Default fallback
     match /{allPaths=**} {
       allow read: if isAuthenticated();

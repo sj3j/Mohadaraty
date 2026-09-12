@@ -431,6 +431,65 @@ the first side of that line.
 price fields, so it passing is **necessary but not sufficient** - it would not
 have caught a "Subscription" row with a credit-card icon.
 
+## The manual payment method: Super Qi / Qi Card
+
+ZainCash settles itself - the gateway calls back and `shared/subscriptions.ts`
+inquires and activates. **A Super Qi transfer lands in a wallet nothing here can
+query**, so the only two things the app can do are point the student at a number
+and a human, and collect enough evidence for that human to recognise the
+transfer in their own wallet history. The form used to do neither: it printed the
+literal placeholder `07XXXXXXXXX` and demanded a transaction id with nobody to
+ask about it.
+
+Both halves are deliberately **one of two, not both** (`src/lib/paymentContact.ts`,
+pinned by `npm run test:payments`):
+
+* **Contact: WhatsApp OR Telegram.** A seller who only uses Telegram should not
+  have to invent a WhatsApp number, and a row of dead buttons is worse than one
+  live one. The wallet number is *not* a channel - it takes money and answers
+  nothing, so a student who has already paid would have nowhere to go.
+  `normalizeWhatsapp()` rewrites a local `07xx` to `9647xx` because wa.me opens
+  its own "invalid number" page otherwise, and `normalizeTelegram()` refuses a
+  `t.me/joinchat/...`, `t.me/+invite` or `t.me/c/123/45` link - a remaining `/`
+  means the path is not a username, and "joinchat" survives the username check.
+* **Proof: a receipt screenshot OR the transaction number.** Super Qi shows its
+  reference once, on a screen most students have already dismissed; requiring it
+  is what made the form unfinishable. `isProofSufficient()` is the rule and it is
+  enforced three times - the disabled submit button, the service before the
+  write, and the test.
+
+**The details live in Firestore (`settings/payment_contact`), not an env var**,
+and are edited in-app from Subscription Management. The receiving number is the
+single most likely thing to change and a rebuild is not an acceptable cost for
+that. `settings/*` is already `read: if isAuthenticated()` / `write: if isAdmin()`,
+which is exactly the audience. The dead `SUPERKEY_PHONE_NUMBER` this replaces was
+never read by anything: no `VITE_` prefix, so it never reached the browser - the
+same dead-code shape as the MCQ key above.
+
+Receipts go to `payment_receipts/{uid}_{ts}_{salt}.{ext}` in Cloud Storage. The
+object name **must** start with the uploader's uid: `storage.rules` admits the
+write with `fileName.matches(request.auth.uid + ".*")`, and the default fallback
+grants write to staff only, so without that rule a student attaching a receipt
+gets a 403. Reads are not narrowed and cannot be - the fallback already allows
+any authenticated read and Storage grants on ANY matching rule - so what keeps a
+receipt private is the token in its `getDownloadURL()` link. The upload happens
+on submit, not on pick, so an abandoned form leaves no orphan object; a failed
+upload still submits when a transaction number was typed, because either half is
+enough.
+
+**The stored `paymentMethod` stays `'superkey'`.** Live subscriptions carry it and
+`SubscriptionManagement`'s stats and filters key off it. Only the label was
+corrected: "SuperKey" was a mis-transliteration of سوبر كي, which is Super Qi,
+Qi Card's own wallet app. Renaming the value would strand every existing row.
+
+All of it is web-only by construction: the strings are in `src/i18n/payments.ts`
+and the logic is reachable only from the two components `vite.config.ts` stubs
+for `mode === 'native'`, so `paymentContact.ts` leaves the native graph with
+them. Verified - no `t.me/`, `payment_receipts` or "Super Qi" in a native build.
+Generic-sounding keys in `payments.ts` carry a `pay` prefix (`paySave`,
+`payCopied`, `payOr`) so nothing outside the purchase UI can come to depend on a
+string that vanishes there.
+
 
 ## Two Gemini keys, and which pipeline uses which
 

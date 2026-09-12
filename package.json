@@ -30,6 +30,7 @@
     "test:anchor": "npx tsx scripts/pdfAnchor.test.ts",
     "test:search": "npx tsx scripts/pdfSearch.test.ts",
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
+    "test:payments": "npx tsx scripts/paymentContact.test.ts",
     "test:masters": "npx tsx scripts/masterAdmins.test.ts",
     "test:roster": "npx tsx scripts/roster.test.ts",
     "streak:audit": "npx tsx scripts/streakAudit.ts",

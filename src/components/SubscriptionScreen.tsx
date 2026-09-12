@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Crown, Clock, CreditCard, CheckCircle2, XCircle, AlertCircle,
-  Loader2, ChevronLeft, ChevronRight, Sparkles, Shield, ArrowRight
+  Loader2, ChevronLeft, ChevronRight, Sparkles, Shield, ArrowRight,
+  MessageSquare, Send, Copy, Check, ImagePlus, Trash2
 } from 'lucide-react';
 import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan, Subscription, UserProfile } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 import {
+  EMPTY_PAYMENT_CONTACT, PaymentContact, RECEIPT_ACCEPT,
+  checkReceiptFile, hasPaymentChannel, isProofSufficient,
+  telegramUrl, whatsappUrl,
+} from '../lib/paymentContact';
+import {
   onUserSubscriptions, createPendingSubscription, initiateZainCashPayment,
+  onPaymentContact, uploadPaymentReceipt,
   getRemainingDays, formatSubscriptionDate
 } from '../services/subscriptionService';
 
@@ -28,14 +35,34 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   const [viewState, setViewState] = useState<ViewState>('plans');
   const [superkeyRef, setSuperkeyRef] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  /** Who to message, and where the transfer goes. Empty until it loads. */
+  const [contact, setContact] = useState<PaymentContact>(EMPTY_PAYMENT_CONTACT);
+  /** The chosen receipt, not yet uploaded - the upload happens on submit so an
+   *  abandoned form leaves no orphan object in the bucket. */
+  const [receipt, setReceipt] = useState<{ file: File; preview: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const receiptInputRef = useRef<HTMLInputElement>(null);
 
   // Listen for user's subscriptions
   useEffect(() => {
     const unsub = onUserSubscriptions(user.uid, setSubscriptions);
     return unsub;
   }, [user.uid]);
+
+  // The seller's own WhatsApp / Telegram / wallet number, live so a change in
+  // Subscription Management reaches a student who already has this screen open.
+  useEffect(() => onPaymentContact(setContact), []);
+
+  // Object URLs are not garbage collected. Revoking in the cleanup releases the
+  // PREVIOUS preview when the student picks a different image, and the last one
+  // when they leave the screen.
+  useEffect(() => {
+    if (!receipt) return;
+    return () => URL.revokeObjectURL(receipt.preview);
+  }, [receipt]);
 
   // Return leg of a ZainCash payment. The server has already verified the
   // gateway JWT and confirmed the transaction via the Inquiry API before
@@ -74,17 +101,72 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
     }
   };
 
+  const handleReceiptPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Cleared so re-picking the same file still fires a change event.
+    e.target.value = '';
+    if (!file) return;
+    const problem = checkReceiptFile(file);
+    if (problem) {
+      setError(problem === 'size' ? t.receiptTooLarge : t.receiptWrongType);
+      return;
+    }
+    setError(null);
+    setReceipt({ file, preview: URL.createObjectURL(file) });
+  };
+
+  const handleCopyNumber = async () => {
+    try {
+      await navigator.clipboard.writeText(contact.walletNumber);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // No clipboard on an insecure origin or inside some in-app browsers. The
+      // number is on screen and selectable regardless, so this is not an error
+      // worth showing.
+    }
+  };
+
+  /**
+   * Submit a manual transfer for review.
+   *
+   * The proof is a screenshot OR the transaction number - isProofSufficient()
+   * is the same rule the submit button is disabled by and the service re-checks.
+   */
   const handleSuperkeySubmit = async () => {
-    if (!superkeyRef.trim()) return;
+    const reference = superkeyRef.trim();
+    if (!isProofSufficient(reference, !!receipt)) {
+      setError(t.proofRequired);
+      return;
+    }
     setIsProcessing(true);
     setError(null);
     try {
+      let uploaded: { url: string; path: string } | null = null;
+      if (receipt) {
+        setIsUploading(true);
+        try {
+          uploaded = await uploadPaymentReceipt(user.uid, receipt.file);
+        } catch {
+          // A failed upload must not throw away a reference the student has
+          // already typed - either half is enough for an admin to match the
+          // transfer. With nothing else to send, the upload IS the submission.
+          if (!reference) throw new Error(t.receiptUploadFailed);
+        } finally {
+          setIsUploading(false);
+        }
+      }
       await createPendingSubscription(
-        user.uid, user.email, user.name, selectedPlan, superkeyRef.trim()
+        user.uid, user.email, user.name, selectedPlan,
+        {
+          transactionId: reference || undefined,
+          receiptUrl: uploaded?.url,
+          receiptPath: uploaded?.path,
+        },
       );
       setViewState('pending');
     } catch (err: any) {
-      setError(err.message || t.paymentFailed);
+      setError(err?.message === 'NO_PAYMENT_PROOF' ? t.proofRequired : (err?.message || t.paymentFailed));
     } finally {
       setIsProcessing(false);
     }
@@ -121,6 +203,23 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
     superkey: t.superkey,
     admin_grant: t.adminGrant,
   };
+
+  /**
+   * What the WhatsApp button hands over.
+   *
+   * The seller has to match a transfer in their wallet history to an account in
+   * this app, and the three things that make that possible - who, which plan,
+   * how much - are exactly what a student retypes wrong. Telegram drops
+   * prefilled text on a direct chat, so that button carries none.
+   */
+  const contactMessage = [
+    isRtl ? 'مرحباً، أريد تفعيل اشتراك في تطبيق محاضراتي.' : 'Hello, I would like to activate a subscription in Mohadaraty.',
+    `${isRtl ? 'الاسم' : 'Name'}: ${user.name || user.email}`,
+    `${isRtl ? 'الخطة' : 'Plan'}: ${planLabels[selectedPlan]}`,
+    `${isRtl ? 'المبلغ' : 'Amount'}: ${PLAN_CONFIG[selectedPlan].price.toLocaleString()} ${t.iqd}`,
+  ].join('\n');
+
+  const proofReady = isProofSufficient(superkeyRef, !!receipt);
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -315,7 +414,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                   </motion.div>
                 )}
 
-                {/* SuperKey Form */}
+                {/* Super Qi / Qi Card: a manual transfer, reviewed by a human */}
                 {viewState === 'superkey_form' && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
@@ -330,41 +429,158 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                       {isRtl ? 'رجوع' : 'Back'}
                     </button>
 
-                    <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
-                      <p className="text-sm text-amber-800 dark:text-amber-200 font-medium mb-2">
-                        {t.superkeyInstructions}
-                      </p>
-                      <p className="text-2xl font-bold text-amber-900 dark:text-amber-100 font-mono tracking-wider text-center py-2">
-                        {/* SuperKey number from env - placeholder */}
-                        07XXXXXXXXX
-                      </p>
-                      <p className="text-xs text-amber-600 dark:text-amber-400 text-center mt-1">
-                        {isRtl ? `المبلغ: ${PLAN_CONFIG[selectedPlan].price.toLocaleString()} ${t.iqd}` : `Amount: ${PLAN_CONFIG[selectedPlan].price.toLocaleString()} ${t.iqd}`}
-                      </p>
-                    </div>
+                    {/* Where the money goes. Rendered only when a number is
+                        actually configured - this block used to print the
+                        literal placeholder 07XXXXXXXXX to every student. */}
+                    {contact.walletNumber && (
+                      <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                        <p className="text-sm text-amber-800 dark:text-amber-200 font-medium mb-2">
+                          {t.superkeyInstructions}
+                        </p>
+                        <p className="text-2xl font-bold text-amber-900 dark:text-amber-100 font-mono tracking-wider text-center py-2 select-all" dir="ltr">
+                          {contact.walletNumber}
+                        </p>
+                        <div className="flex justify-center">
+                          <button
+                            onClick={handleCopyNumber}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 text-xs font-medium hover:bg-amber-200 dark:hover:bg-amber-900/70 transition-colors"
+                          >
+                            {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copied ? t.payCopied : t.copyNumber}
+                          </button>
+                        </div>
+                        {contact.note && (
+                          <p className="text-xs text-amber-700 dark:text-amber-300 text-center mt-2">{contact.note}</p>
+                        )}
+                        <p className="text-xs text-amber-600 dark:text-amber-400 text-center mt-2">
+                          {isRtl ? `المبلغ: ${PLAN_CONFIG[selectedPlan].price.toLocaleString()} ${t.iqd}` : `Amount: ${PLAN_CONFIG[selectedPlan].price.toLocaleString()} ${t.iqd}`}
+                        </p>
+                      </div>
+                    )}
 
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                        {t.enterTransactionId}
-                      </label>
+                    {/* A human to talk to. WhatsApp, Telegram, or whichever one
+                        of the two is configured - a transfer nobody can query
+                        needs somebody to confirm it. */}
+                    {hasPaymentChannel(contact) ? (
+                      <div className="p-4 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800">
+                        <p className="text-sm font-medium text-sky-900 dark:text-sky-200">{t.contactUsToPay}</p>
+                        <p className="text-xs text-sky-700 dark:text-sky-400 mt-1">{t.contactUsToPayHint}</p>
+                        <div className={`grid gap-2 mt-3 ${contact.whatsapp && contact.telegram ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          {contact.whatsapp && (
+                            <a
+                              href={whatsappUrl(contact, contactMessage)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-500 text-white text-sm font-bold shadow-sm shadow-emerald-500/30 hover:bg-emerald-600 transition-colors"
+                            >
+                              <MessageSquare className="w-4 h-4" />
+                              {t.payWhatsapp}
+                            </a>
+                          )}
+                          {contact.telegram && (
+                            <a
+                              href={telegramUrl(contact)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-500 text-white text-sm font-bold shadow-sm shadow-sky-500/30 hover:bg-sky-600 transition-colors"
+                            >
+                              <Send className="w-4 h-4" />
+                              {t.payTelegram}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                        <p className="text-sm text-amber-800 dark:text-amber-200">{t.noPaymentContact}</p>
+                      </div>
+                    )}
+
+                    {/* Proof: a screenshot OR the transaction number. Either
+                        one submits; demanding the number is what used to leave
+                        a student who had already paid with no way forward. */}
+                    <div className="space-y-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900 dark:text-white">{t.paymentProof}</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t.proofOneOfTwo}</p>
+                      </div>
+
                       <input
-                        type="text"
-                        value={superkeyRef}
-                        onChange={(e) => setSuperkeyRef(e.target.value)}
-                        placeholder={isRtl ? 'رقم العملية...' : 'Transaction reference...'}
-                        className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20 outline-none transition-all"
+                        ref={receiptInputRef}
+                        type="file"
+                        accept={RECEIPT_ACCEPT}
+                        onChange={handleReceiptPick}
+                        className="hidden"
                       />
+
+                      {receipt ? (
+                        <div className="flex items-center gap-3 p-3 rounded-2xl border-2 border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30">
+                          <img
+                            src={receipt.preview}
+                            alt=""
+                            className="w-14 h-14 rounded-xl object-cover flex-shrink-0 bg-white"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{receipt.file.name}</p>
+                            <button
+                              onClick={() => receiptInputRef.current?.click()}
+                              className="text-xs text-sky-600 dark:text-sky-400 font-medium hover:underline mt-0.5"
+                            >
+                              {t.changeReceipt}
+                            </button>
+                          </div>
+                          <button
+                            onClick={() => setReceipt(null)}
+                            title={t.removeReceipt}
+                            aria-label={t.removeReceipt}
+                            className="p-2 rounded-xl text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors flex-shrink-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => receiptInputRef.current?.click()}
+                          className="w-full py-4 rounded-2xl border-2 border-dashed border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-slate-300 text-sm font-medium hover:border-sky-400 hover:text-sky-600 dark:hover:text-sky-400 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <ImagePlus className="w-5 h-5" />
+                          {t.attachReceipt}
+                        </button>
+                      )}
+
+                      <div className="flex items-center gap-3">
+                        <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+                        <span className="text-xs text-slate-400">{t.payOr}</span>
+                        <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                          {t.enterTransactionId}
+                        </label>
+                        <input
+                          type="text"
+                          value={superkeyRef}
+                          onChange={(e) => setSuperkeyRef(e.target.value)}
+                          placeholder={isRtl ? 'رقم العملية...' : 'Transaction reference...'}
+                          className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20 outline-none transition-all"
+                        />
+                      </div>
                     </div>
 
                     <motion.button
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={handleSuperkeySubmit}
-                      disabled={isProcessing || !superkeyRef.trim()}
+                      disabled={isProcessing || !proofReady}
                       className="w-full py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold text-base shadow-lg shadow-amber-500/30 disabled:opacity-60 flex items-center justify-center gap-2"
                     >
                       {isProcessing ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          {isUploading && <span className="text-sm">{t.uploadingReceipt}</span>}
+                        </>
                       ) : (
                         <>
                           {t.submitPayment}
@@ -372,6 +588,10 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                         </>
                       )}
                     </motion.button>
+
+                    {!proofReady && (
+                      <p className="text-xs text-slate-400 text-center">{t.proofRequired}</p>
+                    )}
                   </motion.div>
                 )}
               </>
