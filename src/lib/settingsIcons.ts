@@ -9,7 +9,8 @@
 import {
   Bell, Palette, Languages, ShieldCheck, User, Flame, Trophy, CreditCard,
   GraduationCap, CalendarDays, Users, FileText, HardDrive, Crown, LogOut,
-  Ban, Info, Shield, BookOpen, Inbox, Layers, Sparkles, KeyRound, Send, type LucideIcon,
+  Ban, Info, Shield, BookOpen, Inbox, Layers, Sparkles, KeyRound, Send, HelpCircle,
+  type LucideIcon,
 } from 'lucide-react';
 
 export interface SettingsIcon {
@@ -35,6 +36,7 @@ export const SETTINGS_ICONS: Record<string, SettingsIcon> = {
   // Store builds show this instead of `subscription`. A credit-card glyph is
   // payment iconography on a screen that must not offer a payment.
   access:        { Icon: KeyRound,      className: 'text-fuchsia-500', tile: 'bg-fuchsia-100 dark:bg-fuchsia-900/30' },
+  faq:           { Icon: HelpCircle,    className: 'text-teal-500',    tile: 'bg-teal-100 dark:bg-teal-900/30' },
   about:         { Icon: Info,          className: 'text-slate-500',   tile: 'bg-slate-100 dark:bg-zinc-800' },
   logout:        { Icon: LogOut,        className: 'text-rose-500',    tile: 'bg-rose-100 dark:bg-rose-900/30' },
 
