@@ -81,6 +81,12 @@ export interface Subscription {
   /** Storage object name behind receiptUrl, kept so the file can be found (or
    *  removed) without parsing the tokenised URL. */
   receiptPath?: string;
+  /** How to reach the STUDENT about this request - one of the two is present on
+   *  a manual one. `userEmail` is not a reply channel: for a roster student it
+   *  is a college address nobody reads. Normalised on write, so contactWhatsapp
+   *  is dialable digits and contactTelegram carries no `@`. */
+  contactWhatsapp?: string;
+  contactTelegram?: string;
   amount: number; // in IQD
   createdAt: any;
   updatedAt?: any;

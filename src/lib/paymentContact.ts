@@ -178,6 +178,42 @@ export function whatsappUrl(c: PaymentContact, message?: string): string {
 export const telegramUrl = (c: PaymentContact): string =>
   c.telegram ? `https://t.me/${c.telegram}` : '';
 
+// ─── The student's own contact ──────────────────────────────────────────────
+
+/**
+ * How the seller reaches the STUDENT about a request.
+ *
+ * The other direction of the same problem. A manual transfer is approved by a
+ * human reading a screenshot, and that human regularly needs to ask something
+ * back - the amount is short, the name on the transfer is a sibling's, the
+ * receipt is for last month. Before this the only reply channel was the
+ * subscription's `userEmail`, which for a roster student is a college address
+ * nobody reads, so an unclear request could only be rejected.
+ *
+ * Same shape and same rule as the seller's side: WhatsApp OR Telegram, one is
+ * enough, and an unusable value is refused rather than stored.
+ */
+export interface StudentContact {
+  /** Digits only, international, no `+` or `00`. */
+  whatsapp: string;
+  /** Telegram username WITHOUT the leading `@`. */
+  telegram: string;
+}
+
+export const EMPTY_STUDENT_CONTACT: StudentContact = { whatsapp: '', telegram: '' };
+
+export function normalizeStudentContact(raw: unknown): StudentContact {
+  const data = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    whatsapp: normalizeWhatsapp(data.whatsapp),
+    telegram: normalizeTelegram(data.telegram),
+  };
+}
+
+/** True when the request carries at least one way to reach its author. */
+export const hasStudentContact = (c: StudentContact): boolean =>
+  !!(c.whatsapp || c.telegram);
+
 // ─── Proof of payment ───────────────────────────────────────────────────────
 
 /** Images only, and small enough that a phone upload finishes on 3G. */

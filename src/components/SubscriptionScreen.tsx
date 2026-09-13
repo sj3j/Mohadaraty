@@ -8,9 +8,9 @@ import {
 import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan, Subscription, UserProfile } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 import {
-  EMPTY_PAYMENT_CONTACT, PaymentContact, RECEIPT_ACCEPT,
-  checkReceiptFile, hasPaymentChannel, isProofSufficient,
-  telegramUrl, whatsappUrl,
+  EMPTY_PAYMENT_CONTACT, EMPTY_STUDENT_CONTACT, PaymentContact, RECEIPT_ACCEPT,
+  checkReceiptFile, hasPaymentChannel, hasStudentContact, isProofSufficient,
+  normalizeStudentContact, telegramUrl, whatsappUrl,
 } from '../lib/paymentContact';
 import {
   onUserSubscriptions, createPendingSubscription, initiateZainCashPayment,
@@ -44,7 +44,14 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
    *  abandoned form leaves no orphan object in the bucket. */
   const [receipt, setReceipt] = useState<{ file: File; preview: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  /** How WE reach the STUDENT about this request. Raw as typed - normalised on
+   *  submit, and previewed below so a value we cannot use says so first. */
+  const [myContact, setMyContact] = useState(EMPTY_STUDENT_CONTACT);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+  /** A returning student should not retype their number every renewal, so the
+   *  last request that carried one seeds the fields - once, or it would fight
+   *  the keyboard as the listener re-fires. */
+  const contactSeeded = useRef(false);
 
   // Listen for user's subscriptions
   useEffect(() => {
@@ -55,6 +62,19 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   // The seller's own WhatsApp / Telegram / wallet number, live so a change in
   // Subscription Management reaches a student who already has this screen open.
   useEffect(() => onPaymentContact(setContact), []);
+
+  // Seed the contact fields from this student's most recent request that had
+  // one. onUserSubscriptions orders by createdAt desc, so the first hit is it.
+  useEffect(() => {
+    if (contactSeeded.current) return;
+    const previous = subscriptions.find(sub => sub.contactWhatsapp || sub.contactTelegram);
+    if (!previous) return;
+    contactSeeded.current = true;
+    setMyContact({
+      whatsapp: previous.contactWhatsapp || '',
+      telegram: previous.contactTelegram || '',
+    });
+  }, [subscriptions]);
 
   // Object URLs are not garbage collected. Revoking in the cleanup releases the
   // PREVIOUS preview when the student picks a different image, and the last one
@@ -130,13 +150,18 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   /**
    * Submit a manual transfer for review.
    *
-   * The proof is a screenshot OR the transaction number - isProofSufficient()
-   * is the same rule the submit button is disabled by and the service re-checks.
+   * Two rules, both "one of two": the proof is a screenshot OR the transaction
+   * number, and the contact is WhatsApp OR Telegram. Both are what the submit
+   * button is disabled by and what the service re-checks.
    */
   const handleSuperkeySubmit = async () => {
     const reference = superkeyRef.trim();
     if (!isProofSufficient(reference, !!receipt)) {
       setError(t.proofRequired);
+      return;
+    }
+    if (!hasStudentContact(myReach)) {
+      setError(t.contactRequired);
       return;
     }
     setIsProcessing(true);
@@ -163,10 +188,16 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
           receiptUrl: uploaded?.url,
           receiptPath: uploaded?.path,
         },
+        myReach,
       );
       setViewState('pending');
     } catch (err: any) {
-      setError(err?.message === 'NO_PAYMENT_PROOF' ? t.proofRequired : (err?.message || t.paymentFailed));
+      const code = err?.message;
+      setError(
+        code === 'NO_PAYMENT_PROOF' ? t.proofRequired
+          : code === 'NO_STUDENT_CONTACT' ? t.contactRequired
+          : (code || t.paymentFailed),
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -220,6 +251,13 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   ].join('\n');
 
   const proofReady = isProofSufficient(superkeyRef, !!receipt);
+
+  // Normalised as they type, so a number wa.me cannot dial is flagged here
+  // rather than stored and discovered when somebody tries to use it.
+  const myReach = normalizeStudentContact(myContact);
+  const myWhatsappBad = !!myContact.whatsapp.trim() && !myReach.whatsapp;
+  const myTelegramBad = !!myContact.telegram.trim() && !myReach.telegram;
+  const contactReady = hasStudentContact(myReach);
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -569,11 +607,70 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                       </div>
                     </div>
 
+                    {/* How WE reach the STUDENT. A receipt an admin has a
+                        question about is one they can only reject otherwise:
+                        the account's email is a college address nobody reads.
+                        Same one-of-two rule as everything else here. */}
+                    <div className="space-y-3 p-4 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900 dark:text-white">{t.yourContact}</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t.yourContactHint}</p>
+                      </div>
+
+                      <div>
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-500" />
+                          {t.yourWhatsapp}
+                        </label>
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          autoComplete="tel"
+                          dir="ltr"
+                          value={myContact.whatsapp}
+                          onChange={(e) => setMyContact({ ...myContact, whatsapp: e.target.value })}
+                          placeholder="07700000000"
+                          className={`w-full px-4 py-3 rounded-xl border-2 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder-slate-400 focus:ring-2 focus:ring-sky-400/20 outline-none transition-all ${
+                            myWhatsappBad ? 'border-red-400 dark:border-red-500' : 'border-slate-200 dark:border-zinc-700 focus:border-sky-400'
+                          }`}
+                        />
+                        {myWhatsappBad && (
+                          <p className="text-[11px] text-red-500 mt-1">{t.whatsappInvalid}</p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+                        <span className="text-xs text-slate-400">{t.payOr}</span>
+                        <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+                      </div>
+
+                      <div>
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                          <Send className="w-3.5 h-3.5 text-sky-500" />
+                          {t.yourTelegram}
+                        </label>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          value={myContact.telegram}
+                          onChange={(e) => setMyContact({ ...myContact, telegram: e.target.value })}
+                          placeholder="@username"
+                          className={`w-full px-4 py-3 rounded-xl border-2 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder-slate-400 focus:ring-2 focus:ring-sky-400/20 outline-none transition-all ${
+                            myTelegramBad ? 'border-red-400 dark:border-red-500' : 'border-slate-200 dark:border-zinc-700 focus:border-sky-400'
+                          }`}
+                        />
+                        {myTelegramBad && (
+                          <p className="text-[11px] text-red-500 mt-1">{t.telegramInvalid}</p>
+                        )}
+                      </div>
+                    </div>
+
                     <motion.button
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={handleSuperkeySubmit}
-                      disabled={isProcessing || !proofReady}
+                      disabled={isProcessing || !proofReady || !contactReady}
                       className="w-full py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold text-base shadow-lg shadow-amber-500/30 disabled:opacity-60 flex items-center justify-center gap-2"
                     >
                       {isProcessing ? (
@@ -589,8 +686,13 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                       )}
                     </motion.button>
 
+                    {/* Whichever half is still missing, named. One combined
+                        "fill in the form" line leaves the student hunting. */}
                     {!proofReady && (
                       <p className="text-xs text-slate-400 text-center">{t.proofRequired}</p>
+                    )}
+                    {proofReady && !contactReady && (
+                      <p className="text-xs text-slate-400 text-center">{t.contactRequired}</p>
                     )}
                   </motion.div>
                 )}

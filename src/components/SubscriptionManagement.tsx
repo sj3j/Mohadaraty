@@ -15,6 +15,7 @@ import {
 import {
   EMPTY_PAYMENT_CONTACT, PaymentContact,
   hasPaymentChannel, normalizePaymentContact, normalizeTelegram, normalizeWhatsapp,
+  telegramUrl, whatsappUrl,
 } from '../lib/paymentContact';
 import { db } from '../lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
@@ -105,10 +106,19 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
       if (filterPlan !== 'all' && s.plan !== filterPlan) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
+        // A rep holding a phone number or a Telegram handle should find the
+        // request it belongs to. The stored number is digits only, so a typed
+        // 07xx is reduced the same way first. BOTH are guarded on being
+        // non-empty: "".includes("") is true, so an unguarded digit match makes
+        // every row with a number answer a plain name search.
+        const digits = q.replace(/\D/g, '').replace(/^0/, '');
+        const handle = q.replace(/^@/, '');
         return (
           (s.userEmail || '').toLowerCase().includes(q) ||
           (s.userName || '').toLowerCase().includes(q) ||
-          (s.transactionId || '').toLowerCase().includes(q)
+          (s.transactionId || '').toLowerCase().includes(q) ||
+          (!!digits && (s.contactWhatsapp || '').includes(digits)) ||
+          (!!handle && (s.contactTelegram || '').toLowerCase().includes(handle))
         );
       }
       return true;
@@ -188,6 +198,47 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
       zaincash: t.zaincash, superkey: t.superkey, admin_grant: t.adminGrant,
     };
     return labels[method] || method;
+  };
+
+  /**
+   * The student's own WhatsApp / Telegram, as one-tap links.
+   *
+   * The reason the fields exist: a receipt with a question on it (short amount,
+   * a sibling's name on the transfer, last month's screenshot) is otherwise a
+   * reject, because the row's email is a college address nobody reads. Stored
+   * normalised, so these need no re-parsing.
+   */
+  const StudentContactLinks = ({ sub }: { sub: Subscription }) => {
+    if (!sub.contactWhatsapp && !sub.contactTelegram) return null;
+    return (
+      <div className="flex items-center gap-3 mt-1 text-xs">
+        <span className="text-slate-400">{t.studentContact}:</span>
+        {sub.contactWhatsapp && (
+          <a
+            href={whatsappUrl({ ...EMPTY_PAYMENT_CONTACT, whatsapp: sub.contactWhatsapp })}
+            target="_blank"
+            rel="noopener noreferrer"
+            dir="ltr"
+            className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+          >
+            <MessageSquare className="w-3 h-3" />
+            {sub.contactWhatsapp}
+          </a>
+        )}
+        {sub.contactTelegram && (
+          <a
+            href={telegramUrl({ ...EMPTY_PAYMENT_CONTACT, telegram: sub.contactTelegram })}
+            target="_blank"
+            rel="noopener noreferrer"
+            dir="ltr"
+            className="inline-flex items-center gap-1 font-medium text-sky-600 dark:text-sky-400 hover:underline"
+          >
+            <Send className="w-3 h-3" />
+            @{sub.contactTelegram}
+          </a>
+        )}
+      </div>
+    );
   };
 
   const statusColors: Record<string, string> = {
@@ -445,6 +496,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                         {t.viewReceipt}
                       </a>
                     )}
+                    <StudentContactLinks sub={sub} />
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
@@ -523,6 +575,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                       {t.viewReceipt}
                     </a>
                   )}
+                  <StudentContactLinks sub={sub} />
                 </div>
 
                 {/* Actions */}

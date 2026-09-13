@@ -69,6 +69,13 @@ export const PAYMENT_STRINGS = {
     proofRequired: 'أرفق صورة الإشعار أو اكتب رقم العملية.',
     viewReceipt: 'عرض الإشعار',
     payOr: 'أو',
+    // The student's own contact, so the reviewer can ask about the request.
+    yourContact: 'كيف نتواصل معك؟',
+    yourContactHint: 'اتركه لنتواصل معك إذا احتجنا شيئاً بخصوص طلبك — واتساب أو تيليجرام، واحد منهما يكفي.',
+    yourWhatsapp: 'رقم الواتساب الخاص بك',
+    yourTelegram: 'حساب تيليجرام الخاص بك',
+    contactRequired: 'اترك رقم واتساب أو حساب تيليجرام لنتمكن من التواصل معك.',
+    studentContact: 'للتواصل مع الطالب',
     // Admin editor for the details above.
     paymentContactSettings: 'معلومات الدفع اليدوي',
     paymentContactHint: 'يظهر هذا للطالب عند اختيار سوبر كي / كي كارد. يكفي واتساب أو تيليجرام — واحد منهما مطلوب.',
@@ -132,6 +139,13 @@ export const PAYMENT_STRINGS = {
     proofRequired: 'Attach the receipt image or enter the transaction number.',
     viewReceipt: 'View receipt',
     payOr: 'or',
+    // The student's own contact, so the reviewer can ask about the request.
+    yourContact: 'How can we reach you?',
+    yourContactHint: 'Leave it so we can contact you if anything comes up about your request — WhatsApp or Telegram, one is enough.',
+    yourWhatsapp: 'Your WhatsApp number',
+    yourTelegram: 'Your Telegram username',
+    contactRequired: 'Leave a WhatsApp number or a Telegram username so we can reach you.',
+    studentContact: 'Contact the student',
     // Admin editor for the details above.
     paymentContactSettings: 'Manual payment details',
     paymentContactHint: 'Shown to students who choose Super Qi / Qi Card. WhatsApp or Telegram — at least one is required.',

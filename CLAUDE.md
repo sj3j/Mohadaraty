@@ -458,6 +458,18 @@ pinned by `npm run test:payments`):
   enforced three times - the disabled submit button, the service before the
   write, and the test.
 
+**The student leaves a contact too, and it is required.** A reviewer regularly
+has to ask something back - the amount is short, the name on the transfer is a
+sibling's, the receipt is for last month - and before this the only reply channel
+was the row's `userEmail`, which for a roster student is a college address nobody
+reads, so an unclear request could only be rejected. WhatsApp OR Telegram, the
+same one-of-two rule, stored normalised on the subscription
+(`contactWhatsapp` / `contactTelegram`) so Subscription Management can link
+straight to wa.me / t.me. The fields seed from that student's last request that
+carried one, so a renewal is not a retype. The admin search matches them, and
+both needles are guarded on being non-empty - `"abc".includes("")` is true, so an
+unguarded digit match makes every row with a number answer a plain name search.
+
 **The details live in Firestore (`settings/payment_contact`), not an env var**,
 and are edited in-app from Subscription Management. The receiving number is the
 single most likely thing to change and a rebuild is not an acceptable cost for

@@ -17,12 +17,15 @@
  */
 import {
   EMPTY_PAYMENT_CONTACT,
+  EMPTY_STUDENT_CONTACT,
   RECEIPT_MAX_BYTES,
   checkReceiptFile,
   hasPaymentChannel,
   hasPaymentContact,
+  hasStudentContact,
   isProofSufficient,
   normalizePaymentContact,
+  normalizeStudentContact,
   normalizeTelegram,
   normalizeWalletNumber,
   normalizeWhatsapp,
@@ -106,6 +109,24 @@ console.log('\nOne channel is enough:');
     hasPaymentContact(normalizePaymentContact('nonsense')) === false);
 }
 
+console.log('\nThe student is reachable:');
+{
+  check('a WhatsApp number alone is enough',
+    hasStudentContact(normalizeStudentContact({ whatsapp: '07801234567' })));
+  check('a Telegram username alone is enough',
+    hasStudentContact(normalizeStudentContact({ telegram: '@student_ali' })));
+  check('neither is not enough', !hasStudentContact(EMPTY_STUDENT_CONTACT));
+  check('a half-typed number does not count as reachable',
+    !hasStudentContact(normalizeStudentContact({ whatsapp: '077' })));
+  check('a student number is stored dialable, not as typed',
+    normalizeStudentContact({ whatsapp: '0780 123 4567' }).whatsapp === '9647801234567',
+    normalizeStudentContact({ whatsapp: '0780 123 4567' }).whatsapp);
+  check('a pasted t.me link is stored as the username',
+    normalizeStudentContact({ telegram: 'https://t.me/student_ali' }).telegram === 'student_ali');
+  check('a missing field reads as empty rather than undefined',
+    normalizeStudentContact({}).whatsapp === '' && normalizeStudentContact({}).telegram === '');
+}
+
 console.log('\nOne proof is enough:');
 check('a transaction number alone submits', isProofSufficient('TX9931', false));
 check('a receipt alone submits', isProofSufficient('', true));
@@ -144,6 +165,31 @@ console.log('\nStorage path (the rule in storage.rules is a uid PREFIX match):')
     !receiptStoragePath('u1', 'a.../../x').includes('..'), receiptStoragePath('u1', 'a.../../x'));
   check('two uploads in the same millisecond do not collide',
     receiptStoragePath('u1', 'a.png') !== receiptStoragePath('u1', 'a.png'));
+}
+
+// The admin list lets a rep paste a number or a handle into the search box.
+// Both needles are guarded on being non-empty because "abc".includes("") is
+// true - an unguarded digit match makes every row carrying a number answer a
+// plain name search. This mirrors the filter in SubscriptionManagement.
+console.log('\nAdmin search needles:');
+{
+  const match = (query: string, sub: { contactWhatsapp?: string; contactTelegram?: string }) => {
+    const q = query.toLowerCase();
+    const digits = q.replace(/\D/g, '').replace(/^0/, '');
+    const handle = q.replace(/^@/, '');
+    return (!!digits && (sub.contactWhatsapp || '').includes(digits))
+      || (!!handle && (sub.contactTelegram || '').toLowerCase().includes(handle));
+  };
+  const row = { contactWhatsapp: '9647801234567', contactTelegram: 'student_ali' };
+
+  check('a local number finds the request', match('07801234567', row));
+  check('the tail of a number finds it', match('1234567', row));
+  check('a handle with @ finds it', match('@student_ali', row));
+  check('a different number does not', !match('07709999999', row));
+  check('a name search does not match every row that has a number',
+    !match('ahmed', { contactWhatsapp: '9647801234567' }));
+  check('a bare @ does not match every row that has a handle',
+    !match('@', { contactTelegram: 'student_ali' }));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
