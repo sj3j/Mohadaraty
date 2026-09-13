@@ -324,9 +324,20 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    match /settings/{document=**} {
+    // payment_contact is the Super Qi number and the WhatsApp/Telegram handle
+    // students are told to send money to, so it is master-admin only - a
+    // representative able to rewrite it could redirect every manual payment in
+    // the college. Firestore grants access if ANY matching rule allows it, so
+    // this cannot be a narrower match block added alongside the wildcard; the
+    // condition has to live here, the way app_settings does for academicCalendar
+    // just below.
+    // A single-segment {docId}, not {document=**}: the recursive form binds a
+    // Path, and `path == 'payment_contact'` is quietly FALSE against one - so
+    // the ternary fell through to isAdmin() and every representative could still
+    // rewrite it. Nothing nests under settings/; every document here is flat.
+    match /settings/{docId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if docId == 'payment_contact' ? isMasterAdmin() : isAdmin();
     }
 
     // The academic calendar decides whether the competition is running for the
@@ -878,17 +889,28 @@ service cloud.firestore {
     // ===============================================================
     // Subscriptions
     // ===============================================================
+    // The ledger. isMasterAdmin(), never isAdmin(): a subscription belongs to an
+    // ACCOUNT, not to a stage, so there is no stageId to scope a representative
+    // by - isAdmin() here let every stage representative read the payment
+    // history of every student in the college and edit any row from the client,
+    // while the screen itself has always been master-admin only. Support reaches
+    // it when ticked for manageSubscriptions, which is what lets the statistics
+    // reduce over the whole collection.
     match /subscriptions/{subId} {
-      // Users can read their own subscriptions, admins can read all
-      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
-      // Users can create pending subscriptions for themselves (SuperKey flow)
-      allow create: if isAdmin() || (
+      allow read: if isMasterAdmin() || supportCan('manageSubscriptions') ||
+                     (isAuthenticated() && resource.data.userId == request.auth.uid);
+      // Students create their own pending row for the manual (Super Qi) flow.
+      // Every other creator - the grant route, ZainCash init - is the Admin SDK,
+      // which bypasses these rules.
+      allow create: if isMasterAdmin() || (
         isAuthenticated() && 
         request.resource.data.userId == request.auth.uid && 
         request.resource.data.status == 'pending'
       );
-      // Only admins (and Admin SDK via webhooks) can update subscriptions
-      allow update: if isAdmin();
+      // No client writes one: approve/reject/extend/cancel and every ZainCash
+      // settlement go through the Admin SDK. Left at isMasterAdmin() rather than
+      // false only so a stuck row can be repaired by hand.
+      allow update: if isMasterAdmin();
       // No deletes
       allow delete: if false;
     }

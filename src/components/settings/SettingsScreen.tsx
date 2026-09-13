@@ -18,7 +18,7 @@ import { ThemeChoice } from '../../hooks/useTheme';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
 import {
   canManageAssistants, canManageStudents, canManageGrades,
-  canManageStreakSystem, canViewAdminLogs, canManageSimosanBilling,
+  canManageStreakSystem, canManageSubscriptions, canViewAdminLogs, canManageSimosanBilling,
   canManageTelegramMirror,
   canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
@@ -367,8 +367,11 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                   />
                 )}
                 {/* Web only: SubscriptionManagement is build-time stubbed for
-                    native, so on a store build this row would open nothing. */}
-                {!IS_STORE_BUILD && isMasterAdmin(user) && (
+                    native, so on a store build this row would open nothing.
+                    canManageSubscriptions, not isMasterAdmin: support reaches
+                    the screen when ticked, and sees only the statistics and
+                    منح اشتراك once inside. */}
+                {!IS_STORE_BUILD && canManageSubscriptions(user) && (
                   <SettingsRow
                     isRtl={isRtl} icon={SETTINGS_ICONS.subsAdmin}
                     label={isRtl ? 'إدارة الاشتراكات' : 'Manage subscriptions'}

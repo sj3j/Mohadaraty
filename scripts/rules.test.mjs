@@ -169,6 +169,35 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'announcements/ann_stage4'), { content: 'A4', stageId: 'stage_4' });
   await setDoc(doc(db, 'homeworks/hw_stage4'), { subject: 'biochemistry', stageId: 'stage_4' });
   await setDoc(doc(db, 'chat_messages/msg_stage4'), { text: 'C4', stageId: 'stage_4' });
+  // The subscription ledger. A subscription belongs to an ACCOUNT, not a stage,
+  // so the stage_3 representative has no business in either of these rows.
+  await setDoc(doc(db, 'subscriptions/sub_stu'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', plan: 'monthly',
+    status: 'active', paymentMethod: 'zaincash', amount: 1000,
+  });
+  await setDoc(doc(db, 'subscriptions/sub_stu2'), {
+    userId: 'stu2_uid', userEmail: 'stu2@x.com', plan: 'monthly',
+    status: 'pending', paymentMethod: 'superkey', amount: 1000,
+  });
+
+  // A support account ticked for manageSubscriptions - the one thing that opens
+  // إدارة الاشتراكات. sup_uid deliberately is NOT ticked, so the two together
+  // assert the capability and not merely the role.
+  await setDoc(doc(db, 'users/supsubs_uid'), {
+    role: 'support', email: 'supsubs@x.com', managedStageId: 'stage_4',
+    permissions: { manageSubscriptions: true },
+  });
+  await setDoc(doc(db, 'allowed_admins/supsubs@x.com'), {
+    email: 'supsubs@x.com', role: 'support', managedStageId: 'stage_4',
+  });
+
+  // Where students are told to send a Super Qi transfer, and a settings doc that
+  // is not - so the narrowing can be told apart from locking settings/* wholesale.
+  await setDoc(doc(db, 'settings/payment_contact'), {
+    walletNumber: '07700000000', whatsapp: '9647700000000', telegram: '',
+  });
+  await setDoc(doc(db, 'settings/misc'), { anything: true });
+
   await setDoc(doc(db, 'subjects/stage_3__biochemistry_ii'), {
     id: 'biochemistry_ii', stageId: 'stage_3', courseId: 'course_2',
     nameEn: 'Biochemistry II', nameAr: 'Biochemistry II', order: 0, isActive: true,
@@ -196,6 +225,7 @@ const master = ctxFor('master_uid', MASTER_ADMIN_EMAILS[0]);
 const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
+const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
 
 console.log('\nModerator is walled off from student data');
 await check('moderator CANNOT read students',
@@ -845,6 +875,66 @@ await check('support CAN appoint a moderator on a stage it does not manage',
   assertSucceeds(updateDoc(doc(support, 'users/stu2_uid'), {
     role: 'moderator', managedStageId: 'stage_3', permissions: { manageLectures: true },
   })));
+
+console.log('\nSubscriptions are account-scoped, not stage-scoped');
+await check('a student CAN read their own subscription',
+  assertSucceeds(getDoc(doc(student, 'subscriptions/sub_stu'))));
+await check('a student CANNOT read another student\'s subscription',
+  assertFails(getDoc(doc(student, 'subscriptions/sub_stu2'))));
+// This was `allow read: if isAdmin()`, which handed every stage representative
+// the payment history of every student in the college.
+await check('a representative CANNOT read a student\'s subscription',
+  assertFails(getDoc(doc(rep, 'subscriptions/sub_stu'))));
+await check('a representative CANNOT update a subscription',
+  assertFails(updateDoc(doc(rep, 'subscriptions/sub_stu2'), { status: 'active' })));
+await check('a moderator CANNOT read a subscription',
+  assertFails(getDoc(doc(mod, 'subscriptions/sub_stu'))));
+await check('the master admin CAN read the ledger',
+  assertSucceeds(getDocs(collection(master, 'subscriptions'))));
+
+console.log('\nإدارة الاشتراكات is a ticked capability, not the support role');
+await check('support WITHOUT manageSubscriptions cannot read the ledger',
+  assertFails(getDocs(collection(support, 'subscriptions'))));
+await check('support WITH manageSubscriptions can - the statistics reduce over it',
+  assertSucceeds(getDocs(collection(supportSubs, 'subscriptions'))));
+// Support is granted the statistics and منح اشتراك; approving, rejecting,
+// extending and cancelling stay master-admin only, on this path as on the API.
+await check('support WITH manageSubscriptions still cannot approve a row',
+  assertFails(updateDoc(doc(supportSubs, 'subscriptions/sub_stu2'), { status: 'active' })));
+
+console.log('\nA student cannot forge their own access');
+await check('a student CAN file their own pending request',
+  assertSucceeds(setDoc(doc(student, 'subscriptions/new_pending'), {
+    userId: 'stu_uid', plan: 'monthly', status: 'pending',
+    paymentMethod: 'superkey', amount: 1000,
+  })));
+await check('a student CANNOT create an already-active subscription',
+  assertFails(setDoc(doc(student, 'subscriptions/forged'), {
+    userId: 'stu_uid', plan: 'monthly', status: 'active',
+    paymentMethod: 'superkey', amount: 1000,
+  })));
+await check('a student CANNOT file a request in somebody else\'s name',
+  assertFails(setDoc(doc(student, 'subscriptions/impostor'), {
+    userId: 'stu2_uid', plan: 'monthly', status: 'pending',
+    paymentMethod: 'superkey', amount: 1000,
+  })));
+await check('a student CANNOT rewrite their own pending request',
+  assertFails(updateDoc(doc(student, 'subscriptions/sub_stu'), { status: 'active' })));
+await check('not even the master admin can delete a subscription',
+  assertFails(deleteDoc(doc(master, 'subscriptions/sub_stu'))));
+
+console.log('\nThe number students pay into is master-admin only');
+await check('a representative CANNOT rewrite settings/payment_contact',
+  assertFails(setDoc(doc(rep, 'settings/payment_contact'), { walletNumber: '07712345678' })));
+await check('support WITH manageSubscriptions CANNOT either',
+  assertFails(setDoc(doc(supportSubs, 'settings/payment_contact'), { walletNumber: '07712345678' })));
+await check('the master admin CAN',
+  assertSucceeds(setDoc(doc(master, 'settings/payment_contact'), {
+    walletNumber: '07712345678', whatsapp: '9647712345678', telegram: '',
+  })));
+// The narrowing is one document, not the whole settings/ wildcard.
+await check('a representative CAN still write another settings document',
+  assertSucceeds(setDoc(doc(rep, 'settings/misc'), { anything: false })));
 
 await testEnv.cleanup();
 

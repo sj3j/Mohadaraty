@@ -303,6 +303,45 @@ export async function grantSubscription(
   }
 }
 
+export interface ReconcileResult {
+  checked: number;
+  activated: number;
+  cancelled: number;
+  stillPending: number;
+}
+
+/**
+ * Ask the server to re-check ZainCash payments still sitting as pending.
+ *
+ * ZainCash settles itself on the redirect or the webhook, but both can be lost
+ * - the redirect comes back through the customer's browser, and the webhook
+ * does not fire in the test environment. Before this there was nothing to
+ * recover a paid-but-unsettled row with except an admin pressing Approve, which
+ * grants access without checking that any money arrived.
+ *
+ * Default scope is the caller's own payments; 'all' sweeps the queue and needs
+ * manageSubscriptions. Failure is deliberately swallowed by callers - this runs
+ * on screen open and must never be what stops a screen from rendering.
+ */
+export async function reconcileZainCash(scope?: 'all'): Promise<ReconcileResult> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const res = await fetch(apiUrl('/api/zaincash/reconcile'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(scope ? { scope } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Reconcile failed' }));
+    throw new Error(err.error || 'Reconcile failed');
+  }
+  return res.json();
+}
+
 // ─── Helpers ────────────────────────────────────────────────────
 
 /** Calculate remaining days from a Firestore Timestamp */

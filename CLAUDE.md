@@ -503,6 +503,72 @@ Generic-sounding keys in `payments.ts` carry a `pay` prefix (`paySave`,
 string that vanishes there.
 
 
+## The subscription ledger: rows, people, and who may see either
+
+**The dashboard counts two different things and they are not interchangeable**
+(`src/lib/subscriptionStats.ts`, pinned by `npm run test:subscriptions`). إجمالي
+المشتركين, المشتركون الفعالون and توزيع المشتركين count **people** — distinct
+`userId`. إجمالي الإيرادات and إحصائيات طرق الدفع count **transactions**, because
+a count sitting beside a revenue figure has to mean payments. إجمالي المشتركين was
+`subscriptions.length`, so a student who abandoned two ZainCash attempts before
+paying was three subscribers and a rejected Super Qi request was one; the live
+board read 8 against a single real subscriber.
+
+`'inactive'` is **not** a failure state — it is written when a subscription
+expires (`functions/index.js`, `expireSubscriptions`) and when one is superseded
+by an early renewal (`activateSubscription`), so `active || inactive` is the set
+of subscriptions that really happened, and it is the denominator for both the
+lifetime total and revenue. `pending` and `cancelled` are attempts.
+
+توزيع المشتركين takes each person's **newest** active row, because
+`activateSubscription` supersedes only `existingSubs.docs[0]` — a user holding
+two active rows is a real shape, and counting rows let the breakdown exceed its
+own total.
+
+**ZainCash is never approved by hand.** It settles against the Inquiry API, so a
+click on Approve would grant access for money nobody checked was collected; the
+route refuses `paymentMethod === 'zaincash'` and the queue filters it out
+(`needsManualApproval`). What made it *look* manual was that nothing ever moved a
+row out of `pending`: the redirect comes back through the customer's browser and
+the webhook does not fire in the test environment, so a student who paid and
+closed the tab was stuck until an admin pressed the button.
+`reconcilePendingZainCash()` is the sweep — run from the student's own
+subscription screen and from إدارة الاشتراكات on open, not a cron, because
+Vercel Hobby crons are daily and a payment cannot wait a day.
+
+Two traps inside that path:
+
+* **The probe's `eventId` must be unique per attempt.** It was
+  `inquiry-${transactionId}`, and `claimForSettlement` writes `lastEventId` when
+  it takes the claim while the `still_pending` branch releases only `settling` —
+  so every re-check after the first returned `duplicate_event` without reaching
+  the gateway. Double settlement is prevented by the claim's
+  `status !== 'pending'` arm, not by that id.
+* **`findLiveZainCashPayment` probes before checking `expiryTime`**, not after.
+  The old order returned early on an expired window, which is precisely the row
+  that needs asking about.
+
+**`manageSubscriptions` is a `SYSTEM_CAPABILITIES` entry** (`src/lib/permissions.ts`)
+— a subscription belongs to an *account*, not a stage, so there is no `stageId`
+to scope a representative by, and a representative's "allowed unless explicitly
+false" arm would be exactly wrong for it. Master admin always; support when
+ticked; representative and moderator never. Support gets the statistics and منح
+اشتراك; approve/reject/extend/cancel and `settings/payment_contact` stay
+master-admin-only, on all three layers.
+
+Those three layers used to disagree in opposite directions, which is the reason
+this is written down: the Settings row was `isMasterAdmin`, `firestore.rules` was
+`isAdmin()` (every stage representative could read the whole payment history and
+edit any row straight from the client), and all five API routes were bare
+`verifyAdmin` — which admits `admin`, `moderator` **and** `support`, so any
+moderator could grant themselves a free subscription with a direct POST.
+
+`settings/payment_contact` is matched by `match /settings/{docId}`, a
+**single-segment** wildcard. It was `{document=**}`, and a recursive wildcard
+binds a `Path`: `document == 'payment_contact'` is quietly *false* against one,
+so the ternary fell through to `isAdmin()` and the narrowing did nothing. Nothing
+nests under `settings/`.
+
 ## Two Gemini keys, and which pipeline uses which
 
 | | Simosan | MCQ generation |

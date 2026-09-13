@@ -36,6 +36,12 @@ export const ADMIN_ONLY_CAPABILITIES = ['manageStudents', 'manageGrades'] as con
 /**
  * Tools that act on every stage at once, so they are not one stage's business.
  *
+ * manageSubscriptions belongs here and not with the per-stage capabilities: a
+ * subscription is bought by an account, not by a stage, and the ledger has no
+ * stageId to scope on. It is also the widest of the four - it reads every
+ * student's payment history - so the `!== false` arm a representative gets
+ * would be exactly wrong for it.
+ *
  * Hard-denied to a representative and a moderator, grantable to support. The
  * denial is not decoration: a representative resolves an ABSENT key as granted
  * (`!== false`, for legacy docs that carry no permissions map), so without this
@@ -46,6 +52,7 @@ export const SYSTEM_CAPABILITIES = [
   'manageStreakSystem',
   'manageMcqSystem',
   'manageAntiCheat',
+  'manageSubscriptions',
 ] as const;
 
 /**
@@ -201,6 +208,11 @@ export const canManageMcqSystem = (user?: UserProfile | null): boolean =>
 
 export const canManageAntiCheat = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageAntiCheat');
+
+/** إدارة الاشتراكات. Master admin always; support when ticked. The screen is
+ *  web-only either way - vite.config.ts stubs it for mode === 'native'. */
+export const canManageSubscriptions = (user?: UserProfile | null): boolean =>
+  canManage(user, 'manageSubscriptions');
 
 /** Master-admin-exclusive. Deliberately left as aliases rather than routed
  *  through canManage, so there is no stored key that could ever turn them on. */

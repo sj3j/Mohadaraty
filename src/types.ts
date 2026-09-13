@@ -247,6 +247,9 @@ export interface UserProfile {
     manageStreakSystem?: boolean;
     manageMcqSystem?: boolean;
     manageAntiCheat?: boolean;
+    /** إدارة الاشتراكات. The ledger is account-keyed, not stage-keyed, which is
+     *  why it sits with the system-wide three rather than the per-stage ones. */
+    manageSubscriptions?: boolean;
     // Master-admin-only surfaces. Present so Capability is indexable against
     // this map; they are stripped on save and hard-denied on read, so a stored
     // `true` grants nothing.
