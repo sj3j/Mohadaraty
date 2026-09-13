@@ -12,6 +12,7 @@ import AppearanceSettings from './AppearanceSettings';
 import BlockedUsersSettings from './BlockedUsersSettings';
 import AccountSecuritySettings from './AccountSecuritySettings';
 import StageSettings from './StageSettings';
+import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
@@ -22,7 +23,7 @@ import {
   canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
 
-type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage';
+type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage' | 'faq';
 
 export interface SettingsScreenProps {
   /** Returns to the profile. This is a real page now, not an overlay. */
@@ -79,6 +80,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
     blocked:    { ar: 'المستخدمون المحظورون', en: 'Blocked users' },
     security:   { ar: 'الحساب وكلمة المرور',  en: 'Account & password' },
     stage:      { ar: 'المرحلة المعروضة',     en: 'Viewing stage' },
+    faq:        { ar: 'الأسئلة الشائعة',      en: 'FAQ' },
   };
 
   const notifLabel = notificationPermission === 'granted'
@@ -150,6 +152,10 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
         {page === 'stage' && (
           <StageSettings lang={lang} />
+        )}
+
+        {page === 'faq' && (
+          <FaqList lang={lang} />
         )}
 
         {page === 'root' && (
@@ -284,6 +290,18 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     : (isRtl ? 'الاشتراك' : 'Subscription')
                 }
                 onClick={() => onOpen('subscription')}
+              />
+            </SettingsGroup>
+
+            {/* Help, above the admin group so it stays in the same place for
+                every role - a student needing it should not have to scroll
+                past rows only staff ever see. */}
+            <SettingsGroup title={isRtl ? 'المساعدة' : 'Help'}>
+              <SettingsRow
+                isRtl={isRtl} icon={SETTINGS_ICONS.faq}
+                label={isRtl ? 'الأسئلة الشائعة' : 'FAQ'}
+                sublabel={isRtl ? 'الحساب وتسجيل الدخول والدعم' : 'Account, sign-in and support'}
+                onClick={() => setPage('faq')}
               />
             </SettingsGroup>
 

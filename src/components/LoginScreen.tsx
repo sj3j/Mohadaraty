@@ -9,6 +9,7 @@ import { getGoogleCustomToken, NoAccountError } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
 import { isMasterAdminEmail } from '../../shared/masterAdmins';
 import SignupScreen from './SignupScreen';
+import FaqSheet, { FaqTrigger } from './support/FaqSheet';
 
 interface LoginScreenProps {
   lang: Language;
@@ -122,6 +123,7 @@ const isIOS = (): boolean =>
 
 export default function LoginScreen({ lang, externalError, onClearError }: LoginScreenProps) {
   const [showSignup, setShowSignup] = useState(false);
+  const [showFaq, setShowFaq] = useState(false);
   const [signupPrefill, setSignupPrefill] = useState<{ email?: string; name?: string | null } | null>(null);
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
@@ -527,7 +529,16 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
             {isRtl ? 'أنشئ حساباً' : 'Sign up'}
           </button>
         </p>
+
+        {/* Where a student stuck on this screen is told what their credentials
+            are and who to ask. Deliberately quiet: it sits under the primary
+            actions rather than competing with them. */}
+        <div className="mt-3">
+          <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
+        </div>
       </div>
+
+      <FaqSheet open={showFaq} onClose={() => setShowFaq(false)} lang={lang} />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { Loader2, AlertCircle, CheckCircle2, ArrowRight, ArrowLeft } from 'lucid
 import { Language } from '../types';
 import { apiUrl } from '../lib/apiBase';
 import { subgroupOptions, FALLBACK_GROUP_CONFIG, GroupConfigLike } from '../../shared/groups';
+import FaqSheet, { FaqTrigger } from './support/FaqSheet';
 
 interface StageOption {
   id: string;
@@ -49,6 +50,7 @@ export default function SignupScreen({ lang, onBackToLogin, prefill }: SignupScr
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [showFaq, setShowFaq] = useState(false);
 
   // Split a Google display name across the three fields as a starting point.
   useEffect(() => {
@@ -134,7 +136,13 @@ export default function SignupScreen({ lang, onBackToLogin, prefill }: SignupScr
           <button onClick={onBackToLogin} className="w-full py-3.5 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white font-bold transition-colors">
             {isRtl ? 'العودة لتسجيل الدخول' : 'Back to login'}
           </button>
+
+          <div className="mt-3">
+            <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
+          </div>
         </motion.div>
+
+        <FaqSheet open={showFaq} onClose={() => setShowFaq(false)} lang={lang} />
       </div>
     );
   }
@@ -241,8 +249,15 @@ export default function SignupScreen({ lang, onBackToLogin, prefill }: SignupScr
             {submitting && <Loader2 className="w-5 h-5 animate-spin" />}
             {isRtl ? 'إرسال الطلب' : 'Send request'}
           </button>
+
+          {/* Same help as the login screen: most people who reach this form do
+              so because they could not sign in, and an existing account is the
+              answer for a good share of them. */}
+          <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
         </div>
       </motion.div>
+
+      <FaqSheet open={showFaq} onClose={() => setShowFaq(false)} lang={lang} />
     </div>
   );
 }
