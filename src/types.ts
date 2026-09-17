@@ -217,7 +217,6 @@ export interface UserProfile {
   notificationPreferences?: {
     lectures: boolean;
     announcements: boolean;
-    chat?: boolean;
     records?: boolean;
     homeworks?: boolean;
   };
@@ -235,7 +234,6 @@ export interface UserProfile {
     manageLectures: boolean;
     manageAnnouncements: boolean;
     manageRecords: boolean;
-    manageChat: boolean;
     manageHomeworks: boolean;
     manageStudents: boolean;
     manageGrades?: boolean;
@@ -436,7 +434,6 @@ export const TRANSLATIONS = {
     navWeekly: 'واجبات الأسبوع',
     navProfile: 'الملف الشخصي',
     navRecords: 'تسجيلات',
-    navChat: 'الدردشة',
     original: 'أصلي',
     translated: 'مترجم',
     addToWeekly: 'إضافة لواجبات الأسبوع',
@@ -583,7 +580,6 @@ export const TRANSLATIONS = {
     navWeekly: 'Weekly List',
     navProfile: 'Profile',
     navRecords: 'Records',
-    navChat: 'Chat',
     original: 'Original',
     translated: 'Translated',
     addToWeekly: 'Add to Weekly List',

@@ -153,8 +153,8 @@ export function blocksToDoc(blocks: RichBlock[]): PmNode {
   return { type: 'doc', content: content.length ? content : [{ type: 'paragraph' }] };
 }
 
-/** The flat string written to `text`/`content`. Read by the FCM function, the
- *  unread badge and share-to-chat, none of which know about blocks. */
+/** The flat string written to `text`/`content`. Read by the FCM function and
+ *  the unread badge, neither of which knows about blocks. */
 export function blocksToPlainText(blocks: RichBlock[]): string {
   return blocks.map(b => b.text).join('\n').trim();
 }

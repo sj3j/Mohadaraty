@@ -10,7 +10,6 @@ import type { Announcement } from '../types/announcement.types';
 import { safeUrl } from '../lib/richText';
 import LectureCard from './LectureCard';
 import SpotlightTooltip from './SpotlightTooltip';
-import { ConfirmShareDialog } from './ui/ConfirmShareDialog';
 import RichContent from './announcements/RichContent';
 import AttachmentGrid from './announcements/AttachmentGrid';
 import PollCard from './announcements/PollCard';
@@ -20,7 +19,6 @@ interface AnnouncementsScreenProps {
   user: UserProfile | null;
   lang: Language;
   lectures: Lecture[];
-  onNavigateToChat?: () => void;
   onOpenMCQ?: (lecture: Lecture) => void;
   onOpenReader?: (lecture: Lecture) => void;
   /** Staff only. The floating nav is hidden while the composer owns the bottom
@@ -29,7 +27,7 @@ interface AnnouncementsScreenProps {
 }
 
 export default function AnnouncementsScreen({
-  user, lang, lectures, onNavigateToChat, onOpenMCQ, onOpenReader, onBack,
+  user, lang, lectures, onOpenMCQ, onOpenReader, onBack,
 }: AnnouncementsScreenProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
@@ -41,7 +39,6 @@ export default function AnnouncementsScreen({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [editing, setEditing] = useState<Announcement | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [shareItem, setShareItem] = useState<{ id: string; content: string; authorName: string } | null>(null);
 
   const { effectiveStageId } = useStageContext();
   const postsEndRef = useRef<HTMLDivElement>(null);
@@ -128,34 +125,6 @@ export default function AnnouncementsScreen({
     const key = formatMessageDate(new Date(millisOf(post)));
     (groupedPosts[key] ||= []).push(post);
   }
-
-  const handleShareToChat = async () => {
-    if (!user || !shareItem) return;
-    try {
-      const { addDoc, collection: coll, serverTimestamp } = await import('firebase/firestore');
-      await addDoc(coll(db, 'chat_messages'), {
-        text: '',
-        senderName: user.name,
-        senderEmail: user.email,
-        senderId: user.uid,
-        senderAvatar: user.photoUrl || user.name.charAt(0).toUpperCase(),
-        timestamp: serverTimestamp(),
-        createdAt: Date.now(),
-        reactions: { like: [], heart: [], thanks: [] },
-        isAnonymous: false,
-        originalSenderName: user.name,
-        embeddedItem: {
-          type: 'announcement',
-          id: shareItem.id,
-          title: shareItem.content?.substring(0, 50) || 'تبليغ جديد',
-          subtitle: shareItem.authorName,
-        },
-      });
-      onNavigateToChat?.();
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const handleDeletePost = async (postId: string) => {
     try {
@@ -364,7 +333,6 @@ export default function AnnouncementsScreen({
                                     lecture={lecture}
                                     lang={lang}
                                     user={user}
-                                    onNavigateToChat={onNavigateToChat}
                                     onOpenMCQ={onOpenMCQ}
                                     onOpenReader={onOpenReader}
                                   />
@@ -372,16 +340,6 @@ export default function AnnouncementsScreen({
                               })}
                             </div>
                           </div>
-                        )}
-
-                        {user && (
-                          <button
-                            onClick={() => setShareItem({ id: post.id, content: post.text || '', authorName: post.authorName || '' })}
-                            className="w-full mt-3 p-2 flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 dark:bg-zinc-800/50 dark:hover:bg-zinc-800 text-slate-500 hover:text-sky-600 dark:hover:text-sky-400 rounded-xl transition-colors font-bold text-sm border border-slate-200 dark:border-zinc-700/50"
-                          >
-                            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                            {isRtl ? 'مناقشة في الشات' : 'Discuss in Chat'}
-                          </button>
                         )}
 
                         {user && (
@@ -530,14 +488,6 @@ export default function AnnouncementsScreen({
           </div>
         )}
       </AnimatePresence>
-
-      <ConfirmShareDialog
-        isOpen={!!shareItem}
-        onClose={() => setShareItem(null)}
-        onConfirm={handleShareToChat}
-        itemName={isRtl ? 'هذا التبليغ' : 'this announcement'}
-        lang={lang}
-      />
     </div>
   );
 }

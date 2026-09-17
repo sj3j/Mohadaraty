@@ -93,7 +93,7 @@ export interface PollVote {
 export interface Announcement {
   id: string;
   /** Plain text of the whole document, blocks joined by newline. Always written:
-   *  the FCM function, the unread badge and share-to-chat all read it. */
+   *  the FCM function and the unread badge both read it. */
   text: string;
   /** Legacy duplicate of `text`. Written for the notification function, which
    *  reads `text || content`. */

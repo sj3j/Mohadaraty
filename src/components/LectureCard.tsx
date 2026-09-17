@@ -1,15 +1,15 @@
-import React, { useState } from 'react';
-import { FileText, Download, ExternalLink, Clock, Tag, X, Maximize2, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, Heart, CheckCircle, Youtube, ClipboardList, BookOpen, Highlighter } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { FileText, Download, ExternalLink, Clock, Tag, X, Maximize2, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, Heart, CheckCircle, Youtube, ClipboardList, BookOpen, Highlighter, Share2 } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
 import { doc, deleteDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
-import { useOfflinePDF } from '../hooks/useOfflinePDF';
+import { useOfflinePDF, readStoredPdf } from '../hooks/useOfflinePDF';
 import { forceDownload, getYoutubeEmbedUrl } from '../lib/utils';
 import { useMCQStatus } from '../hooks/useMCQStatus';
-import { ConfirmShareDialog } from './ui/ConfirmShareDialog';
+import { shareFile } from '../lib/shareFile';
 
 interface LectureCardProps {
   lecture: Lecture;
@@ -17,51 +17,61 @@ interface LectureCardProps {
   user: UserProfile | null;
   onEdit?: (lecture: Lecture) => void;
   onRemoveDownload?: (lecture: Lecture) => void;
-  onNavigateToChat?: () => void;
   onOpenMCQ?: (lecture: Lecture) => void;
   onOpenReader?: (lecture: Lecture) => void;
   key?: string;
 }
 
-export default React.memo(function LectureCard({ lecture, lang, user, onEdit, onRemoveDownload, onNavigateToChat, onOpenMCQ, onOpenReader }: LectureCardProps) {
+export default React.memo(function LectureCard({ lecture, lang, user, onEdit, onRemoveDownload, onOpenMCQ, onOpenReader }: LectureCardProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const [showPreview, setShowPreview] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareToast, setShareToast] = useState<string | null>(null);
   
-  const handleShareToChat = async () => {
-    if (!user) return;
+  /**
+   * Hand the lecture's actual PDF to the OS share sheet.
+   *
+   * This replaces a button that posted the lecture into the group chat. Bytes
+   * come from the offline copy when the student has already downloaded it, so
+   * the share works with no connection at all; otherwise they are fetched.
+   */
+  const handleShare = async () => {
+    if (isSharing) return;
+    setIsSharing(true);
     try {
-      const { addDoc, collection, serverTimestamp } = await import('firebase/firestore');
-      await addDoc(collection(db, 'chat_messages'), {
-        text: '',
-        senderName: user.name,
-        senderEmail: user.email,
-        senderId: user.uid,
-        senderAvatar: user.photoUrl || user.name.charAt(0).toUpperCase(),
-        timestamp: serverTimestamp(),
-        createdAt: Date.now(),
-        reactions: { like: [], heart: [], thanks: [] },
-        isAnonymous: false,
-        originalSenderName: user.name,
-        embeddedItem: {
-          type: 'lecture',
-          id: lecture.id,
-          title: lecture.title,
-          subtitle: `محاضرة ${lecture.number || ''} ${lecture.category}`,
-          link: lecture.pdfUrl
-        }
+      const stored = await readStoredPdf(lecture.pdfUrl).catch(() => null);
+      const result = await shareFile({
+        url: lecture.pdfUrl,
+        // The number disambiguates the two dozen lectures a subject can carry;
+        // a bare title arrives in WhatsApp as one of several identical files.
+        name: lecture.number ? `${lecture.title} - ${lecture.number}` : lecture.title,
+        extension: 'pdf',
+        mimeType: 'application/pdf',
+        title: lecture.title,
+        bytes: stored,
       });
-      if (onNavigateToChat) {
-         onNavigateToChat();
+      // 'shared' needs no toast - the chooser was the feedback - and neither
+      // does 'cancelled', which is the student changing their mind.
+      if (result === 'downloaded') {
+        setShareToast(isRtl ? 'تم تنزيل الملف' : 'File downloaded');
+      } else if (result === 'failed') {
+        setShareToast(isRtl ? 'تعذّرت المشاركة' : 'Could not share');
       }
-    } catch (err) {
-      console.error(err);
-      alert('Error sharing to chat');
+    } finally {
+      setIsSharing(false);
     }
   };
+
+  // Self-clearing, keyed on the message: a second toast restarts the timer
+  // instead of being cut short by the first one's pending timeout.
+  useEffect(() => {
+    if (!shareToast) return;
+    const t = setTimeout(() => setShareToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [shareToast]);
 
   const categoryData = CATEGORIES.find(c => c.value === lecture.category);
   // subjectName is denormalised at upload time so the badge reads correctly for
@@ -252,11 +262,17 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
           </button>
           {user && (
             <button
-              onClick={() => setIsShareDialogOpen(true)}
-              className="inline-flex items-center justify-center p-1.5 sm:p-2.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg sm:rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
-              title={isRtl ? 'مشاركة في المحادثة' : 'Share to Chat'}
+              onClick={handleShare}
+              disabled={isSharing}
+              className="inline-flex items-center justify-center p-1.5 sm:p-2.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg sm:rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors disabled:opacity-60"
+              title={isRtl ? 'مشاركة الملف' : 'Share file'}
             >
-              <svg className="w-3.5 h-3.5 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
+              {/* Several MB have to be read and encoded before the chooser can
+                  open, so the button has to say it is working or the first tap
+                  reads as a dead button and gets tapped again. */}
+              {isSharing
+                ? <Loader2 className="w-3.5 h-3.5 sm:w-5 sm:h-5 animate-spin" />
+                : <Share2 className="w-3.5 h-3.5 sm:w-5 sm:h-5" />}
             </button>
           )}
 
@@ -611,13 +627,18 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
         )}
       </AnimatePresence>
 
-      <ConfirmShareDialog
-        isOpen={isShareDialogOpen}
-        onClose={() => setIsShareDialogOpen(false)}
-        onConfirm={handleShareToChat}
-        itemName={isRtl ? 'هذه المحاضرة' : 'this lecture'}
-        lang={lang}
-      />
+      <AnimatePresence>
+        {shareToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[220] px-4 py-2 rounded-full bg-slate-900/90 dark:bg-stone-100/90 text-white dark:text-zinc-900 text-sm font-bold shadow-lg pointer-events-none"
+          >
+            {shareToast}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 });

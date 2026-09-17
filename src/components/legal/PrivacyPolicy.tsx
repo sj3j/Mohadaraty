@@ -128,7 +128,6 @@ export default function PrivacyPolicy() {
           'Email address, where one exists. Students imported from a name list have no email and sign in with their name or a short login code.',
           'Your password, always stored hashed and readable by nobody, including us.',
           'A profile photo, if you upload one.',
-          'Your chat messages and any attachments.',
           'Quiz answers and results, grades, and daily activity (streak).',
           'Your device notification token, used to alert you to new lectures and announcements.',
         ]} />
@@ -148,7 +147,7 @@ export default function PrivacyPolicy() {
         <Bullets items={[
           'Your stage representative and its moderators — their access is limited to their own stage.',
           'The system administrator.',
-          'Other students see your name and photo in chat and on the leaderboard; you can hide both from the leaderboard in Settings.',
+          'Other students see your name and photo on the leaderboard; you can hide both from it in Settings.',
         ]} />
       </Section>
 

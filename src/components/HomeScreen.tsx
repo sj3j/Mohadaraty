@@ -12,7 +12,7 @@ import { db } from '../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { listOfflineLectures, type OfflineLecture } from '../lib/localDb';
 
-function DownloadsTab({ lectures, lang, user, onNavigateToChat, onEdit, onOpenMCQ, onOpenReader }: any) {
+function DownloadsTab({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader }: any) {
   const [trigger, setTrigger] = useState(0);
   const [storedLectures, setStoredLectures] = useState<OfflineLecture[]>([]);
   const isRtl = lang === 'ar';
@@ -68,7 +68,6 @@ function DownloadsTab({ lectures, lang, user, onNavigateToChat, onEdit, onOpenMC
           lecture={lecture}
           lang={lang}
           user={user}
-          onNavigateToChat={onNavigateToChat}
           onEdit={onEdit}
           onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
           onRemoveDownload={() => setTrigger(t => t + 1)}
@@ -89,7 +88,6 @@ interface HomeScreenProps {
   /** Opens the lecture uploader. Staff only - see canManage(user, 'manageLectures'). */
   onShowUpload: () => void;
   isLoading: boolean;
-  onNavigateToChat: () => void;
   onEdit: (l: Lecture) => void;
   onOpenMCQ?: (l: Lecture) => void;
   onOpenReader?: (l: Lecture) => void;
@@ -107,7 +105,6 @@ export default function HomeScreen({
   setSearchQuery,
   onShowUpload,
   isLoading,
-  onNavigateToChat,
   onEdit,
   onOpenMCQ,
   onOpenReader,
@@ -293,8 +290,7 @@ export default function HomeScreen({
                 user={user}
                 searchQuery={searchQuery}
                 isLoading={isLoading}
-                onNavigateToChat={onNavigateToChat}
-                onEdit={onEdit}
+                      onEdit={onEdit}
                 onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
               />
               
@@ -314,8 +310,7 @@ export default function HomeScreen({
                     user={user}
                     searchQuery={searchQuery}
                     isLoading={isLoading}
-                    onNavigateToChat={onNavigateToChat}
-                    onEdit={onEdit}
+                              onEdit={onEdit}
                     onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
                   />
                 </div>
@@ -328,8 +323,7 @@ export default function HomeScreen({
              lectures={lectures}
              lang={lang}
              user={user}
-             onNavigateToChat={onNavigateToChat}
-             onEdit={onEdit}
+                onEdit={onEdit}
              onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
           />
         )}
@@ -337,7 +331,7 @@ export default function HomeScreen({
           <WeeklyListScreen user={user} lang={lang} />
         )}
         {activeTab === 'records' && (
-          <RecordsScreen user={user} lang={lang} searchQuery={searchQuery} onNavigateToChat={onNavigateToChat} />
+          <RecordsScreen user={user} lang={lang} searchQuery={searchQuery} />
         )}
         {activeTab === 'leaderboard' && (
           <LeaderboardTab user={user} lang={lang} />

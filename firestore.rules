@@ -177,10 +177,10 @@ service cloud.firestore {
     // non-staff caller now short-circuits before reaching it.
     //
     // Role and stage only, no capability: that is the granularity these rules
-    // have always had (a moderator ticked for chat alone still passes here, and
-    // the per-capability gating lives in src/lib/permissions.ts). The capability
-    // IS checked below for the surfaces that read the students whitelist or
-    // change who holds a role, which is where it actually buys something.
+    // have always had (a moderator ticked for records alone still passes here,
+    // and the per-capability gating lives in src/lib/permissions.ts). The
+    // capability IS checked below for the surfaces that read the students
+    // whitelist or change who holds a role, where it actually buys something.
     function canWriteStage(stageId) {
       return isMasterAdmin() || (
         isStaff() && (isSupport() || myManagedStage() == '' || myManagedStage() == stageId)
@@ -381,8 +381,8 @@ service cloud.firestore {
                     && request.resource.data.reporterId == request.auth.uid
                     && request.resource.data.messageId is string
                     && request.resource.data.reason is string;
-      // Moderators are the ones who actually watch the chat, so they must be
-      // able to triage - isAdmin() alone deliberately excludes them.
+      // Moderators are the ones who actually watch user content, so they must
+      // be able to triage - isAdmin() alone deliberately excludes them.
       allow read: if isAdmin() || isModerator();
       allow update, delete: if isMasterAdmin();
     }
@@ -608,60 +608,6 @@ service cloud.firestore {
         (request.resource == null || canWriteStage(request.resource.data.get('stageId', '')));
     }
     
-    match /chat_presence/{userId} {
-      allow read: if hasAccess();
-      allow write: if isOwner(userId);
-    }
-
-    match /chat_settings/{documentId} {
-      allow read: if hasAccess();
-      allow write: if isAdmin();
-    }
-
-    match /chat_messages/{messageId} {
-      // Group messages carry stageId and are read per stage. Direct messages and
-      // anything predating the migration have none, and stay readable as before -
-      // narrowing those is a separate change to ChatScreen's own queries.
-      allow read: if canReadStage(resource.data.get('stageId', null), '');
-      // A stamped message must land in the sender's own stage. Unstamped ones
-      // (DMs) keep the previous behaviour, or representatives lose direct chat.
-      allow create: if isAdmin() && (
-        request.resource.data.get('stageId', null) == null ||
-        canWriteStage(request.resource.data.stageId)
-      );
-      allow update: if isAdmin() || (
-        hasAccess() && 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'viewers']) &&
-        request.auth.token.email != null
-      );
-      allow delete: if isAdmin() || 
-                    (isAuthenticated() && (
-                      resource.data.get('senderId', '') == request.auth.uid ||
-                      (request.auth.token.email != null && resource.data.get('senderEmail', '') == request.auth.token.email)
-                    ));
-      
-      match /private/{docId} {
-        allow read: if isMasterAdmin();
-        allow write: if isAuthenticated();
-      }
-    }
-
-    match /chat_typing/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if isOwner(userId) || isAdmin();
-    }
-
-    match /inbox_sessions/{sessionId} {
-      allow read, write: if hasAccess();
-      allow create, update: if isAuthenticated() && request.auth.token.email != null && request.resource.data.studentEmail == request.auth.token.email;
-      allow read: if isAuthenticated() && request.auth.token.email != null && resource.data.studentEmail == request.auth.token.email;
-    }
-
-    match /private_chats/{chatId}/{document=**} {
-      allow read, write: if hasAccess();
-      allow read, write: if isAuthenticated() && request.auth.token.email != null && chatId.matches('.*' + request.auth.token.email + '.*');
-    }
-
     // records / announcements / homeworks all carry stageId and are filtered by
     // it in the client. Until now the rules did not check it, so the isolation
     // was a UI convenience: any student could hand-craft a query for another

@@ -91,12 +91,6 @@ service firebase.storage {
       allow write: if isStaff();
     }
 
-    // Chat Attachments: Authenticated users can upload their own files
-    match /chat_attachments/{fileName} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && fileName.matches(request.auth.uid + ".*");
-    }
-
     // Proof of a manual Super Qi / Qi Card transfer, uploaded by the student
     // who made it. Same uid-prefix contract as the two paths above, which is
     // what receiptStoragePath() in src/lib/paymentContact.ts builds - the

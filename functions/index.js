@@ -753,103 +753,10 @@ exports.syncRole = onDocumentWritten({
 
   await admin.auth().setCustomUserClaims(uid, {
     role: role,
-    manageChat: newData.permissions?.manageChat ?? false,
   });
-});
-
-exports.sendMessage = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'User must be logged in.');
-  }
-
-  const { data } = request;
-  const uid = request.auth.uid;
-  const role = request.auth.token.role || 'student';
-  const isMasterAdmin = role === 'master_admin';
-  const isAdminOrModerator = isMasterAdmin || role === 'admin' || role === 'moderator';
-
-  const userRef = db.doc(`users/${uid}`);
-  const userData = (await userRef.get()).data();
-  
-  const now = admin.firestore.Timestamp.now();
-
-  const collectionPath = data.collectionPath || 'chat_messages';
-  if (collectionPath !== 'chat_messages' && !collectionPath.startsWith('private_chats/')) {
-    throw new HttpsError('invalid-argument', 'Invalid collection path.');
-  }
-
-  if (!isAdminOrModerator) {
-    const lastSent = userData?.lastMessageAt?.toMillis() ?? 0;
-    if (now.toMillis() - lastSent < 3000) {
-      throw new HttpsError('resource-exhausted', 'Rate limit: 1 message per 3 seconds.');
-    }
-  }
-
-  const batch = db.batch();
-  if (!isAdminOrModerator) {
-    batch.set(userRef, { lastMessageAt: now }, { merge: true });
-  }
-
-  const msgRef = data.messageId ? db.collection(collectionPath).doc(data.messageId) : db.collection(collectionPath).doc();
-  const messageData = {
-    ...data.message,
-    createdAt: now.toMillis(),
-    timestamp: admin.firestore.FieldValue.serverTimestamp()
-  };
-
-  if (messageData.isAnonymous) {
-    // Write private subcollection for emails
-    const privateRef = db.doc(`${collectionPath}/${msgRef.id}/private/sender`);
-    batch.set(privateRef, {
-      senderEmail: userData?.email || request.auth.token.email || "",
-      senderId: uid
-    });
-    // Remove email/id from public payload
-    delete messageData.senderEmail;
-    delete messageData.senderId;
-  } else {
-    messageData.senderEmail = userData?.email || request.auth.token.email || "";
-    messageData.senderId = uid;
-  }
-
-  // Support for inbox session creation/update for private chats from students
-  if (data.inboxSession && data.inboxSession.id) {
-     const sessionRef = db.doc(`inbox_sessions/${data.inboxSession.id}`);
-     batch.set(sessionRef, {
-        ...data.inboxSession,
-        updatedAt: now.toMillis() // force server time
-     }, { merge: true });
-  }
-
-  batch.set(msgRef, messageData);
-  await batch.commit();
-
-  return { id: msgRef.id };
 });
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-
-exports.archiveOldMessages = onSchedule('every 24 hours', async (event) => {
-  const cutoff = admin.firestore.Timestamp.fromDate(
-    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // 30 days ago
-  );
-
-  const old = await db.collection('chat_messages')
-    .where('timestamp', '<', cutoff)
-    .limit(400)
-    .get();
-
-  if (old.empty) return;
-
-  const batch = db.batch();
-  old.docs.forEach(doc => {
-    batch.set(db.collection('chat_archive').doc(doc.id), doc.data());
-    batch.delete(doc.ref);
-  });
-
-  await batch.commit();
-  console.log(`Archived ${old.docs.length} messages`);
-});
 
 // ============================================================================
 // Subscription Cron Jobs

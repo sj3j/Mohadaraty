@@ -215,7 +215,7 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
               favorites: [],
               studied: [],
               completedWeeklyTasks: [],
-              notificationPreferences: { lectures: true, announcements: true, chat: true, records: true, homeworks: true }
+              notificationPreferences: { lectures: true, announcements: true, records: true, homeworks: true }
             } as UserProfile & { isRegistered?: boolean });
           }
         });
