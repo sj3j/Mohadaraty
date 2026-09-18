@@ -34,6 +34,7 @@
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
     "test:subject-display": "npx tsx scripts/subjectDisplay.test.ts",
     "test:payments": "npx tsx scripts/paymentContact.test.ts",
+    "test:subscriptions": "npx tsx scripts/subscriptionStats.test.ts",
     "test:masters": "npx tsx scripts/masterAdmins.test.ts",
     "test:access": "npx tsx scripts/subscriptionAccess.test.ts",
     "test:roster": "npx tsx scripts/roster.test.ts",

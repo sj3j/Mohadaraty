@@ -9,9 +9,11 @@ import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan, Subscription, Us
 import {
   onAllSubscriptions, approveSubscription, rejectSubscription,
   extendSubscription, cancelSubscription, grantSubscription,
-  onPaymentContact, savePaymentContact,
+  onPaymentContact, savePaymentContact, reconcileZainCash,
   getRemainingDays, formatSubscriptionDate
 } from '../services/subscriptionService';
+import { computeSubscriptionStats, needsManualApproval } from '../lib/subscriptionStats';
+import { isMasterAdmin } from '../lib/permissions';
 import {
   EMPTY_PAYMENT_CONTACT, PaymentContact,
   hasPaymentChannel, normalizePaymentContact, normalizeTelegram, normalizeWhatsapp,
@@ -51,9 +53,40 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
    *  stored values seed the draft once and never again. */
   const contactSeeded = useRef(false);
 
+  /**
+   * What this account may do here.
+   *
+   * Reaching the screen at all takes canManageSubscriptions (the Settings row),
+   * which a ticked support account holds. Support is granted the statistics and
+   * منح اشتراك and nothing else: approving, rejecting, extending and cancelling
+   * somebody's subscription, and changing the number students are told to pay
+   * into, stay with the master admin. firestore.rules and the five server
+   * routes draw the same line - this is only the UI half of it.
+   *
+   * The ledger itself stays visible to support, without its action buttons: the
+   * stat cards are reduced from the full collection client-side, so the read
+   * has already happened, and "is this student subscribed?" is the question the
+   * role exists to answer.
+   */
+  const canAct = isMasterAdmin(user);
+
   useEffect(() => {
     const unsub = onAllSubscriptions(setSubscriptions);
     return unsub;
+  }, []);
+
+  /**
+   * Settle any ZainCash payment the gateway has already finished.
+   *
+   * ZainCash settles itself on the redirect or the webhook, but a lost callback
+   * used to leave a paid row sitting as 'pending' with nothing to resolve it
+   * except an admin pressing Approve - which grants access without checking a
+   * single dinar arrived. Sweeping on open means the queue an admin looks at is
+   * one that only ever contains real work. onAllSubscriptions is live, so
+   * anything settled here re-renders on its own.
+   */
+  useEffect(() => {
+    reconcileZainCash('all').catch(() => undefined);
   }, []);
 
   useEffect(() => onPaymentContact(contact => {
@@ -76,28 +109,19 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
     }
   }, [showGrantModal]);
 
-  // Stats
-  const stats = useMemo(() => {
-    const active = subscriptions.filter(s => s.status === 'active');
-    const pending = subscriptions.filter(s => s.status === 'pending');
-    const totalRevenue = subscriptions
-      .filter(s => s.status === 'active' || s.status === 'inactive')
-      .reduce((sum, s) => sum + (s.amount || 0), 0);
-    
-    const byPlan = {
-      monthly: active.filter(s => s.plan === 'monthly').length,
-      seasonal: active.filter(s => s.plan === 'seasonal').length,
-      semi_annual: active.filter(s => s.plan === 'semi_annual').length,
-    };
+  // Stats. The reduction lives in src/lib/subscriptionStats.ts so it can be
+  // unit-tested (npm run test:subscriptions) - read the header there before
+  // changing a denominator, the cards do not all count the same thing.
+  const stats = useMemo(() => computeSubscriptionStats(subscriptions), [subscriptions]);
 
-    const byPayment = {
-      zaincash: subscriptions.filter(s => s.paymentMethod === 'zaincash' && (s.status === 'active' || s.status === 'inactive')),
-      superkey: subscriptions.filter(s => s.paymentMethod === 'superkey' && (s.status === 'active' || s.status === 'inactive')),
-      admin_grant: subscriptions.filter(s => s.paymentMethod === 'admin_grant'),
-    };
-
-    return { active: active.length, pending: pending.length, totalRevenue, byPlan, byPayment };
-  }, [subscriptions]);
+  // Rows still waiting on a human. ZainCash never appears: it settles against
+  // the Inquiry API, so an in-flight or abandoned gateway payment is nobody's
+  // queue item, and approving one would grant access for money nobody checked
+  // was collected.
+  const awaitingApproval = useMemo(
+    () => subscriptions.filter(needsManualApproval),
+    [subscriptions],
+  );
 
   // Filtered list
   const filtered = useMemo(() => {
@@ -269,10 +293,10 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
         {/* Stats Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           {[
-            { label: t.activeSubscribers, value: stats.active, icon: Users, color: 'from-emerald-500 to-teal-500', iconBg: 'bg-emerald-100 dark:bg-emerald-900/30', iconColor: 'text-emerald-600 dark:text-emerald-400' },
-            { label: t.pendingPayments, value: stats.pending, icon: AlertCircle, color: 'from-amber-500 to-orange-500', iconBg: 'bg-amber-100 dark:bg-amber-900/30', iconColor: 'text-amber-600 dark:text-amber-400' },
+            { label: t.activeSubscribers, value: stats.activeSubscribers, icon: Users, color: 'from-emerald-500 to-teal-500', iconBg: 'bg-emerald-100 dark:bg-emerald-900/30', iconColor: 'text-emerald-600 dark:text-emerald-400' },
+            { label: t.pendingPayments, value: stats.pendingApprovals, icon: AlertCircle, color: 'from-amber-500 to-orange-500', iconBg: 'bg-amber-100 dark:bg-amber-900/30', iconColor: 'text-amber-600 dark:text-amber-400' },
             { label: t.totalRevenue, value: `${stats.totalRevenue.toLocaleString()} ${t.iqd}`, icon: DollarSign, color: 'from-sky-500 to-blue-500', iconBg: 'bg-sky-100 dark:bg-sky-900/30', iconColor: 'text-sky-600 dark:text-sky-400' },
-            { label: t.totalSubscribers, value: subscriptions.length, icon: TrendingUp, color: 'from-violet-500 to-purple-500', iconBg: 'bg-violet-100 dark:bg-violet-900/30', iconColor: 'text-violet-600 dark:text-violet-400' },
+            { label: t.totalSubscribers, value: stats.totalSubscribers, icon: TrendingUp, color: 'from-violet-500 to-purple-500', iconBg: 'bg-violet-100 dark:bg-violet-900/30', iconColor: 'text-violet-600 dark:text-violet-400' },
           ].map((stat, i) => (
             <motion.div
               key={i}
@@ -310,13 +334,12 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
             <h3 className="font-bold text-sm text-slate-900 dark:text-white mb-3">{t.paymentMethodStats}</h3>
             <div className="space-y-2">
               {(['zaincash', 'superkey', 'admin_grant'] as const).map(method => {
-                const subs = stats.byPayment[method];
-                const revenue = subs.reduce((s, sub) => s + (sub.amount || 0), 0);
+                const { count, revenue } = stats.byPayment[method];
                 return (
                   <div key={method} className="flex items-center justify-between">
                     <span className="text-sm text-slate-600 dark:text-slate-400">{paymentLabel(method)}</span>
                     <div className="text-right rtl:text-left">
-                      <span className="text-sm font-bold text-slate-900 dark:text-white">{subs.length}</span>
+                      <span className="text-sm font-bold text-slate-900 dark:text-white">{count}</span>
                       <span className="text-xs text-slate-400 mr-2 rtl:ml-2">({revenue.toLocaleString()} {t.iqd})</span>
                     </div>
                   </div>
@@ -331,7 +354,13 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
             query, so the student needs a number to send to and a human to
             confirm it with. Editable here rather than in an env var because the
             receiving number is the most likely thing to change, and a rebuild
-            is not an acceptable cost for that. */}
+            is not an acceptable cost for that.
+
+            Master admin only, and firestore.rules says the same for
+            settings/payment_contact: this is where students are told to send
+            money, so changing it is not something a ticked support account
+            should be able to do on its own. */}
+        {canAct && (
         <div className="mb-6 p-4 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
           <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
             <CreditCard className="w-4 h-4 text-amber-500" />
@@ -413,6 +442,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
             {contactSave === 'error' && <span className="text-xs text-red-500">{t.paySaveFailed}</span>}
           </div>
         </div>
+        )}
 
         {/* Actions Bar */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -457,14 +487,14 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
         </div>
 
         {/* Pending Approvals (highlighted) */}
-        {stats.pending > 0 && filterStatus !== 'active' && (
+        {canAct && stats.pendingApprovals > 0 && filterStatus !== 'active' && (
           <div className="mb-4 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border-2 border-amber-300 dark:border-amber-700">
             <h3 className="font-bold text-amber-800 dark:text-amber-300 mb-3 flex items-center gap-2">
               <AlertCircle className="w-4 h-4" />
-              {t.pendingPayments} ({stats.pending})
+              {t.pendingPayments} ({stats.pendingApprovals})
             </h3>
             <div className="space-y-2">
-              {subscriptions.filter(s => s.status === 'pending').map(sub => (
+              {awaitingApproval.map(sub => (
                 <div key={sub.id} className="p-3 rounded-xl bg-white dark:bg-zinc-800 flex items-center justify-between gap-3">
                   {/* The receipt is what approval is decided on, so it is a
                       thumbnail here rather than a link to click through. */}
@@ -578,9 +608,10 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                   <StudentContactLinks sub={sub} />
                 </div>
 
-                {/* Actions */}
+                {/* Actions. Hidden entirely for a support account - it holds
+                    the statistics and منح اشتراك, not the ledger. */}
                 <div className="flex items-center gap-1.5 flex-shrink-0">
-                  {sub.status === 'pending' && (
+                  {canAct && needsManualApproval(sub) && (
                     <>
                       <button
                         onClick={() => handleAction(() => approveSubscription(sub.id), sub.id)}
@@ -600,7 +631,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                       </button>
                     </>
                   )}
-                  {sub.status === 'active' && (
+                  {canAct && sub.status === 'active' && (
                     <>
                       <button
                         onClick={() => { setShowExtendModal(sub.id); setExtendDays(30); }}

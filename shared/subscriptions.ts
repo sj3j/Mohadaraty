@@ -215,39 +215,25 @@ export async function findLiveZainCashPayment(
     return null;
   }
 
-  const expiresAt = Date.parse(sub.expiryTime ?? '');
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+  // Ask the gateway BEFORE looking at expiryTime. The order matters: this used
+  // to bail out on an expired window without probing, so a payment that
+  // SUCCEEDED but whose redirect and webhook were both lost - a closed tab, a
+  // dropped webhook - stayed 'pending' for ever and could only be delivered by
+  // an admin pressing Approve. The inquiry is authoritative either way: a paid
+  // one activates here, and a genuinely dead one comes back EXPIRED and is
+  // written 'cancelled' instead of leaking as a pending row for ever.
+  const outcome = await probeSettlement(ctx, cfg, ref, sub);
+
+  if (outcome !== 'still_pending') {
+    // Finished, and now delivered. Let a new payment through.
     await clearPendingPointer(ctx, userId);
     return null;
   }
 
-  // settleZainCashPayment always inquires and ignores the status carried in the
-  // event, so this synthetic one is only a carrier for the identifiers. The
-  // eventId is deterministic, which makes a repeat a duplicate rather than a
-  // second settlement.
-  const probe: ZainCashEvent = {
-    eventType: 'STATUS_CHANGED',
-    eventId: `inquiry-${sub.transactionId}`,
-    timestamp: new Date().toISOString(),
-    data: {
-      transactionId: sub.transactionId,
-      merchantReferenceId: sub.externalReferenceId,
-      orderId: tagOrderId(ref),
-      currentStatus: 'PENDING',
-    },
-  };
-
-  let outcome: SettlementOutcome;
-  try {
-    outcome = (await settleZainCashPayment(ctx, cfg, probe, 'redirect')).outcome;
-  } catch (err) {
-    // Gateway unreachable. Treat the payment as live: opening a second one
-    // while the first may still be open is the failure being prevented here.
-    outcome = 'still_pending';
-  }
-
-  if (outcome !== 'still_pending') {
-    // Finished, and now delivered. Let a new payment through.
+  // Open at the gateway, but past the window the customer could pay in. Nothing
+  // to resume, so forget it and let a fresh payment be opened.
+  const expiresAt = Date.parse(sub.expiryTime ?? '');
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
     await clearPendingPointer(ctx, userId);
     return null;
   }
@@ -259,6 +245,134 @@ export async function findLiveZainCashPayment(
     redirectUrl: sub.redirectUrl,
     minutesLeft: Math.max(1, Math.ceil((expiresAt - Date.now()) / 60000)),
   };
+}
+
+/**
+ * Re-ask the gateway about one pending row, through the ordinary settlement
+ * path so there is exactly one of those - with its claim, its idempotency and
+ * its amount check.
+ *
+ * settleZainCashPayment always inquires and ignores the status carried in the
+ * event, so this synthetic one is only a carrier for the identifiers.
+ *
+ * The eventId MUST be unique per attempt. It used to be `inquiry-${txId}`, and
+ * claimForSettlement writes lastEventId when it takes the claim while the
+ * still_pending path releases only `settling` - so the second probe of a row
+ * short-circuited as 'duplicate_event' and never reached the gateway again.
+ * Every re-check after the first was silently a no-op, and findLive read that
+ * non-'still_pending' outcome as "finished" and dropped the pointer. Replaying
+ * a real gateway event is still caught: lastEventId keeps the gateway's own
+ * ids, and double settlement is prevented by the `status !== 'pending'` arm of
+ * the claim, not by this id.
+ */
+async function probeSettlement(
+  ctx: SubscriptionCtx,
+  cfg: ZainCashConfig,
+  subId: string,
+  sub: FirebaseFirestore.DocumentData,
+): Promise<SettlementOutcome> {
+  const probe: ZainCashEvent = {
+    eventType: 'STATUS_CHANGED',
+    eventId: `inquiry-${sub.transactionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    data: {
+      transactionId: sub.transactionId,
+      merchantReferenceId: sub.externalReferenceId,
+      orderId: tagOrderId(subId),
+      currentStatus: 'PENDING',
+    },
+  };
+
+  try {
+    return (await settleZainCashPayment(ctx, cfg, probe, 'redirect')).outcome;
+  } catch (err) {
+    // Gateway unreachable. Treat the payment as live: opening a second one
+    // while the first may still be open is the failure being prevented here.
+    return 'still_pending';
+  }
+}
+
+export interface ReconcileResult {
+  checked: number;
+  activated: number;
+  cancelled: number;
+  stillPending: number;
+}
+
+/**
+ * Settle every ZainCash payment the gateway has already finished.
+ *
+ * ZainCash is supposed to settle itself, and on the happy path it does - the
+ * redirect or the webhook arrives and settleZainCashPayment runs. Neither is
+ * guaranteed: the redirect comes back through the customer's browser, and the
+ * webhook "does not fire in the test environment". Nothing else ever moved a
+ * row out of 'pending', so a lost callback meant a student who really paid had
+ * to be approved by hand - and abandoned attempts piled up in the queue for
+ * ever, one per retry.
+ *
+ * Deliberately NOT routed through users/{uid}.pendingZainCashRef the way
+ * findLiveZainCashPayment is: that pointer is cleared on several paths, and a
+ * row whose pointer is gone is exactly the one nothing can reach.
+ *
+ * The query carries ONE equality filter on purpose - `subscriptions` has no
+ * composite index (it is absent from firestore.indexes.json), so the
+ * paymentMethod narrowing is done in memory rather than adding a second filter.
+ */
+export async function reconcilePendingZainCash(
+  ctx: SubscriptionCtx,
+  cfg: ZainCashConfig,
+  opts: { userId?: string; limit?: number; minAgeMs?: number } = {},
+): Promise<ReconcileResult> {
+  const limit = opts.limit ?? 25;
+  // Rows younger than this are still legitimately in flight - the customer is
+  // on the gateway page right now - and the inquiry would cost a round trip to
+  // be told 'PENDING'.
+  const minAgeMs = opts.minAgeMs ?? 2 * 60 * 1000;
+  const cutoff = Date.now() - minAgeMs;
+
+  let query: FirebaseFirestore.Query = ctx.db
+    .collection('subscriptions')
+    .where('status', '==', 'pending');
+  if (opts.userId) query = query.where('userId', '==', opts.userId);
+
+  const snap = await query.get();
+
+  const rows = snap.docs
+    .filter((d) => {
+      const data = d.data();
+      if (data.paymentMethod !== 'zaincash') return false;
+      // Written before the gateway answered, so there is nothing to inquire on.
+      if (!data.transactionId) return false;
+      const created = data.createdAt?.toMillis?.() ?? 0;
+      return created === 0 || created <= cutoff;
+    })
+    // Oldest first: those are the ones that have been stuck longest, and the
+    // cap must not starve them in favour of rows that are about to settle
+    // themselves anyway.
+    .sort((a, b) => (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0))
+    .slice(0, limit);
+
+  const result: ReconcileResult = { checked: 0, activated: 0, cancelled: 0, stillPending: 0 };
+
+  for (const row of rows) {
+    const data = row.data();
+    const outcome = await probeSettlement(ctx, cfg, row.id, data);
+    result.checked += 1;
+    if (outcome === 'still_pending') {
+      result.stillPending += 1;
+      continue;
+    }
+    if (outcome === 'activated') result.activated += 1;
+    // failed / refunded / amount_mismatch are terminal and now 'cancelled'.
+    // already_settled and duplicate_event land here too; both mean the row is
+    // no longer this function's business.
+    else result.cancelled += 1;
+    // Guarded: .doc(undefined) throws synchronously, ahead of the .catch inside
+    // clearPendingPointer, which would abort the whole sweep over one bad row.
+    if (data.userId) await clearPendingPointer(ctx, data.userId);
+  }
+
+  return result;
 }
 
 /**

@@ -14,7 +14,7 @@ import {
 } from '../lib/paymentContact';
 import {
   onUserSubscriptions, createPendingSubscription, initiateZainCashPayment,
-  onPaymentContact, uploadPaymentReceipt,
+  onPaymentContact, uploadPaymentReceipt, reconcileZainCash,
   getRemainingDays, formatSubscriptionDate
 } from '../services/subscriptionService';
 
@@ -83,6 +83,24 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
     if (!receipt) return;
     return () => URL.revokeObjectURL(receipt.preview);
   }, [receipt]);
+
+  /**
+   * Recover a payment whose callback never arrived.
+   *
+   * The redirect below comes back through the student's browser and the
+   * webhook does not fire in the test environment, so neither is guaranteed:
+   * a student who paid and then closed the tab used to be left with a pending
+   * row that only an admin could clear, by pressing Approve on money nobody
+   * had verified. This asks the gateway instead, on the one screen where the
+   * answer matters. onUserSubscriptions is live, so a settled row re-renders
+   * on its own.
+   *
+   * Failure is swallowed on purpose: the gateway being unreachable must not
+   * stop the screen from rendering what is already known.
+   */
+  useEffect(() => {
+    reconcileZainCash().catch(() => undefined);
+  }, []);
 
   // Return leg of a ZainCash payment. The server has already verified the
   // gateway JWT and confirmed the transaction via the Inquiry API before

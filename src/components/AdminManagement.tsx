@@ -44,6 +44,17 @@ const PERMISSION_LABELS = [
   { id: 'manageAdmins', labelEn: 'Manage Assistants', labelAr: 'إدارة المساعدين' },
   { id: 'manageStreakSystem', labelEn: 'Streak System', labelAr: 'إدارة الستريك' },
   { id: 'manageMcqSystem', labelEn: 'MCQ System', labelAr: 'إدارة بنك الأسئلة' },
+  { id: 'manageAntiCheat', labelEn: 'Anti-cheat', labelAr: 'مكافحة الغش' },
+  // إدارة الاشتراكات. The label is READ from TRANSLATIONS rather than written
+  // out here: it arrives through src/i18n/payments.ts, which vite.config.ts
+  // aliases to an empty stub for mode === 'native'. So the word "اشتراك" never
+  // enters the Android artefact and the checkbox drops out with it - which is
+  // right, because the screen it grants is stubbed in that build too.
+  ...(TRANSLATIONS.ar.manageSubscriptions ? [{
+    id: 'manageSubscriptions',
+    labelEn: TRANSLATIONS.en.manageSubscriptions,
+    labelAr: TRANSLATIONS.ar.manageSubscriptions,
+  }] : []),
 ];
 
 const ROLE_LABELS: Record<AssistantRole, { ar: string; en: string }> = {
@@ -122,6 +133,8 @@ const defaultPermissionsFor = (role: AssistantRole): Record<string, boolean> =>
       manageAdmins: false,
       manageStreakSystem: false,
       manageMcqSystem: false,
+      manageAntiCheat: false,
+      manageSubscriptions: false,
     }
     : { ...ALL_CONTENT_TRUE };
 

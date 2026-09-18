@@ -58,6 +58,7 @@ import {
   activateSubscription,
   settleZainCashPayment,
   findLiveZainCashPayment,
+  reconcilePendingZainCash,
   NotifyFn,
   SubscriptionCtx,
 } from "./shared/subscriptions.js";
@@ -2269,8 +2270,90 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
   });
 
+  /**
+   * Re-ask ZainCash about payments still sitting as pending.
+   *
+   * ZainCash settles itself - but only if a callback arrives, and neither the
+   * redirect (it comes back through the customer's browser) nor the webhook (it
+   * "does not fire in the test environment") is guaranteed. Nothing else ever
+   * moved a row out of 'pending', so a lost callback meant a student who really
+   * paid could only be let in by an admin pressing Approve, and every abandoned
+   * attempt sat in the queue for ever. This is the sweep that makes it automatic.
+   *
+   * Called with no scope by the student's own subscription screen - which is
+   * exactly when a lost redirect matters - and with scope 'all' by
+   * إدارة الاشتراكات when it opens.
+   */
+  app.post('/api/zaincash/reconcile', verifyAuth, async (req: express.Request, res: express.Response) => {
+    const user = (req as any).user;
+    const all = req.body?.scope === 'all';
+
+    let cfg;
+    try {
+      cfg = loadZainCashConfig();
+    } catch (e: any) {
+      console.error('ZainCash config error:', e.message);
+      return res.status(500).json({ error: 'ZainCash not configured' });
+    }
+
+    if (all) {
+      // Sweeping the whole queue is staff work; reconciling your own payment is
+      // not, so the capability is checked only on this branch. Read here rather
+      // than through verifyAdmin so a student never trips its 403.
+      const doc = await admin.firestore().collection('users').doc(user.uid).get();
+      const data = doc.data() || {};
+      const isMaster = isMasterAdminEmail((user.email || '').toLowerCase())
+        || data.role === 'master_admin' || data.isMasterAdmin === true;
+      const granted = isMaster
+        || (data.role === 'support' && data.permissions?.manageSubscriptions === true);
+      if (!granted) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+    }
+
+    try {
+      const result = await reconcilePendingZainCash(
+        subCtx(),
+        cfg,
+        all ? {} : { userId: user.uid },
+      );
+      if (result.checked > 0) {
+        console.log(`[ZainCash] reconcile(${all ? 'all' : user.uid}) -> ${JSON.stringify(result)}`);
+      }
+      return res.json(result);
+    } catch (err) {
+      console.error('ZainCash reconcile error:', err);
+      return res.status(500).json({ error: 'Reconcile failed' });
+    }
+  });
+
+  /**
+   * إدارة الاشتراكات is not one stage's business, so verifyAdmin is not its gate.
+   *
+   * verifyAdmin admits admin, moderator AND support alike, while the screen has
+   * always been hidden from all three - so every route below was reachable by a
+   * direct POST from any staff account, up to and including granting oneself a
+   * free subscription. These two guards close that, and are what lets a ticked
+   * support account in through the front door instead.
+   */
+  const requireSubscriptionAccess = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!staffCan(callerStage(req), 'manageSubscriptions')) {
+      return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+    }
+    next();
+  };
+
+  /** Approving, rejecting, extending or cancelling somebody's subscription stays
+   *  master-admin only. Support is granted the statistics and منح اشتراك - the
+   *  same split the screen itself renders. Identified by address, like every
+   *  other master-only route here. */
+  const requireSubscriptionMaster = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!isMasterAdminEmail((req as any).user?.email)) {
+      return res.status(403).json({ error: 'Master Admin only' });
+    }
+    next();
+  };
+
   // --- Admin: Grant free subscription ---
-  app.post('/api/subscriptions/grant', verifyAuth, verifyAdmin, async (req, res) => {
+  app.post('/api/subscriptions/grant', verifyAuth, verifyAdmin, requireSubscriptionAccess, async (req, res) => {
     try {
       const { userId, plan, notes } = req.body;
       const adminUser = (req as any).user;
@@ -2310,7 +2393,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   });
 
   // --- Admin: Approve pending SuperKey subscription ---
-  app.post('/api/subscriptions/:id/approve', verifyAuth, verifyAdmin, async (req, res) => {
+  app.post('/api/subscriptions/:id/approve', verifyAuth, verifyAdmin, requireSubscriptionMaster, async (req, res) => {
     try {
       const { id } = req.params;
       const adminUser = (req as any).user;
@@ -2320,6 +2403,15 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       if (!subDoc.exists) return res.status(404).json({ error: 'Subscription not found' });
 
       const subData = subDoc.data()!;
+      // ZainCash is never approved by hand. It settles against the Inquiry API
+      // (shared/subscriptions.ts), so a click here would grant access for money
+      // nobody has checked was collected - the row may be abandoned, expired, or
+      // still open at the gateway. /api/zaincash/reconcile resolves one properly.
+      if (subData.paymentMethod === 'zaincash') {
+        return res.status(400).json({
+          error: 'ZainCash payments settle automatically; re-check the payment instead',
+        });
+      }
       if (subData.status !== 'pending') {
         return res.status(400).json({ error: 'Subscription is not pending' });
       }
@@ -2335,7 +2427,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   });
 
   // --- Admin: Reject pending subscription ---
-  app.post('/api/subscriptions/:id/reject', verifyAuth, verifyAdmin, async (req, res) => {
+  app.post('/api/subscriptions/:id/reject', verifyAuth, verifyAdmin, requireSubscriptionMaster, async (req, res) => {
     try {
       const { id } = req.params;
       const db = admin.firestore();
@@ -2364,7 +2456,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   });
 
   // --- Admin: Extend subscription ---
-  app.post('/api/subscriptions/:id/extend', verifyAuth, verifyAdmin, async (req, res) => {
+  app.post('/api/subscriptions/:id/extend', verifyAuth, verifyAdmin, requireSubscriptionMaster, async (req, res) => {
     try {
       const { id } = req.params;
       const { days } = req.body;
@@ -2406,7 +2498,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   });
 
   // --- Admin: Cancel subscription ---
-  app.post('/api/subscriptions/:id/cancel', verifyAuth, verifyAdmin, async (req, res) => {
+  app.post('/api/subscriptions/:id/cancel', verifyAuth, verifyAdmin, requireSubscriptionMaster, async (req, res) => {
     try {
       const { id } = req.params;
       const db = admin.firestore();
