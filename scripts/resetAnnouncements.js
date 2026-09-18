@@ -25,7 +25,7 @@ import 'dotenv/config';
 //   - the `votes` subcollection under each, if any poll ballots exist
 //   - the Storage objects those posts referenced, under `announcements/`
 //
-// It does NOT touch lectures, records, homeworks, chat, or anything else.
+// It does NOT touch lectures, records, homeworks, or anything else.
 //
 // SAFETY
 //

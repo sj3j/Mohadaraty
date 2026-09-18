@@ -45,7 +45,7 @@ export interface SettingsScreenProps {
   onLogout: () => void;
 }
 
-type NotificationKey = 'lectures' | 'announcements' | 'chat' | 'records' | 'homeworks';
+type NotificationKey = 'lectures' | 'announcements' | 'records' | 'homeworks';
 
 /**
  * The settings surface, organised into pages rather than one flat column of
@@ -95,7 +95,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
   const toggleNotification = async (type: NotificationKey) => {
     if (!user) return;
-    const current = notifPrefs || { lectures: true, announcements: true, chat: true, records: true, homeworks: true };
+    const current = notifPrefs || { lectures: true, announcements: true, records: true, homeworks: true };
     const next = { ...current, [type]: current[type] === undefined ? false : !current[type] };
     try {
       await setDoc(doc(db, 'users', user.uid), { notificationPreferences: next }, { merge: true });
@@ -116,7 +116,6 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   const NOTIFICATION_ROWS: { key: NotificationKey; ar: string; en: string }[] = [
     { key: 'lectures',      ar: 'المحاضرات الجديدة', en: 'New lectures' },
     { key: 'announcements', ar: 'التبليغات',         en: 'Announcements' },
-    { key: 'chat',          ar: 'الشات',             en: 'Chat' },
     { key: 'records',       ar: 'التسجيلات',         en: 'Records' },
     { key: 'homeworks',     ar: 'الواجبات',          en: 'Homework' },
   ];

@@ -32,7 +32,7 @@ import AnnouncementsScreen from './components/AnnouncementsScreen';
 import WeeklyListScreen from './components/WeeklyListScreen';
 import ProfileScreen from './components/ProfileScreen';
 import RecordsScreen from './components/RecordsScreen';
-import ChatScreen from './components/ChatScreen';
+import SimosanSoonScreen from './components/SimosanSoonScreen';
 import SubjectBrowser from './components/SubjectBrowser';
 import HomeScreen from './components/HomeScreen';
 import LoginScreen from './components/LoginScreen';
@@ -100,7 +100,6 @@ export default function App() {
    * which would rip the congratulations screen away before it is read.
    */
   const [progressionRound, setProgressionRound] = useState<ProgressionRound | null>(null);
-
 
   const [user, setUser] = useState<UserProfile | null>(null);
   useEffect(() => {
@@ -170,7 +169,6 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [mcqLecture, setMcqLecture] = useState<Lecture | null>(null);
   const [readerLecture, setReaderLecture] = useState<Lecture | null>(null);
-  const [isMobileChatOpenApp, setIsMobileChatOpenApp] = useState(false);
   const { theme, setTheme } = useTheme();
 
   const { permission, requestPermission, isRequesting } = usePushNotifications(user);
@@ -189,7 +187,6 @@ export default function App() {
       localStorage.setItem('hideNotificationBanner', 'true');
     }
   };
-
 
   useEffect(() => {
     document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
@@ -375,7 +372,6 @@ export default function App() {
               manageLectures: true,
               manageAnnouncements: true,
               manageRecords: true,
-              manageChat: true,
               manageHomeworks: true,
               manageStudents: true,
               manageGrades: true
@@ -410,7 +406,7 @@ export default function App() {
               favorites: userDoc.data().favorites || [],
               studied: userDoc.data().studied || [],
               completedWeeklyTasks: userDoc.data().completedWeeklyTasks || [],
-              notificationPreferences: userDoc.data().notificationPreferences || { lectures: true, announcements: true, chat: true, records: true, homeworks: true },
+              notificationPreferences: userDoc.data().notificationPreferences || { lectures: true, announcements: true, records: true, homeworks: true },
               memberSince: studentData?.createdAt || userDoc.data().createdAt,
               permissions: masterAdminPermissions || userDoc.data().permissions || studentData?.permissions,
               stageId: userDoc.data().stageId || studentData?.stageId || undefined,
@@ -430,7 +426,6 @@ export default function App() {
               manageLectures: true,
               manageAnnouncements: true,
               manageRecords: true,
-              manageChat: true,
               manageHomeworks: true,
               manageStudents: true,
               manageGrades: true
@@ -449,7 +444,7 @@ export default function App() {
               favorites: [],
               studied: [],
               completedWeeklyTasks: [],
-              notificationPreferences: { lectures: true, announcements: true, chat: true, records: true, homeworks: true },
+              notificationPreferences: { lectures: true, announcements: true, records: true, homeworks: true },
               memberSince: studentData?.createdAt,
               permissions: masterAdminPermissions || studentData?.permissions,
               stageId: studentData?.stageId || undefined,
@@ -466,7 +461,6 @@ export default function App() {
             manageLectures: true,
             manageAnnouncements: true,
             manageRecords: true,
-            manageChat: true,
             manageHomeworks: true,
             manageStudents: true,
             manageGrades: true
@@ -485,7 +479,7 @@ export default function App() {
             favorites: [],
             studied: [],
             completedWeeklyTasks: [],
-            notificationPreferences: { lectures: true, announcements: true, chat: true, records: true, homeworks: true },
+            notificationPreferences: { lectures: true, announcements: true, records: true, homeworks: true },
             memberSince: studentData?.createdAt,
             permissions: masterAdminPermissions || studentData?.permissions,
             stageId: studentData?.stageId || undefined,
@@ -579,7 +573,6 @@ export default function App() {
           }
         }
 
-        // Chat mentions might be missed here for performance, but this covers major system/homework/alerts
         if (latestTime > lastRead) {
           setHasUnreadInbox(true);
         }
@@ -700,7 +693,6 @@ export default function App() {
     });
   }, [lectures, selectedCategory, selectedType, searchQuery, sortBy, sortOrder, lang]);
 
-  const handleNavigateToChat = useCallback(() => setCurrentTab('chat'), []);
   const handleEditLecture = useCallback((l: Lecture) => { setLectureToEdit(l); setShowUpload(true); }, []);
   const handleCloseUpload = useCallback(() => { setShowUpload(false); setLectureToEdit(null); }, []);
 
@@ -782,8 +774,6 @@ export default function App() {
     return isRtl ? 'مساء الخير' : 'Good evening';
   };
 
-
-
   // Staff compose from a docked bar that owns the bottom edge of the
   // announcements screen, so the floating nav is removed there rather than
   // stacked on top of it - the screen grows a back arrow instead (its `onBack`).
@@ -809,7 +799,7 @@ export default function App() {
     // half-screen under the last card. A screen that needs more room now says so
     // by its own content, not by re-padding.
     <div
-      className={`min-h-screen bg-stone-50 dark:bg-zinc-900 text-slate-900 dark:text-stone-100 ${currentTab === 'chat' || composingAnnouncements ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
+      className={`min-h-screen bg-stone-50 dark:bg-zinc-900 text-slate-900 dark:text-stone-100 ${composingAnnouncements ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
       dir={isRtl ? 'rtl' : 'ltr'}
     >
@@ -857,7 +847,6 @@ export default function App() {
           setSearchQuery={setSearchQuery}
           onShowUpload={() => setShowUpload(true)}
           isLoading={isLoading} 
-          onNavigateToChat={handleNavigateToChat} 
           onEdit={handleEditLecture} 
           onOpenMCQ={handleOpenMCQ}
           onOpenReader={handleOpenReader}
@@ -868,10 +857,10 @@ export default function App() {
         />
       )}
       {currentTab === 'announcements' && (
-        <AnnouncementsScreen user={user} lang={lang} lectures={lectures} onNavigateToChat={handleNavigateToChat} onOpenMCQ={handleOpenMCQ} onOpenReader={handleOpenReader} onBack={() => setCurrentTab('home')} />
+        <AnnouncementsScreen user={user} lang={lang} lectures={lectures} onOpenMCQ={handleOpenMCQ} onOpenReader={handleOpenReader} onBack={() => setCurrentTab('home')} />
       )}
-      {currentTab === 'chat' && (
-        <ChatScreen user={user} lang={lang} setCurrentTab={setCurrentTab} onMobileChatOpenChange={setIsMobileChatOpenApp} />
+      {currentTab === 'simosan' && (
+        <SimosanSoonScreen lang={lang} />
       )}
       {currentTab === 'subscription' && (
         <SubscriptionScreen user={user} lang={lang} />
@@ -986,7 +975,7 @@ export default function App() {
 
       <GlobalAudioPlayer isRtl={isRtl} />
       <AnimatePresence>
-        {(!isAnyOverlayOpen && !isMobileChatOpenApp && !composingAnnouncements) && (
+        {(!isAnyOverlayOpen && !composingAnnouncements) && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9, y: 30 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}

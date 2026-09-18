@@ -22,7 +22,7 @@ import PollBuilder, { emptyPoll } from './PollBuilder';
 /**
  * The docked announcement composer.
  *
- * Pinned to the bottom and grows upward as it fills, the way a chat composer
+ * Pinned to the bottom and grows upward as it fills, the way a messaging composer
  * does, rather than opening as a centred modal. Two constraints shape the
  * geometry:
  *
@@ -264,7 +264,7 @@ export default function Composer({ user, stageId, lang, lectures, editing, onCan
       const payload: Record<string, unknown> = {
         // Kept plain and in sync with the blocks: functions/index.js builds the
         // push-notification body from `text || content`, and the unread badge
-        // and share-to-chat both read it too. None of them know about blocks.
+        // reads it too. Neither knows about blocks.
         text: plain,
         content: plain,
         richBlocks: blocks,

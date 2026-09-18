@@ -152,7 +152,6 @@ const BACKFILL_COLLECTIONS = [
   'homeworks',
   'degreeBatches',
   'userMCQStats',
-  'chat_messages', // the group chat; private DMs live under private_chats/*
 ];
 
 const BATCH_LIMIT = 500;

@@ -29,20 +29,6 @@
       ]
     },
     {
-      "collectionGroup": "chat_messages",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "stageId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "users",
       "queryScope": "COLLECTION",
       "fields": [

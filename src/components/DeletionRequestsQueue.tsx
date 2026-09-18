@@ -9,8 +9,8 @@ import { logAdminAction } from '../services/adminLogService';
  * Pending account-deletion requests for the representative's own stage.
  *
  * Approving is irreversible and does more than it looks: it deletes the
- * student's sign-in identity, profile, push token and quiz history, strips
- * every credential from the roster record, and anonymises their chat messages.
+ * student's sign-in identity, profile, push token and quiz history, and strips
+ * every credential from the roster record.
  * shared/accountDeletion.ts is the authority on exactly what goes.
  *
  * The queue is served by the API rather than read from Firestore, because the

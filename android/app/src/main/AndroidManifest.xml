@@ -11,11 +11,10 @@
 
         <!--
             windowSoftInputMode=adjustResize is what makes `100dvh` track the
-            soft keyboard. Both bottom-docked composers in this app - the chat
-            one and the announcements one - size themselves from dvh and pin
-            their footer to the bottom edge; under the system default the window
-            pans instead of resizing, which slides the composer off-screen and
-            leaves the caret behind the keyboard.
+            soft keyboard. The announcements composer is bottom-docked, sizes
+            itself from dvh and pins its footer to the bottom edge; under the
+            system default the window pans instead of resizing, which slides the
+            composer off-screen and leaves the caret behind the keyboard.
         -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"

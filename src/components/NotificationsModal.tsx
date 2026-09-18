@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { X, Bell, MessageSquare, BookOpen, Clock, ShieldAlert } from 'lucide-react';
+import { X, Bell, BookOpen, Clock, ShieldAlert } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { useStageContext } from '../contexts/StageContext';
 
@@ -31,7 +31,7 @@ interface NotificationsModalProps {
 
 interface NotificationItem {
   id: string;
-  type: 'mention' | 'homework' | 'system' | 'report';
+  type: 'homework' | 'system' | 'report';
   title: string;
   body: string;
   createdAt: any;
@@ -125,56 +125,7 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
           console.error("Homeworks fetch failed", e);
         }
 
-        // 2. Fetch Chat Mentions (last 200 messages)
-        try {
-          const chatQuery = query(collection(db, 'chat_messages'), orderBy('timestamp', 'desc'), limit(200));
-          const chatSnap = await getDocs(chatQuery);
-          
-          const normalizeArabic = (text: string) => {
-            if (!text) return '';
-            return text.toLowerCase()
-                       .replace(/[أإآا]/g, 'ا')
-                       .replace(/ة/g, 'ه')
-                       .replace(/ى/g, 'ي');
-          };
-
-          const firstName = user.name ? user.name.split(' ')[0] : '';
-          const originalFirstName = user.originalName ? user.originalName.split(' ')[0] : '';
-          const possibleMentions = [
-            `@${normalizeArabic(user.name)}`, 
-            `@${normalizeArabic(user.originalName)}`, 
-            `@${normalizeArabic(user.email.split('@')[0])}`,
-            `@${normalizeArabic(firstName)}`,
-            `@${normalizeArabic(originalFirstName)}`
-          ].filter(m => m && m.length > 2); // Exclude very short or empty mentions like "@"
-          
-          chatSnap.forEach(docSnap => {
-            const msg = docSnap.data();
-            if (!msg.text) return;
-            
-            const text = normalizeArabic(msg.text);
-            const isMentioned = possibleMentions.some(m => text.includes(m));
-            const isRepliedTo = msg.replyTo?.senderId === user.uid || 
-                                (msg.replyTo?.senderName && (msg.replyTo.senderName === user.name || msg.replyTo.senderName === user.originalName));
-            
-            if ((isMentioned || isRepliedTo) && msg.senderId !== user.uid && msg.senderEmail !== user.email) {
-              items.push({
-                id: docSnap.id,
-                type: 'mention',
-                title: isRepliedTo ? (isRtl ? 'رد جديد' : 'New Reply') : (isRtl ? 'إشارة جديدة' : 'New Mention'),
-                body: isRtl 
-                  ? (isRepliedTo ? `قام ${msg.senderName} بالرد عليك: "${msg.text.substring(0, 50)}${msg.text.length > 50 ? '...' : ''}"` : `قام ${msg.senderName} بذكرك في المحادثة: "${msg.text.substring(0, 50)}${msg.text.length > 50 ? '...' : ''}"`)
-                  : (isRepliedTo ? `${msg.senderName} replied to you: "${msg.text.substring(0, 50)}${msg.text.length > 50 ? '...' : ''}"` : `${msg.senderName} mentioned you: "${msg.text.substring(0, 50)}${msg.text.length > 50 ? '...' : ''}"`),
-                createdAt: msg.timestamp?.toMillis ? msg.timestamp.toMillis() : Date.now(),
-                icon: MessageSquare
-              });
-            }
-          });
-        } catch (e) {
-          console.error("Chat mentions fetch failed", e);
-        }
-
-        // 3. Fetch system notifications
+        // 2. Fetch system notifications
         try {
           const sysQuery = query(collection(db, 'systemNotifications'), where('userId', '==', user.uid), orderBy('createdAt', 'desc'), limit(20));
           const sysSnap = await getDocs(sysQuery);
@@ -242,7 +193,7 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
           </div>
           <div className="flex-1">
             <h2 className="text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-              {isRtl ? 'إشعارات المحادثة والتطبيق' : 'Chat & App Notifications'}
+              {isRtl ? 'إشعارات التطبيق' : 'App Notifications'}
             </h2>
           </div>
           <button 
@@ -270,11 +221,9 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                 className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 flex gap-4 items-start shadow-sm hover:shadow-md transition-all cursor-pointer group"
               >
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                  item.type === 'mention' 
-                    ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
-                    : (item.type === 'system' || item.type === 'report')
-                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                      : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400'
+                  (item.type === 'system' || item.type === 'report')
+                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                    : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400'
                 }`}>
                   <item.icon className="w-5 h-5" />
                 </div>
@@ -351,7 +300,7 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                  <Bell className="w-8 h-8" />
                </div>
                <h3 className="text-lg font-bold text-slate-700 dark:text-slate-300 mb-1">{isRtl ? 'لا توجد إشعارات' : 'No notifications'}</h3>
-               <p className="text-slate-500 dark:text-slate-400 text-sm max-w-xs">{isRtl ? 'سوف تظهر الإشعارات عند وجود واجبات جديدة أو عند الإشارة إليك في المحادثة.' : 'Notifications will appear when new homework is added or someone mentions you in chat.'}</p>
+               <p className="text-slate-500 dark:text-slate-400 text-sm max-w-xs">{isRtl ? 'سوف تظهر الإشعارات عند وجود واجبات جديدة أو تحديثات تخص حسابك.' : 'Notifications will appear when new homework is added or something changes on your account.'}</p>
              </div>
           )}
         </div>
