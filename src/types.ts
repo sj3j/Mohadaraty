@@ -73,6 +73,20 @@ export interface Subscription {
   endDate: any;   // Firestore Timestamp
   paymentMethod: PaymentMethod;
   transactionId?: string;
+  /** Receipt screenshot for a manual (Super Qi / Qi Card) transfer. Either this
+   *  or transactionId is present on a manual request - see isProofSufficient()
+   *  in src/lib/paymentContact.ts. A download URL, so it carries its own access
+   *  token; the object itself lives at receiptPath. */
+  receiptUrl?: string;
+  /** Storage object name behind receiptUrl, kept so the file can be found (or
+   *  removed) without parsing the tokenised URL. */
+  receiptPath?: string;
+  /** How to reach the STUDENT about this request - one of the two is present on
+   *  a manual one. `userEmail` is not a reply channel: for a roster student it
+   *  is a college address nobody reads. Normalised on write, so contactWhatsapp
+   *  is dialable digits and contactTelegram carries no `@`. */
+  contactWhatsapp?: string;
+  contactTelegram?: string;
   amount: number; // in IQD
   createdAt: any;
   updatedAt?: any;
@@ -209,7 +223,6 @@ export interface UserProfile {
   notificationPreferences?: {
     lectures: boolean;
     announcements: boolean;
-    chat?: boolean;
     records?: boolean;
     homeworks?: boolean;
   };
@@ -227,7 +240,6 @@ export interface UserProfile {
     manageLectures: boolean;
     manageAnnouncements: boolean;
     manageRecords: boolean;
-    manageChat: boolean;
     manageHomeworks: boolean;
     manageStudents: boolean;
     manageGrades?: boolean;
@@ -440,7 +452,6 @@ export const TRANSLATIONS = {
     navWeekly: 'واجبات الأسبوع',
     navProfile: 'الملف الشخصي',
     navRecords: 'تسجيلات',
-    navChat: 'الدردشة',
     original: 'أصلي',
     translated: 'مترجم',
     addToWeekly: 'إضافة لواجبات الأسبوع',
@@ -587,7 +598,6 @@ export const TRANSLATIONS = {
     navWeekly: 'Weekly List',
     navProfile: 'Profile',
     navRecords: 'Records',
-    navChat: 'Chat',
     original: 'Original',
     translated: 'Translated',
     addToWeekly: 'Add to Weekly List',

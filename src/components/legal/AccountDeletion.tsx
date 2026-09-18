@@ -93,7 +93,6 @@ export default function AccountDeletion() {
           'Your device notification token.',
           'Your quiz answers and statistics, and your daily activity history.',
         ]} />
-        <p>Your chat messages are kept, because other students took part in those conversations, but your name is removed from them and they appear as “deleted student”.</p>
       </Section>
 
       <Section heading="What is kept, and why">

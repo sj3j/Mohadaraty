@@ -25,7 +25,6 @@ export const MODERATOR_CAPABILITIES = [
   'manageLectures',
   'manageAnnouncements',
   'manageRecords',
-  'manageChat',
   'manageHomeworks',
 ] as const;
 

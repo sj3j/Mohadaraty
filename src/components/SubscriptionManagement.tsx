@@ -1,16 +1,22 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X, Crown, Users, CreditCard, DollarSign, Clock, CheckCircle2, XCircle,
   AlertCircle, Search, ChevronDown, ChevronUp, Loader2, Gift, Plus,
-  TrendingUp, Calendar, ArrowRight
+  TrendingUp, Calendar, ArrowRight, Paperclip, MessageSquare, Send, Check
 } from 'lucide-react';
 import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan, Subscription, UserProfile } from '../types';
 import {
   onAllSubscriptions, approveSubscription, rejectSubscription,
   extendSubscription, cancelSubscription, grantSubscription,
+  onPaymentContact, savePaymentContact,
   getRemainingDays, formatSubscriptionDate
 } from '../services/subscriptionService';
+import {
+  EMPTY_PAYMENT_CONTACT, PaymentContact,
+  hasPaymentChannel, normalizePaymentContact, normalizeTelegram, normalizeWhatsapp,
+  telegramUrl, whatsappUrl,
+} from '../lib/paymentContact';
 import { db } from '../lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 
@@ -37,11 +43,24 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
   const [grantNotes, setGrantNotes] = useState('');
   const [allUsers, setAllUsers] = useState<{ uid: string; name: string; email: string }[]>([]);
   const [userSearch, setUserSearch] = useState('');
+  /** Draft of settings/payment_contact - what a student sees on the manual
+   *  (Super Qi / Qi Card) form. */
+  const [contactDraft, setContactDraft] = useState<PaymentContact>(EMPTY_PAYMENT_CONTACT);
+  const [contactSave, setContactSave] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  /** The live listener must not overwrite what an admin is typing, so the
+   *  stored values seed the draft once and never again. */
+  const contactSeeded = useRef(false);
 
   useEffect(() => {
     const unsub = onAllSubscriptions(setSubscriptions);
     return unsub;
   }, []);
+
+  useEffect(() => onPaymentContact(contact => {
+    if (contactSeeded.current) return;
+    contactSeeded.current = true;
+    setContactDraft(contact);
+  }), []);
 
   // Load all users for grant modal
   useEffect(() => {
@@ -87,10 +106,19 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
       if (filterPlan !== 'all' && s.plan !== filterPlan) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
+        // A rep holding a phone number or a Telegram handle should find the
+        // request it belongs to. The stored number is digits only, so a typed
+        // 07xx is reduced the same way first. BOTH are guarded on being
+        // non-empty: "".includes("") is true, so an unguarded digit match makes
+        // every row with a number answer a plain name search.
+        const digits = q.replace(/\D/g, '').replace(/^0/, '');
+        const handle = q.replace(/^@/, '');
         return (
           (s.userEmail || '').toLowerCase().includes(q) ||
           (s.userName || '').toLowerCase().includes(q) ||
-          (s.transactionId || '').toLowerCase().includes(q)
+          (s.transactionId || '').toLowerCase().includes(q) ||
+          (!!digits && (s.contactWhatsapp || '').includes(digits)) ||
+          (!!handle && (s.contactTelegram || '').toLowerCase().includes(handle))
         );
       }
       return true;
@@ -123,6 +151,29 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
     }
   };
 
+  // Normalised here as well as on save so the admin is told about a bad entry
+  // before they commit it: a local 07xx number would otherwise be stored, and a
+  // wa.me link built from it opens WhatsApp's "invalid number" page.
+  const contactPreview = normalizePaymentContact(contactDraft);
+  const whatsappBad = !!contactDraft.whatsapp.trim() && !contactPreview.whatsapp;
+  const telegramBad = !!contactDraft.telegram.trim() && !contactPreview.telegram;
+  const channelMissing = !hasPaymentChannel(contactPreview);
+
+  const handleSaveContact = async () => {
+    setContactSave('saving');
+    try {
+      await savePaymentContact(contactDraft);
+      // Show what students will actually get: 07xx rewritten to 9647xx, a
+      // pasted t.me link reduced to the username.
+      setContactDraft(normalizePaymentContact(contactDraft));
+      setContactSave('saved');
+      window.setTimeout(() => setContactSave(cur => (cur === 'saved' ? 'idle' : cur)), 2000);
+    } catch (err) {
+      console.error(err);
+      setContactSave('error');
+    }
+  };
+
   const handleExtend = async (subId: string) => {
     setActionLoading(subId);
     try {
@@ -147,6 +198,47 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
       zaincash: t.zaincash, superkey: t.superkey, admin_grant: t.adminGrant,
     };
     return labels[method] || method;
+  };
+
+  /**
+   * The student's own WhatsApp / Telegram, as one-tap links.
+   *
+   * The reason the fields exist: a receipt with a question on it (short amount,
+   * a sibling's name on the transfer, last month's screenshot) is otherwise a
+   * reject, because the row's email is a college address nobody reads. Stored
+   * normalised, so these need no re-parsing.
+   */
+  const StudentContactLinks = ({ sub }: { sub: Subscription }) => {
+    if (!sub.contactWhatsapp && !sub.contactTelegram) return null;
+    return (
+      <div className="flex items-center gap-3 mt-1 text-xs">
+        <span className="text-slate-400">{t.studentContact}:</span>
+        {sub.contactWhatsapp && (
+          <a
+            href={whatsappUrl({ ...EMPTY_PAYMENT_CONTACT, whatsapp: sub.contactWhatsapp })}
+            target="_blank"
+            rel="noopener noreferrer"
+            dir="ltr"
+            className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+          >
+            <MessageSquare className="w-3 h-3" />
+            {sub.contactWhatsapp}
+          </a>
+        )}
+        {sub.contactTelegram && (
+          <a
+            href={telegramUrl({ ...EMPTY_PAYMENT_CONTACT, telegram: sub.contactTelegram })}
+            target="_blank"
+            rel="noopener noreferrer"
+            dir="ltr"
+            className="inline-flex items-center gap-1 font-medium text-sky-600 dark:text-sky-400 hover:underline"
+          >
+            <Send className="w-3 h-3" />
+            @{sub.contactTelegram}
+          </a>
+        )}
+      </div>
+    );
   };
 
   const statusColors: Record<string, string> = {
@@ -234,6 +326,94 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
           </div>
         </div>
 
+        {/* Manual payment details.
+            A Super Qi / Qi Card transfer lands in a wallet this app cannot
+            query, so the student needs a number to send to and a human to
+            confirm it with. Editable here rather than in an env var because the
+            receiving number is the most likely thing to change, and a rebuild
+            is not an acceptable cost for that. */}
+        <div className="mb-6 p-4 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
+          <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+            <CreditCard className="w-4 h-4 text-amber-500" />
+            {t.paymentContactSettings}
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t.paymentContactHint}</p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t.walletNumberLabel}</span>
+              <input
+                type="text"
+                value={contactDraft.walletNumber}
+                onChange={e => setContactDraft({ ...contactDraft, walletNumber: e.target.value })}
+                placeholder="0770 000 0000"
+                dir="ltr"
+                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-sky-400"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                <MessageSquare className="w-3.5 h-3.5 text-emerald-500" />
+                {t.whatsappLabel}
+              </span>
+              <input
+                type="text"
+                value={contactDraft.whatsapp}
+                onChange={e => setContactDraft({ ...contactDraft, whatsapp: e.target.value })}
+                placeholder="07700000000"
+                dir="ltr"
+                className={`mt-1 w-full px-3 py-2.5 rounded-xl border bg-white dark:bg-zinc-900 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-sky-400 ${
+                  whatsappBad ? 'border-red-400 dark:border-red-500' : 'border-slate-200 dark:border-zinc-700'
+                }`}
+              />
+              {whatsappBad && <span className="text-[11px] text-red-500">{t.whatsappInvalid}</span>}
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                <Send className="w-3.5 h-3.5 text-sky-500" />
+                {t.telegramLabel}
+              </span>
+              <input
+                type="text"
+                value={contactDraft.telegram}
+                onChange={e => setContactDraft({ ...contactDraft, telegram: e.target.value })}
+                placeholder="@mohadaraty"
+                dir="ltr"
+                className={`mt-1 w-full px-3 py-2.5 rounded-xl border bg-white dark:bg-zinc-900 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-sky-400 ${
+                  telegramBad ? 'border-red-400 dark:border-red-500' : 'border-slate-200 dark:border-zinc-700'
+                }`}
+              />
+              {telegramBad && <span className="text-[11px] text-red-500">{t.telegramInvalid}</span>}
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t.paymentNoteLabel}</span>
+              <input
+                type="text"
+                value={contactDraft.note}
+                onChange={e => setContactDraft({ ...contactDraft, note: e.target.value })}
+                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-sky-400"
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              onClick={handleSaveContact}
+              disabled={contactSave === 'saving' || channelMissing || whatsappBad || telegramBad}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 text-white text-sm font-medium hover:bg-sky-600 disabled:opacity-50 transition-colors"
+            >
+              {contactSave === 'saving' ? <Loader2 className="w-4 h-4 animate-spin" />
+                : contactSave === 'saved' ? <Check className="w-4 h-4" /> : null}
+              {contactSave === 'saved' ? t.paySaved : t.paySave}
+            </button>
+            {channelMissing && <span className="text-xs text-amber-600 dark:text-amber-400">{t.channelRequired}</span>}
+            {contactSave === 'error' && <span className="text-xs text-red-500">{t.paySaveFailed}</span>}
+          </div>
+        </div>
+
         {/* Actions Bar */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <div className="relative flex-1 min-w-[200px]">
@@ -286,12 +466,37 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
             <div className="space-y-2">
               {subscriptions.filter(s => s.status === 'pending').map(sub => (
                 <div key={sub.id} className="p-3 rounded-xl bg-white dark:bg-zinc-800 flex items-center justify-between gap-3">
+                  {/* The receipt is what approval is decided on, so it is a
+                      thumbnail here rather than a link to click through. */}
+                  {sub.receiptUrl && (
+                    <a
+                      href={sub.receiptUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={t.viewReceipt}
+                      className="flex-shrink-0"
+                    >
+                      <img src={sub.receiptUrl} alt={t.viewReceipt} className="w-12 h-12 rounded-lg object-cover bg-slate-100 dark:bg-zinc-700" />
+                    </a>
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{sub.userName || sub.userEmail}</p>
                     <p className="text-xs text-slate-500">{planLabel(sub.plan)} • {sub.amount.toLocaleString()} {t.iqd} • {paymentLabel(sub.paymentMethod)}</p>
                     {sub.transactionId && (
                       <p className="text-xs text-slate-400 mt-0.5 font-mono">Ref: {sub.transactionId}</p>
                     )}
+                    {sub.receiptUrl && (
+                      <a
+                        href={sub.receiptUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 mt-0.5 text-xs font-medium text-sky-600 dark:text-sky-400 hover:underline"
+                      >
+                        <Paperclip className="w-3 h-3" />
+                        {t.viewReceipt}
+                      </a>
+                    )}
+                    <StudentContactLinks sub={sub} />
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
@@ -359,6 +564,18 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                   {sub.transactionId && (
                     <p className="text-xs text-slate-400 mt-1 font-mono">TxID: {sub.transactionId}</p>
                   )}
+                  {sub.receiptUrl && (
+                    <a
+                      href={sub.receiptUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mt-1 text-xs font-medium text-sky-600 dark:text-sky-400 hover:underline"
+                    >
+                      <Paperclip className="w-3 h-3" />
+                      {t.viewReceipt}
+                    </a>
+                  )}
+                  <StudentContactLinks sub={sub} />
                 </div>
 
                 {/* Actions */}

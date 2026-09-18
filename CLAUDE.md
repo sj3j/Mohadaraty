@@ -15,12 +15,19 @@ that's always loaded:
 
 ## Architecture: the dual API surface
 
-`server.ts` (43 routes) is the **dev** server, run via `npm run dev` (tsx).
-`api/index.ts` (29 routes) is what actually serves **production** — `vercel.json`
-rewrites `/api/*` to it. The two have drifted by 14 routes.
+`server.ts` is the **dev** server, run via `npm run dev` (tsx). `api/index.ts` is
+what actually serves **production** — `vercel.json` rewrites `/api/*` to it.
 
-**A change to one usually needs the same change to the other.** Always check both
-before concluding a route does or does not exist.
+They used to disagree by 14 routes. **As of the chat removal they carry the same
+55 paths**, and the only difference left is server.ts's `"*"` SPA catch-all,
+which Vercel does not need. Re-check with
+
+    grep -oE "app\.(get|post|put|delete|patch|all)\(\s*[\"'\`][^\"'\`]*" server.ts
+
+against the same over `api/index.ts` before trusting that number again.
+
+**A change to one needs the same change to the other.** Always check both before
+concluding a route does or does not exist.
 
 ## Knowledge graph
 
@@ -47,7 +54,6 @@ does not classify them as code.
 
 | File | Lines |
 | --- | --- |
-| `src/components/ChatScreen.tsx` | 2543 |
 | `server.ts` | 1922 |
 | `src/components/StudentManagement.tsx` | 1450 |
 | `api/index.ts` | 1159 |
@@ -275,6 +281,68 @@ strings against `isRtl` rather than `TRANSLATIONS`, scrim `z-[170]` / panel
 existing three so back closes Simosan first.
 
 
+## The chat is gone, and what replaced its button
+
+The in-app group chat was deleted: `ChatScreen.tsx`, `chat/ReportMessageSheet`,
+the `sendMessage` callable, the `archiveOldMessages` cron, the
+`/api/admin/create-chat-bundle` route on both surfaces, and the rules for
+`chat_messages` (+ its `private/` subcollection), `chat_archive`,
+`chat_settings`, `chat_presence`, `chat_typing`, `inbox_sessions` and
+`private_chats`. `scripts/purgeChat.ts` empties all of it from a live project -
+dry run unless `--commit`, and it walks subcollections explicitly because
+deleting a parent leaves them orphaned, and `chat_messages/{id}/private/sender`
+held the real identity behind every anonymous message.
+
+Two fields survive on `users/` with nothing reading them:
+`notificationPreferences.chat` and `permissions.manageChat`. `manageChat` was
+never enforced anywhere - `syncRole` put it on the custom claim, but no rule and
+no function ever read it; `ChatScreen` was its only consumer.
+
+The nav slot is **reserved for Simosan**, which today exists only as a drawer
+inside the PDF reader. `SimosanSoonScreen.tsx` holds it - inert by design, no
+listener, no state. The tab id is `simosan`, not `chat`.
+
+`moderationService.ts` and Settings -> Blocked users stay. Blocking is still
+reachable and both stores want it, but `reportMessage()` has lost its only
+caller: **the app no longer has an in-app reporting path**. If a store reviewer
+raises Apple 1.2 / Play UGC, the fix is a report button on announcements, not a
+restored chat.
+
+### Sharing a lecture sends the FILE
+
+The three "share to chat" buttons are gone. Records and announcements lost
+theirs outright; the lecture button now hands the actual PDF to the OS share
+sheet (`src/lib/shareFile.ts`), so a classmate gets the file rather than a link
+into an app they may not have.
+
+**It must write into `Directory.Cache` and nowhere else.** `@capacitor/share`
+runs every entry in `files[]` through
+`FileProvider.getUriForFile(activity, packageName + ".fileprovider", ...)`, so
+the path has to sit under a directory `android/app/src/main/res/xml/file_paths.xml`
+already serves. It has `<cache-path path="." />`, and Capacitor's
+`Directory.Cache` is `context.cacheDir` - so that combination needs no native
+change, and any other directory throws from FileProvider at runtime with
+nothing a build would catch.
+
+Two more things that only fail on a device:
+
+* **The filename decides the MIME type.** Android reads it with
+  `MimeTypeMap.getFileExtensionFromUrl`, which yields an extension only when
+  the percent-encoded name matches `[a-zA-Z_0-9.\-()%]+`. Arabic is fine (it
+  encodes to `%D8%A7`); `'` `!` `~` `*` are not, because `Uri.encode` leaves
+  them alone. `safeFileName()` in `src/lib/shareFileName.ts` whitelists instead
+  of blacklisting, and `npm run test:share` pins it.
+* **The cached copy is swept on the NEXT share, never after this one.**
+  `Share.share()` resolves when the chooser returns, which is routinely before
+  the receiving app has read the stream - deleting on resolve ships a zero-byte
+  attachment.
+
+Bytes come from `readStoredPdf()` when the lecture is already downloaded, so a
+saved lecture shares with no connection at all, and encoding goes through
+`FileReader.readAsDataURL`: `btoa(String.fromCharCode(...bytes))` spreads one
+argument per byte and throws `RangeError` on any real PDF.
+
+
 ## Streaks: three stores, and which one is true
 
 `users/{uid}` holds the live counters. A season end (`shared/seasonReset.ts`) writes
@@ -363,7 +431,7 @@ been swapped - it needs a migration that drops superseded bytes.
 ## Master admins: one list, and the copies that cannot import it
 
 `shared/masterAdmins.ts` is the source of truth. Everything that can import does
-(`server.ts`, `api/index.ts`, `App.tsx`, `LoginScreen`, `ChatScreen`,
+(`server.ts`, `api/index.ts`, `App.tsx`, `LoginScreen`,
 `StudentManagement`, `AdminGradesScreen`). Four places cannot and hold a checked
 copy: `firestore.rules` and `storage.rules` (rules have no imports),
 `functions/index.js` (deploys as its own package, so `../shared` is not on disk)
@@ -371,9 +439,9 @@ and the `.mjs` scripts. `npm run test:masters` parses all four and fails if any
 disagrees, and also fails if a new source file hardcodes an address instead of
 importing.
 
-It exists because the inline lists **had already drifted**. `LoginScreen`,
-`ChatScreen` and `AdminGradesScreen` carried one address while the two servers
-carried two. That is not cosmetic: `LoginScreen` decides the `role` written onto
+It exists because the inline lists **had already drifted**. `LoginScreen`, the
+old `ChatScreen` and `AdminGradesScreen` carried one address while the two
+servers carried two. That is not cosmetic: `LoginScreen` decides the `role` written onto
 a brand-new `users` document, so a master admin whose first-ever sign-in was
 Google was created as a **student** and had to be repaired by hand.
 
@@ -443,6 +511,77 @@ the first side of that line.
 `npm run check:payment-surface` only flags gateway names, currency codes and
 price fields, so it passing is **necessary but not sufficient** - it would not
 have caught a "Subscription" row with a credit-card icon.
+
+## The manual payment method: Super Qi / Qi Card
+
+ZainCash settles itself - the gateway calls back and `shared/subscriptions.ts`
+inquires and activates. **A Super Qi transfer lands in a wallet nothing here can
+query**, so the only two things the app can do are point the student at a number
+and a human, and collect enough evidence for that human to recognise the
+transfer in their own wallet history. The form used to do neither: it printed the
+literal placeholder `07XXXXXXXXX` and demanded a transaction id with nobody to
+ask about it.
+
+Both halves are deliberately **one of two, not both** (`src/lib/paymentContact.ts`,
+pinned by `npm run test:payments`):
+
+* **Contact: WhatsApp OR Telegram.** A seller who only uses Telegram should not
+  have to invent a WhatsApp number, and a row of dead buttons is worse than one
+  live one. The wallet number is *not* a channel - it takes money and answers
+  nothing, so a student who has already paid would have nowhere to go.
+  `normalizeWhatsapp()` rewrites a local `07xx` to `9647xx` because wa.me opens
+  its own "invalid number" page otherwise, and `normalizeTelegram()` refuses a
+  `t.me/joinchat/...`, `t.me/+invite` or `t.me/c/123/45` link - a remaining `/`
+  means the path is not a username, and "joinchat" survives the username check.
+* **Proof: a receipt screenshot OR the transaction number.** Super Qi shows its
+  reference once, on a screen most students have already dismissed; requiring it
+  is what made the form unfinishable. `isProofSufficient()` is the rule and it is
+  enforced three times - the disabled submit button, the service before the
+  write, and the test.
+
+**The student leaves a contact too, and it is required.** A reviewer regularly
+has to ask something back - the amount is short, the name on the transfer is a
+sibling's, the receipt is for last month - and before this the only reply channel
+was the row's `userEmail`, which for a roster student is a college address nobody
+reads, so an unclear request could only be rejected. WhatsApp OR Telegram, the
+same one-of-two rule, stored normalised on the subscription
+(`contactWhatsapp` / `contactTelegram`) so Subscription Management can link
+straight to wa.me / t.me. The fields seed from that student's last request that
+carried one, so a renewal is not a retype. The admin search matches them, and
+both needles are guarded on being non-empty - `"abc".includes("")` is true, so an
+unguarded digit match makes every row with a number answer a plain name search.
+
+**The details live in Firestore (`settings/payment_contact`), not an env var**,
+and are edited in-app from Subscription Management. The receiving number is the
+single most likely thing to change and a rebuild is not an acceptable cost for
+that. `settings/*` is already `read: if isAuthenticated()` / `write: if isAdmin()`,
+which is exactly the audience. The dead `SUPERKEY_PHONE_NUMBER` this replaces was
+never read by anything: no `VITE_` prefix, so it never reached the browser - the
+same dead-code shape as the MCQ key above.
+
+Receipts go to `payment_receipts/{uid}_{ts}_{salt}.{ext}` in Cloud Storage. The
+object name **must** start with the uploader's uid: `storage.rules` admits the
+write with `fileName.matches(request.auth.uid + ".*")`, and the default fallback
+grants write to staff only, so without that rule a student attaching a receipt
+gets a 403. Reads are not narrowed and cannot be - the fallback already allows
+any authenticated read and Storage grants on ANY matching rule - so what keeps a
+receipt private is the token in its `getDownloadURL()` link. The upload happens
+on submit, not on pick, so an abandoned form leaves no orphan object; a failed
+upload still submits when a transaction number was typed, because either half is
+enough.
+
+**The stored `paymentMethod` stays `'superkey'`.** Live subscriptions carry it and
+`SubscriptionManagement`'s stats and filters key off it. Only the label was
+corrected: "SuperKey" was a mis-transliteration of سوبر كي, which is Super Qi,
+Qi Card's own wallet app. Renaming the value would strand every existing row.
+
+All of it is web-only by construction: the strings are in `src/i18n/payments.ts`
+and the logic is reachable only from the two components `vite.config.ts` stubs
+for `mode === 'native'`, so `paymentContact.ts` leaves the native graph with
+them. Verified - no `t.me/`, `payment_receipts` or "Super Qi" in a native build.
+Generic-sounding keys in `payments.ts` carry a `pay` prefix (`paySave`,
+`payCopied`, `payOr`) so nothing outside the purchase UI can come to depend on a
+string that vanishes there.
 
 
 ## Two Gemini keys, and which pipeline uses which

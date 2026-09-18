@@ -9,8 +9,9 @@ import { unblockUser } from '../../services/moderationService';
  * The list of people this user has blocked, with an unblock action.
  *
  * Apple 1.2 wants blocking to be reversible from inside the app - blockUser()
- * shipped with the chat report sheet, but nothing exposed unblockUser(), which
- * left the action one-way.
+ * shipped with the group chat's report sheet, but nothing exposed
+ * unblockUser(), which left the action one-way. The chat is gone and its report
+ * sheet with it; this screen is what still makes an existing block reversible.
  */
 export default function BlockedUsersSettings({ user, lang }: { user: UserProfile | null; lang: Language }) {
   const isRtl = lang === 'ar';

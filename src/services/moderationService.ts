@@ -12,6 +12,19 @@ import { auth, db } from '../lib/firebase';
  * path. The app already had the enforcement half (admin delete, mute, the
  * anti-cheat dashboard) but nothing a student could actually use.
  *
+ * STATE OF PLAY AFTER THE CHAT WAS REMOVED
+ *
+ * Blocking is still live: Settings -> Blocked users lists and reverses it, and
+ * `blockedUsers` is still validated by firestore.rules.
+ *
+ * `reportMessage()` and `filterBlocked()` have NO CALLER. The chat's report
+ * sheet was the only one, and it went with the chat - so as things stand there
+ * is no in-app reporting path at all. They are kept rather than deleted because
+ * whatever takes the chat's place will need exactly this, and because
+ * `content_reports` still holds the reports already filed. If a store reviewer
+ * raises 1.2 before then, the answer is a report button on announcements, not a
+ * restored chat.
+ *
  * Blocking is stored on the blocker's own user document and applied on read.
  * Deliberately NOT symmetric and not enforced server-side: hiding someone's
  * messages from you is a display preference, and a rule that let one student
@@ -34,7 +47,8 @@ export interface ReportInput {
   messageText: string;
   reportedUserId?: string | null;
   reportedUserName?: string | null;
-  chatPath: string;
+  /** Where the reported content lives, for a moderator following it up. */
+  contentPath?: string;
   reason: ReportReason;
   note?: string;
 }

@@ -127,7 +127,7 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
     role: 'support', email: 'sup@x.com', managedStageId: 'stage_4',
     permissions: {
       manageLectures: true, manageAnnouncements: true, manageRecords: true,
-      manageChat: true, manageHomeworks: true, manageStudents: true,
+      manageHomeworks: true, manageStudents: true,
       manageGrades: true, manageAdmins: true, manageGroups: true,
     },
   });
@@ -183,7 +183,6 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'records/rec_stage4'), { title: 'R4', stageId: 'stage_4' });
   await setDoc(doc(db, 'announcements/ann_stage4'), { content: 'A4', stageId: 'stage_4' });
   await setDoc(doc(db, 'homeworks/hw_stage4'), { subject: 'biochemistry', stageId: 'stage_4' });
-  await setDoc(doc(db, 'chat_messages/msg_stage4'), { text: 'C4', stageId: 'stage_4' });
   await setDoc(doc(db, 'subjects/stage_3__biochemistry_ii'), {
     id: 'biochemistry_ii', stageId: 'stage_3', courseId: 'course_2',
     nameEn: 'Biochemistry II', nameAr: 'Biochemistry II', order: 0, isActive: true,
@@ -351,8 +350,6 @@ await check('student CANNOT read an announcement on another stage',
   assertFails(getDoc(doc(student, 'announcements/ann_stage4'))));
 await check('student CANNOT read a homework on another stage',
   assertFails(getDoc(doc(student, 'homeworks/hw_stage4'))));
-await check('student CANNOT read another stage group chat',
-  assertFails(getDoc(doc(student, 'chat_messages/msg_stage4'))));
 await check('representative CANNOT read another stage record',
   assertFails(getDoc(doc(rep, 'records/rec_stage4'))));
 

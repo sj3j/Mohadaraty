@@ -482,7 +482,6 @@ export default function ProfileScreen({
               icon={STAT_ICONS.group}
               label={isRtl ? 'الكروب' : 'Group'}
               value={user.group || '—'}
-              onClick={() => onNavigate?.('chat')}
             />
           )}
           <StatCard
