@@ -52,7 +52,6 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
   const [showUpload, setShowUpload] = useState(false);
   const [recordToEdit, setRecordToEdit] = useState<RecordItem | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [localSearch, setLocalSearch] = useState('');
 
   const { effectiveStageId, activeCourseId } = useStageContext();
   const { subjects } = useStageSubjects();
@@ -133,7 +132,7 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
     return tabs;
   })();
 
-  const activeSearch = localSearch.trim() || searchQuery.trim();
+  const activeSearch = searchQuery.trim();
 
   if (activeSearch) {
     const fuse = new Fuse(baseRecords, {
@@ -206,20 +205,6 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
       </div>
 
       {stageHasCourses && <CourseTabs lang={lang} className="mb-6" />}
-
-      {/* Local Search Bar */}
-      {!searchQuery.trim() && (
-        <div className="relative mb-6">
-          <Search className={`w-5 h-5 absolute top-1/2 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-4' : 'left-4'}`} />
-          <input
-            type="text"
-            placeholder={isRtl ? 'ابحث في التسجيلات...' : 'Search recordings...'}
-            value={localSearch}
-            onChange={(e) => setLocalSearch(e.target.value)}
-            className={`w-full bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl py-3 ${isRtl ? 'pr-12 pl-4' : 'pl-12 pr-4'} focus:outline-none focus:border-sky-500 transition-colors font-medium dark:text-white`}
-          />
-        </div>
-      )}
 
       {/* Horizontal Tabs */}
       <div className="flex overflow-x-auto gap-3 pb-4 mb-2 no-scrollbar" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>

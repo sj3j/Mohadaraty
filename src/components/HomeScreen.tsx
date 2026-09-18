@@ -248,7 +248,7 @@ export default function HomeScreen({
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder={t.searchPlaceholder}
+                placeholder={activeTab === 'records' ? t.searchPlaceholderRecords : t.searchPlaceholder}
                 className={`w-full ${isRtl ? 'pr-11 pl-10' : 'pl-11 pr-10'} py-3 bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl text-sm font-bold text-slate-800 dark:text-stone-100 placeholder:font-medium placeholder-slate-400 dark:placeholder-slate-500 shadow-sm outline-none focus:border-sky-500 dark:focus:border-sky-500 transition-colors`}
               />
               {searchQuery && (

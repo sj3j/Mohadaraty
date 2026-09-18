@@ -11,11 +11,8 @@ import {
   PAYMENT_CONTACT_COLLECTION,
   PAYMENT_CONTACT_DOC,
   PaymentContact,
-  StudentContact,
-  hasStudentContact,
   isProofSufficient,
   normalizePaymentContact,
-  normalizeStudentContact,
   receiptStoragePath,
 } from '../lib/paymentContact';
 
@@ -84,19 +81,14 @@ export interface PaymentProof {
 /**
  * Create a pending subscription (manual Super Qi / Qi Card flow).
  *
- * Two independent rules, both enforced here as well as in the form because this
- * is the only writer of a pending row:
+ * PROOF - a screenshot OR a transaction number (isProofSufficient) - is
+ * enforced here as well as in the form because this is the only writer of a
+ * pending row. A request with neither is one an admin cannot approve: there
+ * is nothing to match against the wallet history.
  *
- *   - PROOF: a screenshot OR a transaction number (isProofSufficient). A
- *     request with neither is one an admin cannot approve - there is nothing to
- *     match against the wallet history.
- *   - CONTACT: the student's WhatsApp OR Telegram (hasStudentContact). A
- *     request an admin has a question about, and no way to ask it, can only be
- *     rejected; `userEmail` is not a reply channel, since for a roster student
- *     it is a college address nobody reads.
- *
- * The contact is normalised, not merely trimmed, so the admin list can link
- * straight to wa.me / t.me without re-parsing what a student typed.
+ * There is deliberately no student-contact requirement: the seller's own
+ * WhatsApp/Telegram is already shown on this screen, so a student with a
+ * question messages first.
  *
  * Undefined members are stripped rather than written: Firestore rejects an
  * explicit `undefined`, and a `transactionId: null` on a receipt-only request
@@ -108,15 +100,10 @@ export async function createPendingSubscription(
   userName: string,
   plan: SubscriptionPlan,
   proof: PaymentProof,
-  contact: StudentContact
 ): Promise<string> {
   const transactionId = (proof.transactionId || '').trim();
   if (!isProofSufficient(transactionId, !!proof.receiptUrl)) {
     throw new Error('NO_PAYMENT_PROOF');
-  }
-  const reachable = normalizeStudentContact(contact);
-  if (!hasStudentContact(reachable)) {
-    throw new Error('NO_STUDENT_CONTACT');
   }
   const config = PLAN_CONFIG[plan];
   const docRef = await addDoc(collection(db, SUBSCRIPTIONS_COL), {
@@ -131,8 +118,6 @@ export async function createPendingSubscription(
     ...(transactionId ? { transactionId } : {}),
     ...(proof.receiptUrl ? { receiptUrl: proof.receiptUrl } : {}),
     ...(proof.receiptPath ? { receiptPath: proof.receiptPath } : {}),
-    ...(reachable.whatsapp ? { contactWhatsapp: reachable.whatsapp } : {}),
-    ...(reachable.telegram ? { contactTelegram: reachable.telegram } : {}),
     amount: config.price,
     createdAt: serverTimestamp(),
   });
