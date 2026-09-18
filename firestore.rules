@@ -212,6 +212,58 @@ service cloud.firestore {
       );
     }
 
+    // Grades. Shaped on canManageStudentsOn, NOT on canWriteStage, and the
+    // difference is the point: canWriteStage is isStaff()-based, so it admits
+    // moderators - while src/lib/permissions.ts puts manageGrades in
+    // ADMIN_ONLY_CAPABILITIES and scripts/rules.test.mjs asserts a moderator
+    // cannot reach the grade book. Support is gated on the capability rather
+    // than waved through, for the same reason it is on the students whitelist.
+    //
+    // Carries the same temporary managedStageId grace as its neighbours and is
+    // removed at the same time.
+    function canManageGradesOn(stageId) {
+      return isMasterAdmin() ||
+        supportCan('manageGrades') || (
+        isAdmin() && (myManagedStage() == '' || myManagedStage() == stageId)
+      );
+    }
+
+    function gradeStageOf(data) {
+      return data == null ? '' : data.get('stageId', '');
+    }
+
+    // Repairing a grade row that predates the stage rollout.
+    //
+    // This is NOT the same thing as canManageGradesOn's empty-string arm: that
+    // one is about STAFF with no managedStageId, this one is about a DOCUMENT
+    // with no stageId. An assigned representative fails the stage comparison
+    // against '' and would otherwise be locked out of every pre-rollout degree.
+    //
+    // Deliberately used for update and delete ONLY, never create. Allowing a
+    // create with no stageId would hand back the whole bypass: omit the field
+    // and write into any stage you like.
+    function isLegacyGradeDoc(data) {
+      return gradeStageOf(data) == '';
+    }
+
+    // The timetable photo, whose stage lives in the DOCUMENT ID
+    // (settings/weekly_schedule_stage_4) rather than in a field - so it is
+    // compared by BUILDING the id, because rules have no split().
+    //
+    // Keeps canWriteStage's exact arms: master admin and support must be here
+    // because they drive the stage picker and myManagedStage() is '' or a stale
+    // home stage for them, and the '' grace stays for symmetry with every other
+    // write path in this file.
+    function canWriteScheduleDoc(docId) {
+      return isMasterAdmin() || (
+        isStaff() && (
+          isSupport() ||
+          myManagedStage() == '' ||
+          docId == 'weekly_schedule_' + myManagedStage()
+        )
+      );
+    }
+
     // Read scope for stage-owned content. Mirrors canWriteStage on the read side:
     // staff see the stage they manage, students see the stage they are enrolled in
     // (plus any subject they carry, via hasStageAccess).
@@ -237,18 +289,13 @@ service cloud.firestore {
       );
     }
 
-    function isValidLecture(data) {
-      return data.keys().hasAll(['title', 'category', 'type', 'pdfUrl', 'createdAt', 'uploadedBy']) &&
-             data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
-             data.category in ['pharmacology', 'pharmacognosy', 'organic_chemistry', 'biochemistry', 'cosmetics'] &&
-             data.type in ['theoretical', 'practical'] &&
-             data.pdfUrl is string && data.pdfUrl.matches(".*") &&
-             data.createdAt is timestamp &&
-             data.uploadedBy == request.auth.uid &&
-             (!('number' in data) || data.number == null || (data.number is number && data.number > 0)) &&
-             (!('isWeekly' in data) || data.isWeekly is bool) &&
-             (!('version' in data) || data.version in ['original', 'translated']);
-    }
+    // isValidLecture was removed here. It was never called - the lectures rules
+    // below gate on canWriteStage alone - but it still enumerated the five
+    // legacy categories as the ONLY permitted `category` values, which read as
+    // though the curriculum were closed at five stage-3 subjects. A lecture now
+    // carries a subjectId from its stage's own curriculum and frequently no
+    // `category` at all, so anything reinstating this check as written would
+    // reject most real uploads.
 
     function isValidUser(data) {
       return (!('name' in data) || data.name is string) &&
@@ -324,9 +371,25 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    match /settings/{document=**} {
+    // Was settings/{document=**} with a flat isAdmin() write, which let any
+    // representative overwrite ANOTHER stage's timetable - defeating the
+    // per-stage document id WeeklyListScreen already writes.
+    //
+    // Narrowed IN PLACE, and as a ternary, for two separate reasons. In place
+    // because Firestore grants access if ANY matching rule allows it, so a
+    // stricter rule added beside a permissive wildcard restricts nothing (the
+    // same note is on app_settings below). As a ternary because
+    // settings/announcements is a live client write from AnnouncementsScreen
+    // and has to keep working. Dropping the recursive wildcard is safe:
+    // settings is flat - only announcements and the weekly_schedule_* docs.
+    //
+    // The pre-rollout global settings/weekly_schedule does not match the prefix
+    // test and stays on isAdmin(); it is read as a fallback, never written.
+    match /settings/{docId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if docId.matches('weekly_schedule_.*')
+        ? canWriteScheduleDoc(docId)
+        : isAdmin();
     }
 
     // The academic calendar decides whether the competition is running for the
@@ -565,13 +628,56 @@ service cloud.firestore {
       allow write: if false; // Only via API
     }
 
+    // WRITES are stage-scoped; READS are deliberately NOT.
+    //
+    // Three things break if the read arm is scoped, and none of them is obvious:
+    //
+    //  1. AdminGradesScreen's edit-batch path does a getDoc per student and
+    //     treats a missing document as normal (a student with no result). On a
+    //     GET of a document that does not exist `resource` is null, so any arm
+    //     reaching into resource.data errors and DENIES rather than returning
+    //     exists:false - and it fans out under Promise.all, so one denial
+    //     rejects the whole chunk. The lectures rule below uses that shape
+    //     safely only because lecture reads are queries, which never see a null
+    //     resource.
+    //  2. canReadStage() opens with hasAccess(), which needs a students/{email}
+    //     row. A graduated or de-rostered student would lose their entire
+    //     academic record - the one thing shared/accountDeletion.ts and the
+    //     year-end wipe both go out of their way to preserve.
+    //  3. hasStageAccess() compares the reader's CURRENT stageId, while
+    //     StudentGradesScreen shows one tab per stage the student has been
+    //     promoted through. Scoping the read empties every past-stage tab.
+    //
+    // The hole being closed is the write: any representative could put a grade
+    // onto any student in any stage.
     match /degrees/{studentId}/exams/{examId} {
       allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == studentId);
-      allow write: if isAdmin();
+      // A new degree must name a stage the writer manages. No legacy arm here
+      // on purpose - see isLegacyGradeDoc.
+      allow create: if canManageGradesOn(gradeStageOf(request.resource.data));
+      // Both sides are checked - the row as it stands and the row being written
+      // - so a degree cannot be dragged into another stage by editing it.
+      allow update: if
+        (isLegacyGradeDoc(resource.data) ? isAdmin() : canManageGradesOn(gradeStageOf(resource.data))) &&
+        (isLegacyGradeDoc(request.resource.data) ? isAdmin() : canManageGradesOn(gradeStageOf(request.resource.data)));
+      allow delete: if isLegacyGradeDoc(resource.data)
+        ? isAdmin()
+        : canManageGradesOn(gradeStageOf(resource.data));
     }
 
+    // Read stays isAdmin() for the same getDoc reason: adminGradeService reads a
+    // batch by id before patching or undoing it and reports a missing one as
+    // the Arabic for "batch not found". A scoped read would turn that into an
+    // opaque permission error. The client already filters history by stage.
     match /degreeBatches/{batchId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow create: if canManageGradesOn(gradeStageOf(request.resource.data));
+      allow update: if
+        (isLegacyGradeDoc(resource.data) ? isAdmin() : canManageGradesOn(gradeStageOf(resource.data))) &&
+        (isLegacyGradeDoc(request.resource.data) ? isAdmin() : canManageGradesOn(gradeStageOf(request.resource.data)));
+      allow delete: if isLegacyGradeDoc(resource.data)
+        ? isAdmin()
+        : canManageGradesOn(gradeStageOf(resource.data));
     }
 
     match /stages/{stageId} {
@@ -830,10 +936,18 @@ service cloud.firestore {
       allow read, update, delete: if isAdmin();
     }
     
+    // Every question belongs to a subject and, through it, to a stage - there
+    // is no such thing as one that belongs to none. Writes are scoped on the
+    // denormalized stageId the composers now attach.
+    //
+    // Reads stay open to anyone with access: the bank is deliberately shared
+    // across stages for revision, and rows predating the stage field carry no
+    // stageId to filter on anyway.
     match /questionBank/{questionId} {
       allow read: if hasAccess();
-      allow create, delete: if isAdmin();
-      allow update: if isAdmin() || (
+      allow create: if canWriteStage(request.resource.data.get('stageId', ''));
+      allow delete: if canWriteStage(resource.data.get('stageId', ''));
+      allow update: if canWriteStage(resource.data.get('stageId', '')) || (
         hasAccess() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isFlagged', 'flaggedReason', 'flaggedBy', 'flaggedAt']) &&
         request.resource.data.isFlagged == true

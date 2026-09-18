@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { normalizePrivateKey, describePrivateKey, unquote, PrivateKeyFormatError } from './privateKey.ts';
 
 /**
  * Environment, parsed and validated once at boot.
@@ -8,13 +9,89 @@ import 'dotenv/config';
  * cannot write to Storage has already dropped an hour of the channel.
  */
 
+function fail(message: string): never {
+  console.error(`[env] ${message}`);
+  process.exit(1);
+}
+
 function required(name: string): string {
   const value = process.env[name];
-  if (!value || !value.trim()) {
-    console.error(`[env] ${name} is required and is not set.`);
-    process.exit(1);
-  }
+  if (!value || !value.trim()) fail(`${name} is required and is not set.`);
   return value.trim();
+}
+
+export interface ServiceAccount {
+  projectId: string;
+  clientEmail: string;
+  privateKey: string;
+}
+
+/**
+ * Credentials, from either of two shapes.
+ *
+ * FIREBASE_SERVICE_ACCOUNT - the whole service-account .json, pasted verbatim -
+ * is the RECOMMENDED form for a hosting panel, and the reason is specific
+ * rather than stylistic: the private key inside it is a JSON string, so
+ * JSON.parse turns its `\n` escapes into real newlines correctly, by spec, with
+ * no hand-rolled unescaping anywhere in the path.
+ *
+ * The three separate variables are what server.ts and every script in scripts/
+ * use, so they stay supported - but they put a PEM through a single-line text
+ * field, and that is where `\\n` double-escaping, stored quote characters and
+ * collapsed whitespace all come from. normalizePrivateKey repairs those; it
+ * should not have to.
+ */
+function readCredentials(): ServiceAccount {
+  // unquote first: env_file and most panels store a wrapping quote as part of
+  // the value, and a quoted blob fails JSON.parse on its first character.
+  const raw = unquote(process.env.FIREBASE_SERVICE_ACCOUNT ?? '');
+
+  if (raw) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      fail(
+        'FIREBASE_SERVICE_ACCOUNT is set but is not valid JSON. Paste the ENTIRE ' +
+        'contents of the service-account .json file, starting with { and ending ' +
+        'with } - all on one line, and not wrapped in extra quotes. ' +
+        `(${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+
+    const projectId = String(parsed.project_id ?? parsed.projectId ?? '');
+    const clientEmail = String(parsed.client_email ?? parsed.clientEmail ?? '');
+    const privateKey = String(parsed.private_key ?? parsed.privateKey ?? '');
+
+    if (!projectId || !clientEmail || !privateKey) {
+      fail(
+        'FIREBASE_SERVICE_ACCOUNT parsed as JSON but is missing project_id, ' +
+        'client_email or private_key. That is the shape of an API-key file, not ' +
+        'a service account - download the service-account key instead.',
+      );
+    }
+
+    // Normalised anyway: harmless for a correct JSON key, and it rescues the
+    // case where someone re-escaped the file's contents before pasting it.
+    return { projectId, clientEmail, privateKey: safeNormalize(privateKey) };
+  }
+
+  return {
+    projectId: required('FIREBASE_PROJECT_ID'),
+    clientEmail: required('FIREBASE_CLIENT_EMAIL'),
+    privateKey: safeNormalize(required('FIREBASE_PRIVATE_KEY')),
+  };
+}
+
+/** Turns a PrivateKeyFormatError into a named exit rather than an OpenSSL
+ *  `DECODER routines::unsupported`, which says nothing about what is wrong. */
+function safeNormalize(raw: string): string {
+  try {
+    return normalizePrivateKey(raw);
+  } catch (error) {
+    if (error instanceof PrivateKeyFormatError) fail(error.message);
+    throw error;
+  }
 }
 
 /**
@@ -29,25 +106,32 @@ function required(name: string): string {
 function requiredBucket(): string {
   const bucket = process.env.FIREBASE_STORAGE_BUCKET?.trim();
   if (!bucket) {
-    console.error(
-      '[env] FIREBASE_STORAGE_BUCKET is required. Do not rely on a ${projectId}.appspot.com ' +
-      'default - this project\'s bucket is mylectures-app.firebasestorage.app.',
+    fail(
+      'FIREBASE_STORAGE_BUCKET is required. Do not rely on a ${projectId}.appspot.com ' +
+      "default - this project's bucket is mylectures-app.firebasestorage.app.",
     );
-    process.exit(1);
   }
   return bucket;
 }
+
+const credentials = readCredentials();
 
 export const env = {
   telegramBotToken: required('TELEGRAM_BOT_TOKEN'),
 
   firebase: {
-    projectId: required('FIREBASE_PROJECT_ID'),
-    clientEmail: required('FIREBASE_CLIENT_EMAIL'),
-    // The PEM is stored on one line with literal \n, exactly as server.ts:71
-    // and every script in scripts/ reads it.
-    privateKey: required('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n'),
+    ...credentials,
     storageBucket: requiredBucket(),
+    /**
+     * Logged at boot, never the key itself.
+     *
+     * A key that is merely MANGLED now fails loudly in normalizePrivateKey.
+     * A key that is intact but belongs to the wrong service account still
+     * boots cleanly and fails much later, as a permission denial on a write,
+     * with nothing in the log tying it back to the credential. This is what
+     * tells those two apart.
+     */
+    keyFingerprint: describePrivateKey(credentials.privateKey),
   },
 
   logLevel: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',

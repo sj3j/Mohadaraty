@@ -18,6 +18,8 @@
  * in a request body.
  */
 
+import { hasSubscriptionAccess } from './subscriptionAccess.js';
+
 /* ------------------------------------------------------------------ *
  * Pricing and the energy unit
  * ------------------------------------------------------------------ */
@@ -242,23 +244,21 @@ export function unitsToUsd(units: number): number {
  * ------------------------------------------------------------------ */
 
 /**
- * Server-side mirror of hasMCQAccess() in src/App.tsx.
+ * Server-side access gate. Delegates to the shared predicate so it cannot
+ * drift from the client's copy in src/App.tsx - it used to be a hand-written
+ * "mirror" of it, and the two produced different answers for the same account
+ * because App.tsx never loaded the fields its copy read.
  *
- * The client's copy decides what to render; this one decides what is spent, so
- * it reads the user document with the Admin SDK and never accepts a
+ * Kept under this name because simosanApi.ts and scripts/simosan.test.ts call
+ * it, and because the qualifier that matters here is Simosan-specific: admins
+ * pass the access check but are deliberately NOT exempt from the daily
+ * allowance - the point is that staff experience the same flow students do.
+ *
+ * The caller reads the user document with the Admin SDK and never accepts a
  * subscription claim from the request body.
- *
- * Admins pass the access check but are deliberately NOT exempt from the daily
- * allowance — the point is that staff experience the same flow students do.
  */
 export function hasAiAccess(userData: any, now: Date = new Date()): boolean {
-  if (!userData) return false;
-  if (userData.role === 'admin' || userData.isMasterAdmin) return true;
-  if (!userData.isSubscribed) return false;
-  const end = userData.subscriptionEnd;
-  if (!end) return true;
-  const endDate = typeof end?.toDate === 'function' ? end.toDate() : new Date(end);
-  return endDate > now;
+  return hasSubscriptionAccess(userData, now);
 }
 
 /* ------------------------------------------------------------------ *

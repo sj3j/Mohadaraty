@@ -9,6 +9,9 @@ import { MatchedResult, GradeBatch } from '../../types/grades.types';
 import { confirmDegreeBatchClient, undoDegreeBatch, patchDegreeBatchClient } from '../../services/adminGradeService';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../../contexts/StageContext';
+import { useStageSubjects } from '../../hooks/useStageSubjects';
+import { resolveSubjectLabel, subjectMetaFrom, subjectsForCourse } from '../../lib/subjectDisplay';
+import { COURSE_IDS, COURSE_LABELS } from '../../types';
 import { useAcademicPhase } from '../../hooks/useAcademicPhase';
 import { canManage } from '../../lib/permissions';
 import { isMasterAdminEmail } from '../../../shared/masterAdmins';
@@ -119,6 +122,13 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
   const isMasterAdmin = isMasterAdminEmail(auth.currentUser?.email);
   const canManageGrades = canManage(user, 'manageGrades');
   const { effectiveStageId } = useStageContext();
+  const { subjects } = useStageSubjects();
+
+  // The stage's real curriculum replaces the five hardcoded CATEGORIES, which
+  // are stage 3 / course 2's subjects - so every other stage's representative
+  // was filing سعيات against subjects their students do not study. A stage with
+  // no curriculum yet (stage 1 seeds none) keeps the legacy list.
+  const hasCurriculum = subjects.length > 0;
   // Stamped onto every degree this upload writes. Taken from the calendar, not
   // from createdAt: a batch confirmed after the year rolls over still belongs to
   // the year it examined.
@@ -343,8 +353,29 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
          await patchDegreeBatchClient(patchAppealsBatchId, matchedResults);
          setPatchAppealsBatchId(null);
        } else {
+         // Refuse rather than guess. A batch written with stageId undefined is
+         // invisible to the stage-filtered history query below, yet still
+         // reaches students - where StudentGradesScreen files it under the
+         // EARLIEST tab, so last year's cohort sees a grade they never sat.
+         // Unassigned staff hit this, and so does a master admin on a fresh
+         // device, whose stage comes from localStorage.
+         if (!effectiveStageId) {
+           throw new Error('لم يتم تحديد المرحلة. اختر المرحلة من الإعدادات ثم أعد المحاولة.');
+         }
          const allStudentIds = students.map(s => s.uid);
-         await confirmDegreeBatchClient(examName, matchedResults, Number(maxDegree) || 100, material, editBatchId || undefined, allStudentIds, effectiveStageId, yearLabel);
+         await confirmDegreeBatchClient(
+           examName, matchedResults, Number(maxDegree) || 100, material,
+           editBatchId || undefined, allStudentIds, effectiveStageId, yearLabel,
+           // The subject NAME, denormalized onto every degree and the manifest.
+           // subjectMetaFrom returns null for a legacy category slug, which is
+           // correct: there is nothing to denormalize and tier 3 names it.
+           (() => {
+             const meta = subjectMetaFrom(subjects, material);
+             return meta
+               ? { materialName: meta.subjectName, materialNameAr: meta.subjectNameAr, courseId: meta.courseId }
+               : undefined;
+           })(),
+         );
        }
        setMatchedResults([]);
        setExamName('');
@@ -561,11 +592,23 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
                       className="w-full px-4 py-3 bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 dark:text-white appearance-none"
                     >
                       <option value="" disabled>اختر المادة الدراسية...</option>
-                      {CATEGORIES.map(c => (
-                        <option key={c.value} value={c.value}>
-                          {TRANSLATIONS.ar[c.labelKey]}
-                        </option>
-                      ))}
+                      {hasCurriculum
+                        ? COURSE_IDS.map(courseId => {
+                            const courseSubjects = subjectsForCourse(subjects, courseId);
+                            if (courseSubjects.length === 0) return null;
+                            return (
+                              <optgroup key={courseId} label={COURSE_LABELS[courseId].ar}>
+                                {courseSubjects.map(sub => (
+                                  <option key={sub.id} value={sub.id}>{sub.nameAr || sub.nameEn}</option>
+                                ))}
+                              </optgroup>
+                            );
+                          })
+                        : CATEGORIES.map(c => (
+                            <option key={c.value} value={c.value}>
+                              {TRANSLATIONS.ar[c.labelKey]}
+                            </option>
+                          ))}
                     </select>
                   </div>
                 </>
@@ -820,7 +863,7 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
                     )}
                     {batch.material && (
                       <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">
-                        {TRANSLATIONS.ar[CATEGORIES.find(c => c.value === batch.material)?.labelKey as keyof typeof TRANSLATIONS.ar] || batch.material}
+                        {resolveSubjectLabel(batch as any, subjects, 'ar')}
                       </span>
                     )}
                   </h3>

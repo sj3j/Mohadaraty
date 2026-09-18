@@ -291,12 +291,38 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         return res.status(400).json({ error: "Filename is required" });
       }
 
+      // Which stage this recording belongs to.
+      //
+      // The route used to mint a presigned PUT to a flat, stage-agnostic key without
+      // ever consulting the caller's stage, even though verifyAdmin has already
+      // resolved it onto req.staff. The bucket had no stage partition at all, so the
+      // only thing tying a recording to a stage was the Firestore document written
+      // afterwards.
+      //
+      // Neither caller sends stageId - AdminRecordUpload's single- and multi-file
+      // paths send filename and contentType only, and an installed APK never will -
+      // so a missing one is INFERRED rather than rejected. Only a volunteered
+      // mismatch is refused, the same stance POST /api/admin/students takes.
+      // Rejecting on `!managedStageId` instead would break record upload for every
+      // unassigned admin, who are still the common case while the rollout grace stands.
+      const staff = callerStage(req);
+      const requestedStage = typeof req.query.stageId === 'string' ? req.query.stageId : '';
+      if (requestedStage && staff.managedStageId && !staff.isMasterAdmin && !staff.isSupport
+          && requestedStage !== staff.managedStageId) {
+        return res.status(403).json({ error: "You may only upload to your own stage." });
+      }
+      const uploadStage = requestedStage || staff.managedStageId || '';
+
       const bucketName = process.env.R2_BUCKET_NAME || "lecture-audio";
       const publicUrlBase = process.env.R2_PUBLIC_URL || "";
       
       // Sanitize filename and add timestamp to prevent overwrites
       const safeFileName = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const objectKey = `records/${Date.now()}_${safeFileName}`;
+      // Partitioned by stage. shared/yearWipe.ts derives the key back out of the
+      // stored URL and is prefix-agnostic, so existing objects are unaffected.
+      const objectKey = uploadStage
+        ? `records/${uploadStage}/${Date.now()}_${safeFileName}`
+        : `records/${Date.now()}_${safeFileName}`;
 
       const command = new PutObjectCommand({
         Bucket: bucketName,
@@ -2443,7 +2469,11 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
+      // isSubscribed as well as the date. expireSubscriptions sweeps off
+      // subscriptions.endDate every 24h, so extending one it has already cleared
+      // would push the expiry out and leave the student still locked out.
       await db.collection('users').doc(subData.userId).update({
+        isSubscribed: true,
         subscriptionEnd: admin.firestore.Timestamp.fromDate(newEnd),
       });
 

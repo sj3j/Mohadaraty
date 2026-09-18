@@ -56,6 +56,45 @@ export interface GoogleTokenResult {
   profile: GoogleProfile;
 }
 
+/**
+ * The Android account picker, with the Credential Manager failure taken as read.
+ *
+ * `signInWithGoogle()` defaults to `useCredentialManager: true`, which routes
+ * through androidx.credentials. That API fails CLOSED on a large slice of real
+ * phones - it raises NoCredentialException ("No credentials available") rather
+ * than showing a picker - and it does so with the project configured correctly:
+ *
+ *   - Play services throttles the sheet for 24h after the student dismisses it
+ *     a few times, and every attempt afterwards is a no-credential error;
+ *   - a device with no Google account added, or with the Google credential
+ *     provider disabled, has nothing to offer;
+ *   - Huawei and other non-GMS handsets have no provider at all.
+ *
+ * Passing `useCredentialManager: false` drops to the legacy GoogleSignIn intent,
+ * which launches a full-screen account picker and can add an account on the
+ * spot. It requests the id token from the SAME `default_web_client_id`, so the
+ * token's `aud` is unchanged and /api/google-login verifies it identically -
+ * this is a different UI on the way to the same credential, not a second
+ * identity path.
+ *
+ * Credential Manager is still tried first, because where it works it is one tap
+ * and does not leave the app. A cancellation is NOT retried: the student closed
+ * the sheet on purpose and re-opening a second picker reads as the app fighting
+ * them.
+ */
+async function signInWithGoogleNative(): Promise<any> {
+  const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+  try {
+    return await FirebaseAuthentication.signInWithGoogle();
+  } catch (error: any) {
+    const message = String(error?.message ?? error ?? '');
+    if (/cancel/i.test(message)) throw error;
+    console.warn('Credential Manager sign-in failed, falling back to the legacy picker:', message);
+    return await FirebaseAuthentication.signInWithGoogle({ useCredentialManager: false });
+  }
+}
+
+
 /** Exchanges a token for our custom token. Throws NoAccountError for signup. */
 async function exchange(body: Record<string, string>): Promise<{ token: string; studentId: string }> {
   const res = await fetch(apiUrl('/api/google-login'), {
@@ -90,7 +129,7 @@ async function exchange(body: Record<string, string>): Promise<{ token: string; 
 export async function getGoogleToken(): Promise<GoogleTokenResult> {
   if (await isNative()) {
     const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
-    const result = await FirebaseAuthentication.signInWithGoogle();
+    const result = await signInWithGoogleNative();
     const googleIdToken = result.credential?.idToken;
     if (!googleIdToken) throw new Error('Google sign-in returned no token');
 

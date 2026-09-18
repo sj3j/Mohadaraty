@@ -1,6 +1,7 @@
 import React from 'react';
 import { KeyRound } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile } from '../types';
+import { hasSubscriptionAccess } from '../../shared/subscriptionAccess';
 
 /**
  * Native replacement for src/components/SubscriptionScreen.tsx.
@@ -27,14 +28,18 @@ import { Language, TRANSLATIONS, UserProfile } from '../types';
  * stage representative against the college roster. The web build, which is not
  * bound by store billing rules, keeps the real screen.
  *
- * Access itself is unaffected: App.tsx gates content on `user.isSubscribed`,
- * read from the users document, so anyone already active keeps everything.
+ * Access itself is unaffected: App.tsx gates content on the shared predicate in
+ * shared/subscriptionAccess.ts, read from the users document, so anyone already
+ * active keeps everything.
  */
 export default function SubscriptionScreen({ user, lang }: { user: UserProfile | null; lang: Language }) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
 
-  const active = !!user?.isSubscribed;
+  // The gate, not a truthiness check: this row states whether the account has
+  // access, so it has to answer the same way the features do - including once
+  // subscriptionEnd has passed but the nightly job has not yet cleared the flag.
+  const active = hasSubscriptionAccess(user);
 
   // Shown only when access is active, and only as a date. An expiry is a fact
   // about the account; a renewal prompt would be an offer.

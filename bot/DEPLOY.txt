@@ -34,13 +34,22 @@ ENVIRONMENT VARIABLES  (you said these are already set — check them anyway)
 REQUIRED. The bot exits immediately with a named error if any is missing.
 
   TELEGRAM_BOT_TOKEN        from @BotFather
-  FIREBASE_PROJECT_ID       mylectures-app
-  FIREBASE_CLIENT_EMAIL     the service account address
-  FIREBASE_PRIVATE_KEY      the full PEM, ONE line, newlines as literal \n
   FIREBASE_STORAGE_BUCKET   mylectures-app.firebasestorage.app
 
   ^ Do not leave the bucket blank and do not guess
     "mylectures-app.appspot.com" — that name does not exist for this project.
+
+  ...plus credentials, in ONE of two shapes. See the next section.
+
+  FIREBASE_SERVICE_ACCOUNT  the whole service-account .json    (recommended)
+
+  ...or...
+
+  FIREBASE_PROJECT_ID       mylectures-app
+  FIREBASE_CLIENT_EMAIL     the service account address
+  FIREBASE_PRIVATE_KEY      the full PEM, ONE line, newlines as literal \n
+
+
 
 OPTIONAL
   LOG_LEVEL                 debug | info (default) | warn | error
@@ -51,16 +60,45 @@ OPTIONAL
                             what is actually running
 
 
-ABOUT FIREBASE_PRIVATE_KEY
---------------------------
-This is the one that usually goes wrong. It must be a single line, with the
-newlines written as the two characters \ and n, like this:
+ABOUT THE CREDENTIALS
+---------------------
+This is the one that usually goes wrong, and there are now two ways to give
+it. Prefer the first.
 
-  -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n
+1. FIREBASE_SERVICE_ACCOUNT   (recommended)
 
-Do NOT paste a multi-line PEM into the panel field, and do NOT wrap it in
-quotes — most panels store the quotes as part of the value. The bot converts
-the literal \n back into real newlines itself.
+   Open the service-account .json and paste the ENTIRE contents into the
+   field — starting with { and ending with }. It is one line already, so
+   there is nothing for the panel to wrap or truncate.
+
+   The reason to prefer it is not tidiness. The private key inside that file
+   is a JSON string, so the bot recovers its newlines with JSON.parse, by
+   spec. Nothing anywhere in the path has to guess what an escape meant.
+
+   When this is set, the three variables below are not read at all.
+
+2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY
+
+   The same three variables server.ts and every script in scripts/ use.
+   The PEM goes on ONE line, with the newlines written as the two
+   characters \ and n:
+
+       -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n
+
+   The bot now repairs the usual damage on the way in — double-escaped
+   \\n, quotes the panel stored as part of the value, a multi-line
+   paste, even the separators collapsed to spaces — and names what it
+   could not repair. You no longer have to get this exactly right. It is
+   still the form that gets mangled, which is why 1 exists.
+
+Either way, the boot line carries a FINGERPRINT of the key that loaded — its
+length and last six characters, never the key:
+
+  {"level":"info","event":"boot","projectId":"mylectures-app",
+   "clientEmail":"...","keyFingerprint":"1624 base64 chars, ending ...QmVnAQ"}
+
+That is what to check when the key is intact but belongs to the wrong service
+account, which boots cleanly and then fails as a permission denial on a write.
 
 
 WHAT YOU SHOULD SEE IN THE CONSOLE
@@ -105,6 +143,21 @@ TROUBLESHOOTING
 ---------------
 "[env] X is required and is not set"
     A variable is missing or blank in the panel. The message names it.
+
+"[env] FIREBASE_PRIVATE_KEY does not contain a BEGIN ... header"
+"[env] FIREBASE_PRIVATE_KEY has only N base64 characters"
+"[env] FIREBASE_PRIVATE_KEY opens with X but closes with Y"
+    The key is damaged beyond repair in the panel field — truncated, or only
+    half pasted. The message says which. Switching to
+    FIREBASE_SERVICE_ACCOUNT retires this whole class of failure.
+
+"[env] FIREBASE_SERVICE_ACCOUNT is set but is not valid JSON"
+    A partial paste. It must start with { and end with }.
+
+"error:1E08010C:DECODER routines::unsupported"
+    Should no longer be reachable from a mangled variable. If it appears, the
+    value is PEM-shaped and correctly formed but is not a usable key — the
+    right shape with the wrong contents.
 
 409 Conflict
     Something else holds the update stream — the old Cloud Function, a second

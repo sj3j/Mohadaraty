@@ -1,6 +1,7 @@
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { getMetadata, ref } from 'firebase/storage';
 import { db, storage } from './firebase';
+import { subjectSlugOf, denormalizedSubjectName } from '../../shared/subjectSlug';
 
 /**
  * Collecting a year's lectures and recordings into a downloadable archive.
@@ -111,11 +112,12 @@ export async function collectArchive(stageId: string | null): Promise<ArchiveSub
     const key = keyFor(d);
     if (!subjects.has(key)) {
       subjects.set(key, {
-        subjectId: d.subjectId || 'uncategorised',
+        subjectId: subjectSlugOf(d) || 'uncategorised',
         // subjectName is denormalised onto both documents at upload time, so
         // the archive never has to join against the subjects collection - and
         // still names folders correctly for content whose subject was deleted.
-        subjectName: d.subjectName || d.subjectId || d.category || 'Uncategorised',
+        // That is exactly denormalizedSubjectName's tier-1-then-slug chain.
+        subjectName: denormalizedSubjectName(d) || 'Uncategorised',
         stageId: d.stageId || 'unknown',
         lectures: [],
         records: [],

@@ -7,6 +7,7 @@ import { CATEGORIES, Category, LectureType, Language, TRANSLATIONS, RecordItem, 
 import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../contexts/StageContext';
 import { useStageSubjects } from '../hooks/useStageSubjects';
+import { subjectMetaFrom } from '../lib/subjectDisplay';
 import { COURSE_IDS, COURSE_LABELS, CourseId } from '../types';
 import { apiUrl } from '../lib/apiBase';
 
@@ -29,11 +30,11 @@ export default function AdminRecordUpload({ isOpen, onClose, lang, recordToEdit,
   const [subjectId, setSubjectId] = useState<string>('');
   const courseSubjects = subjects.filter(sub => sub.courseId === courseFilter);
 
-  const subjectMeta = (id?: string) => {
-    const sub = subjects.find(x => x.id === id);
-    if (!sub) return {};
-    return { subjectId: sub.id, courseId: sub.courseId, subjectName: sub.nameEn };
-  };
+  // Writes subjectNameAr too. The Arabic name is what every badge and push
+  // notification actually renders, and it is the only thing that can name this
+  // record once its subject is hidden, renamed or left behind by a promotion -
+  // see the tier note in src/lib/subjectDisplay.ts.
+  const subjectMeta = (id?: string) => subjectMetaFrom(subjects, id) ?? {};
   
   const [title, setTitle] = useState('');
   const [recordNumber, setRecordNumber] = useState('');

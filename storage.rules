@@ -85,10 +85,35 @@ service firebase.storage {
       allow write: if false;
     }
 
-    // Weekly Tasks: Only staff can upload
-    match /weekly_tasks/{fileName} {
+    // Timetable photos, stage-scoped exactly like announcements above: the
+    // composer writes schedules/{stageId}/{fileName}, so one stage's
+    // representative cannot replace another stage's timetable.
+    //
+    // This prefix previously had NO block at all and fell through to the
+    // catch-all below, which is `isStaff()` - any moderator of any stage.
+    match /schedules/{stageId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if canWriteStage(stageId);
+    }
+
+    // Flat legacy prefix, from before the composer scoped uploads by stage.
+    //
+    // DELIBERATELY STILL WRITABLE, unlike its announcements counterpart. Every
+    // installed APK and cached PWA still uploads here, and their only error
+    // path is a generic alert - so denying it would look like the timetable
+    // upload had simply broken. Close it (write: if false) once the client
+    // rollout has landed.
+    match /schedules/{fileName} {
       allow read: if isAuthenticated();
       allow write: if isStaff();
+    }
+
+    // Weekly Tasks: dead prefix - nothing in src/ or shared/ writes here. It
+    // looks like the intended home for the timetable photos that ended up under
+    // schedules/ instead. Kept readable in case anything was ever put here.
+    match /weekly_tasks/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
 
     // Chat Attachments: Authenticated users can upload their own files

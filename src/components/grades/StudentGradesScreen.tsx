@@ -3,9 +3,11 @@ import { Award, Target, Trophy, Clock, Search, X } from 'lucide-react';
 import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../../lib/firebase';
 import { StudentDegree } from '../../types/grades.types';
-import { CATEGORIES, TRANSLATIONS, Stage } from '../../types';
+import { Stage } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../../contexts/StageContext';
+import { useStageSubjects } from '../../hooks/useStageSubjects';
+import { resolveSubjectLabel, subjectSlugOf, canonicalSubjectSlug } from '../../lib/subjectDisplay';
 
 /**
  * Year bucket for a degree written before yearLabel existed. Sorts last, and is
@@ -24,6 +26,10 @@ export default function StudentGradesScreen({ isOpen, onClose }: StudentGradesSc
   const [search, setSearch] = useState('');
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const { stages, effectiveStageId } = useStageContext();
+  // Tier 2 only, and only for the CURRENT stage - which is why every degree
+  // carries its own materialNameAr. These tabs span every stage the student has
+  // been promoted through, and this list knows about exactly one of them.
+  const { subjects } = useStageSubjects();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -135,19 +141,43 @@ export default function StudentGradesScreen({ isOpen, onClose }: StudentGradesSc
     });
   })();
 
-  const groupByMaterial = (list: StudentDegree[]) =>
-    list.reduce((acc, degree) => {
-      const mat = degree.material || 'other';
-      if (!acc[mat]) acc[mat] = [];
-      acc[mat].push(degree);
-      return acc;
-    }, {} as Record<string, StudentDegree[]>);
+  /**
+   * Sections for one year, keyed on the CANONICAL slug so a subject uploaded
+   * under its legacy name last year and its curriculum name this year is one
+   * section rather than two.
+   */
+  const groupByMaterial = (list: StudentDegree[]) => {
+    const groups = new Map<string, StudentDegree[]>();
+    for (const degree of list) {
+      const key = canonicalSubjectSlug(subjectSlugOf(degree)) || 'other';
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(degree);
+      else groups.set(key, [degree]);
+    }
+    return Array.from(groups.entries()).map(([key, degrees]) => ({
+      key,
+      label: materialName(key, degrees),
+      degrees,
+    }));
+  };
 
-  const materialName = (material: string) =>
-    material === 'other' ? 'أخرى' :
-      (CATEGORIES.find(c => c.value === material)?.labelKey
-        ? TRANSLATIONS.ar[CATEGORIES.find(c => c.value === material)!.labelKey as keyof typeof TRANSLATIONS.ar]
-        : material);
+  /**
+   * The heading for a section.
+   *
+   * Reads the DEGREES, not just the key: the name is denormalized onto each
+   * document, which is the only tier that can name a subject from a stage this
+   * student has already been promoted out of. Scans for the first row that
+   * resolves to something better than its own slug, so a group mixing legacy
+   * rows with newer ones still gets the real name.
+   */
+  const materialName = (key: string, degrees: StudentDegree[] = []) => {
+    if (key === 'other') return 'أخرى';
+    for (const degree of degrees) {
+      const label = resolveSubjectLabel(degree as any, subjects, 'ar');
+      if (label && label !== subjectSlugOf(degree)) return label;
+    }
+    return key;
+  };
 
   const renderDegreeCard = (degree: StudentDegree) => {
     let passRateColor = 'bg-gray-200';
@@ -230,14 +260,14 @@ export default function StudentGradesScreen({ isOpen, onClose }: StudentGradesSc
 
   const renderMaterialSections = (list: StudentDegree[]) => (
     <div className="space-y-8">
-      {Object.entries(groupByMaterial(list)).map(([material, matDegrees]) => (
-        <div key={material}>
+      {groupByMaterial(list).map(({ key, label, degrees }) => (
+        <div key={key}>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <div className="w-2 h-6 bg-emerald-500 rounded-full"></div>
-            {materialName(material)}
+            {label}
           </h2>
           <div className="flex flex-nowrap overflow-x-auto pb-4 gap-4 sm:gap-6 snap-x aesthetic-scrollbar scroll-smooth">
-            {(matDegrees as StudentDegree[]).map(degree => renderDegreeCard(degree))}
+            {degrees.map(degree => renderDegreeCard(degree))}
           </div>
         </div>
       ))}

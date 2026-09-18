@@ -372,15 +372,27 @@ exports.sendHomeworkNotificationV3 = onDocumentCreated({
 
     const homeworkData = snap.data();
     
-    // Translate subject to Arabic
-    const subjectMap = {
+    // The subject NAME is denormalized onto the homework at save time, so the
+    // primary path needs no subject list here at all. That matters: this file
+    // deploys as its own package and cannot import shared/subjectSlug.ts, so a
+    // list here is a SECOND copy that silently goes stale - and it did. Every
+    // subject outside the five below pushed a notification naming a raw slug.
+    //
+    // The map is kept only as a fallback for homework written before the
+    // curriculum move, which carries a legacy category and no name.
+    const LEGACY_SUBJECT_NAMES = {
       'pharmacology': 'فارما',
       'pharmacognosy': 'عقاقير',
       'organic_chemistry': 'عضوية',
       'biochemistry': 'بايو',
       'cosmetics': 'تكنو'
     };
-    const subject = subjectMap[homeworkData.subject] || homeworkData.subject || 'مادة غير معروفة';
+    const subject =
+      (homeworkData.subjectNameAr || '').trim() ||
+      (homeworkData.subjectName || '').trim() ||
+      LEGACY_SUBJECT_NAMES[homeworkData.subject] ||
+      homeworkData.subject ||
+      'مادة غير معروفة';
     const type = homeworkData.type === 'theoretical' ? 'نظري' : 'عملي';
     
     // Extract lecture numbers
@@ -567,122 +579,25 @@ exports.onFirstAttemptComplete = onDocumentCreated(
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 
-exports.confirmDegreeBatch = onCall(async (request) => {
-  try {
-    if (!request.auth) {
-      throw new HttpsError('unauthenticated', 'User must be logged in.');
-    }
-
-    const userRoleDoc = await db.collection('users').doc(request.auth.uid).get();
-    const role = userRoleDoc.exists ? userRoleDoc.data().role : null;
-    const email = request.auth.token.email;
-    const isMasterAdmin = isMasterAdminEmail(email);
-
-    if (!isMasterAdmin && role !== 'admin' && role !== 'moderator') {
-      throw new HttpsError('permission-denied', 'Only admins can confirm batches.');
-    }
-
-    const { examName, confirmedResults } = request.data;
-    if (!examName || !Array.isArray(confirmedResults)) {
-      throw new HttpsError('invalid-argument', 'Missing or invalid parameters.');
-    }
-
-    const batchId = `batch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const examId = `exam_${batchId}`;
-    
-    let saved = 0;
-    let failed = 0;
-    const studentIds = [];
-
-    // Chunk size of 400 to stay safely under the 500 limit
-    const chunkSize = 400;
-    
-    for (let i = 0; i < confirmedResults.length; i += chunkSize) {
-      const chunk = confirmedResults.slice(i, i + chunkSize);
-      const batch = db.batch();
-      
-      for (const result of chunk) {
-        if (result.matchedUserId) {
-          const studentId = result.matchedUserId;
-          studentIds.push(studentId);
-          const degreeRef = db.collection(`degrees/${studentId}/exams`).doc(examId);
-          
-          batch.set(degreeRef, {
-            examName,
-            degree: result.degree || 0,
-            batchId: batchId,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-          saved++;
-        } else {
-          failed++;
-        }
-      }
-      
-      // On the last chunk, also write the degreeBatches document
-      if (i + chunkSize >= confirmedResults.length) {
-        const batchRef = db.collection('degreeBatches').doc(batchId);
-        batch.set(batchRef, {
-          id: batchId,
-          examName,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          createdBy: request.auth.uid,
-          status: 'confirmed',
-          studentIds: studentIds,
-          stats: {
-            totalRows: confirmedResults.length,
-            matched: saved,
-            unmatched: failed
-          }
-        });
-      }
-
-      await batch.commit();
-    }
-
-    // Handle case where confirmedResults mapping matched nothing, still write batch
-    if (confirmedResults.length === 0) {
-      const batch = db.batch();
-      const batchRef = db.collection('degreeBatches').doc(batchId);
-      batch.set(batchRef, {
-        id: batchId,
-        examName,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        createdBy: request.auth.uid,
-        status: 'confirmed',
-        studentIds: studentIds,
-        stats: {
-          totalRows: 0,
-          matched: 0,
-          unmatched: 0
-        }
-      });
-      await batch.commit();
-    }
-
-    return { saved, failed, batchId };
-  } catch (error) {
-    console.error('Error confirming degree batch:', error);
-    
-    // Log error to Firestore
-    try {
-      await db.collection('debug_logs').add({
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        message: error.message || error.toString(),
-        stack: error.stack || null,
-        function: 'confirmDegreeBatch'
-      });
-    } catch (e) {
-      // Ignored
-    }
-
-    if (error instanceof HttpsError) {
-      throw error;
-    }
-    // Changed to 'unknown' so Firebase doesn't strip the error message from the client
-    throw new HttpsError('unknown', 'An internal error occurred: ' + (error.message || error.toString()));
-  }
-});
+// confirmDegreeBatch (onCall) was removed here.
+//
+// It was dead: the app confirms batches through confirmDegreeBatchClient in
+// src/services/adminGradeService.ts, and nothing has called this in-app. But
+// it was still DEPLOYED and callable by any signed-in staff account, and it
+// was wrong in three ways that the client path is not:
+//
+//   - it admitted role === 'moderator', while manageGrades sits in
+//     ADMIN_ONLY_CAPABILITIES (src/lib/permissions.ts) because grades reach
+//     the students whitelist;
+//   - it had no stage check of any kind, so it bypassed the scoping that
+//     firestore.rules now enforces on degrees and degreeBatches - an onCall
+//     runs on the Admin SDK and is not subject to those rules at all;
+//   - it wrote degree documents with no stageId, material, maxDegree or
+//     yearLabel, which land in StudentGradesScreen's legacy bucket and
+//     surface under whichever stage tab happens to be earliest.
+//
+// Deleting it rather than fixing it: a second write path for grades is the
+// thing worth removing, not a second copy of the same guards.
 // onDocumentWritten is imported at the top of the file alongside
 // onDocumentCreated. It used to be re-required here, which stopped working the
 // moment a second trigger needed it: tallyPollVotes registers at module load,

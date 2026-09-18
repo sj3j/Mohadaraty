@@ -117,6 +117,27 @@ check('stage_3 splits 6 / 5 across courses', c1 === 6 && c2 === 5, `got ${c1} / 
 const s1 = await db.collection('subjects').where('stageId', '==', 'stage_1').get();
 check('stage_1 intentionally has no subjects', s1.size === 0, `got ${s1.size}`);
 
+// The other three stages, pinned for the same reason stage_3 is. Every subject
+// picker in the app - grades, records, homework, the question bank - now reads
+// this collection instead of the five hardcoded CATEGORIES, so a stage that
+// silently seeds nothing does not fail loudly: it falls back to the legacy
+// stage-3 list, which is exactly the bug the curriculum replaced.
+for (const [stageId, total, split] of [
+  ['stage_2', 12, [7, 5]],
+  ['stage_4', 11, [6, 5]],
+  ['stage_5', 13, [7, 6]],
+]) {
+  const snap = await db.collection('subjects').where('stageId', '==', stageId).get();
+  check(`${stageId} has ${total} subjects`, snap.size === total, `got ${snap.size}`);
+  const a = snap.docs.filter(d => d.data().courseId === 'course_1').length;
+  const b = snap.docs.filter(d => d.data().courseId === 'course_2').length;
+  check(`${stageId} splits ${split[0]} / ${split[1]} across courses`,
+    a === split[0] && b === split[1], `got ${a} / ${b}`);
+  const unnamed = snap.docs.filter(d => !d.data().nameAr || !d.data().nameEn);
+  check(`every ${stageId} subject is named in both languages`, unnamed.length === 0,
+    unnamed.map(d => d.id).join(', '));
+}
+
 const expected = {
   pharmacology: 'pharmacology_i',
   cosmetics: 'pharmaceutical_and_cosmetic_preparations',

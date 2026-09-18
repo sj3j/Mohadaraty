@@ -64,7 +64,10 @@ picks the change up live — **no restart, no redeploy**.
 
 ```bash
 cp bot/.env.example bot/.env
-# fill in TELEGRAM_BOT_TOKEN and the three FIREBASE_* values
+# fill in TELEGRAM_BOT_TOKEN, FIREBASE_SERVICE_ACCOUNT (paste the whole
+# service-account .json) and FIREBASE_STORAGE_BUCKET. The three separate
+# FIREBASE_PROJECT_ID / _CLIENT_EMAIL / _PRIVATE_KEY variables still work
+# and are the fallback - see bot/DEPLOY.txt, "ABOUT THE CREDENTIALS".
 
 docker compose -f bot/docker-compose.yml up -d --build
 docker compose -f bot/docker-compose.yml logs -f

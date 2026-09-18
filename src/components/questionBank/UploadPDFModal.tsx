@@ -9,7 +9,10 @@ import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
 import { X, Upload, Loader2, Edit3, Save, CheckCircle, FileText, ChevronDown, ChevronUp } from 'lucide-react';
 import { QuestionScope, QuestionTag, QuestionType, Difficulty } from '../../types/questionBank.types';
 import { motion, AnimatePresence } from 'motion/react';
-import { CATEGORIES, TRANSLATIONS } from '../../types';
+import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
+import { useStageSubjects } from '../../hooks/useStageSubjects';
+import { useStageContext } from '../../contexts/StageContext';
+import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
@@ -59,8 +62,17 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
   const [error, setError] = useState<string | null>(null);
   
   // Categorization
-  const [scope, setScope] = useState<QuestionScope>('global');
-  const [subjectId, setSubjectId] = useState<string>(CATEGORIES[0].value);
+  // See AddBankQuestionModal: 'global' wrote subjectId: null and showed the
+  // batch to every stage, and CATEGORIES[0] pre-tagged them all 'pharmacology'.
+  const [scope, setScope] = useState<QuestionScope>('subject');
+  const [subjectId, setSubjectId] = useState<string>('');
+
+  const { effectiveStageId } = useStageContext();
+  const { subjects } = useStageSubjects();
+  const hasCurriculum = subjects.length > 0;
+  // Resolved once rather than per question: a PDF import writes the whole batch
+  // against one subject, and subjectMetaFrom walks the list on every call.
+  const subjectMeta = subjectMetaFrom(subjects, subjectId);
   const [lectureId, setLectureId] = useState<string>('');
   const [tags, setTags] = useState<Set<QuestionTag>>(new Set());
   const [customTag, setCustomTag] = useState<string>('');
@@ -79,8 +91,8 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
       setError(null);
       setExtractedQuestions([]);
       setCompletedSaves(0);
-      setScope('global');
-      setSubjectId(CATEGORIES[0].value);
+      setScope('subject');
+      setSubjectId('');
       setLectureId('');
       setTags(new Set());
       getDocs(query(collection(db, 'lectures')))
@@ -123,6 +135,12 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
     }
     if (scope === 'lecture' && !lectureId) {
       setError('يجب اختيار محاضرة');
+      return;
+    }
+    // A whole PDF filed against no subject would drop dozens of questions into
+    // every stage at once, which is the worst version of this bug.
+    if (!subjectId) {
+      setError('يجب اختيار المادة');
       return;
     }
     
@@ -195,7 +213,11 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
 
         await addBankQuestion({
           scope,
-          subjectId: scope === 'global' ? null : subjectId,
+          subjectId,
+          stageId: effectiveStageId || null,
+          courseId: subjectMeta?.courseId || null,
+          subjectName: subjectMeta?.subjectName || null,
+          subjectNameAr: subjectMeta?.subjectNameAr || null,
           lectureId: scope === 'lecture' ? lectureId : null,
           tags: questionTags,
           year: null, // AI pdf extraction doesn't imply a specific year unless requested
@@ -264,41 +286,51 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
                       onChange={e => setScope(e.target.value as QuestionScope)}
                       className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
                     >
-                      <option value="global">🌐 عام (يظهر للكل)</option>
                       <option value="subject">📚 مادة كاملة</option>
                       <option value="lecture">📖 محاضرة محددة</option>
                     </select>
                   </div>
 
-                  {scope !== 'global' && (
-                    <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 mb-1">المادة</label>
+                      <select 
+                        value={subjectId} 
+                        onChange={e => setSubjectId(e.target.value)}
+                        className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
+                      >
+                        <option value="" disabled>-- اختر المادة --</option>
+                        {hasCurriculum
+                          ? COURSE_IDS.map(courseId => {
+                              const courseSubjects = subjectsForCourse(subjects, courseId);
+                              if (courseSubjects.length === 0) return null;
+                              return (
+                                <optgroup key={courseId} label={COURSE_LABELS[courseId].ar}>
+                                  {courseSubjects.map(sub => (
+                                    <option key={sub.id} value={sub.id}>{sub.nameAr || sub.nameEn}</option>
+                                  ))}
+                                </optgroup>
+                              );
+                            })
+                          : CATEGORIES.map(c => <option key={c.value} value={c.value}>{TRANSLATIONS['ar'][c.labelKey]}</option>)}
+                      </select>
+                    </div>
+                    {scope === 'lecture' && (
                       <div>
-                        <label className="block text-xs font-bold text-slate-500 mb-1">المادة</label>
+                        <label className="block text-xs font-bold text-slate-500 mb-1">المحاضرة</label>
                         <select 
-                          value={subjectId} 
-                          onChange={e => setSubjectId(e.target.value)}
+                          value={lectureId} 
+                          onChange={e => setLectureId(e.target.value)}
                           className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
                         >
-                          {CATEGORIES.map(c => <option key={c.value} value={c.value}>{TRANSLATIONS['ar'][c.labelKey]}</option>)}
+                          <option value="">-- اختر محاضرة --</option>
+                          {lectures.filter(l => subjectSlugOf(l) === subjectId).map(l => (
+                            <option key={l.id} value={l.id}>{l.title}</option>
+                          ))}
                         </select>
                       </div>
-                      {scope === 'lecture' && (
-                        <div>
-                          <label className="block text-xs font-bold text-slate-500 mb-1">المحاضرة</label>
-                          <select 
-                            value={lectureId} 
-                            onChange={e => setLectureId(e.target.value)}
-                            className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
-                          >
-                            <option value="">-- اختر محاضرة --</option>
-                            {lectures.filter(l => l.category === subjectId).map(l => (
-                              <option key={l.id} value={l.id}>{l.title}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1">التصنيف (اختياري)</label>

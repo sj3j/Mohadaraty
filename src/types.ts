@@ -120,6 +120,10 @@ export interface Lecture {
   stageId?: string;
   subjectId?: string;
   subjectName?: string;
+  /** Denormalized at upload. Tier 1 of resolveSubjectLabel - the only thing
+   *  that can name this subject once it is hidden, renamed, or belongs to a
+   *  stage the reader has been promoted out of. */
+  subjectNameAr?: string;
   courseId?: CourseId;
 }
 
@@ -160,6 +164,8 @@ export interface RecordItem {
   stageId?: string;
   subjectId?: string;
   subjectName?: string;
+  /** See Lecture.subjectNameAr. */
+  subjectNameAr?: string;
   courseId?: CourseId;
 }
 
@@ -324,7 +330,20 @@ export interface Student {
 
 export interface Homework {
   id: string;
-  subject: Category;
+  /**
+   * The subject slug. Widened from `Category` to `string` when homework moved
+   * onto the per-stage curriculum - it now holds a real subject id such as
+   * `public_health`, and only pre-migration rows still hold one of the five
+   * legacy categories.
+   */
+  subject: string;
+  /** Mirrors `subject` on rows written since the move; see Lecture.subjectId. */
+  subjectId?: string;
+  courseId?: CourseId;
+  subjectName?: string;
+  /** See Lecture.subjectNameAr. Read by functions/index.js, which cannot import
+   *  from shared/ and would otherwise need its own copy of the subject list. */
+  subjectNameAr?: string;
   type: LectureType | 'both';
   lectures: { label: string; lectureId: string }[];
   note?: string;

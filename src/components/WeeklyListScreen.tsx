@@ -7,6 +7,11 @@ import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Came
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
 import { useStageContext } from '../contexts/StageContext';
+import { useStageSubjects } from '../hooks/useStageSubjects';
+import {
+  resolveSubjectLabel, subjectMetaFrom, subjectSlugOf, subjectsForCourse,
+} from '../lib/subjectDisplay';
+import { COURSE_IDS, COURSE_LABELS } from '../types';
 import { canManage } from '../lib/permissions';
 
 interface WeeklyListScreenProps {
@@ -23,6 +28,10 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
 
+  const { subjects } = useStageSubjects();
+  // A stage with no curriculum yet (stage 1 seeds none) keeps the legacy list.
+  const hasCurriculum = subjects.length > 0;
+
   const [homeworks, setHomeworks] = useState<Homework[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
@@ -33,7 +42,10 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   
   // Admin form state
   const [showAdminForm, setShowAdminForm] = useState(false);
-  const [subject, setSubject] = useState(CATEGORIES[0].value);
+  // Starts EMPTY and is required. It used to default to CATEGORIES[0] -
+  // 'pharmacology' - so a representative who never touched the dropdown filed
+  // their stage's homework under a stage-3 subject without noticing.
+  const [subject, setSubject] = useState<string>('');
   const [type, setType] = useState<'theoretical' | 'practical' | 'both'>('theoretical');
   const [note, setNote] = useState('');
   const [dueDate, setDueDate] = useState<string>('');
@@ -134,7 +146,10 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
 
     setIsUploadingPhoto(true);
     try {
-      const storageRef = ref(storage, `schedules/weekly_${Date.now()}`);
+      // Stage-scoped prefix, mirroring announcements/{stageId}/{fileName}. The
+      // flat path it replaces had no stage in it, so storage.rules could not
+      // tell one stage's timetable from another's.
+      const storageRef = ref(storage, `schedules/${effectiveStageId}/weekly_${Date.now()}`);
       const uploadTask = uploadBytesResumable(storageRef, file);
 
       uploadTask.on('state_changed', 
@@ -194,7 +209,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
 
   const handleCancelEdit = () => {
     setEditingId(null);
-    setSubject(CATEGORIES[0].value);
+    setSubject('');
     setType('theoretical');
     setNote('');
     setDueDate('');
@@ -213,6 +228,11 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       return;
     }
 
+    if (!subject) {
+      alert(isRtl ? 'اختر المادة أولاً.' : 'Please choose a subject first.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       let finalDueDate = null;
@@ -221,12 +241,23 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
          finalDueDate.setHours(23, 59, 59, 999);
       }
 
+      // The subject NAME rides along, so functions/index.js can title the push
+      // notification without a second hardcoded copy of the subject list, and so
+      // a hidden or renamed subject still names its homework.
+      const meta = subjectMetaFrom(subjects, subject);
+
       const homeworkData: Partial<Homework> = {
         subject,
         type,
         note,
         lectures: selectedLectures,
         stageId: effectiveStageId,
+        ...(meta ? {
+          subjectId: meta.subjectId,
+          courseId: meta.courseId,
+          subjectName: meta.subjectName,
+          subjectNameAr: meta.subjectNameAr,
+        } : {}),
       };
 
       if (finalDueDate) {
@@ -303,7 +334,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     return (
       l.title.toLowerCase().includes(searchLower) || 
       (l.number && l.number.toString().includes(searchLower))
-    ) && l.category === subject && l.type === type;
+    ) && subjectSlugOf(l) === subject && l.type === type;
   });
 
   const [showCompleted, setShowCompleted] = useState(false);
@@ -480,9 +511,22 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                     onChange={(e) => setSubject(e.target.value as any)}
                     className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 outline-none focus:border-sky-500 dark:text-stone-100"
                   >
-                    {CATEGORIES.map(cat => (
-                      <option key={cat.value} value={cat.value}>{t[cat.labelKey]}</option>
-                    ))}
+                    <option value="" disabled>{isRtl ? 'اختر المادة...' : 'Select subject...'}</option>
+                    {hasCurriculum
+                      ? COURSE_IDS.map(courseId => {
+                          const courseSubjects = subjectsForCourse(subjects, courseId);
+                          if (courseSubjects.length === 0) return null;
+                          return (
+                            <optgroup key={courseId} label={isRtl ? COURSE_LABELS[courseId].ar : COURSE_LABELS[courseId].en}>
+                              {courseSubjects.map(sub => (
+                                <option key={sub.id} value={sub.id}>{isRtl ? sub.nameAr : sub.nameEn}</option>
+                              ))}
+                            </optgroup>
+                          );
+                        })
+                      : CATEGORIES.map(cat => (
+                          <option key={cat.value} value={cat.value}>{t[cat.labelKey]}</option>
+                        ))}
                   </select>
                 </div>
                 
@@ -657,7 +701,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-2">
                        <h3 className="text-lg font-black text-slate-900 dark:text-stone-100">
-                         {t[CATEGORIES.find(c => c.value === hw.subject)?.labelKey || 'pharmacology']}
+                         {resolveSubjectLabel(hw as any, subjects, lang)}
                        </h3>
                        <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
                          hw.type === 'theoretical' 
@@ -783,7 +827,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                            <div className="flex flex-col gap-1">
                              <h3 className="text-lg font-black text-slate-900 dark:text-stone-100 flex items-center gap-2">
                                <Check className="w-5 h-5 text-emerald-500" />
-                               {t[CATEGORIES.find(c => c.value === hw.subject)?.labelKey || 'pharmacology']}
+                               {resolveSubjectLabel(hw as any, subjects, lang)}
                              </h3>
                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase w-fit ${
                                hw.type === 'theoretical' 

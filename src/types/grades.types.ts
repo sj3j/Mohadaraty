@@ -1,7 +1,22 @@
+import type { CourseId } from '../types';
+
 export interface GradeBatch {
   id: string;
   examName: string;
   material?: string;
+  /**
+   * The subject's name, denormalized at upload. Grades call the subject
+   * `material`, so the pair follows that name - shared/subjectSlug.ts reads
+   * both spellings.
+   *
+   * Tier 1 of resolveSubjectLabel, and the only tier that works here: a
+   * student's grade tabs span every stage they have been promoted through,
+   * while the live `subjects` list only ever holds the current one.
+   */
+  materialName?: string;
+  materialNameAr?: string;
+  /** Which of the stage's two courses the subject belongs to. */
+  courseId?: CourseId;
   maxDegree?: number | string;
   passRate?: number;
   createdAt: string;
@@ -39,6 +54,19 @@ export interface StudentDegree {
   id: string; // usually same as batchId or combined
   examName: string;
   material?: string;
+  /**
+   * The subject's name, denormalized at upload. Grades call the subject
+   * `material`, so the pair follows that name - shared/subjectSlug.ts reads
+   * both spellings.
+   *
+   * Tier 1 of resolveSubjectLabel, and the only tier that works here: a
+   * student's grade tabs span every stage they have been promoted through,
+   * while the live `subjects` list only ever holds the current one.
+   */
+  materialName?: string;
+  materialNameAr?: string;
+  /** Which of the stage's two courses the subject belongs to. */
+  courseId?: CourseId;
   degree: number | string;
   maxDegree?: number | string;
   passRate?: number;

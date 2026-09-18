@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, updateDoc, doc, deleteDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../../lib/firebase';
 import { X, Search, Filter, Plus, Edit2, Trash2, ShieldAlert } from 'lucide-react';
-import { TRANSLATIONS, Language, CATEGORIES } from '../../types';
+import { TRANSLATIONS, Language, CATEGORIES, COURSE_IDS, COURSE_LABELS } from '../../types';
+import { useStageSubjects } from '../../hooks/useStageSubjects';
+import { subjectsForCourse } from '../../lib/subjectDisplay';
 import { BankQuestion } from '../../types/questionBank.types';
 import { getAllBankQuestionsForAdmin, softDeleteBankQuestion } from '../../services/questionBankService';
 import AddBankQuestionModal from './AddBankQuestionModal';
@@ -16,6 +18,7 @@ interface AdminQuestionBankScreenProps {
 }
 
 export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: AdminQuestionBankScreenProps) {
+  const { subjects } = useStageSubjects();
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [lectures, setLectures] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -157,7 +160,19 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
                className="flex-1 p-2 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-sm"
              >
                <option value="">جميع المواد</option>
-               {CATEGORIES.map(c => <option key={c.value} value={c.value}>{t[c.labelKey]}</option>)}
+               {subjects.length > 0
+                 ? COURSE_IDS.map(courseId => {
+                     const courseSubjects = subjectsForCourse(subjects, courseId);
+                     if (courseSubjects.length === 0) return null;
+                     return (
+                       <optgroup key={courseId} label={COURSE_LABELS[courseId].ar}>
+                         {courseSubjects.map(sub => (
+                           <option key={sub.id} value={sub.id}>{sub.nameAr || sub.nameEn}</option>
+                         ))}
+                       </optgroup>
+                     );
+                   })
+                 : CATEGORIES.map(c => <option key={c.value} value={c.value}>{t[c.labelKey]}</option>)}
              </select>
 
              <select
@@ -197,7 +212,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
                     </span>
                   ))}
                   <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400">
-                    {q.scope === 'lecture' ? 'محاضرة' : q.scope === 'subject' ? 'مادة' : 'عام'}
+                    {q.scope === 'lecture' ? 'محاضرة' : q.scope === 'subject' ? 'مادة' : 'بلا مادة ⚠'}
                   </span>
                 </div>
                 <p className="font-medium text-slate-800 dark:text-slate-200 text-sm mb-3 line-clamp-2" dir="auto">{q.stem}</p>

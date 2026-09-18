@@ -24,6 +24,7 @@ import {
   usageDocId,
   type SimosanCtx,
 } from './simosan.js';
+import { subjectSlugOf, denormalizedSubjectName } from './subjectSlug.js';
 import {
   SimosanError,
   buildContents,
@@ -260,12 +261,16 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       // string so it does not disturb the cache the way a varying one would.
       const firstName = String(caller.data?.name || '').trim().split(/[ 	]+/)[0] || undefined;
 
-      let subjectName: string | undefined;
-      const subjectId = lecture.subjectId || lecture.category;
-      if (subjectId) {
+      // The denormalized name on the lecture answers this without a read. The
+      // fallback read is keyed `${stageId}__${slug}` because that is the
+      // document id migrateToStages.js writes - the bare slug is the `id` FIELD,
+      // so looking the bare slug up as a document id never matched anything.
+      const subjectId = subjectSlugOf(lecture);
+      let subjectName: string | undefined = subjectId ? denormalizedSubjectName(lecture) : undefined;
+      if (subjectId && subjectName === subjectId && lecture.stageId) {
         try {
-          const subj = await db.collection('subjects').doc(subjectId).get();
-          subjectName = subj.exists ? (subj.data()?.name || subj.data()?.nameAr || subjectId) : subjectId;
+          const subj = await db.collection('subjects').doc(`${lecture.stageId}__${subjectId}`).get();
+          if (subj.exists) subjectName = subj.data()?.nameAr || subj.data()?.nameEn || subjectId;
         } catch { subjectName = subjectId; }
       }
 

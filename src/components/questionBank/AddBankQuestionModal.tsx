@@ -5,7 +5,10 @@ import { db } from '../../lib/firebase';
 import { X, Save } from 'lucide-react';
 import { BankQuestion, QuestionScope, QuestionTag, QuestionType, StemFormat, Difficulty, BankChoice } from '../../types/questionBank.types';
 import { addBankQuestion, editBankQuestion, bankLectureIdFor } from '../../services/questionBankService';
-import { CATEGORIES, TRANSLATIONS } from '../../types';
+import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
+import { useStageSubjects } from '../../hooks/useStageSubjects';
+import { useStageContext } from '../../contexts/StageContext';
+import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
 
 interface Props {
   isOpen: boolean;
@@ -17,8 +20,17 @@ interface Props {
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
 export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initialData }: Props) {
-  const [scope, setScope] = useState<QuestionScope>('global');
-  const [subjectId, setSubjectId] = useState<string>(CATEGORIES[0].value);
+  const { effectiveStageId } = useStageContext();
+  const { subjects } = useStageSubjects();
+  const hasCurriculum = subjects.length > 0;
+
+  // 'subject' is now the narrowest a question can be. It used to default to
+  // 'global', which wrote subjectId: null and showed the question to all five
+  // stages - and it was the DEFAULT, so that happened unless staff changed it.
+  const [scope, setScope] = useState<QuestionScope>('subject');
+  // No legacy default either: CATEGORIES[0] is 'pharmacology', a stage-3
+  // subject, so every stage's questions were pre-tagged with it.
+  const [subjectId, setSubjectId] = useState<string>('');
   const [lectureId, setLectureId] = useState<string>('');
   
   const [tags, setTags] = useState<Set<QuestionTag>>(new Set());
@@ -70,7 +82,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
     if (isOpen) {
       if (initialData) {
         setScope(initialData.scope);
-        setSubjectId(initialData.subjectId || CATEGORIES[0].value);
+        setSubjectId(initialData.subjectId || '');
         setLectureId(initialData.lectureId || '');
         setTags(new Set(initialData.tags || []));
         setYear(initialData.year || '');
@@ -90,8 +102,8 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
         setExplanation(initialData.explanation || '');
       } else {
         // Reset form
-        setScope('global');
-        setSubjectId(CATEGORIES[0].value);
+        setScope('subject');
+        setSubjectId('');
         setLectureId('');
         setTags(new Set());
         setYear('');
@@ -154,6 +166,12 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
       return alert("يجب اختيار محاضرة");
     }
 
+    // Every question belongs to a subject, and through it to a stage. Without
+    // one there is nowhere to file it and nobody it is meant for.
+    if (!subjectId) {
+      return alert("يجب اختيار المادة");
+    }
+
     setSubmitting(true);
     try {
       // If the admin picked a TRANSLATED lecture, store the question against the
@@ -162,9 +180,18 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
       const selectedLecture = lectures.find(l => l.id === lectureId);
       const resolvedLectureId = selectedLecture ? bankLectureIdFor(selectedLecture) : lectureId;
 
+      const meta = subjectMetaFrom(subjects, subjectId);
+
       const payload: any = {
         scope,
-        subjectId: scope === 'global' ? null : subjectId,
+        subjectId,
+        // Denormalized so the bank can be filtered and named without joining
+        // `subjects` - and so a question keeps its subject's name after a
+        // rename. stageId is what makes the collection stage-scopable at all.
+        stageId: effectiveStageId || null,
+        courseId: meta?.courseId || null,
+        subjectName: meta?.subjectName || null,
+        subjectNameAr: meta?.subjectNameAr || null,
         lectureId: scope === 'lecture' ? resolvedLectureId : null,
         tags: _tags,
         year: _tags.includes('سنين_سابقة') ? year : null,
@@ -217,42 +244,52 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
                 onChange={e => setScope(e.target.value as QuestionScope)}
                 className="flex-1 p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
               >
-                <option value="global">🌐 عام (يظهر للكل)</option>
                 <option value="subject">📚 مادة كاملة</option>
                 <option value="lecture">📖 محاضرة محددة</option>
               </select>
             </div>
           </div>
 
-          {scope !== 'global' && (
-            <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المادة</label>
+              <select 
+                value={subjectId} 
+                onChange={e => setSubjectId(e.target.value)}
+                className="w-full p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
+              >
+                <option value="" disabled>-- اختر المادة --</option>
+                {hasCurriculum
+                  ? COURSE_IDS.map(courseId => {
+                      const courseSubjects = subjectsForCourse(subjects, courseId);
+                      if (courseSubjects.length === 0) return null;
+                      return (
+                        <optgroup key={courseId} label={COURSE_LABELS[courseId].ar}>
+                          {courseSubjects.map(sub => (
+                            <option key={sub.id} value={sub.id}>{sub.nameAr || sub.nameEn}</option>
+                          ))}
+                        </optgroup>
+                      );
+                    })
+                  : CATEGORIES.map(c => <option key={c.value} value={c.value}>{TRANSLATIONS['ar'][c.labelKey]}</option>)}
+              </select>
+            </div>
+            {scope === 'lecture' && (
               <div>
-                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المادة</label>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المحاضرة</label>
                 <select 
-                  value={subjectId} 
-                  onChange={e => setSubjectId(e.target.value)}
+                  value={lectureId} 
+                  onChange={e => setLectureId(e.target.value)}
                   className="w-full p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
                 >
-                  {CATEGORIES.map(c => <option key={c.value} value={c.value}>{TRANSLATIONS['ar'][c.labelKey]}</option>)}
+                  <option value="">-- اختر محاضرة --</option>
+                  {lectures.filter(l => subjectSlugOf(l) === subjectId).map(l => (
+                    <option key={l.id} value={l.id}>{l.title}</option>
+                  ))}
                 </select>
               </div>
-              {scope === 'lecture' && (
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المحاضرة</label>
-                  <select 
-                    value={lectureId} 
-                    onChange={e => setLectureId(e.target.value)}
-                    className="w-full p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
-                  >
-                    <option value="">-- اختر محاضرة --</option>
-                    {lectures.filter(l => l.category === subjectId).map(l => (
-                      <option key={l.id} value={l.id}>{l.title}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Tags */}
           <div>

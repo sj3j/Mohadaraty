@@ -3,6 +3,7 @@ import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimest
 import { db } from '../lib/firebase';
 import { X, Bell, MessageSquare, BookOpen, Clock, ShieldAlert } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
+import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
 
 const formatTimeAgo = (timestamp: number, isRtl: boolean) => {
@@ -114,9 +115,14 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
               id: docSnap.id,
               type: 'homework',
               title: isRtl ? 'واجب جديد' : 'New Homework',
-              body: isRtl 
-                ? `تم إضافة واجب جديد لمادة ${data.subject === 'organic_chemistry' ? 'الكيمياء العضوية' : data.subject}`
-                : `New homework added for ${data.subject}`,
+              // Was a one-off ternary that translated exactly ONE subject and
+              // printed the raw slug for every other. denormalizedSubjectName
+              // reads the name written onto the homework at save time, so this
+              // needs no subject list of its own - and it names subjects from
+              // stages this reader has never been in.
+              body: isRtl
+                ? `تم إضافة واجب جديد لمادة ${denormalizedSubjectName(data as any) || 'غير محددة'}`
+                : `New homework added for ${denormalizedSubjectName(data as any) || 'an unspecified subject'}`,
               createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now(),
               icon: BookOpen
             });

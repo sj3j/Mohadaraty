@@ -15,6 +15,7 @@ import SemesterHistoryList from './SemesterHistoryList';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
 import { useStageContext } from '../contexts/StageContext';
 import { STAT_ICONS } from '../lib/profileIcons';
+import { hasLiveSubscription } from '../../shared/subscriptionAccess';
 import { StatCard, ProfileGroup, ProfileRow } from './profile/ProfilePrimitives';
 import ExamCodePrompt from './ExamCodePrompt';
 
@@ -148,6 +149,15 @@ export default function ProfileScreen({
   if (!user) return null;
 
   const isMasterAdminUser = user.isMasterAdmin;
+
+  // Shares the expiry check with the paywall rather than testing isSubscribed
+  // for truthiness. The two answers differ once subscriptionEnd has passed -
+  // expireSubscriptions is the only thing that clears isSubscribed and it runs
+  // every 24h off the subscriptions document - and a profile claiming an active
+  // subscription while the question bank refuses it is worse than either
+  // answer alone. Staff are excluded on purpose: they have access, not a
+  // subscription.
+  const subscriptionActive = hasLiveSubscription(user);
   const stageName = (() => {
     // effectiveStageId first, user.stageId only as a fallback. Every other
     // stage-scoped surface reads effectiveStageId; this tile keyed off the raw
@@ -394,7 +404,7 @@ export default function ProfileScreen({
                 purchase-flavoured word left on a screen a reviewer will open,
                 and "active" states the same account fact without implying a
                 transaction the app is not allowed to offer. */}
-            {user.isSubscribed && (
+            {subscriptionActive && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-xs font-black">
                 <Crown className="w-3.5 h-3.5" strokeWidth={2.5} />
                 {IS_STORE_BUILD
@@ -490,13 +500,13 @@ export default function ProfileScreen({
           <ProfileGroup title={isRtl ? 'الاشتراك' : 'Subscription'}>
             <ProfileRow
               isRtl={isRtl}
-              icon={user.isSubscribed
+              icon={subscriptionActive
                 ? { Icon: Crown, className: 'text-emerald-600 dark:text-emerald-400', tile: 'bg-emerald-100 dark:bg-emerald-900/30' }
                 : { Icon: CreditCard, className: 'text-slate-500 dark:text-slate-400', tile: 'bg-slate-100 dark:bg-zinc-800' }}
-              label={user.isSubscribed
+              label={subscriptionActive
                 ? (isRtl ? 'اشتراك فعال' : 'Active subscription')
                 : (isRtl ? 'لا يوجد اشتراك فعال' : 'No active subscription')}
-              sublabel={user.isSubscribed && user.subscriptionEnd
+              sublabel={subscriptionActive && user.subscriptionEnd
                 ? `${isRtl ? 'ينتهي في' : 'Expires'} ${new Date(
                     user.subscriptionEnd.toDate ? user.subscriptionEnd.toDate() : user.subscriptionEnd
                   ).toLocaleDateString(isRtl ? 'ar-IQ' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`

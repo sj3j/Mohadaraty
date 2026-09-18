@@ -162,6 +162,21 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'stages/stage_4'), { id: 'stage_4', nameEn: 'Fourth Stage', order: 4 });
   await setDoc(doc(db, 'lectures/lec1'), { title: 'L1', stageId: 'stage_3', category: 'biochemistry' });
   await setDoc(doc(db, 'degreeBatches/b1'), { examName: 'Mid', stageId: 'stage_3' });
+  await setDoc(doc(db, 'degreeBatches/b4'), { examName: 'Mid4', stageId: 'stage_4' });
+  await setDoc(doc(db, 'degrees/stu_uid/exams/exam_b1'), {
+    examName: 'Mid', degree: 60, batchId: 'b1', stageId: 'stage_3',
+  });
+  await setDoc(doc(db, 'degrees/stu2_uid/exams/exam_b4'), {
+    examName: 'Mid4', degree: 60, batchId: 'b4', stageId: 'stage_4',
+  });
+  // Pre-rollout: written before degrees carried a stage at all.
+  await setDoc(doc(db, 'degrees/stu_uid/exams/exam_legacy'), {
+    examName: 'Old', degree: 55, batchId: 'b_old',
+  });
+  await setDoc(doc(db, 'questionBank/q_stage4'), {
+    scope: 'subject', subjectId: 'public_health', stageId: 'stage_4', stem: 'Q4',
+  });
+  await setDoc(doc(db, 'settings/weekly_schedule_stage_4'), { photoUrl: 'y' });
 
   // Content belonging to a stage nobody in this test represents or studies in.
   // Every "CANNOT read/write another stage" assertion below reads these.
@@ -845,6 +860,89 @@ await check('support CAN appoint a moderator on a stage it does not manage',
   assertSucceeds(updateDoc(doc(support, 'users/stu2_uid'), {
     role: 'moderator', managedStageId: 'stage_3', permissions: { manageLectures: true },
   })));
+
+console.log('\nGrades are stage-scoped on WRITE, and readable regardless');
+await check('representative CAN write a degree for a student on their own stage',
+  assertSucceeds(setDoc(doc(rep, 'degrees/stu_uid/exams/exam_b1'), {
+    examName: 'Mid', degree: 70, batchId: 'b1', stageId: 'stage_3',
+  })));
+await check('representative CANNOT write a degree onto another stage',
+  assertFails(setDoc(doc(rep, 'degrees/stu2_uid/exams/exam_b4'), {
+    examName: 'Mid4', degree: 70, batchId: 'b4', stageId: 'stage_4',
+  })));
+await check('representative CANNOT move a degree to another stage',
+  assertFails(updateDoc(doc(rep, 'degrees/stu_uid/exams/exam_b1'), { stageId: 'stage_4' })));
+await check('representative CANNOT delete another stage\'s degree',
+  assertFails(deleteDoc(doc(rep, 'degrees/stu2_uid/exams/exam_b4'))));
+// Repairing a pre-rollout row is allowed; MINTING one is not. The two are
+// separated deliberately - if a create with no stageId were allowed, the whole
+// scoping could be bypassed by simply omitting the field.
+await check('a pre-rollout degree with no stageId can still be repaired',
+  assertSucceeds(setDoc(doc(rep, 'degrees/stu_uid/exams/exam_legacy'), {
+    examName: 'Old', degree: 56, batchId: 'b_old',
+  }, { merge: true })));
+await check('a NEW degree cannot be minted without a stageId - no bypass',
+  assertFails(setDoc(doc(rep, 'degrees/stu2_uid/exams/exam_nostage'), {
+    examName: 'Sneaky', degree: 99, batchId: 'b_x',
+  })));
+await check('a NEW batch cannot be minted without a stageId either',
+  assertFails(setDoc(doc(rep, 'degreeBatches/b_nostage'), { examName: 'Sneaky' })));
+
+// The reason the READ arm was left alone. AdminGradesScreen fans these out
+// under Promise.all and treats a miss as "this student had no result"; a rule
+// that reached into resource.data would deny instead, and one denial would
+// reject the whole chunk.
+await check('a MISSING degree still reads as absent rather than denied',
+  assertSucceeds(getDoc(doc(rep, 'degrees/stu_uid/exams/exam_does_not_exist'))));
+await check('a student can still read their OWN degree',
+  assertSucceeds(getDoc(doc(student, 'degrees/stu_uid/exams/exam_b1'))));
+await check('a student CANNOT read another student\'s degree',
+  assertFails(getDoc(doc(student, 'degrees/stu2_uid/exams/exam_b4'))));
+
+await check('representative CAN write a batch on their own stage',
+  assertSucceeds(setDoc(doc(rep, 'degreeBatches/b_new'), { examName: 'New', stageId: 'stage_3' })));
+await check('representative CANNOT write a batch on another stage',
+  assertFails(setDoc(doc(rep, 'degreeBatches/b_new4'), { examName: 'New4', stageId: 'stage_4' })));
+await check('representative CANNOT delete another stage\'s batch',
+  assertFails(deleteDoc(doc(rep, 'degreeBatches/b4'))));
+await check('a missing batch still reads as absent rather than denied',
+  assertSucceeds(getDoc(doc(rep, 'degreeBatches/b_nope'))));
+await check('moderator STILL cannot write a degree - manageGrades is admin-only',
+  assertFails(setDoc(doc(mod, 'degrees/stu_uid/exams/exam_mod'), {
+    examName: 'M', degree: 1, batchId: 'b1', stageId: 'stage_3',
+  })));
+
+console.log('\nThe timetable photo is scoped by its document id');
+await check('representative CAN create their own stage timetable when none exists',
+  assertSucceeds(setDoc(doc(rep, 'settings/weekly_schedule_stage_3'), { photoUrl: 'new' })));
+await check('representative CAN then overwrite the one they created',
+  assertSucceeds(setDoc(doc(rep, 'settings/weekly_schedule_stage_3'), { photoUrl: 'newer' })));
+await check('representative CANNOT overwrite another stage timetable',
+  assertFails(setDoc(doc(rep, 'settings/weekly_schedule_stage_4'), { photoUrl: 'hijack' })));
+await check('moderator CANNOT overwrite another stage timetable',
+  assertFails(setDoc(doc(mod, 'settings/weekly_schedule_stage_4'), { photoUrl: 'hijack' })));
+await check('master admin can write any stage timetable',
+  assertSucceeds(setDoc(doc(master, 'settings/weekly_schedule_stage_4'), { photoUrl: 'ok' })));
+// Narrowing settings/{document=**} must not catch the one live client write
+// that is not a timetable.
+await check('settings/announcements is still writable by a representative',
+  assertSucceeds(setDoc(doc(rep, 'settings/announcements'), { allowedReactions: ['y'] }, { merge: true })));
+await check('a student still CANNOT write settings',
+  assertFails(setDoc(doc(student, 'settings/weekly_schedule_stage_3'), { photoUrl: 'nope' })));
+
+console.log('\nBank questions belong to a stage');
+await check('representative CAN add a question on their own stage',
+  assertSucceeds(setDoc(doc(rep, 'questionBank/q_new'), {
+    scope: 'subject', subjectId: 'biochemistry_ii', stageId: 'stage_3', stem: 'Q',
+  })));
+await check('representative CANNOT add a question onto another stage',
+  assertFails(setDoc(doc(rep, 'questionBank/q_new4'), {
+    scope: 'subject', subjectId: 'public_health', stageId: 'stage_4', stem: 'Q',
+  })));
+await check('representative CANNOT delete another stage\'s question',
+  assertFails(deleteDoc(doc(rep, 'questionBank/q_stage4'))));
+await check('a student can still READ the bank across stages',
+  assertSucceeds(getDoc(doc(student, 'questionBank/q_stage4'))));
 
 await testEnv.cleanup();
 

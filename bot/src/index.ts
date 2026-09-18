@@ -59,7 +59,13 @@ async function verifyChannels(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  log.info('boot', { instanceId: env.instanceId, version: env.version });
+  log.info('boot', {
+    instanceId: env.instanceId,
+    version: env.version,
+    projectId: env.firebase.projectId,
+    clientEmail: env.firebase.clientEmail,
+    keyFingerprint: env.firebase.keyFingerprint,
+  });
 
   const me = await telegram.getMe();
   botUserId = me.id;

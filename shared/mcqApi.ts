@@ -22,6 +22,7 @@ import {
   validateQuestions,
   type McqFailureReason,
 } from './mcqGeneration.js';
+import { subjectSlugOf, denormalizedSubjectName } from './subjectSlug.js';
 
 export interface McqDeps {
   admin: any;
@@ -142,7 +143,7 @@ export function createMcqHandlers(deps: McqDeps) {
       await mcqRef.set(
         {
           lectureId,
-          subjectId: lecture.subjectId || lecture.category || '',
+          subjectId: subjectSlugOf(lecture),
           stageId: lecture.stageId || '',
           status: 'generating',
           startedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -193,7 +194,7 @@ export function createMcqHandlers(deps: McqDeps) {
 
       await mcqRef.set({
         lectureId,
-        subjectId: lecture.subjectId || lecture.category || '',
+        subjectId: subjectSlugOf(lecture),
         stageId: lecture.stageId || '',
         questions,
         generatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -256,15 +257,20 @@ export function createMcqHandlers(deps: McqDeps) {
 
       const lecture = lectureSnap.data();
       const user = userSnap.exists ? userSnap.data() : null;
-      const subjectId = lecture?.subjectId || lecture?.category || '';
+      const subjectId = subjectSlugOf(lecture);
 
       // Resolve the subject's display name so staff can act on the notification
       // without opening the app and looking up a slug.
-      let subjectName = subjectId;
-      if (subjectId) {
+      //
+      // The denormalized name on the lecture answers this without a read. The
+      // fallback read is keyed `${stageId}__${slug}` because that is the
+      // document id migrateToStages.js writes - the bare slug is the `id` FIELD,
+      // and looking the bare slug up as a document id never matched anything.
+      let subjectName = denormalizedSubjectName(lecture);
+      if (subjectId && subjectName === subjectId && lecture?.stageId) {
         try {
-          const s = await db.collection('subjects').doc(subjectId).get();
-          if (s.exists) subjectName = s.data()?.name || s.data()?.nameAr || subjectId;
+          const s = await db.collection('subjects').doc(`${lecture.stageId}__${subjectId}`).get();
+          if (s.exists) subjectName = s.data()?.nameAr || s.data()?.nameEn || subjectId;
         } catch { /* slug is an acceptable fallback */ }
       }
 

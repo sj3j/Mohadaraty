@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { RecordItem, Language, TRANSLATIONS, UserProfile, Category, CATEGORIES, LectureType } from '../types';
+import { RecordItem, Language, TRANSLATIONS, UserProfile, CATEGORIES, LectureType } from '../types';
 import { Loader2, Mic, Search, Play, Pause, Plus, HardDrive, Clock, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Fuse from 'fuse.js';
@@ -12,7 +12,16 @@ import { useStageContext } from '../contexts/StageContext';
 import CourseTabs from './CourseTabs';
 import { DEFAULT_COURSE_ID } from '../types';
 import { canManage } from '../lib/permissions';
+import { useStageSubjects } from '../hooks/useStageSubjects';
+import { resolveSubjectLabel, subjectSlugOf, subjectAccent, findSubject } from '../lib/subjectDisplay';
+import type { SubjectAccent } from '../lib/subjectDisplay';
 
+/**
+ * Hand-picked colours for the five legacy categories, kept so pre-migration
+ * recordings look exactly as they always did. Every other subject is coloured
+ * by `subjectAccent`, which hashes the slug rather than indexing the list -
+ * a representative reordering subjects must not repaint the screen.
+ */
 const CATEGORY_UI: Record<string, { emoji: string; color: string; border: string; bg: string; badge: string }> = {
   all: { emoji: '📚', color: 'text-indigo-500', border: 'border-indigo-500', bg: 'bg-indigo-50 dark:bg-indigo-900/20', badge: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' },
   pharmacology: { emoji: '💊', color: 'text-red-500', border: 'border-red-500', bg: 'bg-red-50 dark:bg-red-900/20', badge: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
@@ -21,6 +30,8 @@ const CATEGORY_UI: Record<string, { emoji: string; color: string; border: string
   biochemistry: { emoji: '🧬', color: 'text-purple-500', border: 'border-purple-500', bg: 'bg-purple-50 dark:bg-purple-900/20', badge: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
   cosmetics: { emoji: '💄', color: 'text-pink-500', border: 'border-pink-500', bg: 'bg-pink-50 dark:bg-pink-900/20', badge: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300' },
 };
+
+const uiFor = (slug: string): SubjectAccent => CATEGORY_UI[slug] || subjectAccent(slug);
 
 interface RecordsScreenProps {
   user: UserProfile | null;
@@ -35,7 +46,10 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
 
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
+  // A subject SLUG, not a legacy Category: on stages 2/4/5 these are real
+  // curriculum slugs, and only pre-migration stage-3 content still uses one of
+  // the five hardcoded values.
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<LectureType | 'all'>('all');
   const [showUpload, setShowUpload] = useState(false);
   const [recordToEdit, setRecordToEdit] = useState<RecordItem | null>(null);
@@ -76,6 +90,15 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
   };
 
   const { effectiveStageId, activeCourseId } = useStageContext();
+  const { subjects } = useStageSubjects();
+
+  // A subject tab means nothing once the course or the stage changes under it -
+  // the slug it holds may not exist in the new list at all, which would show an
+  // empty screen with no tab highlighted.
+  useEffect(() => {
+    setSelectedCategory('all');
+    setSelectedType('all');
+  }, [activeCourseId, effectiveStageId]);
 
   useEffect(() => {
     // Without a stage there is no safe query to run - an unfiltered read would
@@ -103,12 +126,47 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
   // otherwise every record would hide behind a tab the user never set.
   const stageHasCourses = records.some(r => !!r.courseId);
 
-  let baseRecords = records.filter(record => {
-    const matchesCategory = selectedCategory === 'all' || record.category === selectedCategory;
+  // Course-filtered but NOT subject-filtered: the subject tabs are built from
+  // this, so a tab exists for every subject actually present.
+  const courseRecords = records.filter(
+    record => !stageHasCourses || (record.courseId || DEFAULT_COURSE_ID) === activeCourseId,
+  );
+
+  let baseRecords = courseRecords.filter(record => {
+    // Per RECORD, never per screen. `migrateToStages.js` backfilled `subjectId`
+    // only `.where('stageId','==','stage_3')`, so records uploaded to stages
+    // 1/2/4/5 before the seed still carry `category` and no `subjectId`. A
+    // screen-level "does this stage have a curriculum" switch would make
+    // exactly those vanish; subjectSlugOf falls back on the document itself.
+    const matchesCategory = selectedCategory === 'all' || subjectSlugOf(record) === selectedCategory;
     const matchesType = selectedType === 'all' || record.type === selectedType;
-    const matchesCourse = !stageHasCourses || (record.courseId || DEFAULT_COURSE_ID) === activeCourseId;
-    return matchesCategory && matchesType && matchesCourse;
+    return matchesCategory && matchesType;
   });
+
+  /**
+   * One tab per subject: this stage's curriculum for the active course, UNIONED
+   * with every subject actually present in the loaded recordings.
+   *
+   * The union is what stops a recording becoming unreachable. Its subject may
+   * have been hidden by a representative (`useStageSubjects` drops
+   * `isActive: false`), may sit in the other course, or may be one of the five
+   * legacy categories no curriculum lists. `StudentGradesScreen` takes the same
+   * stance for its stage tabs, and for the same reason.
+   */
+  const subjectTabs: { slug: string; label: string }[] = (() => {
+    const tabs: { slug: string; label: string }[] = [];
+    const seen = new Set<string>();
+    const push = (slug: string, label: string) => {
+      if (!slug || seen.has(slug)) return;
+      seen.add(slug);
+      tabs.push({ slug, label: label || slug });
+    };
+    subjects
+      .filter(s => !stageHasCourses || (s.courseId || DEFAULT_COURSE_ID) === activeCourseId)
+      .forEach(s => push(s.id, isRtl ? s.nameAr : s.nameEn));
+    courseRecords.forEach(r => push(subjectSlugOf(r), resolveSubjectLabel(r, subjects, lang)));
+    return tabs;
+  })();
 
   const activeSearch = localSearch.trim() || searchQuery.trim();
 
@@ -147,11 +205,20 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
     }
   };
 
-  const currentCatTypes = selectedCategory === 'all' 
-    ? ['theoretical', 'practical'] 
-    : CATEGORIES.find(c => c.value === selectedCategory)?.types || ['theoretical'];
+  // The subject's own declared types, then the legacy table, then whatever the
+  // loaded recordings actually are - a hidden subject is in neither list, and
+  // hiding the practical toggle on a subject that has practical recordings
+  // would make them unreachable.
+  const currentCatTypes: LectureType[] = selectedCategory === 'all'
+    ? ['theoretical', 'practical']
+    : findSubject(subjects, selectedCategory)?.types
+      || CATEGORIES.find(c => c.value === selectedCategory)?.types
+      || Array.from(new Set(courseRecords.filter(r => subjectSlugOf(r) === selectedCategory).map(r => r.type)));
 
-  const uic = CATEGORY_UI[selectedCategory] || CATEGORY_UI.all;
+  const uic = selectedCategory === 'all' ? CATEGORY_UI.all : uiFor(selectedCategory);
+  const selectedLabel = selectedCategory === 'all'
+    ? t.allSubjects
+    : subjectTabs.find(s => s.slug === selectedCategory)?.label || selectedCategory;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -202,20 +269,20 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
           <span className="text-lg">📚</span>
           <span>{t.allSubjects}</span>
         </button>
-        {CATEGORIES.map(cat => {
-          const tabUi = CATEGORY_UI[cat.value] || CATEGORY_UI.all;
+        {subjectTabs.map(tab => {
+          const tabUi = uiFor(tab.slug);
           return (
             <button
-              key={cat.value}
-              onClick={() => { setSelectedCategory(cat.value); setSelectedType('all'); }}
+              key={tab.slug}
+              onClick={() => { setSelectedCategory(tab.slug); setSelectedType('all'); }}
               className={`flex-shrink-0 px-5 py-3 rounded-2xl font-bold flex items-center gap-2 border transition-all ${
-                selectedCategory === cat.value 
+                selectedCategory === tab.slug
                   ? `${tabUi.bg} ${tabUi.border} ${tabUi.color} shadow-sm`
                   : 'bg-white border-slate-200 text-slate-600 dark:bg-zinc-800 dark:border-zinc-700 dark:text-slate-400 hover:border-slate-300'
               }`}
             >
               <span className="text-lg">{tabUi.emoji}</span>
-              <span>{t[cat.labelKey]}</span>
+              <span>{tab.label}</span>
             </button>
           );
         })}
@@ -227,7 +294,7 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
           <div className="text-4xl">{uic.emoji}</div>
           <div>
             <h2 className={`font-bold text-lg leading-tight ${uic.color}`}>
-               {selectedCategory === 'all' ? t.allSubjects : t[CATEGORIES.find(c => c.value === selectedCategory)?.labelKey || 'pharmacology']}
+               {selectedLabel}
             </h2>
             <p className="text-sm font-medium opacity-80 mt-1" style={{ color: 'inherit' }}>
                {filteredRecords.length} {isRtl ? 'تسجيلات' : 'Recordings'}
@@ -277,7 +344,9 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
           <AnimatePresence mode="popLayout">
             {filteredRecords.map((record, index) => {
               const isNew = record.createdAt && (Date.now() - record.createdAt.toMillis()) < 7 * 24 * 60 * 60 * 1000;
-              const recUi = CATEGORY_UI[record.category] || CATEGORY_UI.all;
+              const recSlug = subjectSlugOf(record);
+              const recUi = recSlug ? uiFor(recSlug) : CATEGORY_UI.all;
+              const recLabel = resolveSubjectLabel(record, subjects, lang);
 
               return (
               <motion.div
@@ -298,10 +367,12 @@ export default function RecordsScreen({ user, lang, searchQuery, onNavigateToCha
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <div className="flex items-center gap-2 mb-2">
-                    <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${recUi.badge} flex items-center justify-center gap-1`}>
-                      <span>{recUi.emoji}</span>
-                      <span>{t[CATEGORIES.find(c => c.value === record.category)?.labelKey || 'pharmacology']}</span>
-                    </span>
+                    {recLabel && (
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${recUi.badge} flex items-center justify-center gap-1`}>
+                        <span>{recUi.emoji}</span>
+                        <span>{recLabel}</span>
+                      </span>
+                    )}
                     <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
                       record.type === 'theoretical' 
                         ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'

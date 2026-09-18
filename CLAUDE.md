@@ -1,5 +1,18 @@
 # MyLecture
 
+## Pitfalls log
+
+`PITFALLS.md` is a terse, categorized log of bugs already fixed once — one
+line each: what broke, and the rule that prevents it recurring. Two standing
+rules, from the file itself but worth repeating here since this is the file
+that's always loaded:
+
+- **After fixing any bug**, append one line to `PITFALLS.md` under the
+  matching category before calling the fix done.
+- **Before writing a feature plan**, scan the categories in `PITFALLS.md`
+  that the feature touches — it's the fast, cheap check; this file is the
+  slow, thorough one.
+
 ## Architecture: the dual API surface
 
 `server.ts` (43 routes) is the **dev** server, run via `npm run dev` (tsx).

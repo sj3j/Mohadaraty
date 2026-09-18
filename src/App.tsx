@@ -17,6 +17,7 @@ import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail } from '../shared/masterAdmins';
+import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
 import AdminGradesScreen from './components/grades/AdminGradesScreen';
 import AdminQuestionBankScreen from './components/questionBank/AdminQuestionBankScreen';
 import StudentGradesScreen from './components/grades/StudentGradesScreen';
@@ -423,7 +424,17 @@ export default function App() {
               graduated: userDoc.data().graduated === true,
               blockedUsers: userDoc.data().blockedUsers || [],
               hideNameOnLeaderboard: userDoc.data().hideNameOnLeaderboard,
-              hidePhotoOnLeaderboard: userDoc.data().hidePhotoOnLeaderboard
+              hidePhotoOnLeaderboard: userDoc.data().hidePhotoOnLeaderboard,
+              // Written only by the Admin SDK and frozen against self-edit in
+              // firestore.rules, so these are safe to trust as read. They are
+              // also the whole client access gate: omitting them - which this
+              // projection did - left hasMCQAccess() reading undefined for
+              // every account, so a paying student saw the paywall on the
+              // question bank and "no active subscription" on their profile
+              // while Simosan, gated server-side, worked fine.
+              isSubscribed: userDoc.data().isSubscribed === true,
+              subscriptionEnd: userDoc.data().subscriptionEnd ?? undefined,
+              subscriptionPlan: userDoc.data().subscriptionPlan ?? undefined
             });
           } else {
             const masterAdminPermissions = isMasterAdmin ? {
@@ -704,18 +715,10 @@ export default function App() {
   const handleEditLecture = useCallback((l: Lecture) => { setLectureToEdit(l); setShowUpload(true); }, []);
   const handleCloseUpload = useCallback(() => { setShowUpload(false); setLectureToEdit(null); }, []);
 
-  const hasMCQAccess = (u: UserProfile | null) => {
-    if (!u) return false;
-    if (u.role === 'admin' || u.isMasterAdmin) return true;
-    if (u.isSubscribed) {
-      if (u.subscriptionEnd) {
-        const end = u.subscriptionEnd.toDate ? u.subscriptionEnd.toDate() : new Date(u.subscriptionEnd);
-        return end > new Date();
-      }
-      return true; // Active but no end date
-    }
-    return false;
-  };
+  // The one access predicate, shared with the server (shared/simosan.ts's
+  // hasAiAccess wraps the same function), so what the UI offers and what the
+  // API allows cannot drift apart. This was a hand-written copy of it.
+  const hasMCQAccess = (u: UserProfile | null) => hasSubscriptionAccess(u);
 
   const handleOpenReader = useCallback((l: Lecture) => setReaderLecture(l), []);
 

@@ -9,7 +9,7 @@
     "start": "node bot.cjs",
     "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node22 --packages=external --sourcemap --outfile=bot.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx test/entities.test.ts"
+    "test": "tsx test/entities.test.ts && tsx test/privateKey.test.ts"
   },
   "dependencies": {
     "dotenv": "^17.2.3",

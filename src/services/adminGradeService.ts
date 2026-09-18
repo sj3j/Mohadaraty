@@ -2,6 +2,37 @@ import { db, auth } from '../lib/firebase';
 import { doc, writeBatch, collection, serverTimestamp, getDocs, query, where, getDoc } from 'firebase/firestore';
 import { GradeBatch, MatchedResult } from '../types/grades.types';
 
+/**
+ * The denormalized subject block that rides alongside `material`.
+ *
+ * Grades call the subject `material` for historical reasons, so the pair is
+ * `materialName`/`materialNameAr` rather than `subjectName` - see
+ * SubjectTaggedDoc in shared/subjectSlug.ts, which reads both.
+ *
+ * It is written because a student's grade tabs span every stage they have been
+ * promoted through, while `useStageSubjects` only ever loads the CURRENT stage.
+ * Without the name on the document, last year's subjects cannot be named at all.
+ */
+export interface SubjectDenorm {
+  materialName?: string;
+  materialNameAr?: string;
+  courseId?: string;
+}
+
+/**
+ * Copies the denormalized block onto a document being written.
+ *
+ * A mutator rather than a spread because every document here is assembled with
+ * `if (x) doc.x = x`: Firestore rejects `undefined` fields outright, and an
+ * empty string would overwrite a good label when a batch is edited.
+ */
+const applyMaterialMeta = (target: any, meta?: SubjectDenorm) => {
+  if (!meta) return;
+  if (meta.materialName) target.materialName = meta.materialName;
+  if (meta.materialNameAr) target.materialNameAr = meta.materialNameAr;
+  if (meta.courseId) target.courseId = meta.courseId;
+};
+
 export async function confirmDegreeBatchClient(
   examName: string,
   confirmedResults: MatchedResult[],
@@ -10,7 +41,8 @@ export async function confirmDegreeBatchClient(
   existingBatchId?: string,
   allStudentIds?: string[],
   stageId?: string,
-  yearLabel?: string
+  yearLabel?: string,
+  materialMeta?: SubjectDenorm
 ) {
   const user = auth.currentUser;
   if (!user) throw new Error("يجب تسجيل الدخول");
@@ -20,11 +52,13 @@ export async function confirmDegreeBatchClient(
   }
 
   if (existingBatchId) {
-    try {
-      await undoDegreeBatch(existingBatchId);
-    } catch (e) {
-      console.warn("Failed to undo previous batch during update", e);
-    }
+    // Deliberately NOT swallowed any more. undoDegreeBatch deletes the previous
+    // degree documents in atomic writeBatches, so one rules denial fails a whole
+    // chunk - and carrying on regardless wrote the new batch over a half-removed
+    // one, orphaning degree docs whose batchId no longer lists them. Nothing
+    // surfaced that to anyone. A batch that is simply already gone is fine and
+    // is the one case still tolerated.
+    await undoDegreeBatch(existingBatchId, { missingIsOk: true });
   }
 
   const batchId = existingBatchId || `batch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -97,6 +131,7 @@ export async function confirmDegreeBatchClient(
         };
         if (maxDegree) degreeData.maxDegree = maxDegree;
         if (material) degreeData.material = material;
+        applyMaterialMeta(degreeData, materialMeta);
         if (passRate !== undefined) degreeData.passRate = passRate;
         if (yearLabel) degreeData.yearLabel = yearLabel;
 
@@ -126,6 +161,7 @@ export async function confirmDegreeBatchClient(
         };
         if (maxDegree) batchDocData.maxDegree = maxDegree;
         if (material) batchDocData.material = material;
+        applyMaterialMeta(batchDocData, materialMeta);
         if (passRate !== undefined) batchDocData.passRate = passRate;
         if (yearLabel) batchDocData.yearLabel = yearLabel;
         firestoreBatch.set(batchRef, batchDocData);
@@ -154,6 +190,7 @@ export async function confirmDegreeBatchClient(
       };
       if (maxDegree) emptyBatchData.maxDegree = maxDegree;
       if (material) emptyBatchData.material = material;
+      applyMaterialMeta(emptyBatchData, materialMeta);
       if (passRate !== undefined) emptyBatchData.passRate = passRate;
       if (yearLabel) emptyBatchData.yearLabel = yearLabel;
       firestoreBatch.set(batchRef, emptyBatchData);
@@ -181,6 +218,20 @@ export async function patchDegreeBatchClient(
   if (!batchSnap.exists()) throw new Error("الكشف غير موجود");
 
   const batchData = batchSnap.data();
+
+  // An appeal can add a student who was not in the original file, and the write
+  // below CREATES their degree document. firestore.rules requires a new degree
+  // to name a stage, so a batch that predates the stage rollout cannot grow new
+  // rows - repairing existing ones is still fine.
+  //
+  // Checked here so this surfaces as an explanation rather than as a raw
+  // permission-denied from deep inside a writeBatch.
+  if (!batchData.stageId) {
+    throw new Error(
+      'هذا الكشف قديم ولا يحمل مرحلة. شغّل scripts/backfillDegreeYears.ts لتثبيت المرحلة قبل إضافة طلاب جدد إليه.',
+    );
+  }
+
   const examId = `exam_${batchId}`;
   
   const existingStudentIds = new Set<string>(batchData.studentIds || []);
@@ -214,6 +265,15 @@ export async function patchDegreeBatchClient(
           updatedAt: serverTimestamp(),
         };
         if (batchData.stageId) patch.stageId = batchData.stageId;
+        // Carries the subject NAME forward too, not just the slug. This path
+        // creates documents (an appeal adds a student who was not in the file),
+        // and one written with only `material` cannot be named once the student
+        // is promoted past this stage.
+        applyMaterialMeta(patch, {
+          materialName: batchData.materialName,
+          materialNameAr: batchData.materialNameAr,
+          courseId: batchData.courseId,
+        });
         if (batchData.yearLabel) patch.yearLabel = batchData.yearLabel;
         if (typeof batchData.passRate === 'number') patch.passRate = batchData.passRate;
         firestoreBatch.set(degreeRef, patch, { merge: true });
@@ -237,14 +297,22 @@ export async function patchDegreeBatchClient(
   return validUpdates;
 }
 
-export async function undoDegreeBatch(batchId: string) {
+export async function undoDegreeBatch(
+  batchId: string,
+  opts?: { missingIsOk?: boolean },
+) {
   const user = auth.currentUser;
   if (!user) throw new Error("يجب تسجيل الدخول");
 
   const batchRef = doc(db, 'degreeBatches', batchId);
   const batchSnap = await getDoc(batchRef);
   
-  if (!batchSnap.exists()) throw new Error("السجل غير موجود");
+  if (!batchSnap.exists()) {
+    // Nothing to undo is not a failure when we are only clearing the way for a
+    // re-upload; it IS one when the user asked to undo a specific batch.
+    if (opts?.missingIsOk) return;
+    throw new Error("السجل غير موجود");
+  }
 
   const studentIds = batchSnap.data().studentIds || [];
   const examId = `exam_${batchId}`;
