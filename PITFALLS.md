@@ -27,6 +27,15 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A new admin's `role` is decided by whichever screen creates their first
   `users/` doc (e.g. LoginScreen) → check every doc-creation path agrees with
   the whitelist, not just the read side.
+- Native Google sign-in is keyed on **package + signing certificate**, not
+  package alone → a debug install of `com.mohadaraty.app` fails with
+  `No credentials available` while the release APK works, because only the
+  upload key was registered. Register every keystore you install from, against
+  the *current* package; a rename leaves the old SHA behind on the old app.
+- Credential Manager reports the same `NoCredentialException` for "no Google
+  account on this phone" and "this build isn't registered" → only the legacy
+  `GoogleSignIn` retry distinguishes them (status 10 = DEVELOPER_ERROR), which
+  is why `signInWithGoogleNative()` classifies from both attempts' messages.
 
 ## Security rules
 - A Firestore rule that branches `create` vs `update` on a ternary (e.g. by

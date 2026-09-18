@@ -18,7 +18,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than anything already
-        // uploaded; 3 has been used, so this is 4. versionName is the string users
+        // uploaded; 4 has been built and may be uploaded, so this is 5 - skipping
+        // a number costs nothing and a rejected upload costs a release. versionName is the string users
         // see and carries no uniqueness requirement, so 1.0 is deliberately held
         // across this upload: it ships fixes to the 1.0 release rather than
         // announcing a new one.
@@ -28,7 +29,7 @@ android {
         // "I'm on 1.0" no longer identifies which. versionCode is the field that
         // tells them apart - Settings shows neither, so ask for the Play "app
         // version" or check the install date when triaging.
-        versionCode 4
+        versionCode 5
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

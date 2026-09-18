@@ -5,7 +5,7 @@ import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs
 import { Language, TRANSLATIONS } from '../types';
 import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
 import { apiUrl } from '../lib/apiBase';
-import { getGoogleCustomToken, NoAccountError } from '../lib/googleSignIn';
+import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
 import { isMasterAdminEmail } from '../../shared/masterAdmins';
 import SignupScreen from './SignupScreen';
@@ -266,6 +266,20 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
               : 'Network error. Troubleshooting (iOS):\n1- Open directly in Safari/Chrome (not in-app browsers).\n2- Check device date/time.\n3- Disable Private Relay.\n4- Try a different network.');
           } else if (error.code === 'auth/account-exists-with-different-credential') {
             setError(isRtl ? 'هذا البريد الإلكتروني مسجل مسبقاً. يرجى تسجيل الدخول باستخدام البريد الإلكتروني وكلمة المرور' : 'This email is already registered. Please sign in using your email and password.');
+          } else if (error instanceof GoogleNativeSignInError && error.reason === 'no-google-account') {
+            // The OS picker had nothing to show. Naming the remedy matters:
+            // the raw exception says "No credentials available", which reads
+            // as a fault in OUR app and leaves the student with nothing to do.
+            setError(isRtl
+              ? 'لا يوجد حساب Google على هذا الجهاز. أضف حسابك من إعدادات الهاتف ثم أعد المحاولة، أو سجّل الدخول بالبريد وكلمة المرور.'
+              : 'No Google account on this device. Add one in your phone settings and try again, or sign in with your email and password.');
+          } else if (error instanceof GoogleNativeSignInError && error.reason === 'app-not-registered') {
+            // Ours, not theirs - no amount of retrying or account-switching
+            // fixes an unregistered signing certificate, so do not send the
+            // student round that loop.
+            setError(isRtl
+              ? 'هذه النسخة من التطبيق غير مُسجّلة لدى Google. المشكلة من عندنا وليست من حسابك — سجّل الدخول بالبريد وكلمة المرور وأبلغنا.'
+              : "This build of the app isn't registered with Google. That is our fault, not your account — sign in with your email and password and let us know.");
           } else {
             setError(isRtl ? 'حدث خطأ أثناء تسجيل الدخول: ' + errorMsg : 'Error signing in: ' + errorMsg);
           }

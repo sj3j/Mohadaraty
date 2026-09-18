@@ -27,6 +27,51 @@ export class NoAccountError extends Error {
   }
 }
 
+/**
+ * Both native account-picker paths failed.
+ *
+ * `reason` separates the two causes that reach the student as the same opaque
+ * English string today - the whole of what the app could say about a failed
+ * sign-in was "No credentials available", which cost two rounds of debugging to
+ * attribute. They need different actions and only one of them is the student's
+ * to take:
+ *
+ *   no-google-account   the phone has no Google account, or its credential
+ *                       provider is switched off. Fixable in system settings.
+ *   app-not-registered  this build's package + signing certificate is not a
+ *                       pair Firebase knows, so Google has no credential to
+ *                       offer ANY account on ANY phone. Ours to fix; a debug
+ *                       build whose keystore was never registered is the usual
+ *                       way in, and it fails while release builds work.
+ */
+export type GoogleNativeFailure = 'no-google-account' | 'app-not-registered' | 'unknown';
+
+export class GoogleNativeSignInError extends Error {
+  constructor(readonly reason: GoogleNativeFailure, readonly detail: string) {
+    super(detail);
+  }
+}
+
+/**
+ * Which failure this was, read off the strings Android hands back.
+ *
+ * DEVELOPER_ERROR (status 10) is the legacy picker's way of saying the package
+ * and certificate it presented are not a registered pair, and it is never
+ * something the student did. Credential Manager has no equivalent - it raises
+ * the same NoCredentialException whether the registration is missing or the
+ * phone merely has no Google account on it - so the legacy attempt is what
+ * decides this, and why the classification reads both messages rather than the
+ * last one.
+ */
+function classifyNativeFailure(first: string, second: string): GoogleNativeFailure {
+  const both = `${first} ${second}`;
+  if (/DEVELOPER_ERROR/i.test(both) || /(?:^|\D)10:/.test(both)) return 'app-not-registered';
+  if (/no credential/i.test(both) || /SIGN_IN_REQUIRED/i.test(both) || /(?:^|\D)4:/.test(both)) {
+    return 'no-google-account';
+  }
+  return 'unknown';
+}
+
 async function isNative(): Promise<boolean> {
   try {
     const { Capacitor } = await import('@capacitor/core');
@@ -84,13 +129,22 @@ export interface GoogleTokenResult {
  */
 async function signInWithGoogleNative(): Promise<any> {
   const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+
+  let first = '';
   try {
     return await FirebaseAuthentication.signInWithGoogle();
   } catch (error: any) {
-    const message = String(error?.message ?? error ?? '');
-    if (/cancel/i.test(message)) throw error;
-    console.warn('Credential Manager sign-in failed, falling back to the legacy picker:', message);
+    first = String(error?.message ?? error ?? '');
+    if (/cancel/i.test(first)) throw error;
+    console.warn('Credential Manager sign-in failed, falling back to the legacy picker:', first);
+  }
+
+  try {
     return await FirebaseAuthentication.signInWithGoogle({ useCredentialManager: false });
+  } catch (error: any) {
+    const second = String(error?.message ?? error ?? '');
+    if (/cancel/i.test(second)) throw error;
+    throw new GoogleNativeSignInError(classifyNativeFailure(first, second), `${first} | ${second}`);
   }
 }
 
