@@ -29,6 +29,31 @@ against the same over `api/index.ts` before trusting that number again.
 **A change to one needs the same change to the other.** Always check both before
 concluding a route does or does not exist.
 
+## Rules in the repo are not rules in production
+
+`npm run test:rules` runs the emulator against the **local** `firestore.rules`. It
+passes 240 assertions and proves nothing about what is deployed. The two drifted
+far enough apart that production was missing `isSupport()`, the narrowed
+`settings/{docId}`, the subscription-ledger tightening, storage's
+`payment_receipts/` block — and both timetable collections.
+
+That last one is the shape to remember: **Firestore denies a path with no
+matching rule, and the Admin SDK ignores rules entirely.** So the server wrote
+59 timetable sessions successfully while every client read of them was refused.
+The data sits in the console looking perfectly healthy, the app shows nothing,
+and a refresh does not help — it reads as a client bug and is not one.
+
+    npm run check:rules      # scripts/checkRulesDeployed.mjs
+
+Compares the deployed rulesets (Firebase Rules REST API, same FIREBASE_*
+service-account credentials the other scripts use) against both local files, and
+reports **missing `match` blocks first** because that is the failure that denies
+rather than merely misgrants. Exits 1 on drift, and also on missing credentials
+or an unreachable API — a check that passes when it could not check is worse
+than no check. Deploy with:
+
+    npx -y firebase-tools@13 deploy --only firestore:rules,storage --project mylectures-app
+
 ## Knowledge graph
 
 A Graphify code graph lives in `graphify-out/` (gitignored, regenerable) and is
