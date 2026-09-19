@@ -18,19 +18,18 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than anything already
-        // uploaded; 4 has been built and may be uploaded, so this is 5 - skipping
-        // a number costs nothing and a rejected upload costs a release. versionName is the string users
-        // see and carries no uniqueness requirement, so 1.0 is deliberately held
-        // across this upload: it ships fixes to the 1.0 release rather than
-        // announcing a new one.
+        // uploaded; 5 has been built and may be uploaded, so this is 6 - skipping
+        // a number costs nothing and a rejected upload costs a release.
         //
-        // The cost of that, so it is a choice and not a surprise: several different
-        // builds are now all called "1.0" in the wild, and a student reporting
-        // "I'm on 1.0" no longer identifies which. versionCode is the field that
-        // tells them apart - Settings shows neither, so ask for the Play "app
-        // version" or check the install date when triaging.
-        versionCode 5
-        versionName "1.0"
+        // versionName leaves 1.0 here. It was held across several builds while
+        // they shipped fixes, which left different binaries all calling
+        // themselves "1.0" in the wild; this one carries the weekly timetable,
+        // Simosan, file sharing and the chat removal, which is a release and not
+        // a patch. Bumping it also makes a student's "I'm on 1.1" mean something
+        // again - Settings shows neither field, so triage otherwise has to ask
+        // for the Play "app version" or the install date.
+        versionCode 6
+        versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

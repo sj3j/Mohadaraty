@@ -36,6 +36,11 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   account on this phone" and "this build isn't registered" → only the legacy
   `GoogleSignIn` retry distinguishes them (status 10 = DEVELOPER_ERROR), which
   is why `signInWithGoogleNative()` classifies from both attempts' messages.
+- Play App Signing re-signs every uploaded AAB with Google's OWN certificate →
+  the Play app-signing SHA-1, not just the upload key's, has to be registered on
+  the Firebase project, or native Google sign-in fails with `DEVELOPER_ERROR`
+  for Play installs *only* while the sideloaded release build works. Read it
+  from Play Console → Setup → App integrity; the local keystore cannot tell you.
 
 ## Security rules
 - A Firestore rule that branches `create` vs `update` on a ternary (e.g. by
