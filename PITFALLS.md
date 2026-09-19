@@ -50,6 +50,18 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A collection meant to be Admin-SDK-only must be `write: if false` in rules,
   not `isAdmin()` — an authenticated admin *client* can still write through
   the second form.
+- **Rules in the repo are not rules in production.** `npm run test:rules` runs
+  against the local file and proves nothing about the deployed ruleset. Deploy
+  (`firebase deploy --only firestore:rules,storage`) as part of shipping the
+  feature, not as a later step.
+- A collection with NO matching rule is denied by default, and the Admin SDK
+  ignores rules — so a server-written collection looks perfectly healthy in the
+  Firestore console while every client read fails. The symptom is an empty UI
+  that survives a refresh, and it reads as a client bug. Check the DEPLOYED
+  rules for the collection before debugging the client.
+- A permission-denied `onSnapshot` is not inert: the backend rejects the target
+  and the client re-adds it, which is its own source of watch-stream target
+  churn. Rule out a missing rule before blaming the SDK.
 
 ## Data model & consistency
 - A denormalized counter/aggregate written by two different code paths
