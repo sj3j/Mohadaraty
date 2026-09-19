@@ -26,6 +26,11 @@ export const MODERATOR_CAPABILITIES = [
   'manageAnnouncements',
   'manageRecords',
   'manageHomeworks',
+  // Parsing, correcting and publishing the stage's weekly timetable. Per-stage
+  // content, so it belongs here and NOT in SYSTEM_CAPABILITIES: a timetable is
+  // one stage's business, and a representative should hold it by default the
+  // way they hold the other four.
+  'manageTimetable',
 ] as const;
 
 /** Never available to a moderator: both read the `students` whitelist, which
@@ -168,6 +173,13 @@ export const canManageGrades = (user?: UserProfile | null): boolean =>
 /** Group/subgroup structure for a stage. */
 export const canManageGroups = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageGroups');
+
+/** Parsing the stage's timetable image and publishing the parsed week. Also
+ *  checked server-side in /api/timetable/parse, which is the path that spends
+ *  Gemini quota - firestore.rules scopes the two documents by stage only, the
+ *  granularity every content collection has. */
+export const canManageTimetable = (user?: UserProfile | null): boolean =>
+  canManage(user, 'manageTimetable');
 
 /** إدارة المساعدين. Master admin manages everyone; a representative may only
  *  appoint moderators inside their own stage; support may seat representatives

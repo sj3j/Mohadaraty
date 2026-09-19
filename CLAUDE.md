@@ -19,7 +19,7 @@ that's always loaded:
 what actually serves **production** — `vercel.json` rewrites `/api/*` to it.
 
 They used to disagree by 14 routes. **As of the chat removal they carry the same
-55 paths**, and the only difference left is server.ts's `"*"` SPA catch-all,
+57 paths**, and the only difference left is server.ts's `"*"` SPA catch-all,
 which Vercel does not need. Re-check with
 
     grep -oE "app\.(get|post|put|delete|patch|all)\(\s*[\"'\`][^\"'\`]*" server.ts
@@ -280,6 +280,73 @@ strings against `isRtl` rather than `TRANSLATIONS`, scrim `z-[170]` / panel
 `z-[171]`, and `useBackDismiss(..., 'pdfSimosan')` registered **after** the
 existing three so back closes Simosan first.
 
+
+## The weekly timetable: parsed, reviewed, then published
+
+The stage's timetable is still uploaded as one flat image
+(`settings/weekly_schedule_{stageId}.photoUrl`, written client-side by
+`WeeklyListScreen`). What changed is the *display*: `shared/timetable.ts` +
+`shared/timetableApi.ts` read that image with Gemini on the **free-tier key**
+and turn it into sessions, and students see their own week instead of a grid
+holding every subgroup at once.
+
+**Two documents per stage, and the split is the design.**
+`timetableDrafts/{stageId}` is what the parse writes and the representative
+corrects; `timetables/{stageId}` is what students read. `/api/timetable/parse`
+**never writes the published one**, so a failed re-parse cannot take a working
+timetable off students' screens - that is a property of the schema, not a rule
+the failure handler has to remember. A draft could not have lived in
+`settings/`, which is `read: if isAuthenticated()`: every student would read
+every unreviewed parse.
+
+Both are matched by `canWriteStage(stageId)` directly, because the stage **is**
+the document id - none of the id-rebuilding that forced `canWriteScheduleDoc`
+into existence is needed. Rules scope by role-and-stage only, as every content
+collection does; the `manageTimetable` capability is enforced in
+`src/lib/permissions.ts` for the UI and inside the parse handler for the one
+path that spends quota. `verifyAdmin` admits admin, moderator **and** support,
+so the route re-implements `canManage()`'s arms itself - `staffCan()` alone
+returns false for a representative, which is exactly the role that should hold
+this by default.
+
+**`groups: []` means everyone, and is deliberately not "every subgroup".** An
+expanded list is a snapshot of the group structure at parse time: add a group to
+`stages/{id}.groupConfig` next semester and every theory session silently stops
+applying to its students, which renders as an *empty agenda* - read as "no
+lectures", not as a bug. The full-cover collapse in `normalizeParsedGroups()`
+turns a row printed "A, B, C, D" back into `[]` for the same reason.
+
+**The audience fails OPEN.** A practical whose group label the model could not
+read has an empty audience and is therefore shown to *everyone*, badged amber in
+the editor. Showing one lab too many costs a glance; hiding the one that was
+theirs costs the lab. Pinned by `npm run test:timetable`.
+
+**Nothing here touches `subjects`.** `TimetableSession` has no `subjectId` and
+never will: the college prints two subjects sharing a slot as
+`Physiology I + Computer Science`, and transcribing those into `subjects` is the
+exact mistake the split flow above exists to undo. A cell stays a string;
+`titles` splits it on `+` **for display only**, by the same `+`-only rule as
+`src/lib/subjectSplit.ts`.
+
+The image is fetched by **URL resolved from Firestore**, never
+`admin.storage().bucket()` - neither route file passes a `storageBucket` to
+`admin.initializeApp()`, so `.bucket()` throws at runtime. Same SSRF contract as
+`/api/mcq/generate`: the client posts an id.
+
+`TIMETABLE_RESPONSE_SCHEMA` carries **no `minItems`/`maxItems`** for the reason
+`MCQ_RESPONSE_SCHEMA` records, and this schema is the same
+array-of-objects-containing-arrays shape that triggers it. `day` is a named enum
+rather than an integer so "is 0 Sunday?" is never the model's problem.
+
+Unlike MCQ there is **no cross-stage lock**. MCQ refuses when any other lecture
+is generating because a bulk upload fires N calls at a free key; this is five
+stages with one hand-triggered image each, so a global lock would block one
+stage while another parses for no quota benefit.
+
+Staff are notified through `systemNotifications` (which `functions/index.js`
+turns into an FCM push for free) - and that query includes `'support'`, which
+`shared/mcqApi.ts` omits. Students are **not** fanned out to on publish: a stage
+is ~400 accounts and each row becomes an individual send.
 
 ## The chat is gone, and what replaced its button
 

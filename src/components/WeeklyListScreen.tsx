@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDoc
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework } from '../types';
-import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check } from 'lucide-react';
+import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
 import { useStageContext } from '../contexts/StageContext';
@@ -12,7 +12,11 @@ import {
   resolveSubjectLabel, subjectMetaFrom, subjectSlugOf, subjectsForCourse,
 } from '../lib/subjectDisplay';
 import { COURSE_IDS, COURSE_LABELS } from '../types';
-import { canManage } from '../lib/permissions';
+import { canManage, canManageTimetable } from '../lib/permissions';
+import StudentAgenda from './timetable/StudentAgenda';
+import TimetableEditorModal from './timetable/TimetableEditorModal';
+import { watchPublishedTimetable } from '../services/timetableService';
+import type { StageTimetableDoc } from '../../shared/timetable';
 
 interface WeeklyListScreenProps {
   lang: Language;
@@ -63,6 +67,17 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
 
+  /* The parsed timetable, when a representative has published one.
+   *
+   * THREE states, not two. `undefined` means not yet known and `null` means
+   * confirmed absent: an offline cold launch fires onSnapshot with
+   * exists() === false for a document that is simply not cached, and treating
+   * that as "nothing published" would drop every student back to the raw image
+   * exactly when they are least able to read it. Only `null` renders the
+   * fallback. */
+  const [timetable, setTimetable] = useState<StageTimetableDoc | null | undefined>(undefined);
+  const [showTimetableEditor, setShowTimetableEditor] = useState(false);
+
   const { effectiveStageId } = useStageContext();
 
   useEffect(() => {
@@ -106,6 +121,15 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       setSchedulePhotoUrl(null);
     }
 
+    // The published, parsed week. Separate document from the draft the
+    // representative is still correcting - students cannot read that one.
+    let unsubscribeTimetable = () => {};
+    if (effectiveStageId) {
+      unsubscribeTimetable = watchPublishedTimetable(effectiveStageId, setTimetable);
+    } else {
+      setTimetable(undefined);
+    }
+
     // Lectures for the link picker and the admin dropdown. Scoped to this stage:
     // an unscoped read let a representative attach another stage's lecture to
     // their homework.
@@ -132,6 +156,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     return () => {
       unsubscribe();
       unsubscribeSettings();
+      unsubscribeTimetable();
     };
   }, [user?.uid, user?.role, user?.group, effectiveStageId]);
 
@@ -371,16 +396,30 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
             <ImageIcon className="w-5 h-5 text-sky-600 dark:text-sky-400" />
             {isRtl ? 'جدول المحاضرات' : 'Lectures Schedule'}
           </h2>
-          {canManage(user, 'manageHomeworks') && (
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploadingPhoto}
-              className="flex items-center gap-2 px-3 py-1.5 bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 rounded-lg text-sm font-bold hover:bg-sky-100 dark:hover:bg-sky-900/50 transition-colors disabled:opacity-50"
-            >
-              {isUploadingPhoto ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
-              {isRtl ? 'تحديث الجدول' : 'Update Schedule'}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {/* Parse, correct and publish. A separate capability from the image
+                upload below: replacing a photo is a swap, publishing a parsed
+                week decides what every student in the stage reads. */}
+            {canManageTimetable(user) && (
+              <button
+                onClick={() => setShowTimetableEditor(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+              >
+                <CalendarDays className="w-4 h-4" />
+                {isRtl ? 'تحرير الجدول' : 'Edit'}
+              </button>
+            )}
+            {canManage(user, 'manageHomeworks') && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingPhoto}
+                className="flex items-center gap-2 px-3 py-1.5 bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 rounded-lg text-sm font-bold hover:bg-sky-100 dark:hover:bg-sky-900/50 transition-colors disabled:opacity-50"
+              >
+                {isUploadingPhoto ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+                {isRtl ? 'تحديث الجدول' : 'Update Schedule'}
+              </button>
+            )}
+          </div>
         </div>
         
         <input 
@@ -391,23 +430,48 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
           className="hidden" 
         />
 
-        <div className="w-full bg-slate-50 dark:bg-zinc-900 rounded-2xl overflow-hidden border border-slate-100 dark:border-zinc-800 min-h-[200px] flex items-center justify-center">
-          {schedulePhotoUrl ? (
-            <img 
-              src={schedulePhotoUrl} 
-              alt="Schedule" 
-              className="w-full h-auto object-contain max-h-[500px] cursor-pointer hover:opacity-90 transition-opacity" 
-              referrerPolicy="no-referrer" 
-              onClick={() => setSelectedImage(schedulePhotoUrl)}
-            />
-          ) : (
-            <div className="text-center p-8 text-slate-400 dark:text-slate-500">
-              <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-              <p>{isRtl ? 'لم يتم رفع جدول بعد' : 'No schedule uploaded yet'}</p>
-            </div>
-          )}
-        </div>
+        {/* Three-way, not two. A published timetable renders the student's own
+            week; otherwise the original image, exactly as before; and the empty
+            state only when there is neither. `timetable === undefined` is the
+            not-yet-known case and deliberately falls through to the image. */}
+        {timetable?.sessions?.length ? (
+          <StudentAgenda
+            sessions={timetable.sessions}
+            subgroup={user?.group}
+            isRtl={isRtl}
+            weekLabel={timetable.weekLabel}
+            onViewOriginal={schedulePhotoUrl ? () => setSelectedImage(schedulePhotoUrl) : undefined}
+          />
+        ) : (
+          <div className="w-full bg-slate-50 dark:bg-zinc-900 rounded-2xl overflow-hidden border border-slate-100 dark:border-zinc-800 min-h-[200px] flex items-center justify-center">
+            {schedulePhotoUrl ? (
+              <img
+                src={schedulePhotoUrl}
+                alt="Schedule"
+                className="w-full h-auto object-contain max-h-[500px] cursor-pointer hover:opacity-90 transition-opacity"
+                referrerPolicy="no-referrer"
+                onClick={() => setSelectedImage(schedulePhotoUrl)}
+              />
+            ) : (
+              <div className="text-center p-8 text-slate-400 dark:text-slate-500">
+                <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>{isRtl ? 'لم يتم رفع جدول بعد' : 'No schedule uploaded yet'}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {showTimetableEditor && (
+        <TimetableEditorModal
+          isOpen={showTimetableEditor}
+          onClose={() => setShowTimetableEditor(false)}
+          user={user}
+          isRtl={isRtl}
+          photoUrl={schedulePhotoUrl}
+          published={timetable}
+        />
+      )}
 
       <AnimatePresence>
         {selectedImage && (

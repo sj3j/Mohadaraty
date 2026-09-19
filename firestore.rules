@@ -786,7 +786,43 @@ service cloud.firestore {
       allow update, delete: if canWriteStage(resource.data.get('stageId', '')) &&
         (request.resource == null || canWriteStage(request.resource.data.get('stageId', '')));
     }
-    
+
+    // The weekly timetable parsed out of settings/weekly_schedule_{stageId}'s
+    // image. TWO documents per stage, deliberately:
+    //
+    //   timetableDrafts/{stageId} - what Gemini produced and what the stage
+    //     representative is still correcting. NOT readable by students: an
+    //     unreviewed parse is wrong often enough that showing it is worse than
+    //     showing nothing. It could not have lived in settings/ for exactly
+    //     that reason - that match is `read: if isAuthenticated()`, so every
+    //     student would read every draft.
+    //
+    //   timetables/{stageId} - the published week. /api/timetable/parse NEVER
+    //     writes here, which is what makes a published week survive a failed
+    //     re-parse by construction rather than by the failure handler
+    //     remembering to leave it alone.
+    //
+    // The stage IS the document id, so canWriteStage() applies directly. None
+    // of the id-rebuilding that forced canWriteScheduleDoc() into existence is
+    // needed here, and a near-identical copy would be one more set of its arms
+    // to keep in step when the staged-rollout grace above is removed.
+    //
+    // Role-and-stage only, matching every other content collection: the
+    // manageTimetable capability is enforced in src/lib/permissions.ts for the
+    // UI and in /api/timetable/parse for the one path that spends Gemini quota.
+    match /timetableDrafts/{stageId} {
+      allow read, write: if canWriteStage(stageId);
+    }
+
+    match /timetables/{stageId} {
+      // isAuthenticated(), matching settings/{docId}: the source image these
+      // sessions are transcribed from is already readable by every signed-in
+      // account, so narrowing to canReadStage() would hide nothing while adding
+      // its document reads to a listener every student runs.
+      allow read: if isAuthenticated();
+      allow write: if canWriteStage(stageId);
+    }
+
     match /mcqs/{lectureId} {
       allow read: if hasAccess();
 

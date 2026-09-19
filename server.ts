@@ -39,6 +39,7 @@ import { deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { createMcqHandlers } from "./shared/mcqApi.js";
+import { createTimetableHandlers } from "./shared/timetableApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
@@ -2545,6 +2546,13 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.post("/api/mcq/request", verifyAuth, mcq.request);
   app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);
   app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
+
+  /* Weekly timetable parse. Staff-only, on the same free-tier key as MCQ. The
+   * manageTimetable capability and the managedStageId scoping are enforced
+   * INSIDE the handler, not by this middleware: verifyAdmin admits admin,
+   * moderator and support alike. Mirrored in api/index.ts. */
+  const timetable = createTimetableHandlers({ admin });
+  app.post("/api/timetable/parse", verifyAuth, verifyAdmin, timetable.parse);
 
   // --- Vite Middleware for Development / Static Serving for Production ---
   if (process.env.NODE_ENV !== "production") {

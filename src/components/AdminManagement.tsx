@@ -34,6 +34,7 @@ const PERMISSION_LABELS = [
   { id: 'manageAnnouncements', labelEn: 'Manage Announcements', labelAr: 'إدارة التبليغات' },
   { id: 'manageRecords', labelEn: 'Manage Records', labelAr: 'إدارة التسجيلات' },
   { id: 'manageHomeworks', labelEn: 'Manage Homeworks', labelAr: 'إدارة الواجبات' },
+  { id: 'manageTimetable', labelEn: 'Manage Timetable', labelAr: 'إدارة الجدول الأسبوعي' },
   { id: 'manageStudents', labelEn: 'Manage Students', labelAr: 'إدارة الطلاب' },
   { id: 'manageGrades', labelEn: 'Manage Grades', labelAr: 'إدارة السعي والدرجات' },
   // Offered to support only. A representative is hard-denied the system

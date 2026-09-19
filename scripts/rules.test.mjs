@@ -178,6 +178,15 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   });
   await setDoc(doc(db, 'settings/weekly_schedule_stage_4'), { photoUrl: 'y' });
 
+  // The parsed timetable. `timetables/stage_3` is seeded so a student has
+  // something published to read; `timetableDrafts/stage_3` is deliberately left
+  // ABSENT so the representative's CREATE arm gets exercised - a test that
+  // always seeds the target only ever reaches the update arm, and the two are
+  // different rules. stage_4 is seeded as the stage nobody here represents.
+  await setDoc(doc(db, 'timetables/stage_3'), { stageId: 'stage_3', sessions: [] });
+  await setDoc(doc(db, 'timetables/stage_4'), { stageId: 'stage_4', sessions: [] });
+  await setDoc(doc(db, 'timetableDrafts/stage_4'), { stageId: 'stage_4', sessions: [], status: 'draft' });
+
   // Content belonging to a stage nobody in this test represents or studies in.
   // Every "CANNOT read/write another stage" assertion below reads these.
   await setDoc(doc(db, 'records/rec_stage4'), { title: 'R4', stageId: 'stage_4' });
@@ -956,6 +965,53 @@ await check('settings/announcements is still writable by a representative',
   assertSucceeds(setDoc(doc(rep, 'settings/announcements'), { allowedReactions: ['y'] }, { merge: true })));
 await check('a student still CANNOT write settings',
   assertFails(setDoc(doc(student, 'settings/weekly_schedule_stage_3'), { photoUrl: 'nope' })));
+
+console.log('\nThe parsed timetable: a draft is staff-only, the published week is not');
+// timetableDrafts/stage_3 is NOT seeded, so this reaches the create arm.
+await check('representative CAN create their own stage draft when none exists',
+  assertSucceeds(setDoc(doc(rep, 'timetableDrafts/stage_3'), {
+    stageId: 'stage_3', sessions: [], status: 'draft',
+  })));
+await check('representative CAN then update the draft they created',
+  assertSucceeds(setDoc(doc(rep, 'timetableDrafts/stage_3'), {
+    stageId: 'stage_3', sessions: [{ id: 's1', day: 0 }], status: 'draft',
+  }, { merge: true })));
+await check('representative CAN publish their own stage',
+  assertSucceeds(setDoc(doc(rep, 'timetables/stage_3'), { stageId: 'stage_3', sessions: [] })));
+await check('representative CANNOT write another stage draft',
+  assertFails(setDoc(doc(rep, 'timetableDrafts/stage_4'), { stageId: 'stage_4', sessions: [] })));
+await check('representative CANNOT publish onto another stage',
+  assertFails(setDoc(doc(rep, 'timetables/stage_4'), { stageId: 'stage_4', sessions: [] })));
+await check('representative CANNOT read another stage draft',
+  assertFails(getDoc(doc(rep, 'timetableDrafts/stage_4'))));
+
+// The assertion the whole two-document split exists for. An unreviewed parse
+// misreads a dense grid often enough that showing it is worse than showing the
+// image, and settings/{docId} - where the source photo lives - is
+// `read: if isAuthenticated()`, so a draft could never have lived there.
+await check('a student CANNOT read an unreviewed draft',
+  assertFails(getDoc(doc(student, 'timetableDrafts/stage_3'))));
+await check('a student CAN read the published week',
+  assertSucceeds(getDoc(doc(student, 'timetables/stage_3'))));
+await check('a student CANNOT publish',
+  assertFails(setDoc(doc(student, 'timetables/stage_3'), { stageId: 'stage_3', sessions: [] })));
+await check('a student CANNOT write a draft',
+  assertFails(setDoc(doc(student, 'timetableDrafts/stage_3'), { stageId: 'stage_3', sessions: [] })));
+
+await check('moderator CAN write their own stage draft',
+  assertSucceeds(setDoc(doc(mod, 'timetableDrafts/stage_3'), {
+    stageId: 'stage_3', sessions: [],
+  }, { merge: true })));
+await check('moderator CANNOT write another stage draft',
+  assertFails(setDoc(doc(mod, 'timetableDrafts/stage_4'), { stageId: 'stage_4', sessions: [] })));
+await check('master admin can write any stage draft',
+  assertSucceeds(setDoc(doc(master, 'timetableDrafts/stage_4'), {
+    stageId: 'stage_4', sessions: [],
+  }, { merge: true })));
+await check('support reaches every stage, the way the master admin does',
+  assertSucceeds(setDoc(doc(support, 'timetables/stage_3'), {
+    stageId: 'stage_3', sessions: [],
+  }, { merge: true })));
 
 console.log('\nBank questions belong to a stage');
 await check('representative CAN add a question on their own stage',

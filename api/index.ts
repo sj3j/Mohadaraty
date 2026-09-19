@@ -56,6 +56,7 @@ import {
 } from "../shared/subscriptions.js";
 import { createSimosanHandlers } from "../shared/simosanApi.js";
 import { createMcqHandlers } from "../shared/mcqApi.js";
+import { createTimetableHandlers } from "../shared/timetableApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "../shared/masterAdmins.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -2458,5 +2459,12 @@ app.post("/api/mcq/generate", verifyAuth, verifyAdmin, mcq.generate);
 app.post("/api/mcq/request", verifyAuth, mcq.request);
 app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);
 app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
+
+/* Weekly timetable parse. Staff-only, on the same free-tier key as MCQ. The
+ * manageTimetable capability and the managedStageId scoping are enforced
+ * INSIDE the handler, not by this middleware: verifyAdmin admits admin,
+ * moderator and support alike. Mirrored in server.ts. */
+const timetable = createTimetableHandlers({ admin });
+app.post("/api/timetable/parse", verifyAuth, verifyAdmin, timetable.parse);
 
 export default app;

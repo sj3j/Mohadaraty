@@ -32,6 +32,7 @@
     "test:search": "npx tsx scripts/pdfSearch.test.ts",
     "test:share": "npx tsx scripts/shareFile.test.ts",
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
+    "test:timetable": "npx tsx scripts/timetable.test.ts",
     "test:subject-display": "npx tsx scripts/subjectDisplay.test.ts",
     "test:payments": "npx tsx scripts/paymentContact.test.ts",
     "test:subscriptions": "npx tsx scripts/subscriptionStats.test.ts",

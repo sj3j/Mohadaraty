@@ -241,6 +241,9 @@ export interface UserProfile {
     manageAnnouncements: boolean;
     manageRecords: boolean;
     manageHomeworks: boolean;
+    /** Parsing and publishing the stage's weekly timetable. Per-stage content,
+     *  so a representative holds it by default like the four above. */
+    manageTimetable?: boolean;
     manageStudents: boolean;
     manageGrades?: boolean;
     manageAdmins?: boolean;

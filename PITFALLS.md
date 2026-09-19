@@ -67,6 +67,18 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A board/leaderboard scoped by "the stage played in" must never fall back to
   the *viewer's current* stage on a missing field — that silently collapses
   a whole cohort to one row.
+- A parser heuristic that disambiguates a SHORTHAND value must not also fire
+  on the explicit one — reading a bare "2" on a timetable as 14:00 is right,
+  rewriting a written "07:00" to 19:00 is not; key the rule on the written
+  form (zero-padding, separators), not on the parsed number alone.
+- "Applies to everyone" must be stored as its own value (an empty audience),
+  never as an expanded list of every current member — the list is a snapshot
+  that silently stops covering anyone added later, and the symptom is an empty
+  screen that reads as "nothing scheduled" rather than as a bug.
+- When AI output needs human review before it goes live, give the draft and
+  the published copy SEPARATE documents — one document plus a status field
+  makes "a failed re-run must not disturb what is live" a rule every write
+  path has to remember, instead of something the schema guarantees.
 
 ## Offline & Firestore sync
 - `getDoc` rejects offline-not-cached; `getDocs` resolves empty; `onSnapshot`
@@ -84,6 +96,18 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A cache keyed by a mutable field (e.g. `pdfUrl` that changes on re-upload)
   serves stale data forever after that field changes — key by a stable id, or
   plan the migration up front, don't patch around it later.
+- `snapshot.exists()` is a TYPE PREDICATE: reading any field after
+  `!snap.exists()` narrows the snapshot to `never` and fails the build. Put the
+  `metadata.fromCache` check FIRST in that guard, not second.
+- TWO `onSnapshot` listeners on the SAME document (e.g. a parent screen and a
+  modal it opens) crash the SDK with `INTERNAL ASSERTION FAILED: Unexpected
+  state (ID: ca9/b815)`, `ve: -1` — overlapping targets on one key drive the
+  watch stream's pendingResponses negative, and StrictMode doubles every
+  subscribe/unsubscribe cycle. One listener per document; pass the data down as
+  a prop. The stack points into the SDK, never at the duplicate.
+- A `getDoc` on a document that already has a live `onSnapshot` opens a second
+  one-shot target on the same key and trips the same assertion — read the value
+  from the listener's state instead (pass it in as an argument).
 
 ## Billing & metering (any metered AI feature)
 - Any refund/credit path triggered by output the model produces (e.g. an
@@ -162,3 +186,6 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A test suite for a mirrored/duplicated script (`bot/` importing shared
   logic) needs its own `npm test` wiring checked — a new test file sitting
   next to old ones doesn't run unless the script/CI list is updated.
+- `@types/react` is absent, so JSX gives `key` no special handling on a typed
+  component — a props interface must declare `key?: string` or every
+  `.map()` render site fails `tsc`. See `LectureCardProps`.
