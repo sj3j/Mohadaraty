@@ -108,6 +108,20 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A `getDoc` on a document that already has a live `onSnapshot` opens a second
   one-shot target on the same key and trips the same assertion — read the value
   from the listener's state instead (pass it in as an argument).
+- `INTERNAL ASSERTION FAILED: Unexpected state (ca9/b815)` with `ve: -1` is a
+  KNOWN SDK bug (firebase-js-sdk #9267), fixed by PR #9985 in
+  `@firebase/firestore` 4.15.0 / `firebase` 12.14.0. Before blaming app code,
+  check the installed version against the fix: `grep -c ensureTargetState
+  node_modules/@firebase/firestore/dist/*` returns >0 on a pre-fix build and 0
+  on a fixed one. No app-level change can work around a negative counter inside
+  the SDK's own watch bookkeeping.
+- After upgrading any dep that Vite pre-bundles, delete `node_modules/.vite`.
+  The dev server keeps serving the old optimized copy (`?v=<hash>` in the stack
+  trace), so a real fix looks like it changed nothing.
+- When a dead listener leaves the UI empty, the screen lies by omission: it
+  showed "59 parsed" above an empty list. If a server call reports storing N
+  rows and the listener has delivered none seconds later, say so and offer a
+  reload — "nothing happened" is the least actionable failure there is.
 
 ## Billing & metering (any metered AI feature)
 - Any refund/credit path triggered by output the model produces (e.g. an

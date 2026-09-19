@@ -65,6 +65,10 @@ export default function TimetableEditorModal({
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   /** The three-strike cap has been hit, so offer the way out of it. */
   const [capReached, setCapReached] = useState(false);
+  /** How many sessions the last parse reported storing. Compared against what
+   *  the listener actually delivers - see the reconcile effect below. */
+  const [parsedCount, setParsedCount] = useState(0);
+  const [needsReload, setNeedsReload] = useState(false);
 
   useBackDismiss(isOpen, onClose, 'timetableEditor');
 
@@ -82,6 +86,31 @@ export default function TimetableEditorModal({
     });
     return () => { unsubDraft(); };
   }, [isOpen, effectiveStageId]);
+
+  /*
+   * The server says it stored N sessions; the listener should deliver them a
+   * moment later. If it does not, the two disagree and the screen is lying by
+   * omission - which is exactly what happened when a Firestore SDK assertion
+   * killed the watch stream: the banner read "59 sessions" above a list that
+   * showed none, with nothing to say the data was safe and the connection was
+   * not. Say what is true and what to do about it.
+   *
+   * Re-running on sessions.length is what cancels this: the moment the listener
+   * delivers, the cleanup clears the pending timer.
+   */
+  useEffect(() => {
+    if (!parsedCount || sessions.length) return;
+    const timer = setTimeout(() => {
+      setNeedsReload(true);
+      setMessage({
+        kind: 'err',
+        text: isRtl
+          ? `حُفظت ${parsedCount} محاضرة بنجاح، لكن تعذّر تحديث العرض. أعد تحميل الصفحة لرؤيتها.`
+          : `${parsedCount} sessions were saved successfully, but the view could not refresh. Reload the page to see them.`,
+      });
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [parsedCount, sessions.length, isRtl]);
 
   // Debounced autosave. Never awaited on mount: an unacknowledged Firestore
   // write does not settle while offline.
@@ -128,9 +157,12 @@ export default function TimetableEditorModal({
     setIsParsing(true);
     setMessage(null);
     setCapReached(false);
+    setNeedsReload(false);
+    setParsedCount(0);
     try {
       const result = await requestTimetableParse(effectiveStageId);
       dirty.current = false;
+      setParsedCount(result.count || 0);
       const extra = [
         result.dropped
           ? (isRtl ? `، تعذّرت قراءة ${result.dropped}` : `, ${result.dropped} unreadable`)
@@ -319,6 +351,14 @@ export default function TimetableEditorModal({
                 : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
             }`}>
               {message.text}
+              {needsReload && (
+                <button
+                  onClick={() => window.location.reload()}
+                  className="block mt-2 px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-zinc-700"
+                >
+                  {isRtl ? 'إعادة تحميل الصفحة' : 'Reload the page'}
+                </button>
+              )}
               {capReached && (
                 <button
                   onClick={handleResetFailures}
