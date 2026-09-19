@@ -135,6 +135,16 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A citation/marker regex that matches `[[p:N]]` must also accept a
   comma-separated list (`[[p:7, 8]]`) if the model can emit one — test both
   shapes, not just the single-value case.
+- A retry cap must NOT count transient provider failures. Gemini answers a
+  demand spike with `503 UNAVAILABLE` ("please try again later"); three of
+  those burned a whole 3-strike budget and then told the user their image was
+  unreadable. Classify transient (503/UNAVAILABLE/overloaded/500/socket) apart
+  from `error`, retry it with backoff inside the request, and charge only
+  input-caused failures against the cap.
+- Any counter that BLOCKS an action needs a reset path the user can actually
+  reach, and the error message must name a remedy that really resets it —
+  "upload a clearer image" was a dead end because only a successful parse
+  cleared the count, which was the one thing that could not happen.
 
 ## Env, secrets & config
 - A PEM/secret pasted into a single-line hosting-panel field arrives

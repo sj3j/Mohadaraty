@@ -54,6 +54,46 @@ const EMPTY_STAGE: CallerStage = {
   isMasterAdmin: false, isSupport: false, role: '', managedStageId: null, permissions: {},
 };
 
+/** Attempts at the model call, including the first. */
+const GENERATE_ATTEMPTS = 3;
+/** Waits before attempt 2 and 3. Short: the caller is a human watching a
+ *  spinner, and Vercel kills the function at 60s regardless. */
+const RETRY_BACKOFF_MS = [1500, 4000];
+/** Room a retry needs to be worth starting. A call killed mid-flight by the
+ *  platform is worse than a clean failure the user can act on. */
+const MIN_CALL_BUDGET_MS = 15_000;
+/** vercel.json sets maxDuration 60 for api/index.ts; stop short of it. */
+const FUNCTION_BUDGET_MS = 50_000;
+
+/**
+ * Run the model call, retrying only what is worth retrying.
+ *
+ * Gemini answers a demand spike with `503 UNAVAILABLE` whose own message reads
+ * "Spikes in demand are usually temporary. Please try again later." Taking that
+ * at face value is the difference between a timetable that parses and a
+ * representative being told their image is unreadable - which is what happened:
+ * three separate 503s burned the whole retry budget and locked the stage out.
+ *
+ * Everything else throws on the first attempt. A schema Gemini rejects or an
+ * image it cannot read fails the same way however many times it is sent.
+ */
+async function generateWithRetry<T>(call: () => Promise<T>, deadlineAt: number): Promise<T> {
+  let last: any;
+  for (let attempt = 0; attempt < GENERATE_ATTEMPTS; attempt++) {
+    try {
+      return await call();
+    } catch (e: any) {
+      last = e;
+      if (classifyFailure(e) !== 'unavailable') throw e;
+      const wait = RETRY_BACKOFF_MS[attempt];
+      if (!wait || Date.now() + wait + MIN_CALL_BUDGET_MS > deadlineAt) throw e;
+      console.warn(`[timetable] provider unavailable, retrying in ${wait}ms`);
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+  throw last;
+}
+
 /**
  * The server-side twin of canManage(user, 'manageTimetable') in
  * src/lib/permissions.ts. The arms and their ORDER match it exactly.
@@ -154,6 +194,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
    * ---------------------------------------------------------------- */
   async function parse(req: any, res: any) {
     const db = admin.firestore();
+    const deadlineAt = Date.now() + FUNCTION_BUDGET_MS;
     const staff: CallerStage = (req as any).staff || EMPTY_STAGE;
 
     if (!mayManageTimetable(staff)) {
@@ -219,13 +260,23 @@ export function createTimetableHandlers(deps: TimetableDeps) {
         if (data?.status === 'parsing' && startedMs > 0 && Date.now() - startedMs < GENERATION_LOCK_MS) {
           return 'already_parsing';
         }
-        if ((Number(data?.failureCount) || 0) >= MAX_GENERATION_FAILURES) {
+        /*
+         * The retry cap counts failures against ONE image. Uploading a new one
+         * clears it, because that is exactly what the cap's own message tells
+         * the user to do - and before this, doing so changed nothing and left
+         * them permanently locked out with no way back.
+         */
+        const failedOn = data?.failedPhotoUrl;
+        const staleCount = !!failedOn && failedOn !== photoUrl;
+        const failureCount = staleCount ? 0 : (Number(data?.failureCount) || 0);
+        if (failureCount >= MAX_GENERATION_FAILURES) {
           return 'too_many_failures';
         }
         tx.set(draftRef, {
           stageId,
           status: 'parsing',
           startedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(staleCount ? { failureCount: 0 } : {}),
         }, { merge: true });
         return 'ok';
       });
@@ -246,7 +297,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
         if (!buf.length) throw new Error('image_unreachable:empty');
         if (buf.length > MAX_INLINE_IMAGE_BYTES) throw new Error('image_too_large');
 
-        const response = await ai.models.generateContent({
+        const response = await generateWithRetry(() => ai.models.generateContent({
           model: MCQ_MODEL,
           contents: [{
             role: 'user',
@@ -259,7 +310,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
             responseMimeType: 'application/json',
             responseSchema: TIMETABLE_RESPONSE_SCHEMA as any,
           },
-        });
+        }), deadlineAt);
 
         // `text` is a getter on GenerateContentResponse, not a method.
         const parsed = JSON.parse(response.text || '{}');
@@ -284,6 +335,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
           model: MCQ_MODEL,
           failureCount: 0,
           failureReason: admin.firestore.FieldValue.delete(),
+          failedPhotoUrl: admin.firestore.FieldValue.delete(),
         }, { merge: true });
 
         await notifyStaff(stageId, `${stageId} — ${result.sessions.length} محاضرة بانتظار المراجعة`);
@@ -303,14 +355,29 @@ export function createTimetableHandlers(deps: TimetableDeps) {
               : msg.startsWith('invalid_response') ? 'invalid_response'
                 : classifyFailure(e);
 
-        // `sessions` is deliberately NOT touched: a failed re-parse must leave
-        // the previous draft intact, and the published week is in a different
-        // document that this route never writes at all.
+        /*
+         * The retry cap exists to stop an unprocessable IMAGE from draining the
+         * daily free quota. A provider outage is not the image's fault and not
+         * something the user can fix, so it must not spend that budget - three
+         * transient 503s once locked a stage out permanently and told the
+         * representative to upload a clearer picture.
+         *
+         * `failedPhotoUrl` records which image the count belongs to, so
+         * uploading a different one resets it in the claim above.
+         *
+         * `sessions` is deliberately NOT touched: a failed re-parse must leave
+         * the previous draft intact, and the published week is in a different
+         * document that this route never writes at all.
+         */
+        const transient = specific === 'unavailable';
         await draftRef.set({
           stageId,
           status: 'failed',
           failureReason: `${specific}${msg ? `: ${msg.slice(0, 200)}` : ''}`,
-          failureCount: admin.firestore.FieldValue.increment(1),
+          ...(transient ? {} : {
+            failedPhotoUrl: photoUrl,
+            failureCount: admin.firestore.FieldValue.increment(1),
+          }),
         }, { merge: true });
 
         // Only provider-level problems are an operations alert. A sheet this
@@ -320,7 +387,11 @@ export function createTimetableHandlers(deps: TimetableDeps) {
         }
 
         console.error('[timetable] parse failed', specific, msg);
-        return res.status(502).json({ error: specific, detail: msg.slice(0, 200) });
+        // 503, not 502, when the provider was the thing that was down: it is
+        // the one failure here that is worth simply trying again.
+        return res
+          .status(transient ? 503 : 502)
+          .json({ error: specific, detail: msg.slice(0, 200) });
       }
     } catch (e: any) {
       console.error('[timetable] parse failed before the lock', e);

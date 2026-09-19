@@ -7,7 +7,7 @@
  * is why there is no route for them.
  */
 import {
-  deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, writeBatch,
+  deleteDoc, deleteField, doc, onSnapshot, serverTimestamp, setDoc, writeBatch,
   type DocumentSnapshot,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -21,7 +21,11 @@ export class TimetableUnavailableError extends Error {
   constructor(public code: string) { super('TIMETABLE_UNAVAILABLE'); }
 }
 
-const PROVIDER_CODES = ['quota', 'free_tier_limit', 'not_configured', 'bad_request'];
+// 'unavailable' is here so a provider outage reaches the UI as a typed error
+// rather than a raw code, but it is NOT interchangeable with the others: the
+// remedy is to wait a moment and press the button again, and the message the
+// user sees has to say so.
+const PROVIDER_CODES = ['quota', 'free_tier_limit', 'not_configured', 'bad_request', 'unavailable'];
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await auth.currentUser?.getIdToken();
@@ -132,6 +136,25 @@ export async function publishTimetable(
     failureCount: 0,
   }, { merge: true });
   await batch.commit();
+}
+
+/**
+ * Clear the three-strike parse cap.
+ *
+ * The cap is meant to stop an unreadable image from draining the daily free
+ * quota, but nothing except a SUCCESSFUL parse used to reset it - so a stage
+ * that hit the cap could never parse again, and the message telling the user to
+ * upload a clearer image was advice they could not act on. The server now
+ * resets it automatically when the image changes; this is the manual escape for
+ * when they want to retry the same one.
+ */
+export async function resetTimetableFailures(stageId: string): Promise<void> {
+  await setDoc(doc(db, 'timetableDrafts', stageId), {
+    stageId,
+    failureCount: 0,
+    failureReason: deleteField(),
+    failedPhotoUrl: deleteField(),
+  }, { merge: true });
 }
 
 /** Take the week down. Students fall back to the original image through exactly

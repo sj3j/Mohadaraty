@@ -87,6 +87,9 @@ export interface StageTimetableDoc {
   parsedAt?: any;
   failureReason?: string;
   failureCount?: number;
+  /** The image `failureCount` was accumulated against. Uploading a different
+   *  one resets the retry cap, which is what its own error message promises. */
+  failedPhotoUrl?: string;
   model?: string;
   /** Group labels the model read that this stage's groupConfig does not
    *  contain. Surfaced in the editor so a representative can tell a misread

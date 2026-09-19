@@ -19,8 +19,8 @@ import { useBackDismiss } from '../../hooks/useBackDismiss';
 import { useStageContext } from '../../contexts/StageContext';
 import TimetableSessionRow from './TimetableSessionRow';
 import {
-  publishTimetable, requestTimetableParse, saveDraftSessions,
-  unpublishTimetable, watchDraftTimetable,
+  publishTimetable, requestTimetableParse, resetTimetableFailures,
+  saveDraftSessions, unpublishTimetable, watchDraftTimetable,
   TimetableUnavailableError,
 } from '../../services/timetableService';
 import {
@@ -63,6 +63,8 @@ export default function TimetableEditorModal({
   const [isPublishing, setIsPublishing] = useState(false);
   const [showImage, setShowImage] = useState(false);
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  /** The three-strike cap has been hit, so offer the way out of it. */
+  const [capReached, setCapReached] = useState(false);
 
   useBackDismiss(isOpen, onClose, 'timetableEditor');
 
@@ -125,6 +127,7 @@ export default function TimetableEditorModal({
     if (!effectiveStageId) return;
     setIsParsing(true);
     setMessage(null);
+    setCapReached(false);
     try {
       const result = await requestTimetableParse(effectiveStageId);
       dirty.current = false;
@@ -145,26 +148,51 @@ export default function TimetableEditorModal({
           : `Read ${result.count} sessions${extra}. Review before publishing.`,
       });
     } catch (err: any) {
-      const provider = err instanceof TimetableUnavailableError;
-      const code = err?.message;
+      // A provider error carries its code on `.code`; everything else throws a
+      // plain Error whose message IS the code.
+      const code = err instanceof TimetableUnavailableError ? err.code : err?.message;
+      if (code === 'too_many_failures') setCapReached(true);
       setMessage({
         kind: 'err',
-        text: provider
-          ? (isRtl
-            ? 'خدمة التحليل غير متاحة حالياً. حاول لاحقاً.'
-            : 'Parsing is unavailable right now. Try again later.')
-          : code === 'no_image'
-            ? (isRtl ? 'ارفع صورة الجدول أولاً.' : 'Upload the timetable image first.')
-            : code === 'already_parsing'
-              ? (isRtl ? 'التحليل جارٍ بالفعل.' : 'A parse is already running.')
-              : code === 'too_many_failures'
-                ? (isRtl
-                  ? 'فشل التحليل ثلاث مرات. عدّل الجدول يدوياً أو ارفع صورة أوضح.'
-                  : 'Parsing failed three times. Edit by hand or upload a clearer image.')
-                : (isRtl ? 'تعذّر تحليل الصورة.' : 'Could not parse the image.'),
+        text:
+          // The provider was overloaded. Nothing is wrong with the image and
+          // there is nothing to fix - saying otherwise sent a representative
+          // off to re-photograph a timetable that read perfectly well.
+          code === 'unavailable'
+            ? (isRtl
+              ? 'خدمة الذكاء الاصطناعي مزدحمة الآن. الصورة سليمة — أعد المحاولة بعد دقيقة.'
+              : 'The AI service is busy right now. Nothing is wrong with the image — try again in a minute.')
+            : code === 'free_tier_limit'
+              ? (isRtl
+                ? 'انتهت حصة اليوم من التحليل المجاني. تُستأنف غداً.'
+                : "Today's free parsing quota is used up. It resumes tomorrow.")
+              : code === 'not_configured'
+                ? (isRtl ? 'خدمة التحليل غير مهيّأة. راجع مدير النظام.' : 'Parsing is not configured. Contact an administrator.')
+                : code === 'no_image'
+                  ? (isRtl ? 'ارفع صورة الجدول أولاً.' : 'Upload the timetable image first.')
+                  : code === 'already_parsing'
+                    ? (isRtl ? 'التحليل جارٍ بالفعل.' : 'A parse is already running.')
+                    : code === 'too_many_failures'
+                      ? (isRtl
+                        ? 'توقف التحليل بعد ثلاث محاولات فاشلة على هذه الصورة. ارفع صورة أوضح، أو أعد المحاولة على أي حال.'
+                        : 'Parsing stopped after three failed attempts on this image. Upload a clearer one, or retry anyway.')
+                      : (isRtl ? 'تعذّر تحليل الصورة.' : 'Could not parse the image.'),
       });
     } finally {
       setIsParsing(false);
+    }
+  };
+
+  /** Clear the cap so the button works again. The server also clears it by
+   *  itself as soon as a different image is uploaded. */
+  const handleResetFailures = async () => {
+    if (!effectiveStageId) return;
+    try {
+      await resetTimetableFailures(effectiveStageId);
+      setCapReached(false);
+      setMessage(null);
+    } catch (err) {
+      console.error('[timetable] reset failed', err);
     }
   };
 
@@ -291,6 +319,14 @@ export default function TimetableEditorModal({
                 : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
             }`}>
               {message.text}
+              {capReached && (
+                <button
+                  onClick={handleResetFailures}
+                  className="block mt-2 px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-zinc-700"
+                >
+                  {isRtl ? 'إعادة المحاولة على أي حال' : 'Retry anyway'}
+                </button>
+              )}
             </div>
           )}
 

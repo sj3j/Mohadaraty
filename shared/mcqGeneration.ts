@@ -48,6 +48,9 @@ export type McqFailureReason =
   | 'free_tier_limit'
   | 'not_configured'
   | 'bad_request'
+  /** The provider was temporarily down or overloaded. NOT the input's fault,
+   *  and the only reason here that is worth retrying unchanged. */
+  | 'unavailable'
   | 'pdf_unreachable'
   | 'pdf_too_large'
   | 'invalid_response'
@@ -318,6 +321,20 @@ export function classifyFailure(err: any): McqFailureReason {
     // completely different responses - wait for the daily reset, versus fix the
     // key. The free pipeline can only ever hit the former.
     return 'free_tier_limit';
+  }
+  // Transient: the model was overloaded, the backend blipped, or the socket
+  // died. Gemini answers a demand spike with a 503 whose own message says
+  // "please try again later", and this used to fall through to 'error' - which
+  // is indistinguishable from an unreadable input, so a caller counting
+  // failures against a retry cap spent its whole budget on an outage and then
+  // told the user to fix a file that was never the problem.
+  if (
+    raw.includes('UNAVAILABLE') || raw.includes('"code":503') || raw.includes('503 ')
+    || /overloaded|try again later|high demand/i.test(raw)
+    || raw.includes('"code":500') || raw.includes('INTERNAL')
+    || /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network error/i.test(raw)
+  ) {
+    return 'unavailable';
   }
   return 'error';
 }

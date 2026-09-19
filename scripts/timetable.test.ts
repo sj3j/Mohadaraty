@@ -36,6 +36,7 @@ import {
   type TimetableSession,
 } from '../shared/timetable';
 import type { GroupConfigLike } from '../shared/groups';
+import { classifyFailure } from '../shared/mcqGeneration';
 
 let passed = 0, failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -336,6 +337,36 @@ console.log('\ngroupSessionsByDay / overlaps');
     overlappingSessions([clash, other]).length === 0);
   check('audiencesIntersect treats [] as everyone',
     audiencesIntersect(session({ groups: [] }), session({ groups: ['A1'] })));
+}
+
+/* ------------------------------------------------------------------ *
+ * 9. Transient provider failures are not the image's fault
+ * ------------------------------------------------------------------ */
+console.log('');
+console.log('classifyFailure: transient vs. permanent');
+{
+  // The exact body that locked stage_4 out: three of these burned the whole
+  // retry budget, then told the representative to upload a clearer image.
+  const live503 = new Error('{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}');
+  check('a live 503 UNAVAILABLE is transient', classifyFailure(live503) === 'unavailable',
+    classifyFailure(live503));
+  check('"overloaded" is transient',
+    classifyFailure(new Error('The model is overloaded. Please try again later.')) === 'unavailable');
+  check('a 500 INTERNAL is transient',
+    classifyFailure(new Error('{"error":{"code":500,"status":"INTERNAL"}}')) === 'unavailable');
+  check('a dropped socket is transient',
+    classifyFailure(new Error('fetch failed')) === 'unavailable');
+
+  // These must NOT be retried or excused - retrying changes nothing, and the
+  // remedies are completely different from each other.
+  check('INVALID_ARGUMENT stays a bug in our request',
+    classifyFailure(new Error('INVALID_ARGUMENT: bad schema')) === 'bad_request');
+  check('a quota failure stays free_tier_limit',
+    classifyFailure(new Error('RESOURCE_EXHAUSTED: quota')) === 'free_tier_limit');
+  check('a bad key stays not_configured',
+    classifyFailure(new Error('API key not valid')) === 'not_configured');
+  check('an unrecognised failure stays generic',
+    classifyFailure(new Error('something else entirely')) === 'error');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
