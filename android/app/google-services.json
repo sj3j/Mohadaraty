@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "449403914422-8l3sqrqeb00n5tcvcbi5am49u31h8gac.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "e3d05027d31819d1709529742fe2905967aec69b"
+          }
+        },
+        {
           "client_id": "449403914422-pkl1659nddp538pviirhsgfidt0ov1f8.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
