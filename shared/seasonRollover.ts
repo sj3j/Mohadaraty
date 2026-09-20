@@ -161,6 +161,11 @@ export async function runSeasonRollover(
       termId: phase.term.id,
       termStart: phase.term.startDate,
       yearOpens,
+      // Safe as the plain calendar date ONLY because the cron is scheduled at
+      // 01:00 UTC = 04:00 Baghdad (vercel.json), which is outside the 2-hour
+      // grace window - so the day being credited and the calendar day agree.
+      // Move that schedule earlier and this has to become the effective date,
+      // the way scripts/streakAudit.ts computes it.
       creditedDay: today,
       performedBy: opts.performedBy,
     });

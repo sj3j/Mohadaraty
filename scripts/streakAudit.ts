@@ -42,6 +42,7 @@
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { hasBridgedSeasonOpen, hasPreTermStreakState, openSeason } from '../shared/seasonReset.js';
+import { getEffectiveDateString } from '../shared/streakApi.js';
 import { loadCalendar } from '../shared/seasonRollover.js';
 import { baghdadToday, resolvePhase, seasonOpeningDay } from '../shared/academicCalendar.js';
 import 'dotenv/config';
@@ -172,14 +173,32 @@ async function main() {
           const result = await openSeason(db, FieldValue, {
             termId: phase.term.id,
             termStart,
+            // Without this the bridged sweep is disarmed and the pass silently
+            // repairs only half of what it just listed.
             yearOpens,
-            creditedDay: today,
+            // The day record-activity is CURRENTLY crediting, not the calendar
+            // date. The 2-hour grace window means that between 00:00 and 02:00
+            // Baghdad they differ - and an operator running this at 01:00 would
+            // otherwise stamp lastActiveDate a day into the future and look for
+            // the wrong streak_history marker.
+            creditedDay: getEffectiveDateString(),
             performedBy: 'scripts/streakAudit.ts',
           });
           console.log(
             `\n  -> cleared ${result.cleared} account(s), clamped ${result.bridged}; ` +
             `seasonOpenedFor = ${result.termId}`,
           );
+          // A repair that writes less than it just listed is the dangerous
+          // failure here: it prints a healthy-looking summary, stamps
+          // seasonOpenedFor so the cron will not revisit, and leaves the rows
+          // on screen still wrong. Say so loudly and exit non-zero.
+          if (result.cleared < affected.length || result.bridged < bridged.length) {
+            console.error(
+              `\n  MISMATCH: listed ${affected.length} stale and ${bridged.length} bridged, ` +
+              `but wrote ${result.cleared} and ${result.bridged}. Re-run after fixing.`,
+            );
+            process.exit(1);
+          }
         } else {
           console.log('\n  DRY RUN - rerun with --commit to repair these and bank their peaks.');
         }
