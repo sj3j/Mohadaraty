@@ -121,6 +121,15 @@ const isIOS = (): boolean =>
   (navigator.platform === 'MacIntel' &&
    navigator.maxTouchPoints > 1);
 
+/** What a brand-new account starts the season on. See both setDoc calls below. */
+const FRESH_STREAK_FIELDS = {
+  streakCount: 0,
+  longestStreak: 0,
+  bestStreakAllTime: 0,
+  freezeTokens: 3,
+  lastActiveDate: null,
+} as const;
+
 export default function LoginScreen({ lang, externalError, onClearError }: LoginScreenProps) {
   const [showSignup, setShowSignup] = useState(false);
   const [showFaq, setShowFaq] = useState(false);
@@ -238,6 +247,11 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
           favorites: [],
           studied: [],
           completedWeeklyTasks: [],
+          // Seeded, not left absent. LeaderboardTab orders by streakCount, and
+          // an orderBy silently EXCLUDES documents that lack the field - so a
+          // student who signed up during a break, when record-activity returns
+          // early and writes nothing, was missing from the board entirely.
+          ...FRESH_STREAK_FIELDS,
           notificationPreferences: { lectures: true, announcements: true }
         });
       } else {
@@ -363,6 +377,11 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
           favorites: [],
           studied: [],
           completedWeeklyTasks: [],
+          // Seeded, not left absent. LeaderboardTab orders by streakCount, and
+          // an orderBy silently EXCLUDES documents that lack the field - so a
+          // student who signed up during a break, when record-activity returns
+          // early and writes nothing, was missing from the board entirely.
+          ...FRESH_STREAK_FIELDS,
           notificationPreferences: { lectures: true, announcements: true }
         });
       } else {

@@ -253,6 +253,45 @@ export function activeDaysBetween(cal: AcademicCalendar, from: string, to: strin
 }
 
 /**
+ * Is `from` on the far side of the academic year's opening boundary?
+ *
+ * The counterpart to activeDaysBetween's rule that paused days are not misses.
+ * That rule is right within the year - a student active on the last live day
+ * before العطلة الربيعية and again on the first day of term 2 kept their
+ * streak, which is the defence in depth pinned by scripts/calendar.test.ts
+ * against a rollover that failed to run. `preseason` looks identical to that
+ * function and is not: every day before terms[0].startDate is paused, so it
+ * reports a gap of ONE from any of them - last June included - and
+ * record-activity increments a streak belonging to no season on this calendar.
+ *
+ * Nothing else catches it. closableTerm() can never return the FIRST term of
+ * the year, because no term precedes it, so startNewSeason never fires at the
+ * year's open and the stale counters are never zeroed. That is how a student
+ * read 2 on the first day of term 1 with every other student on 1.
+ *
+ * Scoped to the year's opening boundary only, never to a term boundary inside
+ * it: closing term 1 IS a closable term, so the rollover zeroes those counters
+ * properly and the break bridging above must survive.
+ *
+ * Deliberately not folded into activeDaysBetween, whose result also sizes the
+ * freeze-token gap walk inside a term.
+ */
+export function startsFreshSeason(
+  cal: AcademicCalendar,
+  from: string | null | undefined,
+  to: string,
+): boolean {
+  if (!from) return false;
+  const terms = sortedTerms(cal);
+  // An unconfigured calendar has no opening boundary to be outside of, and
+  // failing open here keeps a missing config from wiping everyone's streak -
+  // the same call resolvePhase makes.
+  if (terms.length === 0) return false;
+  const yearOpens = terms[0].startDate;
+  return from < yearOpens && to >= yearOpens;
+}
+
+/**
  * The term whose season is over but has not been archived yet, or null.
  *
  * This is the rollover's idempotency key: once `seasonClosedFor` holds a term's

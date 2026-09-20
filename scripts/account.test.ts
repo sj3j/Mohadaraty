@@ -339,6 +339,8 @@ console.log('\nAccount deletion requests:');
   await db.collection('fcm_tokens').doc(DEL_UID).set({ token: 'abc' });
   await db.collection('userMCQStats').doc(DEL_UID).set({ score: 10 });
   await db.collection('userMCQAnswers').doc(DEL_UID).collection('lectures').doc('l1').set({ a: 1 });
+  await db.collection('streakLog').doc(DEL_UID).collection('days').doc('2026-09-20')
+    .set({ date: '2026-09-20', streakAfter: 1, method: 'normal' });
   await db.collection('chat_messages').doc('m1').set({
     senderId: DEL_UID, senderName: 'To Be Deleted', senderEmail: DEL, text: 'hello',
   });
@@ -394,6 +396,10 @@ console.log('\nAccount deletion requests:');
   check('quiz stats are deleted', !(await db.collection('userMCQStats').doc(DEL_UID).get()).exists);
   check('quiz answers are purged',
     (await db.collection('userMCQAnswers').doc(DEL_UID).collection('lectures').get()).empty);
+  // A subcollection, so deleting users/{uid} above leaves it orphaned and
+  // fully intact - and it records exactly which days the account was active.
+  check('the per-day streak log is purged',
+    (await db.collection('streakLog').doc(DEL_UID).collection('days').get()).empty);
 
   // The credential kill is what makes the account unusable even if a later
   // step had failed.

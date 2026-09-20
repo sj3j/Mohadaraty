@@ -14,6 +14,9 @@ interface LeaderboardTabProps {
 }
 
 const STREAK_LIMIT = 20;
+/** Over-fetch so graduated students, who are filtered client-side below, cannot
+ *  eat slots and leave the board rendering short of STREAK_LIMIT. */
+const STREAK_OVERFETCH = 10;
 const MCQ_LIMIT = 10;
 
 /** One row, shared by both boards so they cannot drift apart again. */
@@ -207,14 +210,18 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       where('role', '==', 'student'),
       where('stageId', '==', effectiveStageId),
       orderBy('streakCount', 'desc'),
-      limit(STREAK_LIMIT),
+      limit(STREAK_LIMIT + STREAK_OVERFETCH),
     ));
     // Graduated students keep read-only access in their final stage, so the
     // stage query still returns them. Filtered here rather than with a where
     // clause, because an inequality would also drop everyone lacking the field.
+    // Trimmed AFTER the filter, not before: filtering a page that was already
+    // cut to STREAK_LIMIT is what let a graduate consume a slot and render the
+    // board one row short.
     const leaders: any[] = snap.docs
       .map(d => ({ uid: d.id, ...(d.data() as any) }))
       .filter(u => u.graduated !== true)
+      .slice(0, STREAK_LIMIT)
       .map((u, i) => ({ ...u, _rank: i + 1 }));
 
     // Append the signed-in user below the cut if they are not already listed.
@@ -228,6 +235,9 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       leaders.push({
         uid: user.uid, name: user.name, photoUrl: user.photoUrl,
         streakCount: user.streakCount || 0,
+        // App.tsx hydrates this onto the profile; without it the detached row's
+        // "best this season" subtitle reads back the current streak instead.
+        longestStreak: user.longestStreak || 0,
         hideNameOnLeaderboard: user.hideNameOnLeaderboard,
         hidePhotoOnLeaderboard: user.hidePhotoOnLeaderboard,
         _rank: countSnap.data().count + 1,
@@ -347,7 +357,10 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     hidePhoto: l.hidePhotoOnLeaderboard,
     detached: l._detached,
     primary: <><Flame className="w-5 h-5 text-orange-500" />{l.streakCount || 0}</>,
-    secondary: `${l.streakCount || 0} ${isRtl ? 'أيام' : 'days'}`,
+    // The season's peak, not the headline a second time. Archived rows already
+    // carry longestStreak (shared/seasonReset.ts writes it onto topStudents[])
+    // and it was never shown anywhere; live rows read it off the user doc.
+    secondary: `${isRtl ? 'أطول هذا الموسم' : 'best this season'}: ${Math.max(l.longestStreak || 0, l.streakCount || 0)} ${isRtl ? 'يوم' : 'days'}`,
   }));
 
   const mcqRows: RowData[] = mcqLeaders.map(l => ({

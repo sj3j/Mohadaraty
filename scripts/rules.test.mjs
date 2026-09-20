@@ -807,6 +807,9 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'pending_streak_resets/stu_uid'), {
     userId: 'stu_uid', email: 'stu@x.com', missedDays: 3, streakAtRisk: 15,
   });
+  await setDoc(doc(db, 'streakLog/stu_uid/days/2026-09-20'), {
+    date: '2026-09-20', streakBefore: 14, streakAfter: 15, method: 'normal',
+  });
 });
 
 // A finished season is written by the Admin SDK during the reset and by nothing
@@ -833,6 +836,21 @@ await check('a representative CAN read a pending streak reset',
   assertSucceeds(getDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
 await check('nobody can clear a pending streak reset from the client',
   assertFails(deleteDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
+
+// The per-day audit of how each streak day was credited. It had NO match block
+// at all, which is not the same as being closed: Firestore denies a path with
+// no matching rule while the Admin SDK ignores rules, so the server wrote a
+// full audit trail that no client could read - the timetable failure again.
+await check('a student CAN read their own streak log day',
+  assertSucceeds(getDoc(doc(student, 'streakLog/stu_uid/days/2026-09-20'))));
+await check('a student CANNOT read another student streak log',
+  assertFails(getDoc(doc(student2, 'streakLog/stu_uid/days/2026-09-20'))));
+await check('a representative CAN read a streak log day',
+  assertSucceeds(getDoc(doc(rep, 'streakLog/stu_uid/days/2026-09-20'))));
+await check('nobody can forge a streak log entry from the client',
+  assertFails(setDoc(doc(student, 'streakLog/stu_uid/days/2026-09-21'), { method: 'normal', streakAfter: 99 })));
+await check('not even an admin can rewrite the audit trail from the client',
+  assertFails(updateDoc(doc(rep, 'streakLog/stu_uid/days/2026-09-20'), { streakAfter: 99 })));
 
 
 // ---------------------------------------------------------------------------

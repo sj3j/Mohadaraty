@@ -626,6 +626,20 @@ service cloud.firestore {
       allow write: if false; // Only Cloud Functions / Admin SDK
     }
 
+    // Per-day audit of how every streak day was credited: which branch ran, the
+    // counters either side of it, and whether the grace period applied.
+    // scripts/streakAudit.ts points operators here to reconstruct a disputed
+    // card, and StreakManagement shows it when a student queries their streak.
+    //
+    // It had NO match block at all, which is not the same as being closed:
+    // Firestore denies a path with no matching rule while the Admin SDK ignores
+    // rules entirely, so the server wrote a complete audit trail that no client
+    // could ever read - the same shape the timetable collections failed in.
+    match /streakLog/{userId}/days/{date} {
+      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == userId);
+      allow write: if false; // Admin SDK only - it is evidence, not state
+    }
+
     match /streak_recoveries/{docId} {
       allow read: if isAdmin();
       allow write: if false; // Only via API

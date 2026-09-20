@@ -274,8 +274,13 @@ export default function StreakManagement({ isOpen, onClose, lang, user }: Streak
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccess(isRtl ? 'تم إيقاف الزمن بنجاح' : 'Time frozen successfully');
-        await logAdminAction('TIME_FREEZE', `Activated global time freeze to recover recent lost streaks`);
+        // Say what it actually did. This rewrites lastActiveDate for every
+        // student with a live streak, so "done" alone gives an admin no way to
+        // tell a no-op from a bulk edit of the whole cohort.
+        setSuccess(isRtl
+          ? `تم استعادة ${data.count ?? 0} ستريك حتى تاريخ ${data.forgivenUpTo ?? ''}`
+          : `Forgave ${data.count ?? 0} streak(s) up to ${data.forgivenUpTo ?? ''}`);
+        await logAdminAction('TIME_FREEZE', `Global time freeze: ${data.count ?? 0} student(s) forgiven up to ${data.forgivenUpTo ?? 'unknown'}`);
       } else throw new Error(data.error || "API error");
     } catch (err: any) {
       setError(err.message || (isRtl ? 'فشل التحديث' : 'Failed'));

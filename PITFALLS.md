@@ -59,6 +59,12 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   Firestore console while every client read fails. The symptom is an empty UI
   that survives a refresh, and it reads as a client bug. Check the DEPLOYED
   rules for the collection before debugging the client.
+- A server-written AUDIT trail needs a rule too. `streakLog/{uid}/days/{date}`
+  had no match block, so the Admin SDK filled it every day and the very screens
+  meant to settle a dispute could not read a line of it.
+- Anything a deletion request is meant to erase must be hunted for in
+  SUBCOLLECTIONS: deleting `users/{uid}` leaves `users/{uid}/...` and any
+  `other/{uid}/...` fully intact.
 - A permission-denied `onSnapshot` is not inert: the backend rejects the target
   and the client re-adds it, which is its own source of watch-stream target
   churn. Rule out a missing rule before blaming the SDK.
@@ -87,6 +93,19 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   never as an expanded list of every current member — the list is a snapshot
   that silently stops covering anyone added later, and the symptom is an empty
   screen that reads as "nothing scheduled" rather than as a bug.
+- A "paused period doesn't break the streak" rule must be scoped to pauses
+  INSIDE a season. Before the first term of a calendar every day is paused, so
+  the same helper reported a gap of one from *last June* into opening day and
+  incremented a stale counter — one student opened the season on 2 while
+  everyone else was on 1. Test the boundary with a date months before it, not
+  just yesterday.
+- Every "close the season" path needs a matching "open the season" path. A
+  close keyed on "a term whose end has passed" can never fire for the FIRST
+  term of a calendar, so nothing zeroed what accounts carried into the new
+  year. Give the open its own idempotency marker alongside the close's.
+- A bulk reset that ships mid-season must key on evidence of staleness (a last
+  activity date older than the term) and not just "has a non-zero counter" —
+  the blanket version wipes the day every student legitimately earned.
 - When AI output needs human review before it goes live, give the draft and
   the published copy SEPARATE documents — one document plus a status field
   makes "a failed re-run must not disturb what is live" a rule every write
@@ -172,6 +191,20 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   "upload a clearer image" was a dead end because only a successful parse
   cleared the count, which was the one thing that could not happen.
 
+## Dual API surfaces
+- `server.ts` and `api/index.ts` drift in handler BODIES long after their route
+  LISTS agree — a path-set diff reports parity while production quietly carries
+  a feature dev has never run (and vice versa). Extract the handlers into a
+  `createXHandlers(deps)` factory in `shared/` and mount them from both; leave
+  only `verifyAuth`/`verifyAdmin` per-surface.
+- A config flag that is READ by one surface and WRITTEN by nothing in the repo
+  is not dead code, it is an unguarded back-door — anyone who can write the
+  settings document can flip behaviour the codebase never exercises. Delete it
+  or wire it up; do not leave it readable.
+- A cron route guarded by `header !== SECRET && SECRET` fails OPEN when the
+  secret is unset. Fail closed on a missing secret, the way the destructive
+  routes already do.
+
 ## Env, secrets & config
 - A PEM/secret pasted into a single-line hosting-panel field arrives
   double-escaped, quoted, or whitespace-collapsed more often than clean —
@@ -214,6 +247,10 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - `tsc --noEmit` on a large codebase can hit the default V8 heap and exit
   134 (OOM) — that looks like a hang/crash, not a type error; give it a
   larger `--max-old-space-size` rather than debugging the "failure".
+- A test that reads wall-clock "today" and asserts a phase silently expires on
+  the date it was written around — this suite's "the holiday keeps the app
+  paused" started failing the morning term 1 opened, which is the one day the
+  season actually starts. Pin the fixture to explicit dates.
 - When a shared predicate function is added to replace N duplicated copies,
   the bug that made the copies inconsistent is usually in what *feeds* the
   predicate, not the predicate itself — test the input-hydration site

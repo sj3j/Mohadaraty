@@ -11,6 +11,7 @@ import {
   DEFAULT_CALENDAR,
   resolvePhase,
   activeDaysBetween,
+  startsFreshSeason,
   closableTerm,
   seasonNameFor,
   validateCalendar,
@@ -100,6 +101,37 @@ check('a break costs no streak days (2027-01-16 -> 2027-01-31 == 1)',
   activeDaysBetween(cal, '2027-01-16', '2027-01-31') === 1,
   String(activeDaysBetween(cal, '2027-01-16', '2027-01-31')));
 check('consecutive live days count as 1', activeDaysBetween(cal, '2026-11-01', '2026-11-02') === 1);
+
+// ---- the year's opening boundary -----------------------------------------
+// The bug this pins: every preseason day is PAUSED, so activeDaysBetween reads
+// a gap of exactly ONE from any of them into day 1 of term 1 - from last June
+// as readily as from yesterday. record-activity then took its `daysDiff === 1`
+// arm and incremented a counter belonging to no season on this calendar, while
+// closableTerm() can never close a first term so startNewSeason never zeroed
+// it. One student opened day 1 on 2 with every other student on 1.
+check('the whole preseason still reads as a one-day gap (the trap)',
+  activeDaysBetween(cal, '2026-06-01', '2026-09-20') === 1,
+  String(activeDaysBetween(cal, '2026-06-01', '2026-09-20')));
+check('...so a June lastActiveDate starts a FRESH season on day 1',
+  startsFreshSeason(cal, '2026-06-01', '2026-09-20') === true);
+check('the day before term 1 does too',
+  startsFreshSeason(cal, '2026-09-19', '2026-09-20') === true);
+check('no prior activity is not a boundary crossing',
+  startsFreshSeason(cal, null, '2026-09-20') === false);
+check('day 1 -> day 2 is an ordinary continuation',
+  startsFreshSeason(cal, '2026-09-20', '2026-09-21') === false);
+check('a mid-term gap is not a boundary crossing',
+  startsFreshSeason(cal, '2026-11-01', '2026-11-05') === false);
+check('study -> exams inside one term is not either',
+  startsFreshSeason(cal, '2026-12-31', '2027-01-03') === false);
+
+// Scoped to the YEAR's open, never a term boundary inside it: closing term 1 IS
+// a closable term, so the rollover zeroes those counters properly and the break
+// bridging asserted just above has to survive.
+check('the mid-year break still bridges - it is a closable season',
+  startsFreshSeason(cal, '2027-01-16', '2027-01-31') === false);
+check('an unconfigured calendar fails open rather than wiping streaks',
+  startsFreshSeason({ ...cal, terms: [] }, '2026-06-01', '2026-09-20') === false);
 check('a genuinely missed live day counts', activeDaysBetween(cal, '2026-11-01', '2026-11-03') === 2,
   String(activeDaysBetween(cal, '2026-11-01', '2026-11-03')));
 check('exams days still count (they are live)',

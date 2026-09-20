@@ -29,6 +29,14 @@ against the same over `api/index.ts` before trusting that number again.
 **A change to one needs the same change to the other.** Always check both before
 concluding a route does or does not exist.
 
+**A matching path list does not mean matching behaviour.** The ten streak routes
+kept identical paths while their bodies drifted badly - production grew a
+`globalFreeze` gap-skip and a `streakLog` audit trail dev never had, dev grew a
+recovery push production never sent, and the two computed the same "effective
+date" by different means. They now live in `shared/streakApi.ts` behind
+`createStreakHandlers()`, mounted as one line each from both files, the way
+`shared/simosanApi.ts` already does it. Prefer that to copying a handler.
+
 ## Rules in the repo are not rules in production
 
 `npm run test:rules` runs the emulator against the **local** `firestore.rules`. It
@@ -448,6 +456,24 @@ found exactly one diverged card in 50 and that is the shape to expect.
 `users/{uid}/streakHistory` is therefore `write: if false` - Admin SDK only. It was
 `isAdmin()`, and an admin client used that to overwrite a finished season three
 weeks after the fact.
+
+**A season has to be OPENED as well as closed.** `closableTerm()` only ever
+returns a term whose live end has passed, so a calendar's *first* term has no
+predecessor, `startNewSeason` never fires at the year's open, and whatever an
+account carried in survives into day 1. Compounding it, `resolvePhase` marks
+every preseason day paused and `activeDaysBetween` skips paused days - so a
+`lastActiveDate` from *last June* read as a one-day gap and `record-activity`
+incremented it. One student opened term 1 on 2 with everyone else on 1.
+`openSeason()` (`shared/seasonReset.ts`) is the missing half: idempotent via
+`app_settings/streak.seasonOpenedFor`, called from `runSeasonRollover` after the
+close pass, and **selective** - it clears only accounts whose `lastActiveDate`
+predates the term, so it is safe to run mid-term without wiping the day the
+cohort legitimately earned. `startsFreshSeason()` is the same rule enforced per
+request, because the rollover cron fails closed without `CRON_SECRET`.
+It is scoped to the YEAR's opening boundary, never a term boundary inside it -
+closing term 1 *is* a closable term, so `npm run test:calendar`'s "a break costs
+no streak days" must keep passing. Repair a live database with
+`npm run streak:audit -- --only preseason [--commit]`.
 
 **`longestStreak` is per-season and is zeroed by the reset.** The all-time record
 lives in `bestStreakAllTime`, which is deliberately absent from the reset patch and

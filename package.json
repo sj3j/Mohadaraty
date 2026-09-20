@@ -23,6 +23,7 @@
     "test:calendar": "npx tsx scripts/calendar.test.ts",
     "test:zaincash": "npx tsx scripts/zaincash.test.ts",
     "test:migration": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"node scripts/migration.test.mjs\"",
+    "test:streak": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/streak.test.ts\"",
     "test:season": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/season.test.ts\"",
     "test:promotion": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/promotion.test.ts\"",
     "test:progression": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/progression.test.ts\"",

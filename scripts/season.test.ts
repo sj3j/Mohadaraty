@@ -10,7 +10,7 @@
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
-import { startNewSeason } from '../shared/seasonReset';
+import { hasPreTermStreakState, openSeason, startNewSeason } from '../shared/seasonReset';
 import { closableTerm, DEFAULT_CALENDAR } from '../shared/academicCalendar';
 import { syncPhaseMirror } from '../shared/seasonRollover';
 
@@ -242,8 +242,19 @@ const beforeSync = (await db.doc('app_settings/streak').get()).data();
 check('a manual archive leaves vacationMode untouched',
   beforeSync?.vacationMode === true, String(beforeSync?.vacationMode));
 
-// Today is before the 2026-2027 calendar opens, so the resolved phase is the
-// summer holiday - paused.
+// A calendar whose first term is still ahead of us, so the resolved phase is
+// the holiday the year opens out of - paused.
+//
+// Pinned to an explicit calendar rather than leaning on DEFAULT_CALENDAR and
+// the real clock: this assertion silently expired the morning term 1 opened
+// (2026-09-20), when "today" stopped being preseason and the app correctly
+// reported `study`. A test that only holds before a hardcoded date is a test
+// that fails on the one day the season actually starts.
+await db.doc('app_settings/academicCalendar').set({
+  yearLabel: 'future', timezone: 'Asia/Baghdad',
+  terms: [{ id: 'future', nameAr: 'x', nameEn: 'x',
+    startDate: '2099-09-20', endDate: '2099-12-31', examsStart: null, examsEnd: null }],
+});
 const syncedPhase = await syncPhaseMirror(db, FieldValue as any);
 const afterManual = (await db.doc('app_settings/streak').get()).data();
 check('syncPhaseMirror writes the phase, not the archive',
@@ -262,6 +273,80 @@ await syncPhaseMirror(db, FieldValue as any);
 const afterLive = (await db.doc('app_settings/streak').get()).data();
 check('a live term unpauses through the same mirror',
   afterLive?.vacationMode === false, String(afterLive?.vacationMode));
+
+// ---------------------------------------------------------------------------
+// openSeason - the half that never existed.
+//
+// closableTerm() only returns a term that has ENDED, so a calendar's FIRST term
+// is never closed and startNewSeason never fired at the year's open. Whatever
+// an account carried in survived into day 1, where the paused preseason reads
+// as a one-day gap and increments it - one student read 2 on the opening day
+// while everyone else read 1.
+// ---------------------------------------------------------------------------
+console.log('\nopenSeason (pre-term state):');
+
+const TERM_START = '2026-09-20';
+
+// Pure predicate first - it is what the audit script's dry run previews.
+check('pre-term state: stale lastActiveDate counts',
+  hasPreTermStreakState({ streakCount: 1, lastActiveDate: '2026-06-01' }, TERM_START) === true);
+check('pre-term state: today\'s legitimate streak does NOT',
+  hasPreTermStreakState({ streakCount: 1, lastActiveDate: TERM_START }, TERM_START) === false);
+check('pre-term state: a clean account does NOT',
+  hasPreTermStreakState({ streakCount: 0, longestStreak: 0 }, TERM_START) === false);
+check('pre-term state: null lastActiveDate with a live streak counts',
+  hasPreTermStreakState({ streakCount: 4, lastActiveDate: null }, TERM_START) === true);
+check('pre-term state: a stranded pending flag alone counts',
+  hasPreTermStreakState({ streakCount: 0, hasPendingStreakReset: true, lastActiveDate: '2026-06-01' }, TERM_START) === true);
+
+await db.collection('users').doc('carryover').set({
+  name: 'carryover', email: 'carryover@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 1, longestStreak: 7, bestStreakAllTime: 0, freezeTokens: 0,
+  lastActiveDate: '2026-06-01', hasPendingStreakReset: true,
+});
+await db.collection('pending_streak_resets').doc('carryover').set({
+  userId: 'carryover', missedDays: 3, streakAtRisk: 7, dateRecorded: '2026-06-01',
+});
+await db.collection('users').doc('earned_today').set({
+  name: 'earned_today', email: 'earned@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 1, longestStreak: 1, bestStreakAllTime: 1, freezeTokens: 3,
+  lastActiveDate: TERM_START,
+});
+
+const opened = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START, performedBy: 'season.test.ts',
+});
+
+const carry = (await db.doc('users/carryover').get()).data();
+check('the carried-over streak is zeroed', carry?.streakCount === 0, String(carry?.streakCount));
+check('its per-season peak is zeroed', carry?.longestStreak === 0, String(carry?.longestStreak));
+check('its lastActiveDate is cleared', carry?.lastActiveDate === null, String(carry?.lastActiveDate));
+check('its peak is BANKED into bestStreakAllTime, not lost',
+  carry?.bestStreakAllTime === 7, String(carry?.bestStreakAllTime));
+check('shields are restored', carry?.freezeTokens === 3, String(carry?.freezeTokens));
+check('the stranded pending flag is dropped',
+  carry?.hasPendingStreakReset === undefined, String(carry?.hasPendingStreakReset));
+check('and its pending_streak_resets row with it',
+  (await db.doc('pending_streak_resets/carryover').get()).exists === false);
+
+// The whole reason the predicate is selective: this ships mid-term.
+const today = (await db.doc('users/earned_today').get()).data();
+check("a streak earned since the term opened is UNTOUCHED",
+  today?.streakCount === 1 && today?.lastActiveDate === TERM_START,
+  `${today?.streakCount} / ${today?.lastActiveDate}`);
+
+check('openSeason reports what it cleared', opened.cleared >= 1, String(opened.cleared));
+check('it stamps seasonOpenedFor',
+  (await db.doc('app_settings/streak').get()).data()?.seasonOpenedFor === 'term1_2026');
+
+// Idempotency: a second run must be a no-op, not a second zeroing.
+await db.doc('users/earned_today').update({ streakCount: 5, lastActiveDate: '2026-09-24' });
+const again = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START, performedBy: 'season.test.ts',
+});
+check('a second run clears nothing', again.cleared === 0, String(again.cleared));
+check('and leaves the live streak alone',
+  (await db.doc('users/earned_today').get()).data()?.streakCount === 5);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

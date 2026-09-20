@@ -2,6 +2,7 @@
  * Audits and repairs the streak system's stored history.
  *
  *   npx tsx scripts/streakAudit.ts                                    # report only
+ *   npx tsx scripts/streakAudit.ts --only preseason                    # the day-1 bug
  *   npx tsx scripts/streakAudit.ts --commit                           # apply repairs
  *   npx tsx scripts/streakAudit.ts --archive semester_123 --commit
  *   npx tsx scripts/streakAudit.ts --backfill-stage stage_3 --commit
@@ -30,9 +31,19 @@
  *   4. best            users.bestStreakAllTime backfilled from the highest value the
  *                      account can prove: its live counters and every archived card.
  *                      Without this the new all-time field starts at 0 for everyone.
+ *
+ *   5. preseason       accounts whose lastActiveDate predates the RUNNING term, which
+ *                      the year's opening day silently incremented instead of starting
+ *                      fresh: every preseason day is paused, so activeDaysBetween reads
+ *                      a gap of one from any of them, and closableTerm can never close
+ *                      a first term so startNewSeason never zeroed them. Needs no
+ *                      archive, so it runs before the archive is resolved.
  */
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { hasPreTermStreakState, openSeason } from '../shared/seasonReset.js';
+import { loadCalendar } from '../shared/seasonRollover.js';
+import { baghdadToday, resolvePhase } from '../shared/academicCalendar.js';
 import 'dotenv/config';
 
 // ---------------------------------------------------------------------------
@@ -48,7 +59,7 @@ const has = (name: string) => argv.includes(`--${name}`);
 const commit = has('commit');
 const archiveIdFlag = flag('archive');
 const backfillStage = flag('backfill-stage');
-const only = flag('only'); // archive-stage | cards | pending | best
+const only = flag('only'); // archive-stage | cards | pending | best | preseason
 
 const runs = (pass: string) => !only || only === pass;
 
@@ -83,6 +94,68 @@ async function writeAll(label: string, ops: ((b: FirebaseFirestore.WriteBatch) =
 }
 
 async function main() {
+  // -------------------------------------------------------------------------
+  // PASS 5 - streak state left over from before the running term opened
+  //
+  // First, and outside the archive requirement below: the case this exists for
+  // is a calendar's FIRST term, where there is no closed season and so no
+  // archive to audit against.
+  // -------------------------------------------------------------------------
+  if (runs('preseason')) {
+    console.log('== 5. pre-term streak state ==');
+
+    const calendar = await loadCalendar(db);
+    const today = baghdadToday(calendar.timezone);
+    const phase = resolvePhase(calendar, today);
+
+    if (!phase.term || phase.isPaused) {
+      console.log(`  ${today} is ${phase.phase}${phase.isPaused ? ' (paused)' : ''} - no running term to measure against.`);
+      console.log('');
+    } else {
+      const termStart = phase.term.startDate;
+      const usersSnap = await db.collection('users').get();
+      const affected = usersSnap.docs.filter(d => hasPreTermStreakState(d.data(), termStart));
+
+      console.log(`  term ${phase.term.id} opened ${termStart}; ${usersSnap.size} account(s) scanned`);
+      if (affected.length === 0) {
+        console.log('  no account carries streak state from before the term opened.');
+      } else {
+        console.log(`  ${affected.length} account(s) carry pre-term state:\n`);
+        for (const d of affected.slice(0, 50)) {
+          const u = d.data() as any;
+          console.log(
+            `    ${d.id}` +
+            `  streak=${u.streakCount || 0}` +
+            `  longest=${u.longestStreak || 0}` +
+            `  best=${u.bestStreakAllTime || 0}` +
+            `  lastActive=${u.lastActiveDate ?? 'null'}` +
+            `  ${u.name || ''}`,
+          );
+        }
+        if (affected.length > 50) console.log(`    ... and ${affected.length - 50} more`);
+
+        if (commit) {
+          // Reuses the rollover's own patch, so the repair and the thing that
+          // prevents a recurrence cannot drift. It also stamps seasonOpenedFor,
+          // which is what stops the next rollover redoing this.
+          const result = await openSeason(db, FieldValue, {
+            termId: phase.term.id,
+            termStart,
+            performedBy: 'scripts/streakAudit.ts',
+          });
+          console.log(`\n  -> cleared ${result.cleared} account(s); seasonOpenedFor = ${result.termId}`);
+        } else {
+          console.log('\n  DRY RUN - rerun with --commit to zero these and bank their peaks.');
+        }
+      }
+      console.log('');
+    }
+
+    // Nothing else this pass needs, and the archive lookup below would exit 1
+    // on a project whose first season has not closed yet.
+    if (only === 'preseason') return;
+  }
+
   // -------------------------------------------------------------------------
   // Which archive are we auditing against?
   // -------------------------------------------------------------------------

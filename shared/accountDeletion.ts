@@ -176,6 +176,13 @@ export async function purgeAccount(
     await batch.commit();
   });
 
+  // Per-day streak audit. A subcollection, so deleting the users/ doc above
+  // leaves it orphaned and fully intact - the same trap purgeChat.ts documents.
+  // It records when the account was active every single day, which is exactly
+  // the kind of thing a deletion request is asking to be rid of.
+  await attempt('streakLog:purged',
+    () => purgeCollection(db, db.collection('streakLog').doc(uid).collection('days')));
+
   // 4. Chat is anonymised, not deleted - see the module comment.
   await attempt('chat:anonymised', async () => {
     const snap = await db.collection('chat_messages').where('senderId', '==', uid).get();

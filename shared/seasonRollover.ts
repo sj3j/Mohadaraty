@@ -25,7 +25,7 @@ import {
   resolvePhase,
   seasonNameFor,
 } from './academicCalendar.js';
-import { startNewSeason } from './seasonReset.js';
+import { openSeason, startNewSeason } from './seasonReset.js';
 
 export interface RolloverResult {
   today: string;
@@ -34,6 +34,10 @@ export interface RolloverResult {
   activeTermId: string | null;
   /** Term id archived by this run, or null when there was nothing to close. */
   archived: string | null;
+  /** Term id whose season this run opened, or null when nothing needed it. */
+  opened?: string | null;
+  /** Accounts whose pre-term streak state the open pass cleared. */
+  openCleared?: number;
   seasonId?: string;
   streakArchived?: number;
   mcqArchived?: number;
@@ -112,6 +116,7 @@ export async function runSeasonRollover(
   const settingsRef = db.collection('app_settings').doc('streak');
   const settingsSnap = await settingsRef.get();
   const seasonClosedFor = settingsSnap.exists ? settingsSnap.data()?.seasonClosedFor : null;
+  const seasonOpenedFor = settingsSnap.exists ? settingsSnap.data()?.seasonOpenedFor : null;
 
   const term = closableTerm(calendar, today, seasonClosedFor);
 
@@ -127,6 +132,26 @@ export async function runSeasonRollover(
     archived = term.id;
   }
 
+  // Open the running term AFTER closing whatever ended, so a close in the same
+  // pass has already zeroed everyone and this finds nothing left to do.
+  //
+  // This is the half that never existed. closableTerm() can only return a term
+  // that has ENDED, so the first term of a calendar is never closed and its
+  // season was never started either - stale counters from before the academic
+  // year simply carried into day 1, where the paused preseason reads as a
+  // one-day gap and increments them.
+  let opened: string | null = null;
+  let openCleared = 0;
+  if (phase.term && !phase.isPaused && seasonOpenedFor !== phase.term.id) {
+    const openResult = await openSeason(db, FieldValue, {
+      termId: phase.term.id,
+      termStart: phase.term.startDate,
+      performedBy: opts.performedBy,
+    });
+    opened = openResult.termId;
+    openCleared = openResult.cleared;
+  }
+
   await syncPhaseMirror(db, FieldValue, phase);
 
   return {
@@ -135,6 +160,8 @@ export async function runSeasonRollover(
     isPaused: phase.isPaused,
     activeTermId: phase.term?.id ?? null,
     archived,
+    opened,
+    openCleared,
     ...(reset || {}),
   };
 }

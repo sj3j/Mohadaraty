@@ -247,3 +247,126 @@ export async function startNewSeason(
     mcqArchived: rankedStats.length,
   };
 }
+
+/**
+ * Does this user doc carry streak state from before `termStart`?
+ *
+ * The one definition of "stale", shared by openSeason and by
+ * scripts/streakAudit.ts's preseason pass so a dry-run report and the repair it
+ * previews can never disagree about who is affected.
+ */
+export function hasPreTermStreakState(u: any, termStart: string): boolean {
+  const streakCount = u?.streakCount || 0;
+  const longestStreak = u?.longestStreak || 0;
+  const hasPending = u?.hasPendingStreakReset === true;
+  // Nothing to clear.
+  if (streakCount <= 0 && longestStreak <= 0 && !hasPending) return false;
+
+  let lastActiveDate: string | null = u?.lastActiveDate ?? null;
+  if (lastActiveDate && lastActiveDate.includes('T')) {
+    lastActiveDate = lastActiveDate.split('T')[0];
+  }
+  // Credited on or after the term opened, so it belongs to THIS season.
+  if (lastActiveDate && lastActiveDate >= termStart) return false;
+  return true;
+}
+
+export interface SeasonOpenResult {
+  termId: string;
+  /** Accounts whose stale pre-term counters were zeroed. */
+  cleared: number;
+}
+
+/**
+ * Opens a term's season, clearing streak state left over from before it.
+ *
+ * startNewSeason closes a season; nothing opened one. closableTerm() only ever
+ * returns a term whose live end is already past, so the FIRST term of a
+ * calendar - which has no predecessor - can never be closed, startNewSeason
+ * never fires at the year's open, and whatever counters an account carried into
+ * the new year survive into day 1. Combined with activeDaysBetween reporting a
+ * gap of ONE across the whole paused preseason, that is how a student read 2 on
+ * the opening day of term 1 while every other student read 1.
+ *
+ * Writes no archive cards. A term that genuinely ended was already archived by
+ * startNewSeason in the same rollover pass; the pre-calendar window is not a
+ * season and has no board worth filing.
+ *
+ * SELECTIVE BY DESIGN. It touches only accounts whose last credited day
+ * predates the term, so it is safe to deploy in the middle of an already
+ * running term: a student who earned today's streak legitimately has
+ * lastActiveDate >= termStart and is left alone. A blanket zeroing would wipe
+ * the day for the whole cohort.
+ *
+ * Idempotent per term via app_settings/streak.seasonOpenedFor, mirroring
+ * seasonClosedFor.
+ */
+export async function openSeason(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { serverTimestamp(): any; delete(): any },
+  opts: {
+    termId: string;
+    /** The term's startDate, 'YYYY-MM-DD'. The boundary that defines "stale". */
+    termStart: string;
+    performedBy?: string;
+  },
+): Promise<SeasonOpenResult> {
+  const { termId, termStart, performedBy } = opts;
+
+  const usersSnap = await db.collection('users').get();
+
+  let batch = db.batch();
+  let ops = 0;
+  let cleared = 0;
+  const flush = async (force = false) => {
+    if (ops >= 400 || (force && ops > 0)) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  };
+
+  for (const doc of usersSnap.docs) {
+    const u = doc.data() as any;
+    if (!hasPreTermStreakState(u, termStart)) continue;
+
+    const streakCount = u.streakCount || 0;
+    const longestStreak = u.longestStreak || 0;
+
+    // Bank the peak before zeroing it. bestStreakAllTime is the only streak
+    // number that survives a rollover, and nothing may lower longestStreak
+    // without raising it first or "الأطول" loses the record permanently.
+    const seasonPeak = Math.max(longestStreak, streakCount);
+
+    batch.update(doc.ref, {
+      streakCount: 0,
+      longestStreak: 0,
+      lastActiveDate: null,
+      freezeTokens: 3,
+      bestStreakAllTime: Math.max(u.bestStreakAllTime || 0, seasonPeak),
+      hasPendingStreakReset: FieldValue.delete(),
+    });
+    ops++;
+    cleared++;
+
+    // The flag guarded a streak this has just zeroed, so it can no longer be
+    // forgiven into anything. Left behind it strands the student on a permanent
+    // "you are about to lose your streak" banner.
+    batch.delete(db.collection('pending_streak_resets').doc(doc.id));
+    ops++;
+
+    await flush();
+  }
+  await flush(true);
+
+  await db.collection('app_settings').doc('streak').set(
+    {
+      seasonOpenedFor: termId,
+      seasonOpenedAt: FieldValue.serverTimestamp(),
+      ...(performedBy ? { seasonOpenedBy: performedBy } : {}),
+    },
+    { merge: true },
+  );
+
+  return { termId, cleared };
+}
