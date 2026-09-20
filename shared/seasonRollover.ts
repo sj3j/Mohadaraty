@@ -24,6 +24,7 @@ import {
   closableTerm,
   resolvePhase,
   seasonNameFor,
+  seasonOpeningDay,
 } from './academicCalendar.js';
 import { openSeason, startNewSeason } from './seasonReset.js';
 
@@ -38,6 +39,9 @@ export interface RolloverResult {
   opened?: string | null;
   /** Accounts whose pre-term streak state the open pass cleared. */
   openCleared?: number;
+  /** Accounts the open pass clamped to 1 because they had already been
+   *  credited for the opening day. */
+  openBridged?: number;
   seasonId?: string;
   streakArchived?: number;
   mcqArchived?: number;
@@ -142,14 +146,27 @@ export async function runSeasonRollover(
   // one-day gap and increments them.
   let opened: string | null = null;
   let openCleared = 0;
-  if (phase.term && !phase.isPaused && seasonOpenedFor !== phase.term.id) {
+  let openBridged = 0;
+  const yearOpens = seasonOpeningDay(calendar);
+  // The stamp must not hide a SAME-DAY second pass. A repair run by hand before
+  // the fixed build reached production stamps the term while production is
+  // still minting bridged rows - and the bridge can only be created on the
+  // year's opening day, so on that one day a year this re-runs regardless of
+  // the stamp. Costs one extra users scan annually; buys "the cron repairs this
+  // even if the operator did it in the wrong order" as a property of the code
+  // rather than of the runbook.
+  const mustReopen = seasonOpenedFor !== phase.term?.id || today === yearOpens;
+  if (phase.term && !phase.isPaused && mustReopen) {
     const openResult = await openSeason(db, FieldValue, {
       termId: phase.term.id,
       termStart: phase.term.startDate,
+      yearOpens,
+      creditedDay: today,
       performedBy: opts.performedBy,
     });
     opened = openResult.termId;
     openCleared = openResult.cleared;
+    openBridged = openResult.bridged;
   }
 
   await syncPhaseMirror(db, FieldValue, phase);
@@ -162,6 +179,7 @@ export async function runSeasonRollover(
     archived,
     opened,
     openCleared,
+    openBridged,
     ...(reset || {}),
   };
 }

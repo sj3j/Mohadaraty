@@ -58,7 +58,7 @@ export interface Subject {
 }
 
 // Subscription types
-export type SubscriptionPlan = 'monthly' | 'seasonal' | 'semi_annual';
+export type SubscriptionPlan = 'monthly' | 'seasonal' | 'semi_annual' | 'annual';
 export type SubscriptionStatus = 'active' | 'inactive' | 'pending' | 'cancelled';
 export type PaymentMethod = 'zaincash' | 'superkey' | 'admin_grant';
 
@@ -94,11 +94,24 @@ export interface Subscription {
   notes?: string;
 }
 
+/** Display copy of the server table in shared/subscriptions.ts. Both must move
+ *  together: the server one is what the gateway amount is validated against, so
+ *  changing only this makes every purchase fail as an amount_mismatch. */
 export const PLAN_CONFIG: Record<SubscriptionPlan, { days: number; price: number; labelAr: string; labelEn: string }> = {
-  monthly: { days: 30, price: 1000, labelAr: 'شهري', labelEn: 'Monthly' },
-  seasonal: { days: 90, price: 3000, labelAr: 'فصلي', labelEn: 'Seasonal' },
-  semi_annual: { days: 180, price: 5000, labelAr: 'نصف سنوي', labelEn: 'Semi-Annual' },
+  monthly: { days: 30, price: 2000, labelAr: 'شهري', labelEn: 'Monthly' },
+  seasonal: { days: 90, price: 5000, labelAr: 'فصلي', labelEn: 'Seasonal' },
+  semi_annual: { days: 180, price: 9000, labelAr: 'نصف سنوي', labelEn: 'Semi-Annual' },
+  annual: { days: 360, price: 12000, labelAr: 'سنوي', labelEn: 'Annual' },
 };
+
+/** What the term would cost at the monthly rate — the struck-through figure on
+ *  the plan cards. Derived, never stored, so it cannot drift from the price it
+ *  is anchoring against. Equal to the price itself on the monthly plan, which
+ *  is why the cards only render it when it is strictly greater. */
+export function planAnchorPrice(plan: SubscriptionPlan): number {
+  const { days } = PLAN_CONFIG[plan];
+  return PLAN_CONFIG.monthly.price * (days / PLAN_CONFIG.monthly.days);
+}
 
 export interface LectureTab {
   id: string;
@@ -497,6 +510,7 @@ export const TRANSLATIONS = {
     monthly: 'شهري',
     seasonal: 'فصلي',
     semiAnnual: 'نصف سنوي',
+    annual: 'سنوي',
     days: 'يوم',
     bestValue: 'الأفضل قيمة',
     popular: 'الأكثر شيوعاً',
@@ -644,6 +658,7 @@ export const TRANSLATIONS = {
     monthly: 'Monthly',
     seasonal: 'Seasonal',
     semiAnnual: 'Semi-Annual',
+    annual: 'Annual',
     days: 'days',
     bestValue: 'Best Value',
     popular: 'Popular',

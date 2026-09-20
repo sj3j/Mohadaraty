@@ -17,7 +17,8 @@
  * next to a revenue figure. Mixing them is what let توزيع المشتركين exceed its
  * own total.
  */
-import type { Subscription } from '../src/types';
+import { PLAN_CONFIG, planAnchorPrice, type Subscription, type SubscriptionPlan } from '../src/types';
+import { PLAN_CONFIG as SERVER_PLAN_CONFIG } from '../shared/subscriptions';
 import {
   computeSubscriptionStats,
   distinctUsers,
@@ -135,7 +136,8 @@ check('counts as one active subscriber', doubled.activeSubscribers === 1, double
 check('is filed under the newer plan only',
   doubled.byPlan.seasonal === 1 && doubled.byPlan.monthly === 0, JSON.stringify(doubled.byPlan));
 check('and توزيع المشتركين still sums to the total',
-  doubled.byPlan.monthly + doubled.byPlan.seasonal + doubled.byPlan.semi_annual === 1);
+  doubled.byPlan.monthly + doubled.byPlan.seasonal + doubled.byPlan.semi_annual +
+  doubled.byPlan.annual === 1);
 
 console.log('\nEmpty ledger:');
 const empty = computeSubscriptionStats([]);
@@ -143,6 +145,54 @@ check('every card reads zero rather than NaN',
   empty.totalSubscribers === 0 && empty.activeSubscribers === 0 &&
   empty.pendingApprovals === 0 && empty.totalRevenue === 0 &&
   empty.byPayment.zaincash.count === 0 && empty.byPlan.monthly === 0);
+
+/*
+ * The plan ladder.
+ *
+ * The two PLAN_CONFIG tables are the whole reason this block exists. The server
+ * one is what the gateway amount is validated against - shared/subscriptions.ts
+ * cancels the row when paid !== expected - and the client one is what the card
+ * advertises. Let them drift and every purchase of the drifted plan dies as an
+ * amount_mismatch AFTER the student has already paid.
+ */
+console.log('\nThe plan ladder:');
+const PLANS = Object.keys(PLAN_CONFIG) as SubscriptionPlan[];
+
+check('client and server tables hold the same plans',
+  PLANS.length === Object.keys(SERVER_PLAN_CONFIG).length &&
+  PLANS.every(p => SERVER_PLAN_CONFIG[p] !== undefined), PLANS.join(','));
+
+check('and agree on every price and duration',
+  PLANS.every(p => SERVER_PLAN_CONFIG[p].price === PLAN_CONFIG[p].price &&
+                   SERVER_PLAN_CONFIG[p].days === PLAN_CONFIG[p].days));
+
+check('prices are 2000 / 5000 / 9000 / 12000',
+  PLAN_CONFIG.monthly.price === 2000 && PLAN_CONFIG.seasonal.price === 5000 &&
+  PLAN_CONFIG.semi_annual.price === 9000 && PLAN_CONFIG.annual.price === 12000);
+
+// A month is 30 days here, not a calendar month. That is what keeps the anchor
+// exact - 360 gives 24,000 and a clean 1,000/month, where 365 gives 24,333.
+check('a month is 30 days, so the ladder is 30/90/180/360',
+  PLAN_CONFIG.monthly.days === 30 && PLAN_CONFIG.seasonal.days === 90 &&
+  PLAN_CONFIG.semi_annual.days === 180 && PLAN_CONFIG.annual.days === 360);
+
+check('the anchor is the term priced at the monthly rate',
+  planAnchorPrice('seasonal') === 6000 && planAnchorPrice('semi_annual') === 12000 &&
+  planAnchorPrice('annual') === 24000);
+
+// Striking it on the monthly card would cross out the price itself.
+check('the monthly card has no anchor to strike',
+  planAnchorPrice('monthly') === PLAN_CONFIG.monthly.price);
+
+// Every longer plan must really be a discount, or the struck-through figure is
+// advertising an increase.
+check('every longer plan beats the monthly rate',
+  PLANS.filter(p => p !== 'monthly').every(p => planAnchorPrice(p) > PLAN_CONFIG[p].price));
+
+// bestValue is pinned to annual in both purchase surfaces; this is that claim.
+const perMonthOf = (p: SubscriptionPlan) => PLAN_CONFIG[p].price / (PLAN_CONFIG[p].days / 30);
+check('annual is the cheapest per month',
+  PLANS.every(p => perMonthOf('annual') <= perMonthOf(p)));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

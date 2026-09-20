@@ -292,6 +292,21 @@ export function startsFreshSeason(
 }
 
 /**
+ * The academic year's opening day - terms[0].startDate - or null if the
+ * calendar is unconfigured.
+ *
+ * Exposed because it is the ONE day on which a streak above 1 is arithmetically
+ * impossible: no earlier day belongs to any season this calendar describes. Two
+ * repairs key on that, and neither may use a term's own startDate instead - on
+ * term 2's first day a streak above 1 is perfectly legitimate, which is exactly
+ * what "a break costs no streak days" means.
+ */
+export function seasonOpeningDay(cal: AcademicCalendar): string | null {
+  const terms = sortedTerms(cal);
+  return terms.length ? terms[0].startDate : null;
+}
+
+/**
  * The term whose season is over but has not been archived yet, or null.
  *
  * This is the rollover's idempotency key: once `seasonClosedFor` holds a term's

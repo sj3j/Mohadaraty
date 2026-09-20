@@ -335,7 +335,7 @@ service cloud.firestore {
              (!('permissions' in data) || data.permissions is map) &&
              (!('isSubscribed' in data) || data.isSubscribed is bool) &&
              (!('subscriptionEnd' in data) || data.subscriptionEnd == null || data.subscriptionEnd is timestamp) &&
-             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual']);
+             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']);
     }
 
     function isWhitelisted() {

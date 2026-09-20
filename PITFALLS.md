@@ -110,6 +110,23 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   the published copy SEPARATE documents — one document plus a status field
   makes "a failed re-run must not disturb what is live" a rule every write
   path has to remember, instead of something the schema guarantees.
+- A repair keyed on STALENESS cannot see the rows the bug already freshened.
+  The same write that inflated the counter moved `lastActiveDate` onto the new
+  term, so the "this belongs to the current season" test skips exactly the
+  accounts that were damaged. Ship the second selector with the first, keyed on
+  the year's opening day — the one date on which the counter is provably capped.
+- A repair that clears `lastActiveDate` must not touch a row that already holds
+  today's credit marker: record-activity returns early on that marker, so
+  nothing recomputes until tomorrow and the row reads 0 for the rest of the day
+  it earned. Clamp to 1 and keep the date. This is also the fix for the race
+  between a bulk scan and a student visiting mid-run.
+- A "reset to a fresh season" rule scoped to a TERM boundary wipes the streak a
+  break is supposed to preserve. Scope it to `terms[0].startDate` — the year's
+  opening — and pin the term-2 case, or the second term silently becomes a
+  second reset.
+- Lowering a per-season peak (`longestStreak`) is not optional when you lower
+  the counter: the board prints `max(longestStreak, streakCount)`, so a clamped
+  row still advertises the wrong number.
 
 ## Offline & Firestore sync
 - `getDoc` rejects offline-not-cached; `getDocs` resolves empty; `onSnapshot`
@@ -262,3 +279,17 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - `@types/react` is absent, so JSX gives `key` no special handling on a typed
   component — a props interface must declare `key?: string` or every
   `.map()` render site fails `tsc`. See `LectureCardProps`.
+- Pinning a fixture to the wall clock is not enough when the code under test
+  applies a GRACE WINDOW: `streak.test.ts` opened its term on the Baghdad date
+  while record-activity was still crediting yesterday, so every run between
+  00:00 and 02:00 resolved to preseason and all ten assertions read `undefined`
+  off a response that was never written. Derive fixture dates from the same
+  helper the handler uses, and derive "yesterday" from that, not from `Date.now`.
+- An index-drift checker that treats "no `orderBy`" as "no composite index
+  needed" misses the commonest count-query shape: two equality filters plus one
+  inequality DOES need one. Ours reported a clean bill while three indexes were
+  missing in production, including the one behind `expireSubscriptions`.
+- A `getCountFromServer` for a "what is my rank" row belongs in its own
+  try/catch. Sharing the board's catch means one missing index throws away the
+  twenty rows already fetched, and the screen reads "no students in this stage"
+  rather than "rank unavailable".

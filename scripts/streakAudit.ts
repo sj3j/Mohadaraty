@@ -41,9 +41,9 @@
  */
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { hasPreTermStreakState, openSeason } from '../shared/seasonReset.js';
+import { hasBridgedSeasonOpen, hasPreTermStreakState, openSeason } from '../shared/seasonReset.js';
 import { loadCalendar } from '../shared/seasonRollover.js';
-import { baghdadToday, resolvePhase } from '../shared/academicCalendar.js';
+import { baghdadToday, resolvePhase, seasonOpeningDay } from '../shared/academicCalendar.js';
 import 'dotenv/config';
 
 // ---------------------------------------------------------------------------
@@ -113,15 +113,19 @@ async function main() {
       console.log('');
     } else {
       const termStart = phase.term.startDate;
+      const yearOpens = seasonOpeningDay(calendar);
+      // The bridged sweep is armed only while opening the YEAR's first term.
+      // On term 2's opening day a streak above 1 is legitimate.
+      const sweepBridged = !!yearOpens && yearOpens === termStart;
+
       const usersSnap = await db.collection('users').get();
       const affected = usersSnap.docs.filter(d => hasPreTermStreakState(d.data(), termStart));
+      const bridged = sweepBridged
+        ? usersSnap.docs.filter(d => hasBridgedSeasonOpen(d.data(), yearOpens as string))
+        : [];
 
-      console.log(`  term ${phase.term.id} opened ${termStart}; ${usersSnap.size} account(s) scanned`);
-      if (affected.length === 0) {
-        console.log('  no account carries streak state from before the term opened.');
-      } else {
-        console.log(`  ${affected.length} account(s) carry pre-term state:\n`);
-        for (const d of affected.slice(0, 50)) {
+      const listRows = (docs: FirebaseFirestore.QueryDocumentSnapshot[]) => {
+        for (const d of docs.slice(0, 50)) {
           const u = d.data() as any;
           console.log(
             `    ${d.id}` +
@@ -132,8 +136,35 @@ async function main() {
             `  ${u.name || ''}`,
           );
         }
-        if (affected.length > 50) console.log(`    ... and ${affected.length - 50} more`);
+        if (docs.length > 50) console.log(`    ... and ${docs.length - 50} more`);
+      };
 
+      console.log(`  term ${phase.term.id} opened ${termStart}; ${usersSnap.size} account(s) scanned`);
+
+      if (affected.length === 0) {
+        console.log('  no account carries streak state from before the term opened.');
+      } else {
+        console.log(`  ${affected.length} account(s) carry pre-term state:\n`);
+        listRows(affected);
+      }
+
+      // The accounts the staleness test above cannot see: the bridge overwrote
+      // their lastActiveDate with the opening day itself, which reads as "this
+      // season" and skips them. They are clamped to 1, not zeroed - zeroing a
+      // row that already holds today's streak_history marker strands it at 0
+      // until tomorrow.
+      if (!sweepBridged) {
+        if (yearOpens) {
+          console.log(`  (bridged sweep off - ${termStart} is not the year's opening day ${yearOpens})`);
+        }
+      } else if (bridged.length === 0) {
+        console.log(`  no account was bridged into the opening day ${yearOpens}.`);
+      } else {
+        console.log(`\n  ${bridged.length} account(s) were bridged into the opening day:\n`);
+        listRows(bridged);
+      }
+
+      if (affected.length > 0 || bridged.length > 0) {
         if (commit) {
           // Reuses the rollover's own patch, so the repair and the thing that
           // prevents a recurrence cannot drift. It also stamps seasonOpenedFor,
@@ -141,11 +172,16 @@ async function main() {
           const result = await openSeason(db, FieldValue, {
             termId: phase.term.id,
             termStart,
+            yearOpens,
+            creditedDay: today,
             performedBy: 'scripts/streakAudit.ts',
           });
-          console.log(`\n  -> cleared ${result.cleared} account(s); seasonOpenedFor = ${result.termId}`);
+          console.log(
+            `\n  -> cleared ${result.cleared} account(s), clamped ${result.bridged}; ` +
+            `seasonOpenedFor = ${result.termId}`,
+          );
         } else {
-          console.log('\n  DRY RUN - rerun with --commit to zero these and bank their peaks.');
+          console.log('\n  DRY RUN - rerun with --commit to repair these and bank their peaks.');
         }
       }
       console.log('');

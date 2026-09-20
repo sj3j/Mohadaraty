@@ -18,6 +18,7 @@ import {
   activeDaysBetween,
   addDays,
   isLiveDay,
+  seasonOpeningDay,
   startsFreshSeason,
 } from './academicCalendar.js';
 import { resolveCurrentPhase } from './seasonRollover.js';
@@ -33,6 +34,7 @@ export type StreakMethod =
   | 'freeze_token'
   | 'pending_loss'
   | 'new_season'
+  | 'bridge_clamp'
   | 'no_op';
 
 const DEFAULT_GRACE_HOURS = 2;
@@ -172,6 +174,29 @@ export function createStreakHandlers(deps: StreakDeps) {
           freezeTokens = MAX_FREEZE_TOKENS;
           processedLastDate = null;
           method = 'new_season';
+        }
+
+        // The bridge's residue, caught on the account's NEXT visit.
+        //
+        // An account whose last credited day is the year's opening day cannot
+        // hold more than 1: the same buggy write that inflated it also moved
+        // lastActiveDate onto that day - which hid it from openSeason's
+        // staleness test - and its own streak_history marker then blocked any
+        // recompute for the rest of that day.
+        //
+        // This is the last moment the evidence is legible. After this write
+        // lastActiveDate moves off the opening day and a wrong 3 is
+        // indistinguishable in shape from an honest 3, so an account that
+        // visits before anyone runs the audit is only saved here.
+        //
+        // Mutually exclusive with the branch above: that one needs
+        // processedLastDate < yearOpens, this one needs it equal.
+        const yearOpens = seasonOpeningDay(calendar);
+        if (processedLastDate && yearOpens && processedLastDate === yearOpens && streakCount > 1) {
+          bestStreakAllTime = Math.max(bestStreakAllTime, longestStreak, streakCount);
+          streakCount = 1;
+          longestStreak = 1;
+          method = 'bridge_clamp';
         }
 
         if (!processedLastDate) {

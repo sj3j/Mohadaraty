@@ -117,15 +117,24 @@ function extractShapes(src, file) {
  *   - a lone orderBy
  *
  * A composite index IS required when the query sorts by one field while
- * filtering on another, or sorts by more than one field.
+ * filtering on another, sorts by more than one field, or - with no orderBy at
+ * all - pairs a range filter with an equality filter on a different field.
  */
 function needsComposite(shape) {
   const { equality, inequality, orderBys } = shape;
   const ineqFields = new Set(inequality);
 
   if (orderBys.length === 0) {
-    // Range filters spanning two different fields still need a composite index.
-    return ineqFields.size > 1;
+    // Equality-only is served by the zigzag merge join, and a lone range filter
+    // by that field's own single-field index.
+    if (ineqFields.size === 0) return false;
+    // Range filters spanning two different fields always need a composite index.
+    if (ineqFields.size > 1) return true;
+    // ONE range filter alongside an equality filter needs one too. This arm was
+    // missing, and it is the exact shape of the leaderboard's "what is my rank"
+    // count - role == x, stageId == y, streakCount > n - which failed in
+    // production with FAILED_PRECONDITION while this checker reported no drift.
+    return equality.some((f) => !ineqFields.has(f));
   }
   if (orderBys.length > 1) return true;
 

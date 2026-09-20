@@ -212,7 +212,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
 
   const planLabel = (plan: string) => {
     const labels: Record<string, string> = {
-      monthly: t.monthly, seasonal: t.seasonal, semi_annual: t.semiAnnual,
+      monthly: t.monthly, seasonal: t.seasonal, semi_annual: t.semiAnnual, annual: t.annual,
     };
     return labels[plan] || plan;
   };
@@ -320,7 +320,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
           <div className="p-4 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
             <h3 className="font-bold text-sm text-slate-900 dark:text-white mb-3">{t.subscriberBreakdown}</h3>
             <div className="space-y-2">
-              {(['monthly', 'seasonal', 'semi_annual'] as const).map(plan => (
+              {(['monthly', 'seasonal', 'semi_annual', 'annual'] as const).map(plan => (
                 <div key={plan} className="flex items-center justify-between">
                   <span className="text-sm text-slate-600 dark:text-slate-400">{planLabel(plan)}</span>
                   <span className="text-sm font-bold text-slate-900 dark:text-white">{stats.byPlan[plan]}</span>
@@ -476,6 +476,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
             <option value="monthly">{t.monthly}</option>
             <option value="seasonal">{t.seasonal}</option>
             <option value="semi_annual">{t.semiAnnual}</option>
+            <option value="annual">{t.annual}</option>
           </select>
           <button
             onClick={() => setShowGrantModal(true)}
@@ -766,6 +767,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
                 <option value="monthly">{t.monthly} (30 {t.days})</option>
                 <option value="seasonal">{t.seasonal} (90 {t.days})</option>
                 <option value="semi_annual">{t.semiAnnual} (180 {t.days})</option>
+                <option value="annual">{t.annual} (360 {t.days})</option>
               </select>
 
               {/* Notes */}
