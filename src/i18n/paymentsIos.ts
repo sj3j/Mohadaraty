@@ -39,6 +39,9 @@ export const PAYMENT_STRINGS = {
     subscriptionPlans: 'خطط الاشتراك',
     subscriptionActive: 'الاشتراك فعال',
     subscriptionExpired: 'الاشتراك منتهي',
+    /** Never subscribed, as opposed to expired. Same wording the web profile
+     *  uses, so a student sees one phrase for one state across both. */
+    payNoSubscription: 'لا يوجد اشتراك فعال',
     subscriptionRequired: 'هذه الميزة تحتاج اشتراكاً فعالاً',
     mcqRequiresSubscription: 'بنك الأسئلة يحتاج اشتراكاً فعالاً',
     subscriptionActivated: 'تم تفعيل اشتراكك',
@@ -76,6 +79,7 @@ export const PAYMENT_STRINGS = {
     subscriptionPlans: 'Subscription plans',
     subscriptionActive: 'Subscription active',
     subscriptionExpired: 'Subscription expired',
+    payNoSubscription: 'No active subscription',
     subscriptionRequired: 'This feature needs an active subscription',
     mcqRequiresSubscription: 'The question bank needs an active subscription',
     subscriptionActivated: 'Your subscription is active',

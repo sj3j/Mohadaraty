@@ -135,7 +135,13 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
         <p className={`text-base font-black mb-1 ${
           active ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
         }`}>
-          {active ? t.subscriptionActive : t.subscriptionExpired}
+          {/* "Expired" only if there WAS one. A student who has never
+              subscribed has not had anything expire, and telling them
+              otherwise on the screen that sells the first subscription reads
+              as an error in the app. */}
+          {active
+            ? t.subscriptionActive
+            : (user?.subscriptionEnd ? t.subscriptionExpired : t.payNoSubscription)}
         </p>
         {until && (
           <p className="text-sm font-bold text-slate-500 dark:text-slate-400">

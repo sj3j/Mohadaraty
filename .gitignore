@@ -63,6 +63,12 @@ ios/App/App/capacitor.config.json
 # Generated at build time by scripts/copyPdfjsAssets.mjs (regenerable)
 public/pdfjs/
 
+# The paywall preview build and the App Store review screenshots taken from it.
+# Both are regenerable from scripts/paywallPreview/ (npm run build:paywall), and
+# the PNGs are uploaded to App Store Connect rather than consumed by the app.
+dist-paywall/
+paywall-shots/
+
 # Class rosters and the password sheets generated from them.
 #
 # THIS REPO IS PUBLIC. A roster file is a list of real students' full names, and
