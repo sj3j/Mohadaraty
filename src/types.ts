@@ -446,6 +446,14 @@ export const TRANSLATIONS = {
     adminList: 'قائمة المسؤولين',
     delete: 'حذف',
     subAdminLogin: 'دخول المسؤولين (اسم مستخدم)',
+    // Claiming an existing account from the Google sign-in dead end. The copy
+    // never mentions the exam code: it is reissued every year, so asking for it
+    // here would identify an enrolment rather than a person.
+    claimTitle: 'لديك حساب بالفعل؟',
+    claimIntro: 'سجّل الدخول بحسابك الحالي مرة واحدة لربطه بحساب Google، وبعدها يكفيك زر Google.',
+    claimIdentifier: 'البريد الجامعي أو رمز الدخول أو الاسم الثلاثي',
+    claimSubmit: 'ربط الحساب وتسجيل الدخول',
+    claimNoAccount: 'ليس لدي حساب — إنشاء حساب جديد',
     login: 'تسجيل الدخول',
     invalidCredentials: 'اسم المستخدم أو كلمة المرور غير صحيحة',
     adminCreated: 'تم إنشاء المسؤول بنجاح',
@@ -594,6 +602,11 @@ export const TRANSLATIONS = {
     adminList: 'Admin List',
     delete: 'Delete',
     subAdminLogin: 'Admin Login (Username)',
+    claimTitle: 'Already have an account?',
+    claimIntro: 'Sign in with your existing account once to link it to Google. After that, the Google button is all you need.',
+    claimIdentifier: 'College email, login code, or full name',
+    claimSubmit: 'Link account and sign in',
+    claimNoAccount: "I don't have an account — create one",
     login: 'Login',
     invalidCredentials: 'Invalid username or password',
     adminCreated: 'Admin created successfully',

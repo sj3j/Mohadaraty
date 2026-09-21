@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { apiUrl } from '../lib/apiBase';
-import { Loader2, UserPlus, Check, X, AlertCircle } from 'lucide-react';
+import { Loader2, UserPlus, Check, X, AlertCircle, Users } from 'lucide-react';
 import { Language, UserProfile } from '../types';
 import { isMasterAdmin } from '../lib/permissions';
 
@@ -14,6 +14,12 @@ interface SignupRequest {
   examCode: string | null;
   noExamCode: boolean;
   status: string;
+  /**
+   * Students already in this stage whose folded name matches. A snapshot from
+   * when the form was filled - the server re-checks at approval, because a
+   * roster import can land in between.
+   */
+  possibleDuplicateOf?: string[];
 }
 
 /**
@@ -29,6 +35,8 @@ export default function SignupRequestsQueue({ user, lang }: { user: UserProfile 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The request whose namesake warning is awaiting a deliberate override. */
+  const [confirmDuplicate, setConfirmDuplicate] = useState<string | null>(null);
 
   const master = isMasterAdmin(user);
   const myStage = user?.managedStageId || user?.stageId || null;
@@ -51,7 +59,7 @@ export default function SignupRequestsQueue({ user, lang }: { user: UserProfile 
     return unsub;
   }, [master, myStage]);
 
-  const review = async (email: string, approve: boolean) => {
+  const review = async (email: string, approve: boolean, force = false) => {
     setBusy(email);
     setError(null);
     try {
@@ -60,10 +68,20 @@ export default function SignupRequestsQueue({ user, lang }: { user: UserProfile 
       const res = await fetch(apiUrl(`/api/admin/signup/${encodeURIComponent(email)}/${approve ? 'approve' : 'reject'}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({}),
+        body: JSON.stringify(force ? { force: true } : {}),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Failed');
+      if (!res.ok) {
+        // Approving would create a second account for someone already enrolled
+        // here. Not refused outright - two identical three-part names in one
+        // cohort is possible - but it takes a deliberate second press.
+        if (data?.code === 'DUPLICATE_NAME_IN_STAGE') {
+          setConfirmDuplicate(email);
+          return;
+        }
+        throw new Error(data?.error || 'Failed');
+      }
+      setConfirmDuplicate(null);
       // The snapshot listener drops it from the list once status changes.
     } catch (err: any) {
       setError(err.message || (isRtl ? 'فشل الإجراء' : 'Action failed'));
@@ -112,6 +130,38 @@ export default function SignupRequestsQueue({ user, lang }: { user: UserProfile 
               ? (isRtl ? 'لا يملك رقماً امتحانياً بعد' : 'No exam code yet')
               : `${isRtl ? 'الرقم الامتحاني' : 'Exam code'}: ${r.examCode || '-'}`}
           </p>
+
+          {(r.possibleDuplicateOf?.length || confirmDuplicate === r.email) && (
+            <div className="mb-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+              <div className="flex items-start gap-2">
+                <Users className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-amber-800 dark:text-amber-300">
+                    {isRtl
+                      ? 'يوجد طالب بنفس الاسم في هذه المرحلة'
+                      : 'A student with this name already exists in this stage'}
+                  </p>
+                  <p className="text-xs text-amber-700 dark:text-amber-400 mt-1 leading-relaxed">
+                    {isRtl
+                      ? 'إن كان هو نفس الشخص، ارفض الطلب واطلب منه ربط حسابه عبر زر Google في شاشة الدخول.'
+                      : 'If this is the same person, reject the request and ask them to link their account with the Google button on the login screen.'}
+                  </p>
+                  {(r.possibleDuplicateOf || []).map(id => (
+                    <p key={id} className="text-xs text-amber-700 dark:text-amber-400 mt-0.5 truncate" dir="ltr">{id}</p>
+                  ))}
+                  {confirmDuplicate === r.email && (
+                    <button
+                      onClick={() => review(r.email, true, true)}
+                      disabled={busy === r.email}
+                      className="mt-2 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs"
+                    >
+                      {isRtl ? 'شخص آخر — وافق على أي حال' : 'Different person — approve anyway'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <button

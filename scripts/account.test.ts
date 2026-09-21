@@ -23,6 +23,7 @@ import {
   accountSummary, SelfServiceError,
 } from '../shared/accountSelfService';
 import { nameKeyFor, makeLoginCode, loginCodeKeyFor } from '../shared/rosterIdentity';
+import { mergeUserAccounts } from '../shared/adminUsers';
 import { resetStudentPassword, assertStageAuthority, StudentAdminError } from '../shared/studentAdmin';
 import {
   requestAccountDeletion, cancelAccountDeletion, reviewDeletionRequest,
@@ -437,6 +438,128 @@ console.log('\nAccount deletion requests:');
   // Purging is idempotent - a retry after a partial failure must not throw.
   const again = await purgeAccount(db, fakeAuth, FieldValue, { uid: DEL_UID, studentId: DEL });
   check('a second purge is harmless', Array.isArray(again.steps));
+}
+
+
+// ---------------------------------------------------------------------------
+// MERGING TWO ACCOUNTS INTO ONE
+//
+// This had no coverage at all, while being the only path that reconciles the
+// duplicates the app used to create. Three things are asserted that it either
+// got wrong or did not do:
+//
+//   1. the students half - without it the losing roster row stays live and the
+//      student mints the duplicate straight back on their next sign-in;
+//   2. earned state that was simply dropped - a paid subscription, the academic
+//      record, the season and year archives;
+//   3. the streak_history re-key, which split the doc id on an underscore
+//      although a roster uid IS an email address and may contain one.
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('Merging duplicate accounts:');
+{
+  const mergeAuth = { deleted: [] as string[], async deleteUser(uid: string) { this.deleted.push(uid); } };
+
+  // The uid deliberately contains an underscore: that is what broke the re-key.
+  const KEEP = 'ph_2101@student.alsafwa.edu.iq';
+  const DROP = 'dupe-account@gmail.com';
+
+  await db.collection('students').doc(KEEP).set({
+    email: KEEP, name: 'Merge Student', isActive: true, stageId: 'stage_3',
+  });
+  await db.collection('students').doc(DROP).set({
+    email: DROP, name: 'Merge Student', isActive: true, stageId: 'stage_3',
+  });
+  await db.collection('users').doc(KEEP).set({
+    email: KEEP, role: 'student', stageId: 'stage_3',
+    streakCount: 3, bestStreakAllTime: 5, studied: ['a'], lastActiveDate: '2026-01-01',
+  });
+  await db.collection('users').doc(DROP).set({
+    email: DROP, role: 'student', stageId: 'stage_3',
+    streakCount: 11, bestStreakAllTime: 19, studied: ['b'], lastActiveDate: '2026-05-05',
+    isSubscribed: true, subscriptionEnd: '2027-01-01', subscriptionPlan: 'yearly',
+  });
+
+  await db.collection('users').doc(DROP).collection('yearHistory').doc('2025').set({ score: 7 });
+  await db.collection('users').doc(DROP).collection('mcqHistory').doc('s1').set({ score: 9 });
+  await db.collection('degrees').doc(DROP).collection('exams').doc('e1').set({ mark: 88 });
+  await db.collection('subscriptions').doc('sub1').set({ userId: DROP, status: 'active' });
+  await db.collection('streak_history').doc(DROP + '_2026-05-05').set({
+    userId: DROP, date: '2026-05-05', wasActive: true,
+  });
+
+  const report = await mergeUserAccounts(db, mergeAuth, KEEP, DROP, {
+    keepStudentId: KEEP, deleteStudentId: DROP, FieldValue, reason: 'test',
+  });
+  check('the merge reports that it ran', report.merged === true);
+
+  const kept = (await db.doc('users/' + KEEP).get()).data() || {};
+  check('the higher streak is carried over', kept.streakCount === 11, String(kept.streakCount));
+  check('the all-time best is carried over', kept.bestStreakAllTime === 19);
+  check('the last-active day follows the counter it supports',
+    kept.lastActiveDate === '2026-05-05', String(kept.lastActiveDate));
+  check('studied lectures are unioned', (kept.studied || []).length === 2);
+  check('a live subscription is NOT lost in the merge', kept.isSubscribed === true);
+  check('...with its expiry and plan',
+    kept.subscriptionEnd === '2027-01-01' && kept.subscriptionPlan === 'yearly');
+
+  check('the subscription ledger row is repointed',
+    (await db.doc('subscriptions/sub1').get()).data()?.userId === KEEP);
+  check('the academic record moves across',
+    (await db.doc('degrees/' + KEEP + '/exams/e1').get()).exists);
+  check('the year archive moves across',
+    (await db.doc('users/' + KEEP + '/yearHistory/2025').get()).exists);
+  check('the season MCQ archive moves across',
+    (await db.doc('users/' + KEEP + '/mcqHistory/s1').get()).exists);
+
+  // The bug: splitting an email-shaped uid on an underscore returned a fragment
+  // of the uid, and the source doc was deleted OUTSIDE the guard that noticed.
+  check('the streak calendar is re-keyed on the DATE, not a split uid',
+    (await db.doc('streak_history/' + KEEP + '_2026-05-05').get()).exists);
+  check('...and the old row is gone rather than stranded',
+    !(await db.doc('streak_history/' + DROP + '_2026-05-05').get()).exists);
+
+  // The half that makes it permanent.
+  const loser = (await db.doc('students/' + DROP).get()).data() || {};
+  check('the losing roster row is deactivated', loser.isActive === false);
+  check('...and points at the row that absorbed it', loser.mergedInto === KEEP);
+  check('...and is RETIRED, not deleted', (await db.doc('students/' + DROP).get()).exists);
+  const winner = (await db.doc('students/' + KEEP).get()).data() || {};
+  check('the duplicate address becomes the survivor linked address',
+    winner.googleEmail === DROP, String(winner.googleEmail));
+  check('the duplicate users doc is gone', !(await db.doc('users/' + DROP).get()).exists);
+  check('the duplicate sign-in identity is deleted', mergeAuth.deleted.includes(DROP));
+
+  const audit = await db.collection('accountMerges').where('deleteUid', '==', DROP).get();
+  check('an audit row records what moved',
+    audit.size === 1 && audit.docs[0].data().status === 'completed', String(audit.size));
+
+  // A retry after a partial failure must not run the students half again.
+  const second = await mergeUserAccounts(db, mergeAuth, KEEP, DROP, { FieldValue });
+  check('a second merge of the same pair is a no-op', second.merged === false);
+
+  // A synthetic roster id is not a mailbox, so it must never be linked as one.
+  const SYN_KEEP = 'ph2102@student.alsafwa.edu.iq';
+  const SYN_DROP = 'ffffffffffffffff@roster.mylecture.local';
+  await db.collection('students').doc(SYN_KEEP).set({ email: SYN_KEEP, isActive: true });
+  await db.collection('students').doc(SYN_DROP).set({ email: SYN_DROP, isActive: true });
+  await db.collection('users').doc(SYN_KEEP).set({ email: SYN_KEEP, role: 'student' });
+  await db.collection('users').doc(SYN_DROP).set({ email: SYN_DROP, role: 'student' });
+  await mergeUserAccounts(db, mergeAuth, SYN_KEEP, SYN_DROP, {
+    keepStudentId: SYN_KEEP, deleteStudentId: SYN_DROP, FieldValue,
+  });
+  const synWinner = (await db.doc('students/' + SYN_KEEP).get()).data() || {};
+  check('a synthetic roster id is NOT linked as a google address',
+    !synWinner.googleEmail, String(synWinner.googleEmail));
+  check('...but the row is still retired',
+    (await db.doc('students/' + SYN_DROP).get()).data()?.mergedInto === SYN_KEEP);
+
+  // And the lookup layer follows the pointer, which is what stops the duplicate
+  // regenerating on the next password login.
+  const followed = await findStudentCandidates(db, DROP);
+  check('logging in with the retired address reaches the surviving row',
+    followed.length === 1 && followed[0].id === KEEP,
+    followed.map(f => f.id).join(','));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

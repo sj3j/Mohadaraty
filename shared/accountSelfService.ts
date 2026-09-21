@@ -139,8 +139,26 @@ export async function linkGoogleAccount(
   identity: { email: string },
   FieldValue: FieldValueLike,
 ): Promise<{ studentId: string; googleEmail: string; alreadyOwned: boolean }> {
-  const email = identity.email.toLowerCase().trim();
   const student = await studentForToken(db, token);
+  return linkGoogleToStudent(db, student, identity, FieldValue);
+}
+
+/**
+ * The link itself, against a student document the caller has already resolved.
+ *
+ * Split out of linkGoogleAccount so the sign-in-time claim path
+ * (shared/googleLogin.ts claimAccountWithGoogle) can reuse the conflict guards
+ * verbatim. That path has no session to read a token from - it proves ownership
+ * with the roster password instead - so it cannot go through studentForToken,
+ * and a second copy of these four guards is exactly how two surfaces drift.
+ */
+export async function linkGoogleToStudent(
+  db: FirebaseFirestore.Firestore,
+  student: StudentRecord,
+  identity: { email: string },
+  FieldValue: FieldValueLike,
+): Promise<{ studentId: string; googleEmail: string; alreadyOwned: boolean }> {
+  const email = identity.email.toLowerCase().trim();
 
   // Their own document id already IS this address - they can sign in with
   // Google today. Report success rather than a confusing conflict.
@@ -152,7 +170,10 @@ export async function linkGoogleAccount(
   }
 
   const conflictDoc = await db.collection('students').doc(email).get();
-  if (conflictDoc.exists) {
+  // A row this student's own merge retired is not a conflict - it is them. Any
+  // other existing document at that address is somebody else's.
+  if (conflictDoc.exists &&
+      (conflictDoc.data()?.mergedInto || '').toLowerCase() !== student.id.toLowerCase()) {
     throw new SelfServiceError('هذا البريد مرتبط بحساب آخر.', 409, 'EMAIL_TAKEN');
   }
 

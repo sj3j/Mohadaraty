@@ -46,6 +46,8 @@
     "secrets:pull": "node scripts/secrets.mjs pull",
     "secrets:push": "node scripts/secrets.mjs push",
     "streak:audit": "npx tsx scripts/streakAudit.ts",
+    "accounts:duplicates": "npx tsx scripts/duplicateAccounts.ts",
+    "stage:audit": "npx tsx scripts/stageConsistency.ts",
     "purge:chat": "npx tsx scripts/purgeChat.ts",
     "roster:passwords": "npx tsx scripts/generateRosterPasswords.ts",
     "roster:backfill": "npx tsx scripts/backfillNameKeys.ts",

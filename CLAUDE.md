@@ -18,9 +18,9 @@ that's always loaded:
 `server.ts` is the **dev** server, run via `npm run dev` (tsx). `api/index.ts` is
 what actually serves **production** — `vercel.json` rewrites `/api/*` to it.
 
-They used to disagree by 14 routes. **As of the chat removal they carry the same
-57 paths**, and the only difference left is server.ts's `"*"` SPA catch-all,
-which Vercel does not need. Re-check with
+They used to disagree by 14 routes. **They now carry the same 66 paths**
+(`/api/google-claim` was the most recent addition to both), and the only
+difference left is server.ts's `"*"` SPA catch-all, which Vercel does not need. Re-check with
 
     grep -oE "app\.(get|post|put|delete|patch|all)\(\s*[\"'\`][^\"'\`]*" server.ts
 
@@ -499,6 +499,42 @@ docs carry an `expiresAt` that nothing reads, and the only other clear is a manu
 admin action, so 325 accounts once sat flagged for four months. The reset now deletes
 the doc and the `hasPendingStreakReset` flag together.
 
+## The MCQ board is filtered on a COPY of the stage
+
+`LeaderboardTab` scopes the MCQ board with
+`where('stageId','==',effectiveStageId)` + `orderBy('mcqRankScore','desc')` on
+`userMCQStats`. That `stageId` is a **denormalised copy** of `users.stageId`,
+kept because a board cannot otherwise be scoped without reading every user
+document.
+
+A copy has to be written by every path that moves a student, and one was not:
+`shared/progressionSubmit.ts` wrote `users/` and `students/` and left the stats
+row filed under the stage the student had just left. `stagePromotion.ts` (the
+bulk path) always re-filed it, so only students who went through the
+**self-service** progression flow drifted.
+
+**The symptom is specific and misleading.** They keep their place on the STREAK
+board, which reads `users/` directly, and disappear from the MCQ board for the
+stage they are actually in — while padding the board of the stage they left.
+That reads as "the MCQ leaderboard is broken for stage N", not as one stale
+field, and nothing in the console looks wrong: every document involved is
+individually healthy. The indexes are deployed and the rules are fine.
+
+    npm run stage:audit                 # dry run - always the default
+    npm run stage:audit -- --commit     # re-file the stale rows
+
+`scripts/stageConsistency.ts` reports both directions separately, because they
+are different failures: **stale** (the copy names a stage the student has left)
+and **missing** (no copy at all — `mcqAnswerService` omits the field when the
+user document had no stage at the time, so the student is on no board at all).
+Rows whose `users/` document is gone are left alone; an account merge or a purge
+owns those.
+
+The existence check on the stats document in `progressionSubmit` is not
+optional: a student who has never answered an MCQ has no row, and `update()` on
+a missing document fails the **whole** batch — which would take the promotion
+down with it. Pinned by `npm run test:progression`.
+
 ## Offline: absence is only meaningful from the server
 
 Firestore runs with `persistentLocalCache` + `persistentMultipleTabManager`
@@ -583,6 +619,98 @@ The `isMasterAdmin` boolean on `users/` is a UI convenience
 (`src/lib/permissions.ts`) set by `scripts/assignStageRepresentatives.mjs`; it is
 never the authority. Nothing security-relevant reads it.
 
+## Duplicate accounts: the app used to create them on purpose
+
+The single most important fact here, because it makes the obvious fix
+impossible: **there is no Firebase email/password account anywhere in this
+project.** `createUserWithEmailAndPassword` and `admin.auth().createUser` appear
+zero times. A staff-created account is a `students/{id}` document holding a
+hashed `password`; its Auth record is materialised by `signInWithCustomToken`
+with **uid = that document id** and **no `email` property at all**.
+
+So Firebase sees a roster identity and a Google identity as unrelated
+principals. `auth/account-exists-with-different-credential` is structurally
+unreachable, and Firebase-level account linking has nothing to link. The join is
+ours to make, and it lives in `students.googleEmail`.
+
+**The duplicate was the happy path, not an accident.** A student with a roster
+account pressed "Continue with Google" with a personal Gmail;
+`resolveGoogleLogin` missed on the doc id and on `googleEmail`, threw
+`NO_ACCOUNT`, and `LoginScreen` opened `SignupScreen` *prefilled with that
+Gmail*. `createSignupRequest` checked only `students/{email}` by doc id, so the
+request was filed, a representative approved it, and a second `students` row, a
+second `users` doc and a second streak came into existence. The remedy already
+existed - `linkGoogleAccount` - but only in Settings, reachable only **after** a
+password login, which is exactly what this student could not do.
+
+`/api/google-claim` (`claimAccountWithGoogle`) is the missing half. It demands
+**two independent proofs**, and neither alone is sufficient: `verifyGoogleIdentity`
+for the mailbox (it refuses an unverified email - without it anyone could claim a
+classmate's address) and `resolveStudentLogin` for the account. It then calls the
+same `linkGoogleToStudent` core the Settings page uses, so the conflict guards
+cannot drift, and mints the token under the **existing** uid.
+
+**`examCode` is never an identifier.** It is reissued every year, so it
+identifies a year's enrolment rather than a person - matching on it would both
+miss a real duplicate whose code has rolled over and fuse two students holding
+the same stale number. Nothing matches, merges or authenticates on it;
+`findStudentCandidates` takes email, login code or folded name and never has. A
+negative test in `scripts/signup.test.ts` pins that two students sharing a code
+are neither flagged nor blocked.
+
+### What makes a merge stick
+
+`mergeUserAccounts` folded the `users` doc and stopped, leaving the losing
+`students` row live at the address it is keyed by - so the student signed in
+again and minted the duplicate straight back. The loser is now **retired in
+place** (`isActive:false` + `mergedInto`) and its address copied onto the
+survivor as `googleEmail`: the duplicate becomes the link. Retired rather than
+deleted, on the same reasoning as a subject split.
+
+**The ordering trap this creates is the whole game.** `resolveGoogleLogin`
+checks the students doc id *before* it reads `isActive`, so a retired row would
+be found first and reported as `DISABLED` - undoing the very link the merge
+created. `followMerge()` (`shared/studentLookup.ts`) is applied at all three
+lookup sites, and in the Google path it runs **before** the `isActive` check.
+One hop only; a cycle is ignored.
+
+The merge is not transactional and cannot be - it spans a dozen collections - so
+an `accountMerges` row is written before it starts and closed after, and a
+re-run is a no-op. Two latent bugs were fixed on the way, both of which would
+have corrupted a bulk run: the `streak_history` re-key split the doc id on `_`
+although a roster uid **is** an email address, and the source delete sat
+*outside* the guard that noticed. It also silently dropped a live subscription,
+the academic record (`degrees/{uid}/exams`), and the season and year archives.
+
+    npm run accounts:duplicates            # dry run - always the default
+    npm run accounts:duplicates -- --commit
+
+Four passes, and the split is the design. **A, B, C are structural** (several
+users docs for one students row; a users doc matching no students row; a linked
+`googleEmail` that is itself another row) - each is a join on a value the system
+wrote, so a match is a fact, and only these are merged by `--commit`. **D is a
+judgement** - the same folded name twice in one stage, which is the shape the
+signup funnel produced and has no structural key at all. It is reported for a
+representative who knows the cohort to settle in إدارة الطلاب, never auto-merged
+at any flag. The winner is the **oldest** `students` row: the roster row
+predates the self-signup that duplicated it, and unlike activity it is not
+something the student can change.
+
+`StudentManagement` grouped strictly on `users.email`, so a roster uid and a
+Google uid for one student could never appear in the same merge dialog. It now
+unions the three structural links, and merges **every** duplicate rather than
+the first one `find` returned - a student holding three users docs merged two
+and reported success.
+
+### The third Auth record
+
+`src/lib/googleSignIn.ts` runs `signInWithPopup` on a throwaway secondary app.
+Deleting that app does **not** delete the Auth user it created - that record is
+project-wide - so every web Google sign-in left an orphan. `discardPopupIdentity`
+removes it, guarded on **owns no `users` doc AND is not the uid being signed
+in**: a master admin's Google uid *is* their real account, so an unconditional
+delete would remove a live administrator.
+
 ## Known hazard: two identity spaces
 
 Roster students sign in with a **custom token whose UID is their college email**
@@ -599,6 +727,12 @@ older `semesterArchives.topStudents[].userId` hold a mix of uids and emails; and
 
 Unifying this touches 423 auth users and every uid-keyed collection. Do not attempt
 it as a side effect of another change.
+
+What has changed since that was written: the app no longer *creates* new pairs -
+see "Duplicate accounts" above - and `shared/adminUsers.ts` is no longer the only
+path that reconciles two accounts. `/api/google-claim` links them before a second
+one exists, which is the cheap half; the merge remains the only repair for the
+pairs already in the data.
 
 ## No purchase surface in the store build
 

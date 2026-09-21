@@ -63,6 +63,48 @@ export function composeFullName(input: SignupInput): string {
   return parts.join(' ');
 }
 
+/**
+ * Students in the same stage whose folded name matches this applicant's.
+ *
+ * This is the ONLY duplicate signal used at signup, and it is deliberately a
+ * weak one. The obvious candidate - examCode - is reissued every year, so the
+ * same student carries a different code from one year to the next (which is why
+ * this form offers "no code yet" at all, and why setOwnExamCode refuses to
+ * overwrite a stored one: it is last year's until an admin changes it). Matching
+ * on it would fail in BOTH directions - missing a real duplicate whose code has
+ * rolled over, and refusing a genuine new student whose freshly issued code
+ * collides with a stale one on somebody's old row. Nothing here matches, merges
+ * or authenticates on examCode.
+ *
+ * A folded name is not unique either - resolveStudentLogin already has an
+ * AMBIGUOUS_IDENTIFIER path for exactly that - so this never blocks the
+ * applicant. It is recorded for the representative, who knows the cohort, and
+ * enforced only at review time where a human is present to override it.
+ *
+ * Scoped to the stage: the same name in a different year is a different person's
+ * problem, and cross-stage matching would flag every promoted namesake.
+ */
+export async function findNameDuplicates(
+  db: FirebaseFirestore.Firestore,
+  fullName: string,
+  stageId: string,
+): Promise<string[]> {
+  const key = nameKeyFor(fullName);
+  if (!key || !stageId) return [];
+
+  const snap = await db.collection('students')
+    .where('nameKey', '==', key).limit(20).get();
+
+  return snap.docs
+    .filter(d => {
+      const data = d.data() || {};
+      return data.stageId === stageId
+        && data.isActive !== false
+        && !(data.mergedInto || '').trim();
+    })
+    .map(d => d.id);
+}
+
 export interface PreparedSignup {
   email: string;
   fullName: string;
@@ -134,8 +176,16 @@ export async function createSignupRequest(
     throw new SignupError('طلبك قيد المراجعة من قبل ممثل المرحلة.', 409, 'ALREADY_PENDING');
   }
 
+  // Recorded, never enforced here. A student blocked at this point has nowhere
+  // to go - the claim step on the login screen is the path forward for someone
+  // who already has an account, and a dead end is what produced the duplicates
+  // in the first place.
+  const possibleDuplicateOf = await findNameDuplicates(
+    db, prepared.fullName, prepared.stageId);
+
   await db.collection('signup_requests').doc(prepared.email).set({
     ...prepared,
+    possibleDuplicateOf,
     passwordHash: await hashPassword(input.password),
     status: 'pending' as SignupStatus,
     createdAt: FieldValue.serverTimestamp(),
@@ -167,10 +217,16 @@ export async function reviewSignupRequest(
     reviewerStageId?: string | null;
     isMasterAdmin: boolean;
     reason?: string;
+    /**
+     * Approve despite a namesake already enrolled in this stage. Two identical
+     * three-part names in one cohort is possible, so this has to be available -
+     * but it is a decision the reviewer makes, not a default.
+     */
+    force?: boolean;
     /** Days until a resolved row is purged by the Firestore TTL policy. */
     ttlDays?: number;
   },
-): Promise<ReviewResult> {
+): Promise<ReviewResult & { duplicateOf?: string[] }> {
   const email = (opts.email || '').toLowerCase().trim();
   const ref = db.collection('signup_requests').doc(email);
   const snap = await ref.get();
@@ -184,6 +240,21 @@ export async function reviewSignupRequest(
   // A representative may only act on their own stage.
   if (!opts.isMasterAdmin && opts.reviewerStageId && data.stageId !== opts.reviewerStageId) {
     throw new SignupError('هذا الطلب يخص مرحلة أخرى', 403, 'WRONG_STAGE');
+  }
+
+  // Re-checked at approval, not trusted from the stored flag: a roster import or
+  // another approval can land between filing and review, and the stored list is
+  // a snapshot from whenever the student filled the form.
+  let duplicateOf: string[] = [];
+  if (opts.approve) {
+    duplicateOf = (await findNameDuplicates(db, data.fullName, data.stageId))
+      .filter(id => id !== email);
+    if (duplicateOf.length > 0 && !opts.force) {
+      throw new SignupError(
+        'يوجد طالب بنفس الاسم في هذه المرحلة. تحقق قبل الموافقة.',
+        409, 'DUPLICATE_NAME_IN_STAGE',
+      );
+    }
   }
 
   const expireAt = new Date();
@@ -213,5 +284,9 @@ export async function reviewSignupRequest(
     expireAt,
   }, { merge: true });
 
-  return { email, status: opts.approve ? 'approved' : 'rejected' };
+  return {
+    email,
+    status: opts.approve ? 'approved' : 'rejected',
+    ...(duplicateOf.length > 0 ? { duplicateOf } : {}),
+  };
 }

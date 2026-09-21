@@ -36,6 +36,30 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   account on this phone" and "this build isn't registered" → only the legacy
   `GoogleSignIn` retry distinguishes them (status 10 = DEVELOPER_ERROR), which
   is why `signInWithGoogleNative()` classifies from both attempts' messages.
+- There is NO Firebase email/password account in this project: a staff-created
+  account is `students/{id}` + a hashed password, and its Auth record is made by
+  `signInWithCustomToken` with uid = that id and **no `email` property**. So
+  Firebase cannot see that it and a Google identity are one person and
+  `auth/account-exists-with-different-credential` never fires - the join is ours
+  to make, in `students.googleEmail`. [Duplicate accounts]
+- `NO_ACCOUNT` must offer to LINK an existing account before it offers signup.
+  Routing straight to the signup form is not a dead end, it is a funnel: the
+  student fills it in, a rep approves, and the duplicate is created by the app's
+  own happy path.
+- `examCode` is reissued every year → never match, merge or authenticate on it.
+  It identifies a year's enrolment, not a person: matching misses a duplicate
+  whose code rolled over AND fuses two students sharing a stale one. Use the
+  folded `nameKey` (report only, a shared name is legitimate) or a structural
+  join. Pinned by a negative test in `scripts/signup.test.ts`.
+- A merge that folds only `users` is undone by the next sign-in - the losing
+  `students` row is still live at the address it is keyed by. Retire it in place
+  (`isActive:false` + `mergedInto`) and every lookup must FOLLOW that pointer
+  BEFORE reading `isActive`, or the retired row is found first and reported as a
+  disabled account. [Duplicate accounts]
+- Deleting a secondary Firebase app does not delete the Auth USER its popup
+  created - the record is project-wide. Discard it server-side, guarded on
+  "owns no users doc AND is not the uid being signed in", because a master
+  admin's Google uid IS their real account.
 
 ## Security rules
 - A Firestore rule that branches `create` vs `update` on a ternary (e.g. by
@@ -70,6 +94,23 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   churn. Rule out a missing rule before blaming the SDK.
 
 ## Data model & consistency
+- A DENORMALISED field (e.g. `userMCQStats.stageId`, a copy of `users.stageId`
+  so a board can be filtered without reading every user) must be rewritten by
+  EVERY path that changes the source. `stagePromotion` re-filed it, the
+  self-service `progressionSubmit` did not → promoted students vanished from
+  their new stage's MCQ board while the streak board, which reads `users/`
+  directly, still showed them. Every document involved looks healthy alone.
+- `batch.update()` on a document that may not exist fails the WHOLE batch -
+  guard with an existence check (or use `set(..., {merge:true})`), or an
+  unrelated missing row takes the primary write down with it.
+- A re-key that recovers a field by splitting a doc id (`{uid}_{date}`) is
+  wrong wherever the uid can be an email: put the delete INSIDE the guard that
+  checks the split worked, or a row that fails to split is destroyed without
+  ever being copied. Prefer the stored field over the id.
+- A multi-collection operation that cannot be transactional (account merge)
+  needs an audit row written BEFORE it starts and closed after, or a crash
+  halfway is indistinguishable from one that never ran - and it must be
+  idempotent, because the retry is the whole point of noticing.
 - A denormalized counter/aggregate written by two different code paths
   (season-end archives, streak resets, etc.) will diverge unless *both*
   writes come from one in-memory pass — if they can't, add an audit script,
@@ -237,6 +278,55 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A stale deployed client can keep failing with an old error message long
   after the server-side fix ships — give server writes a marker (a new field,
   a version stamp) so "still failing" can be told apart from "old client".
+- `JSON.parse` reports the SAME `position 1` for an escaped blob, single
+  quotes, unquoted keys, a literal \n, typographic quotes and a value cut off
+  after `{` - so surfacing the parse error as the diagnosis names nothing and
+  sends the operator to re-paste a value that may already be correct. Name the
+  shape yourself (length, does it close, first character, which quote) and
+  print a key-redacted sketch of what arrived.
+- Stripping the quotes off a JSON *string literal* is not the same as parsing
+  it: `unquote()`-then-parse turns a recoverable double-encoded blob into
+  `{\"project_id...`, which can never parse. Try `JSON.parse` on the raw value
+  FIRST, and if it yields a string, parse that string again.
+- Prefer base64 for a secret that must cross a single-line panel field. Quote,
+  backslash, newline and typographic quote are the only characters these
+  fields damage, and base64 contains none of them - repair logic handles the
+  damage, base64 removes the opportunity.
+- An ignore rule keyed to an extension (`*serviceAccount*.json`) does not cover
+  the same secret written under a new one (`.b64.txt`) - widen the pattern in
+  the commit that adds the file, and check the widened glob does not also
+  swallow a source file of that name.
+- `fetch` rejects with `TypeError: fetch failed` and puts the real failure in
+  `.cause` (sometimes inside an `AggregateError` one level further) - an error
+  logger that reads only `.message` records that something network-shaped
+  happened and nothing about what, so DNS, a blocked host and a transient blip
+  all look identical. Walk the cause chain and log `code`/`syscall`/`hostname`.
+- Retry predicates keyed to an application error class silently exclude
+  transport failures: a `TypeError: fetch failed` is not a `TelegramApiError`,
+  so it fell through a catch that retried 429s and 5xx and got no retry at all.
+  Classify network failures separately from request failures - and never retry
+  a 401, which fails identically forever.
+- `fetch` has no default timeout. A connection that is accepted and then
+  ignored hangs the caller forever, which at boot is worse than a crash because
+  nothing restarts it. Pass an `AbortSignal.timeout`, and derive it from the
+  request for a long poll rather than using one global value.
+- A panel host that aborts automatic restarts for a crash inside the first
+  minute turns any fast boot failure into a permanently dead container. Make
+  transient failures wait rather than exit, and keep exiting fast for permanent
+  ones - a container restarting every 70s forever hides the message that says
+  what is actually wrong.
+- Two HTTP statuses from one API can mean opposite things about the same
+  variable: Telegram answers a MALFORMED bot token with 404 and a REVOKED one
+  with 401, and neither status says so. Validate the credential's shape locally
+  so the "damaged in the panel" case never reaches the wire, and translate the
+  remaining status into the actual remedy.
+- Log a fingerprint of every credential, not just the one that already has one
+  - the bot id plus four characters is enough to answer "is the panel even
+  holding the token I think it is", which no error from the far end can.
+- A redaction list keyed to field NAMES will silently swallow a value that was
+  designed to be safe to log: `botToken: <fingerprint>` became
+  `botTokenRedacted: true`. Name deliberately-safe fields differently
+  (`botTokenFingerprint`), rather than loosening the list.
 
 ## Layout, RTL & safe area
 - A screen must not add its own bottom padding (`pb-*`) if the app root
