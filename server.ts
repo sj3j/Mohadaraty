@@ -10,7 +10,8 @@ import crypto from "crypto";
 import { startNewSeason } from "./shared/seasonReset.js";
 import { runSeasonRollover, resolveCurrentPhase, syncPhaseMirror, loadCalendar } from "./shared/seasonRollover.js";
 import { submitProgression, ProgressionError } from "./shared/progressionSubmit.js";
-import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError } from "./shared/googleLogin.js";
+import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError,
+  claimAccountWithGoogle, asGoogleLoginError, discardPopupIdentity } from "./shared/googleLogin.js";
 import {
   resolveStudentLogin,
   resolveSessionUid,
@@ -596,6 +597,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         reviewerStageId: reviewer.managedStageId || null,
         isMasterAdmin: isMaster,
         reason: req.body?.reason,
+        // A namesake in the same stage blocks approval unless the reviewer
+        // says otherwise. Two identical three-part names in one cohort is
+        // possible, so this has to exist - as a decision, not a default.
+        force: req.body?.force === true,
       });
       return res.json({ success: true, ...result });
     } catch (error: any) {
@@ -629,6 +634,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       // studentId is the students/ document id the server resolved to - which
       // for a roster account that linked a Gmail is NOT the address Google
       // asserted. The client needs it for its own whitelist lookups.
+      await discardPopupIdentity(db, admin.auth(), identity, result.uid);
+
       res.json({ token: result.customToken, studentId: result.email });
     } catch (error: any) {
       if (error instanceof GoogleLoginError) {
@@ -636,6 +643,47 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       }
       console.error("Google login error:", error);
       res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // The other half of NO_ACCOUNT. A staff-created account is a students/ document
+  // with a hashed password whose Auth record carries no email at all, so Firebase
+  // cannot see that it and a Google identity are the same person - the join is
+  // ours to make. Public for the same reason /api/login is: it IS an
+  // authentication, and it demands two independent proofs (a Google-verified
+  // mailbox, and the roster password) before it links anything.
+  app.post("/api/google-claim", async (req, res) => {
+    try {
+      const { idToken, googleIdToken, identifier, password } = req.body || {};
+      const db = admin.firestore();
+
+      const identity = await verifyGoogleIdentity({
+        adminAuth: admin.auth(),
+        oauthClient: googleOAuthClient,
+        audience: GOOGLE_WEB_CLIENT_ID,
+        idToken,
+        googleIdToken,
+      });
+
+      const result = await claimAccountWithGoogle(db, admin.auth(), identity,
+        { identifier, password },
+        {
+          masterAdminEmails: [...MASTER_ADMIN_EMAILS],
+          syncUserStage: (uid, source) => syncUserStage(db, uid, source),
+          FieldValue: admin.firestore.FieldValue as any,
+        });
+
+      await discardPopupIdentity(db, admin.auth(), identity, result.uid);
+
+      res.json({
+        token: result.customToken,
+        studentId: result.email,
+        alreadyOwned: result.alreadyOwned,
+      });
+    } catch (error: any) {
+      const wrapped = asGoogleLoginError(error);
+      if (wrapped.status >= 500) console.error("Google claim error:", error);
+      return res.status(wrapped.status).json({ error: wrapped.message, code: wrapped.code });
     }
   });
 
@@ -1174,9 +1222,18 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         return res.status(400).json({ error: "primaryUid and secondaryUid must differ" });
       }
 
-      await mergeUserAccounts(admin.firestore(), admin.auth(), keepUid, deleteUid);
+      // The students half is what stops the duplicate coming straight back:
+      // without it the losing roster row stays live and the next sign-in on
+      // that address mints the second account again.
+      const report = await mergeUserAccounts(
+        admin.firestore(), admin.auth(), keepUid, deleteUid, {
+          keepStudentId: req.body?.keepStudentId,
+          deleteStudentId: req.body?.deleteStudentId,
+          FieldValue: admin.firestore.FieldValue as any,
+          reason: `admin:${user.email || user.uid}`,
+        });
 
-      res.json({ success: true });
+      res.json({ success: true, ...report });
     } catch (error) {
       console.error("Merge user accounts error:", error);
       res.status(500).json({ error: "Internal server error" });

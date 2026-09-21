@@ -5,10 +5,12 @@ import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs
 import { Language, TRANSLATIONS } from '../types';
 import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
 import { apiUrl } from '../lib/apiBase';
-import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError } from '../lib/googleSignIn';
+import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError,
+  GoogleTokenBody } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
 import { isMasterAdminEmail } from '../../shared/masterAdmins';
 import SignupScreen from './SignupScreen';
+import ClaimAccountScreen from './ClaimAccountScreen';
 import FaqSheet, { FaqTrigger } from './support/FaqSheet';
 
 interface LoginScreenProps {
@@ -130,10 +132,119 @@ const FRESH_STREAK_FIELDS = {
   lastActiveDate: null,
 } as const;
 
+/**
+ * Creates the `users/{uid}` document for a session that has just opened, or
+ * leaves the existing one alone.
+ *
+ * ONE copy, called by all three sign-in paths - password, Google, and the claim
+ * that links the two. There were two near-identical copies of this and they had
+ * already drifted: the Google path never carried `examCode` or the imported
+ * `group` across, so a student who happened to sign in with Google lost both.
+ * A third copy for the claim path would have drifted the same way, and the
+ * comment on `email` below records what a drift here actually costs.
+ *
+ * `resolvedId` is the students/ document id the SERVER resolved to, never the
+ * address Google asserted and never the string the student typed. Every lookup
+ * that reconciles a session to a profile queries `users.email` against that id
+ * (shared/studentLookup.ts resolveSessionUid, shared/googleLogin.ts), so storing
+ * anything else here forks the account into two documents on the next sign-in -
+ * which is the very duplicate this whole path exists to prevent.
+ */
+async function ensureUserDoc(opts: {
+  uid: string;
+  resolvedId: string;
+  /** From the Google profile, when there is one. */
+  profileName?: string | null;
+  profilePhoto?: string | null;
+}): Promise<void> {
+  const { uid, resolvedId, profileName, profilePhoto } = opts;
+
+  let userRole = 'student';
+  let studentData: any = {};
+  let managedStageId: string | null = null;
+
+  const isMasterAdmin = isMasterAdminEmail(resolvedId);
+
+  if (isMasterAdmin) {
+    userRole = 'admin'; // syncRole promotes this to master_admin from the claim.
+  } else {
+    const allowedDoc = await getDoc(doc(db, 'allowed_admins', resolvedId));
+    if (allowedDoc.exists()) {
+      userRole = allowedDoc.data().role || 'admin';
+      managedStageId = allowedDoc.data().managedStageId || null;
+    } else {
+      try {
+        const studentDoc = await getDoc(doc(db, 'students', resolvedId));
+        if (studentDoc.exists()) {
+          studentData = studentDoc.data() || {};
+          userRole = studentData.role || 'student';
+        }
+      } catch (e: any) {
+        if (e.code === 'permission-denied') {
+          throw new Error('غير مصرح لك بالدخول. يرجى التواصل مع الإدارة لإضافة بريدك الإلكتروني.');
+        }
+        throw e;
+      }
+    }
+  }
+
+  const userRef = doc(db, 'users', uid);
+  const userSnap = await getDoc(userRef);
+
+  if (userSnap.exists()) {
+    // If the whitelist says admin and the stored doc disagrees, catch it up.
+    const currentRole = userSnap.data().role;
+    if (currentRole !== userRole && userRole === 'admin') {
+      await setDoc(userRef, { role: userRole }, { merge: true });
+    }
+    return;
+  }
+
+  const initialName = studentData.name
+    || profileName
+    || (userRole === 'admin' ? 'Admin' : 'Student');
+
+  await setDoc(userRef, {
+    name: initialName,
+    originalName: initialName,
+    email: resolvedId,
+    role: userRole,
+    examCode: studentData.examCode || '',
+    ...(profilePhoto ? { photoUrl: profilePhoto } : {}),
+    // Seed the stage at creation time; rules only allow a student to write
+    // stageId on create or during progression season.
+    ...(studentData.stageId ? { stageId: studentData.stageId } : {}),
+    ...(managedStageId ? { managedStageId } : {}),
+    // shared/groups.ts: anything that assigns a group has to write both
+    // students.subgroup and users.group. The importer can only write the first -
+    // the users doc does not exist yet - so it is carried across here, which
+    // also lets an imported student skip the group step.
+    ...(studentData.subgroup ? { group: studentData.subgroup } : {}),
+    // A fresh-intake roster import stamps this on the students doc, since it
+    // cannot write to a uid that does not exist yet. See RosterImport and
+    // shared/progression.ts's completedProgressionFields.
+    ...carriedProgressionFields(studentData),
+    createdAt: serverTimestamp(),
+    favorites: [],
+    studied: [],
+    completedWeeklyTasks: [],
+    // Seeded, not left absent. LeaderboardTab orders by streakCount, and an
+    // orderBy silently EXCLUDES documents that lack the field - so a student who
+    // signed up during a break, when record-activity returns early and writes
+    // nothing, was missing from the board entirely.
+    ...FRESH_STREAK_FIELDS,
+    notificationPreferences: { lectures: true, announcements: true },
+  });
+}
+
 export default function LoginScreen({ lang, externalError, onClearError }: LoginScreenProps) {
   const [showSignup, setShowSignup] = useState(false);
   const [showFaq, setShowFaq] = useState(false);
   const [signupPrefill, setSignupPrefill] = useState<{ email?: string; name?: string | null } | null>(null);
+  // Set when Google sign-in found no student record. Holds the TOKEN as well as
+  // the address, so the claim step needs no second popup.
+  const [claimContext, setClaimContext] =
+    useState<{ email: string; tokenBody: GoogleTokenBody } | null>(null);
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const [isLoading, setIsLoading] = useState(false);
@@ -180,96 +291,36 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
       // Sign in again using custom token
       const result = await signInWithCustomToken(auth, token);
       
-      let userRole = 'student';
-      let whitelistStageId: string | null = null;
-      let whitelistManagedStageId: string | null = null;
-      let whitelistStudentData: any = null;
-
       // The id the SERVER resolved, not the address Google asserted: a roster
       // student who linked a Gmail is keyed by a synthetic id, so looking them
       // up by the Gmail would find nothing and drop their role and stage.
       const resolvedId = studentId || (result.user.email || profile.email || '').toLowerCase();
 
-      if (resolvedId) {
-        const emailLower = resolvedId;
-        
-        const isMasterAdmin = isMasterAdminEmail(emailLower);
-        
-        if (isMasterAdmin) {
-           userRole = 'admin'; // Will become master_admin by cloud function
-        } else {
-          // Check allowed_admins
-          const adminDoc = await getDoc(doc(db, 'allowed_admins', emailLower));
-          if (adminDoc.exists()) {
-            const data = adminDoc.data();
-            userRole = data.role || 'admin';
-            whitelistManagedStageId = data.managedStageId || null;
-          } else {
-            // Check students collection
-            const studentDoc = await getDoc(doc(db, 'students', emailLower));
-            if (studentDoc.exists()) {
-              const data = studentDoc.data();
-              if (data.isActive === false) return; // shouldn't reach here since API checks it
-              userRole = data.role || 'student';
-              whitelistStageId = data.stageId || null;
-              whitelistStudentData = data;
-            }
-          }
-        }
-      }
-
-      // Check if user exists in Firestore
-      const userRef = doc(db, 'users', result.user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (!userSnap.exists()) {
-        // Create new user document
-        const initialName = profile.name || (userRole === 'admin' ? 'Admin' : 'Student');
-        await setDoc(userRef, {
-          name: initialName,
-          originalName: initialName,
-          // The resolved student id, not the Google address: every lookup that
-          // reconciles a session to a profile queries users.email against the
-          // students/ document id, so storing anything else here forks the
-          // account into two documents on the next sign-in.
-          email: resolvedId,
-          role: userRole,
-          photoUrl: profile.photoUrl,
-          // Seed the stage at creation time; rules only allow a student to
-          // write stageId on create or during progression season.
-          ...(whitelistStageId ? { stageId: whitelistStageId } : {}),
-          ...(whitelistManagedStageId ? { managedStageId: whitelistManagedStageId } : {}),
-          // A fresh-intake roster import stamps this on the students doc, since
-          // it cannot write to a uid that does not exist yet. See RosterImport
-          // and shared/progression.ts's completedProgressionFields.
-          ...carriedProgressionFields(whitelistStudentData),
-          createdAt: serverTimestamp(),
-          favorites: [],
-          studied: [],
-          completedWeeklyTasks: [],
-          // Seeded, not left absent. LeaderboardTab orders by streakCount, and
-          // an orderBy silently EXCLUDES documents that lack the field - so a
-          // student who signed up during a break, when record-activity returns
-          // early and writes nothing, was missing from the board entirely.
-          ...FRESH_STREAK_FIELDS,
-          notificationPreferences: { lectures: true, announcements: true }
-        });
-      } else {
-        // If user exists but role is different from whitelist, update it
-        const currentRole = userSnap.data().role;
-        if (currentRole !== userRole && (userRole === 'admin')) {
-          await setDoc(userRef, { role: userRole }, { merge: true });
-        }
-      }
+      await ensureUserDoc({
+        uid: result.user.uid,
+        resolvedId,
+        profileName: profile.name,
+        profilePhoto: profile.photoUrl,
+      });
     } catch (error: any) {
       if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
         console.error('Error signing in:', error);
         // The Google identity is valid, there is just no student record yet.
         // Route to signup with what Google told us, rather than showing a
         // credential error for a password they never set.
+        // NOT a dead end, and no longer a funnel straight into a second
+        // account. A staff-created account has no Firebase email/password
+        // identity at all - it is a students/ row whose Auth record carries no
+        // email - so Firebase cannot see that this Google identity is the same
+        // person, and nothing but asking them can. Offer the link first; the
+        // signup form is one tap further on, for someone who really is new.
         if (error instanceof NoAccountError) {
           setSignupPrefill({ email: error.email, name: error.name });
-          setShowSignup(true);
+          if (error.tokenBody) {
+            setClaimContext({ email: error.email, tokenBody: error.tokenBody });
+          } else {
+            setShowSignup(true);
+          }
           return;
         }
         if (!externalError) {
@@ -322,74 +373,9 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
     try {
       const { credential: result, studentId } = await signInWithRetry(identifier, password);
 
-      // Check if user exists in users collection
-      const userRef = doc(db, 'users', result.user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      let userRole = 'student';
-      let studentData: any = {};
       // The id the SERVER resolved, never the typed string: a name or a login
       // code is not a document id, and a roster student's id is synthetic.
-      const emailLower = studentId;
-      
-      const allowedDoc = await getDoc(doc(db, 'allowed_admins', emailLower));
-      
-      const isMasterAdmin = isMasterAdminEmail(emailLower);
-      
-      if (isMasterAdmin) {
-        userRole = 'admin';
-      } else if (allowedDoc.exists()) {
-        userRole = allowedDoc.data().role || 'admin';
-      } else {
-        try {
-          const studentDoc = await getDoc(doc(db, 'students', emailLower));
-          if (studentDoc.exists()) {
-            studentData = studentDoc.data() || {};
-            userRole = studentData.role || 'student';
-          }
-        } catch (e: any) {
-          if (e.code === 'permission-denied') {
-            console.log("User not in students whitelist or admin collection");
-            throw new Error('غير مصرح لك بالدخول. يرجى التواصل مع الإدارة لإضافة بريدك الإلكتروني.');
-          }
-          throw e; // rethrow other errors
-        }
-      }
-      
-      if (!userSnap.exists()) {
-        const initialName = studentData.name || (userRole === 'admin' ? 'Admin' : 'Student');
-        
-        await setDoc(userRef, {
-          name: initialName,
-          originalName: initialName,
-          email: emailLower,
-          role: userRole,
-          examCode: studentData.examCode || '',
-          ...(studentData.stageId ? { stageId: studentData.stageId } : {}),
-          // shared/groups.ts: anything that assigns a group has to write both
-          // students.subgroup and users.group. The importer can only write the
-          // first - the users doc does not exist yet - so it is carried across
-          // here, which also lets an imported student skip the group step.
-          ...(studentData.subgroup ? { group: studentData.subgroup } : {}),
-          // Same reasoning for a fresh-intake stamp - see completedProgressionFields.
-          ...carriedProgressionFields(studentData),
-          createdAt: serverTimestamp(),
-          favorites: [],
-          studied: [],
-          completedWeeklyTasks: [],
-          // Seeded, not left absent. LeaderboardTab orders by streakCount, and
-          // an orderBy silently EXCLUDES documents that lack the field - so a
-          // student who signed up during a break, when record-activity returns
-          // early and writes nothing, was missing from the board entirely.
-          ...FRESH_STREAK_FIELDS,
-          notificationPreferences: { lectures: true, announcements: true }
-        });
-      } else {
-        const currentRole = userSnap.data().role;
-        if (currentRole !== userRole && (userRole === 'admin')) {
-          await setDoc(userRef, { role: userRole }, { merge: true });
-        }
-      }
+      await ensureUserDoc({ uid: result.user.uid, resolvedId: studentId });
 
     } catch (err: any) {
       console.error('Email sign in error:', err);
@@ -410,6 +396,32 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
         lang={lang}
         prefill={signupPrefill}
         onBackToLogin={() => { setShowSignup(false); setSignupPrefill(null); }}
+        onClaimExisting={claimContext ? () => setShowSignup(false) : undefined}
+      />
+    );
+  }
+
+  // Offered BEFORE signup, not instead of it. Checked after showSignup so that
+  // stepping forward to the form is not immediately undone by this branch.
+  if (claimContext) {
+    return (
+      <ClaimAccountScreen
+        lang={lang}
+        googleEmail={claimContext.email}
+        tokenBody={claimContext.tokenBody}
+        onBackToLogin={() => { setClaimContext(null); setSignupPrefill(null); setIsLoading(false); }}
+        onNeedSignup={() => setShowSignup(true)}
+        onClaimed={async ({ token, studentId }) => {
+          // Same two steps every other path takes, in the same order: open the
+          // session, then reconcile the profile document against the id the
+          // server resolved. Because that id is the EXISTING account's, the
+          // users doc is already there and nothing new is written.
+          sessionStorage.removeItem('googleLoginInProgress');
+          const credential = await signInWithCustomToken(auth, token);
+          await ensureUserDoc({ uid: credential.user.uid, resolvedId: studentId });
+          setClaimContext(null);
+          setSignupPrefill(null);
+        }}
       />
     );
   }

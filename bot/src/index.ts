@@ -1,6 +1,9 @@
 import { env } from './env.ts';
 import { log, errFields } from './log.ts';
-import { telegram, checkChannelAccess } from './telegram/api.ts';
+import { isNetworkError, describeNetworkFailure } from './net.ts';
+import { explainUnauthorized } from './botToken.ts';
+import { TelegramApiError } from './telegram/types.ts';
+import { telegram, checkChannelAccess, TELEGRAM_HOST } from './telegram/api.ts';
 import { acquireLease, startLeaseRenewal, stopLeaseRenewal, releaseLease } from './state.ts';
 import { watchConfig, getConfig, onConfigChange, publishActiveStages } from './config.ts';
 import { startPolling, stopPolling } from './poll.ts';
@@ -58,6 +61,51 @@ async function verifyChannels(): Promise<void> {
   }
 }
 
+/**
+ * Waits for Telegram to be reachable, for as long as that takes.
+ *
+ * This does not exit, and that is the point. A network failure at boot used to
+ * kill the process about two seconds after start, and a panel host that aborts
+ * automatic restarts for anything crashing inside its first minute then leaves
+ * the container dead until a human notices. The bot has nothing else to do
+ * while the network is down, so waiting is strictly better than dying: it comes
+ * back by itself when the host's networking finishes coming up, or when
+ * whatever was interfering stops.
+ *
+ * Only NETWORK failures loop. An invalid token is a 401, which fails the same
+ * way forever - retrying that would turn a typo into a container that looks
+ * busy and is doing nothing, which is the failure mode this whole file is
+ * written to avoid.
+ */
+async function reachTelegram(): Promise<{ id: number; username?: string }> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await telegram.getMe();
+    } catch (error) {
+      // A 401 is the one Telegram error whose status does not explain itself,
+      // and it is permanent - so it is named here and never retried.
+      if (error instanceof TelegramApiError && error.errorCode === 401) {
+        log.error('tg.token_rejected', {
+          botTokenFingerprint: env.botTokenFingerprint,
+          detail: explainUnauthorized(error.description, env.botTokenFingerprint),
+        });
+        throw error;
+      }
+      if (!isNetworkError(error)) throw error;
+      // Capped at a minute: past that the wait says nothing new, and a host
+      // that recovers deserves to be noticed promptly.
+      const waitMs = Math.min(60_000, 2 ** Math.min(attempt, 6) * 1000);
+      log.warn('tg.unreachable', {
+        attempt,
+        waitMs,
+        detail: describeNetworkFailure(error, TELEGRAM_HOST),
+        ...errFields(error),
+      });
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 async function main(): Promise<void> {
   log.info('boot', {
     instanceId: env.instanceId,
@@ -65,9 +113,18 @@ async function main(): Promise<void> {
     projectId: env.firebase.projectId,
     clientEmail: env.firebase.clientEmail,
     keyFingerprint: env.firebase.keyFingerprint,
+    // Which variable the credentials came from, and what had to be repaired on
+    // the way in. `repairedBy` anything other than "none" means the panel is
+    // still storing a damaged value - it boots now, but it is worth fixing at
+    // the source, and this line is the only place that would ever say so.
+    credentialSource: env.firebase.source,
+    repairedBy: env.firebase.repairedBy,
+    // Printed before the first Telegram call on purpose: when the token is
+    // rejected, this is the only line that says WHICH token was tried.
+    botTokenFingerprint: env.botTokenFingerprint,
   });
 
-  const me = await telegram.getMe();
+  const me = await reachTelegram();
   botUserId = me.id;
   log.info('tg.identity', { botUserId, username: me.username });
 
@@ -142,7 +199,31 @@ async function shutdown(reason: string, teardown?: () => Promise<void>): Promise
   process.exit(reason === 'lease-lost' ? 1 : 0);
 }
 
-main().catch(error => {
-  log.error('boot.failed', errFields(error));
+/**
+ * A panel host aborts its own automatic restart when a container crashes
+ * inside its first minute ("last crash occurred less than 60 seconds ago"),
+ * which is exactly what a network failure at boot produces. Staying up past
+ * that mark converts a dead container into a restarted one.
+ */
+const RESTART_GRACE_MS = 70_000;
+
+main().catch(async error => {
+  const network = isNetworkError(error);
+  log.error('boot.failed', {
+    detail: network ? describeNetworkFailure(error, TELEGRAM_HOST) : undefined,
+    ...errFields(error),
+  });
+
+  // Only for network failures. A permanent error - a bad token, a malformed
+  // config - should stop the container and stay stopped, because restarting it
+  // every 70 seconds forever hides the message that says what is wrong.
+  const remaining = RESTART_GRACE_MS - Math.round(process.uptime() * 1000);
+  if (network && remaining > 0) {
+    log.warn('boot.delaying_exit', {
+      remainingMs: remaining,
+      why: 'crashing sooner than this makes the host abort its own restart',
+    });
+    await new Promise(resolve => setTimeout(resolve, remaining));
+  }
   process.exit(1);
 });

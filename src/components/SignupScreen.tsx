@@ -18,6 +18,12 @@ interface SignupScreenProps {
   onBackToLogin: () => void;
   /** Pre-filled when they arrived here from a Google account with no student record. */
   prefill?: { email?: string; name?: string | null } | null;
+  /**
+   * Back to the claim step. Present only when they reached this form from a
+   * verified Google identity, which is the one case where "I already have an
+   * account" has a one-tap answer.
+   */
+  onClaimExisting?: () => void;
 }
 
 /**
@@ -30,7 +36,7 @@ interface SignupScreenProps {
  * عبد-compounds are written open or closed ("عبد الحسين" / "عبدالحسين"), so
  * counting spaces mis-reads real names in both directions.
  */
-export default function SignupScreen({ lang, onBackToLogin, prefill }: SignupScreenProps) {
+export default function SignupScreen({ lang, onBackToLogin, prefill, onClaimExisting }: SignupScreenProps) {
   const isRtl = lang === 'ar';
   const Back = isRtl ? ArrowRight : ArrowLeft;
 
@@ -170,6 +176,18 @@ export default function SignupScreen({ lang, onBackToLogin, prefill }: SignupScr
             {isRtl ? 'يفعّله ممثل مرحلتك بعد المراجعة' : 'Activated by your stage representative'}
           </p>
         </div>
+
+        {onClaimExisting && (
+          <button
+            type="button"
+            onClick={onClaimExisting}
+            className="w-full mb-6 p-3 rounded-2xl bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 text-sm font-bold text-sky-800 dark:text-sky-300 text-start leading-relaxed"
+          >
+            {isRtl
+              ? 'لديك حساب مسجّل لدى الإدارة؟ اربطه بحساب Google بدل إنشاء حساب جديد.'
+              : 'Already registered with administration? Link that account instead of creating a new one.'}
+          </button>
+        )}
 
         <div className="space-y-4">
           <div>

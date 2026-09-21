@@ -975,6 +975,20 @@ service cloud.firestore {
       allow write: if isOwner(userId) || isAdmin();
     }
     
+    // What a duplicate-account merge moved, written before it starts and closed
+    // after it finishes. The merge spans a dozen collections and cannot be
+    // transactional, so this row is how a crash halfway through is told apart
+    // from a merge that never ran - and how a wrongly paired merge is traced.
+    //
+    // Admin SDK only, and it needs a match block to be readable AT ALL: a
+    // collection with no rule is denied to every client while the Admin SDK
+    // ignores rules entirely, which is how streakLog ended up as a complete
+    // audit trail that the screens meant to settle a dispute could not read.
+    match /accountMerges/{mergeId} {
+      allow read: if isMasterAdmin();
+      allow write: if false; // Admin SDK only - it is evidence, not state
+    }
+
     match /adminLogs/{logId} {
       // Support WRITES here and cannot read: its actions - seating a
       // representative, editing another stage's roster - are exactly what the

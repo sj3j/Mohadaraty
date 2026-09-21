@@ -12,8 +12,9 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
 import {
   createSignupRequest, reviewSignupRequest, SignupError,
-  normalizeNamePart, composeFullName,
+  normalizeNamePart, composeFullName, findNameDuplicates,
 } from '../shared/signupRequest';
+import { nameKeyFor } from '../shared/rosterIdentity';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   console.error('Refusing to run: FIRESTORE_EMULATOR_HOST is not set.');
@@ -152,6 +153,92 @@ check('a REJECTED applicant can correct their details and re-apply',
 check('and the row is pending again, with expireAt cleared',
   (await db.doc('signup_requests/rej@x.com').get()).data()?.status === 'pending' &&
   (await db.doc('signup_requests/rej@x.com').get()).data()?.expireAt === undefined);
+
+
+// ---------------------------------------------------------------------------
+// DUPLICATE DETECTION - and, just as importantly, what it must NOT key on.
+//
+// The signup form is where the second account was actually created: a student
+// with a roster account pressed Google with a personal address, was told there
+// was no account, and filled this form. The block lives at REVIEW rather than
+// at request, because a student stopped here has nowhere to go, and a dead end
+// is what produced the duplicates in the first place.
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('Duplicate detection:');
+
+const DUP_NAME = 'منتظر نهاد حسين';
+await db.collection('students').doc('roster-dup@x.com').set({
+  email: 'roster-dup@x.com', name: DUP_NAME, nameKey: nameKeyFor(DUP_NAME),
+  isActive: true, stageId: 'stage_3', examCode: '4471',
+});
+
+const flagged = await createSignupRequest(db, FieldValue as any, hash,
+  { ...base, email: 'dup@x.com' } as any);
+check('a namesake does NOT block the request', flagged.email === 'dup@x.com');
+const flaggedDoc = await db.doc('signup_requests/dup@x.com').get();
+check('...it is recorded for the reviewer instead',
+  (flaggedDoc.data()?.possibleDuplicateOf || []).includes('roster-dup@x.com'),
+  JSON.stringify(flaggedDoc.data()?.possibleDuplicateOf));
+
+let dupBlocked: SignupError | null = null;
+try {
+  await reviewSignupRequest(db, FieldValue as any, {
+    email: 'dup@x.com', approve: true, reviewerUid: 'rep', isMasterAdmin: true,
+  });
+} catch (e) { dupBlocked = e as SignupError; }
+check('approving a namesake is refused',
+  dupBlocked?.code === 'DUPLICATE_NAME_IN_STAGE', String(dupBlocked?.code));
+check('and no student record was created by the refusal',
+  !(await db.doc('students/dup@x.com').get()).exists);
+
+// Two students in one cohort really can share a three-part name, so the
+// override has to exist - as a decision the reviewer makes, not a default.
+await reviewSignupRequest(db, FieldValue as any, {
+  email: 'dup@x.com', approve: true, reviewerUid: 'rep', isMasterAdmin: true, force: true,
+});
+check('force: true approves a genuine namesake',
+  (await db.doc('students/dup@x.com').get()).exists);
+
+// The same name in ANOTHER stage is a different person's problem entirely.
+await db.collection('stages').doc('stage_4').set({
+  id: 'stage_4', nameAr: 'الرابعة', nameEn: 'Fourth', order: 4,
+  groupConfig: { groups: [{ id: 'A', subgroupCount: 2 }, { id: 'B', subgroupCount: 2 }] },
+});
+const otherStage = await findNameDuplicates(db, DUP_NAME, 'stage_4');
+check('a namesake in a DIFFERENT stage is not a duplicate',
+  otherStage.length === 0, JSON.stringify(otherStage));
+
+// A row a merge already retired is resolved, not a duplicate to report again.
+await db.collection('students').doc('retired-dup@x.com').set({
+  email: 'retired-dup@x.com', name: DUP_NAME, nameKey: nameKeyFor(DUP_NAME),
+  isActive: false, stageId: 'stage_4', mergedInto: 'roster-dup@x.com',
+});
+const afterRetire = await findNameDuplicates(db, DUP_NAME, 'stage_4');
+check('a retired (merged) row is not reported as a duplicate',
+  afterRetire.length === 0, JSON.stringify(afterRetire));
+
+// THE RULE THIS DESIGN EXISTS TO PROTECT. Exam codes are reissued every year,
+// so they identify a year's enrolment rather than a person: matching on one
+// would refuse a genuine new student whose freshly issued code collides with a
+// stale one, and miss a real duplicate whose code has rolled over.
+await db.collection('students').doc('samecode@x.com').set({
+  email: 'samecode@x.com', name: 'شخص آخر تماما', nameKey: nameKeyFor('شخص آخر تماما'),
+  isActive: true, stageId: 'stage_3', examCode: '4471',
+});
+const sameCode = await createSignupRequest(db, FieldValue as any, hash,
+  { ...base, firstName: 'كرار', fatherName: 'سعد', grandfatherName: 'جبار',
+    email: 'samecode-new@x.com', examCode: '4471' } as any);
+check('a shared EXAM CODE does not flag a request', sameCode.email === 'samecode-new@x.com');
+const sameCodeDoc = await db.doc('signup_requests/samecode-new@x.com').get();
+check('...and nothing was recorded against it',
+  (sameCodeDoc.data()?.possibleDuplicateOf || []).length === 0,
+  JSON.stringify(sameCodeDoc.data()?.possibleDuplicateOf));
+await reviewSignupRequest(db, FieldValue as any, {
+  email: 'samecode-new@x.com', approve: true, reviewerUid: 'rep', isMasterAdmin: true,
+});
+check('...and a shared EXAM CODE never blocks approval',
+  (await db.doc('students/samecode-new@x.com').get()).exists);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

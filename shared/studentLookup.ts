@@ -31,6 +31,33 @@ export class LoginError extends Error {
 export const BAD_CREDENTIALS = 'الباسورد أو الإيميل خطأ';
 
 /**
+ * Redirects a merged-away student document to the one that absorbed it.
+ *
+ * A merge deactivates the losing row rather than deleting it (shared/adminUsers.ts)
+ * and stamps `mergedInto` with the surviving document id. Every lookup has to
+ * follow that pointer, and resolveGoogleLogin has to follow it BEFORE it reads
+ * `isActive` - otherwise the deactivated loser is found first and the student is
+ * told their account is disabled, which undoes the very link the merge created.
+ *
+ * Exactly one hop. A chain would mean a survivor was itself later merged, which
+ * the merge refuses to create; following one anyway would turn a corrupted pair
+ * into an infinite loop at the login path of all places. A pointer at a missing
+ * or self-referential document is ignored, leaving the original record to fail
+ * on its own merits.
+ */
+export async function followMerge(
+  db: FirebaseFirestore.Firestore,
+  record: StudentRecord,
+): Promise<StudentRecord> {
+  const target = (record.data?.mergedInto || '').trim().toLowerCase();
+  if (!target || target === record.id) return record;
+
+  const doc = await db.collection('students').doc(target).get();
+  if (!doc.exists) return record;
+  return { id: doc.id, data: doc.data() || {} };
+}
+
+/**
  * The three hash schemes that coexist in this data, tried in order:
  * unsalted SHA-256 (written by the admin UI), bcrypt (written by the API
  * routes and signup approval), and plaintext (legacy rows that predate both).
@@ -72,7 +99,10 @@ export async function findStudentCandidates(
 
   if (raw.includes('@')) {
     const doc = await db.collection('students').doc(raw.toLowerCase()).get();
-    return doc.exists ? [{ id: doc.id, data: doc.data() || {} }] : [];
+    if (!doc.exists) return [];
+    // The typed address may be the one a merge retired. Follow it, so a student
+    // who still types their old email reaches the account that absorbed it.
+    return [await followMerge(db, { id: doc.id, data: doc.data() || {} })];
   }
 
   if (looksLikeLoginCode(raw)) {
@@ -173,13 +203,15 @@ export async function studentForToken(
   for (const id of [email, token.uid]) {
     if (!id) continue;
     const doc = await db.collection('students').doc(id).get();
-    if (doc.exists) return { id: doc.id, data: doc.data() || {} };
+    if (doc.exists) return followMerge(db, { id: doc.id, data: doc.data() || {} });
   }
 
   if (email) {
     const linked = await db.collection('students')
       .where('googleEmail', '==', email).limit(1).get();
-    if (!linked.empty) return { id: linked.docs[0].id, data: linked.docs[0].data() };
+    if (!linked.empty) {
+      return followMerge(db, { id: linked.docs[0].id, data: linked.docs[0].data() });
+    }
   }
 
   throw new LoginError('لا يوجد حساب طالب مرتبط بهذه الجلسة.', 404, 'NO_STUDENT');

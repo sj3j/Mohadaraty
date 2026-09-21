@@ -21,11 +21,30 @@ import firebaseConfig from '../../firebase-applet-config.json';
  * custom-token session is the only identity that ever exists.
  */
 
+/**
+ * The Google identity is good; we simply have no student record for that
+ * address yet.
+ *
+ * It carries the TOKEN as well as the profile, because the two things the app
+ * can offer next - claim an existing account, or apply for a new one - both need
+ * the proof of mailbox ownership that was just obtained. Re-running the popup to
+ * get a second one would be a second permission prompt for a student who has
+ * already granted it, and on native it would re-open the OS account picker
+ * mid-form. Firebase and Google id tokens both last about an hour, which is far
+ * longer than the form takes.
+ */
 export class NoAccountError extends Error {
-  constructor(readonly email: string, readonly name: string | null) {
+  constructor(
+    readonly email: string,
+    readonly name: string | null,
+    readonly tokenBody?: GoogleTokenBody,
+  ) {
     super('NO_ACCOUNT');
   }
 }
+
+/** Exactly one key, and which one it is decides how the server verifies it. */
+export type GoogleTokenBody = { idToken: string } | { googleIdToken: string };
 
 /**
  * Both native account-picker paths failed.
@@ -96,8 +115,7 @@ export interface GoogleSignInResult {
 }
 
 export interface GoogleTokenResult {
-  /** Exactly one key, and which one it is decides how the server verifies it. */
-  body: { idToken: string } | { googleIdToken: string };
+  body: GoogleTokenBody;
   profile: GoogleProfile;
 }
 
@@ -150,7 +168,10 @@ async function signInWithGoogleNative(): Promise<any> {
 
 
 /** Exchanges a token for our custom token. Throws NoAccountError for signup. */
-async function exchange(body: Record<string, string>): Promise<{ token: string; studentId: string }> {
+async function exchange(
+  body: GoogleTokenBody,
+  profile?: GoogleProfile,
+): Promise<{ token: string; studentId: string }> {
   const res = await fetch(apiUrl('/api/google-login'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -160,9 +181,47 @@ async function exchange(body: Record<string, string>): Promise<{ token: string; 
 
   if (!res.ok) {
     if (data?.code === 'NO_ACCOUNT') {
-      throw new NoAccountError(data.email || '', data.name || null);
+      throw new NoAccountError(
+        data.email || profile?.email || '',
+        data.name || profile?.name || null,
+        body,
+      );
     }
     throw new Error(data?.error || 'Authentication failed');
+  }
+  return { token: data.token, studentId: (data.studentId || '').toLowerCase() };
+}
+
+/** Raised when the claim was rejected for a reason worth naming to the student. */
+export class ClaimError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+  }
+}
+
+/**
+ * Links this Google identity onto an account the student already has, and signs
+ * them into it.
+ *
+ * Reuses the token obtained at sign-in rather than re-prompting. The identifier
+ * is whatever they already log in with - college email, login code, or their
+ * full name - and deliberately never an exam code: those are reissued every year
+ * and identify an enrolment, not a person.
+ */
+export async function claimWithGoogle(
+  tokenBody: GoogleTokenBody,
+  identifier: string,
+  password: string,
+): Promise<{ token: string; studentId: string }> {
+  const res = await fetch(apiUrl('/api/google-claim'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...tokenBody, identifier, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new ClaimError(data?.error || 'Authentication failed', data?.code);
   }
   return { token: data.token, studentId: (data.studentId || '').toLowerCase() };
 }
@@ -225,6 +284,6 @@ export async function getGoogleToken(): Promise<GoogleTokenResult> {
  */
 export async function getGoogleCustomToken(): Promise<GoogleSignInResult> {
   const { body, profile } = await getGoogleToken();
-  const { token, studentId } = await exchange(body as Record<string, string>);
+  const { token, studentId } = await exchange(body, profile);
   return { token, studentId, profile };
 }

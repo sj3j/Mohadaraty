@@ -96,6 +96,13 @@ bot/bot.cjs
 bot/node_modules
 
 # Service-account credentials. THIS REPO IS PUBLIC.
+# `serviceAccountKey*` is extension-less on purpose: makeServiceAccountBlob.ts
+# writes the same key as both .json and .b64.txt, and a rule keyed to `.json`
+# covers neither the base64 copy nor the next format someone adds.
+# It is anchored to the "Key" prefix rather than written `*serviceAccount*`
+# because that broader form would also ignore bot/src/serviceAccount.ts, which
+# is source and must stay tracked.
+serviceAccountKey*
 *serviceAccount*.json
 *service-account*.json
 firebase-adminsdk*.json

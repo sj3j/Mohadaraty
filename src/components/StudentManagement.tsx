@@ -295,12 +295,68 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       
       const studentsData: any[] = [];
       const processedEmails = new Set<string>();
-      
+
+      // A person is not one email address. Grouping was keyed strictly on
+      // users.email, so a roster uid and a Google uid for the SAME student -
+      // the exact shape the signup funnel produces - could never appear in the
+      // same merge dialog, and the one reconciliation path in the app could not
+      // see the duplicates it exists to clean up.
+      //
+      // Three structural links, all exact, none of them a guess:
+      //   the document id        what a roster session is keyed by
+      //   students.googleEmail   an address the student linked themselves
+      //   mergedInto             a row a previous merge already retired
+      //
+      // Deliberately NOT examCode: it is reissued every year, so it identifies
+      // a year's enrolment rather than a person - it would both miss a real
+      // duplicate whose code has rolled over and fuse two students who happen
+      // to hold the same stale number.
+      const retiredByKeeper = new Map<string, any[]>();
+      const retiredIds = new Set<string>();
+      snapshot.docs.forEach((doc: any) => {
+        const keeper = (doc.data().mergedInto || '').toLowerCase().trim();
+        if (!keeper) return;
+        retiredIds.add(doc.id.toLowerCase().trim());
+        if (!retiredByKeeper.has(keeper)) retiredByKeeper.set(keeper, []);
+        retiredByKeeper.get(keeper)!.push(doc);
+      });
+
       snapshot.docs.forEach((doc: any) => {
         const data = doc.data();
         const emailLower = (data.email || doc.id).toLowerCase().trim();
+        // A retired row is not a student of its own any more - it is folded
+        // into whichever row absorbed it, just below.
+        if (retiredIds.has(doc.id.toLowerCase().trim())) {
+          processedEmails.add(emailLower);
+          processedEmails.add(doc.id.toLowerCase().trim());
+          return;
+        }
         processedEmails.add(emailLower);
-        const userProfiles = userMap.get(emailLower) || [];
+
+        const aliases = new Set<string>();
+        const addAlias = (v?: string | null) => {
+          const key = (v || '').toLowerCase().trim();
+          if (key) { aliases.add(key); processedEmails.add(key); }
+        };
+        addAlias(doc.id);
+        addAlias(data.email);
+        addAlias(data.googleEmail);
+        for (const retired of retiredByKeeper.get(doc.id.toLowerCase().trim()) || []) {
+          addAlias(retired.id);
+          addAlias(retired.data().email);
+          addAlias(retired.data().googleEmail);
+        }
+
+        // Deduped by uid: two aliases can legitimately resolve to one users doc.
+        const seenUids = new Set<string>();
+        const userProfiles: any[] = [];
+        for (const alias of aliases) {
+          for (const profile of userMap.get(alias) || []) {
+            if (seenUids.has(profile.userUid)) continue;
+            seenUids.add(profile.userUid);
+            userProfiles.push(profile);
+          }
+        }
         
         if (userProfiles.length === 0) {
           studentsData.push({
@@ -1791,16 +1847,16 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     <div className="mt-auto pt-4 border-t border-slate-100 dark:border-zinc-800 flex gap-2">
                       <button
                         onClick={async () => {
+                          // EVERY duplicate, not the first one found. This was
+                          // `.find`, so a student holding three user docs - a
+                          // real shape, see examCode 30086 - merged two and
+                          // silently left the third, reporting success.
                           const duplicates = students.filter(s => (s.baseStudentId || s.id) === mergingBaseId);
-                          const deleteAcc = duplicates.find(d => d.id !== acc.id);
-                          if (!deleteAcc) return;
-                          
+                          const deleteAccs = duplicates.filter(d => d.id !== acc.id && d.userUid);
+                          if (deleteAccs.length === 0) return;
+
                           if (!acc.userUid) {
                             setError(isRtl ? 'لا يمكنك الاحتفاظ بحساب لا يحتوي على معرف مستخدم (UID).' : 'Cannot keep an account without a User ID (UID).');
-                            return;
-                          }
-                          if (!deleteAcc.userUid) {
-                            setError(isRtl ? 'الحساب المكرر لا يحتوي على معرف مستخدم (UID)، لا فائدة من الدمج هنا.' : 'Duplicate account has no UID, nothing to merge from Auth side.');
                             return;
                           }
 
@@ -1808,32 +1864,47 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                           setError(null);
                           try {
                             const token = await auth.currentUser?.getIdToken();
-                            const res = await fetch(apiUrl(`/api/admin/users/merge`), {
-                              method: 'POST',
-                              headers: {
-                                'Authorization': `Bearer ${token}`,
-                                'Content-Type': 'application/json'
-                              },
-                              body: JSON.stringify({ keepUid: acc.userUid, deleteUid: deleteAcc.userUid })
-                            });
-                            
-                            if (!res.ok) {
-                              const text = await res.text();
-                              let errorMsg = 'Failed to merge';
-                              if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-                                errorMsg = `Server returned an HTML error page (Status ${res.status}). The server might be restarting or unavailable. Please reload the app and try again.`;
-                              } else {
-                                try {
-                                  const data = JSON.parse(text);
-                                  errorMsg = data.error || errorMsg;
-                                } catch (e) {
-                                  errorMsg = `Server error (${res.status}): ${text.substring(0, 100)}`;
+
+                            // Sequential, not Promise.all: every one of these
+                            // folds into the SAME keeper, and the merge is a
+                            // read-modify-write across a dozen collections.
+                            // Run in parallel they would race each other.
+                            for (const deleteAcc of deleteAccs) {
+                              const res = await fetch(apiUrl(`/api/admin/users/merge`), {
+                                method: 'POST',
+                                headers: {
+                                  'Authorization': `Bearer ${token}`,
+                                  'Content-Type': 'application/json'
+                                },
+                                // The students half. Without these two the losing
+                                // roster row stays live and the next sign-in on
+                                // that address mints the duplicate straight back.
+                                body: JSON.stringify({
+                                  keepUid: acc.userUid,
+                                  deleteUid: deleteAcc.userUid,
+                                  keepStudentId: acc.baseStudentId || acc.id,
+                                  deleteStudentId: deleteAcc.baseStudentId || deleteAcc.id,
+                                })
+                              });
+
+                              if (!res.ok) {
+                                const text = await res.text();
+                                let errorMsg = 'Failed to merge';
+                                if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+                                  errorMsg = `Server returned an HTML error page (Status ${res.status}). The server might be restarting or unavailable. Please reload the app and try again.`;
+                                } else {
+                                  try {
+                                    const data = JSON.parse(text);
+                                    errorMsg = data.error || errorMsg;
+                                  } catch (e) {
+                                    errorMsg = `Server error (${res.status}): ${text.substring(0, 100)}`;
+                                  }
                                 }
+                                throw new Error(errorMsg);
                               }
-                              throw new Error(errorMsg);
                             }
                             
-                            await logAdminAction('MERGE_DUPLICATES', `Merged accounts for ${acc.email} (Kept: ${acc.userUid})`);
+                            await logAdminAction('MERGE_DUPLICATES', `Merged ${deleteAccs.length} duplicate account(s) for ${acc.email} (Kept: ${acc.userUid})`);
                             setSuccess(isRtl ? 'تم دمج الحسابات بنجاح!' : 'Accounts merged successfully!');
                             fetchStudents();
                             setMergingBaseId(null);
