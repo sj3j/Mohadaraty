@@ -10,7 +10,7 @@
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
-import { startNewSeason } from '../shared/seasonReset';
+import { hasBridgedSeasonOpen, hasPreTermStreakState, openSeason, startNewSeason } from '../shared/seasonReset';
 import { closableTerm, DEFAULT_CALENDAR } from '../shared/academicCalendar';
 import { syncPhaseMirror } from '../shared/seasonRollover';
 
@@ -242,8 +242,19 @@ const beforeSync = (await db.doc('app_settings/streak').get()).data();
 check('a manual archive leaves vacationMode untouched',
   beforeSync?.vacationMode === true, String(beforeSync?.vacationMode));
 
-// Today is before the 2026-2027 calendar opens, so the resolved phase is the
-// summer holiday - paused.
+// A calendar whose first term is still ahead of us, so the resolved phase is
+// the holiday the year opens out of - paused.
+//
+// Pinned to an explicit calendar rather than leaning on DEFAULT_CALENDAR and
+// the real clock: this assertion silently expired the morning term 1 opened
+// (2026-09-20), when "today" stopped being preseason and the app correctly
+// reported `study`. A test that only holds before a hardcoded date is a test
+// that fails on the one day the season actually starts.
+await db.doc('app_settings/academicCalendar').set({
+  yearLabel: 'future', timezone: 'Asia/Baghdad',
+  terms: [{ id: 'future', nameAr: 'x', nameEn: 'x',
+    startDate: '2099-09-20', endDate: '2099-12-31', examsStart: null, examsEnd: null }],
+});
 const syncedPhase = await syncPhaseMirror(db, FieldValue as any);
 const afterManual = (await db.doc('app_settings/streak').get()).data();
 check('syncPhaseMirror writes the phase, not the archive',
@@ -262,6 +273,212 @@ await syncPhaseMirror(db, FieldValue as any);
 const afterLive = (await db.doc('app_settings/streak').get()).data();
 check('a live term unpauses through the same mirror',
   afterLive?.vacationMode === false, String(afterLive?.vacationMode));
+
+// ---------------------------------------------------------------------------
+// openSeason - the half that never existed.
+//
+// closableTerm() only returns a term that has ENDED, so a calendar's FIRST term
+// is never closed and startNewSeason never fired at the year's open. Whatever
+// an account carried in survived into day 1, where the paused preseason reads
+// as a one-day gap and increments it - one student read 2 on the opening day
+// while everyone else read 1.
+// ---------------------------------------------------------------------------
+console.log('\nopenSeason (pre-term state):');
+
+const TERM_START = '2026-09-20';
+
+// Pure predicate first - it is what the audit script's dry run previews.
+check('pre-term state: stale lastActiveDate counts',
+  hasPreTermStreakState({ streakCount: 1, lastActiveDate: '2026-06-01' }, TERM_START) === true);
+check('pre-term state: today\'s legitimate streak does NOT',
+  hasPreTermStreakState({ streakCount: 1, lastActiveDate: TERM_START }, TERM_START) === false);
+check('pre-term state: a clean account does NOT',
+  hasPreTermStreakState({ streakCount: 0, longestStreak: 0 }, TERM_START) === false);
+check('pre-term state: null lastActiveDate with a live streak counts',
+  hasPreTermStreakState({ streakCount: 4, lastActiveDate: null }, TERM_START) === true);
+check('pre-term state: a stranded pending flag alone counts',
+  hasPreTermStreakState({ streakCount: 0, hasPendingStreakReset: true, lastActiveDate: '2026-06-01' }, TERM_START) === true);
+
+await db.collection('users').doc('carryover').set({
+  name: 'carryover', email: 'carryover@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 1, longestStreak: 7, bestStreakAllTime: 0, freezeTokens: 0,
+  lastActiveDate: '2026-06-01', hasPendingStreakReset: true,
+});
+await db.collection('pending_streak_resets').doc('carryover').set({
+  userId: 'carryover', missedDays: 3, streakAtRisk: 7, dateRecorded: '2026-06-01',
+});
+await db.collection('users').doc('earned_today').set({
+  name: 'earned_today', email: 'earned@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 1, longestStreak: 1, bestStreakAllTime: 1, freezeTokens: 3,
+  lastActiveDate: TERM_START,
+});
+
+const opened = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START, performedBy: 'season.test.ts',
+});
+
+const carry = (await db.doc('users/carryover').get()).data();
+check('the carried-over streak is zeroed', carry?.streakCount === 0, String(carry?.streakCount));
+check('its per-season peak is zeroed', carry?.longestStreak === 0, String(carry?.longestStreak));
+check('its lastActiveDate is cleared', carry?.lastActiveDate === null, String(carry?.lastActiveDate));
+check('its peak is BANKED into bestStreakAllTime, not lost',
+  carry?.bestStreakAllTime === 7, String(carry?.bestStreakAllTime));
+check('shields are restored', carry?.freezeTokens === 3, String(carry?.freezeTokens));
+check('the stranded pending flag is dropped',
+  carry?.hasPendingStreakReset === undefined, String(carry?.hasPendingStreakReset));
+check('and its pending_streak_resets row with it',
+  (await db.doc('pending_streak_resets/carryover').get()).exists === false);
+
+// The whole reason the predicate is selective: this ships mid-term.
+const today = (await db.doc('users/earned_today').get()).data();
+check("a streak earned since the term opened is UNTOUCHED",
+  today?.streakCount === 1 && today?.lastActiveDate === TERM_START,
+  `${today?.streakCount} / ${today?.lastActiveDate}`);
+
+check('openSeason reports what it cleared', opened.cleared >= 1, String(opened.cleared));
+check('it stamps seasonOpenedFor',
+  (await db.doc('app_settings/streak').get()).data()?.seasonOpenedFor === 'term1_2026');
+
+// Idempotency: a second run must be a no-op, not a second zeroing.
+await db.doc('users/earned_today').update({ streakCount: 5, lastActiveDate: '2026-09-24' });
+const again = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START, performedBy: 'season.test.ts',
+});
+check('a second run clears nothing', again.cleared === 0, String(again.cleared));
+check('and leaves the live streak alone',
+  (await db.doc('users/earned_today').get()).data()?.streakCount === 5);
+
+/*
+ * The accounts openSeason's staleness test CANNOT see.
+ *
+ * The bridge overwrote lastActiveDate with the opening day itself, so
+ * hasPreTermStreakState reads the row as "credited this season" and skips it.
+ * The selectivity that makes openSeason safe to run mid-term is exactly what
+ * blinds it to the rows already damaged - hence a second selector, and a
+ * different patch.
+ */
+console.log('\nopenSeason (rows bridged into the opening day):');
+
+check('bridged: a streak above 1 on the opening day counts',
+  hasBridgedSeasonOpen({ streakCount: 2, longestStreak: 2, lastActiveDate: TERM_START }, TERM_START) === true);
+check('bridged: a legitimate day-1 streak does NOT',
+  hasBridgedSeasonOpen({ streakCount: 1, longestStreak: 1, lastActiveDate: TERM_START }, TERM_START) === false);
+// The quieter variant: a correct counter carrying a stale SEASON peak, which
+// the board prints as "longest this season".
+check('bridged: a stale season peak counts even when the counter is right',
+  hasBridgedSeasonOpen({ streakCount: 1, longestStreak: 9, lastActiveDate: TERM_START }, TERM_START) === true);
+// The boundary that must never move to a term start: a break costs no streak
+// days, so a streak carried into term 2 is correct.
+check("bridged: term 2's opening day is NOT the year's opening day",
+  hasBridgedSeasonOpen({ streakCount: 5, longestStreak: 5, lastActiveDate: '2027-01-31' }, TERM_START) === false);
+check("bridged: a stale row is the staleness arm's business, not this one",
+  hasBridgedSeasonOpen({ streakCount: 4, lastActiveDate: '2026-06-01' }, TERM_START) === false);
+// Pins WHY a second selector has to exist at all.
+check('and hasPreTermStreakState cannot see a bridged row',
+  hasPreTermStreakState({ streakCount: 2, longestStreak: 2, lastActiveDate: TERM_START }, TERM_START) === false);
+
+await db.collection('users').doc('bridged').set({
+  name: 'bridged', email: 'bridged@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 2, longestStreak: 2, bestStreakAllTime: 17, freezeTokens: 3,
+  lastActiveDate: TERM_START,
+});
+// The marker that makes the clamp necessary: record-activity short-circuits on
+// it, so nothing recomputes this row until tomorrow.
+await db.collection('streak_history').doc(`bridged_${TERM_START}`).set({
+  userId: 'bridged', date: TERM_START, wasActive: true, freezeUsed: false,
+});
+await db.collection('streakLog').doc('bridged').collection('days').doc(TERM_START).set({
+  date: TERM_START, method: 'normal', streakBefore: 1, streakAfter: 2,
+});
+// A bucket-A row that gained today's marker between the scan and the write -
+// the race that would otherwise strand it on 0 for the rest of the day.
+await db.collection('users').doc('raced').set({
+  name: 'raced', email: 'raced@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 7, longestStreak: 7, bestStreakAllTime: 3, freezeTokens: 1,
+  lastActiveDate: '2026-06-01',
+});
+await db.collection('streak_history').doc(`raced_${TERM_START}`).set({
+  userId: 'raced', date: TERM_START, wasActive: true, freezeUsed: false,
+});
+await db.collection('users').doc('legit_day_one').set({
+  name: 'legit_day_one', email: 'legit@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 1, longestStreak: 1, bestStreakAllTime: 1, freezeTokens: 3,
+  lastActiveDate: TERM_START,
+});
+
+const swept = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START,
+  yearOpens: TERM_START, creditedDay: TERM_START,
+  performedBy: 'season.test.ts',
+});
+
+const br = (await db.doc('users/bridged').get()).data();
+check('the bridged counter is clamped to 1, not zeroed',
+  br?.streakCount === 1, String(br?.streakCount));
+check('its season peak comes down too, or the board still reads 2',
+  br?.longestStreak === 1, String(br?.longestStreak));
+// THE assertion. Nulling it strands the account on 0 for the rest of the day it
+// earned, because record-activity returns early on the streak_history marker.
+check('its lastActiveDate is KEPT, not nulled',
+  br?.lastActiveDate === TERM_START, String(br?.lastActiveDate));
+check('its all-time record is neither lowered nor lost',
+  br?.bestStreakAllTime === 17, String(br?.bestStreakAllTime));
+check('shields are restored', br?.freezeTokens === 3, String(br?.freezeTokens));
+
+const log = (await db.doc(`streakLog/bridged/days/${TERM_START}`).get()).data();
+check('the audit trail is annotated with the repair',
+  log?.repairedTo === 1 && log?.repairReason === 'preseason_bridge',
+  JSON.stringify({ to: log?.repairedTo, why: log?.repairReason }));
+check('and the original evidence survives verbatim',
+  log?.method === 'normal' && log?.streakBefore === 1 && log?.streakAfter === 2,
+  JSON.stringify({ m: log?.method, before: log?.streakBefore, after: log?.streakAfter }));
+
+// The stranded-zero regression.
+const raced = (await db.doc('users/raced').get()).data();
+check('a stale row already credited today takes the CLAMP, not the zero',
+  raced?.streakCount === 1, String(raced?.streakCount));
+check('and keeps its date so it can still be credited tomorrow',
+  raced?.lastActiveDate === TERM_START, String(raced?.lastActiveDate));
+check('its peak is banked before the clamp', raced?.bestStreakAllTime === 7,
+  String(raced?.bestStreakAllTime));
+
+const legit = (await db.doc('users/legit_day_one').get()).data();
+check('a legitimate day-1 streak is still untouched',
+  legit?.streakCount === 1 && legit?.longestStreak === 1 &&
+  legit?.lastActiveDate === TERM_START,
+  `${legit?.streakCount}/${legit?.longestStreak}/${legit?.lastActiveDate}`);
+
+check('openSeason reports the clamped rows separately from the cleared ones',
+  swept.bridged === 2, String(swept.bridged));
+
+// Idempotent: after the clamp nothing matches the predicate any more. This runs
+// BEFORE the term-2 case below, which opens a later term and therefore treats
+// every row above as legitimately stale.
+const thirdRun = await openSeason(db, FieldValue as any, {
+  termId: 'term1_2026', termStart: TERM_START,
+  yearOpens: TERM_START, creditedDay: TERM_START,
+  performedBy: 'season.test.ts',
+});
+check('a second sweep clamps nothing', thirdRun.bridged === 0, String(thirdRun.bridged));
+check('and leaves the repaired row at 1',
+  (await db.doc('users/bridged').get()).data()?.streakCount === 1);
+
+// Scoped to the YEAR's opening boundary: on term 2's first day the same shape
+// is a legitimate streak carried across the break, so the sweep must be off.
+await db.collection('users').doc('term2_carry').set({
+  name: 'term2_carry', email: 't2@x.com', role: 'student', stageId: 'stage_3',
+  streakCount: 5, longestStreak: 5, bestStreakAllTime: 5, freezeTokens: 3,
+  lastActiveDate: '2027-01-31',
+});
+const term2 = await openSeason(db, FieldValue as any, {
+  termId: 'term2_2027', termStart: '2027-01-31',
+  yearOpens: TERM_START, creditedDay: '2027-01-31',
+  performedBy: 'season.test.ts',
+});
+check('the bridged sweep is OFF on a term that is not the year opener',
+  term2.bridged === 0, String(term2.bridged));
+check('so a streak carried across the break survives',
+  (await db.doc('users/term2_carry').get()).data()?.streakCount === 5);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

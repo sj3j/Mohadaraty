@@ -247,3 +247,240 @@ export async function startNewSeason(
     mcqArchived: rankedStats.length,
   };
 }
+
+/**
+ * Does this user doc carry streak state from before `termStart`?
+ *
+ * The one definition of "stale", shared by openSeason and by
+ * scripts/streakAudit.ts's preseason pass so a dry-run report and the repair it
+ * previews can never disagree about who is affected.
+ */
+export function hasPreTermStreakState(u: any, termStart: string): boolean {
+  const streakCount = u?.streakCount || 0;
+  const longestStreak = u?.longestStreak || 0;
+  const hasPending = u?.hasPendingStreakReset === true;
+  // Nothing to clear.
+  if (streakCount <= 0 && longestStreak <= 0 && !hasPending) return false;
+
+  let lastActiveDate: string | null = u?.lastActiveDate ?? null;
+  if (lastActiveDate && lastActiveDate.includes('T')) {
+    lastActiveDate = lastActiveDate.split('T')[0];
+  }
+  // Credited on or after the term opened, so it belongs to THIS season.
+  if (lastActiveDate && lastActiveDate >= termStart) return false;
+  return true;
+}
+
+/**
+ * Did the year-opening bridge already fire on this account?
+ *
+ * The counterpart to hasPreTermStreakState, for the accounts it cannot see. The
+ * buggy write that inflated the counter ALSO moved lastActiveDate onto the
+ * opening day, so the "credited on or after the term opened, so it belongs to
+ * THIS season" test above reads the row as legitimate and skips it. The
+ * selectivity that makes openSeason safe to run mid-term is exactly what blinds
+ * it to the rows already damaged.
+ *
+ * `yearOpens` is terms[0].startDate and NOTHING ELSE - see seasonOpeningDay.
+ * Keyed on the running term's start this would wipe the cohort on term 2's
+ * first day, where a streak carried across the break is correct.
+ *
+ * longestStreak is tested as well as streakCount because a stale SEASON PEAK is
+ * its own variant: an account at streakCount 0 with longestStreak 9 gets a
+ * correct streakCount of 1 from the bridge and keeps the 9, which no
+ * streakCount-only predicate sees and which the board prints as
+ * "أطول هذا الموسم: 9".
+ */
+export function hasBridgedSeasonOpen(u: any, yearOpens: string): boolean {
+  let lastActiveDate: string | null = u?.lastActiveDate ?? null;
+  if (lastActiveDate && lastActiveDate.includes('T')) {
+    lastActiveDate = lastActiveDate.split('T')[0];
+  }
+  // Only the opening day is provably capped at 1.
+  if (lastActiveDate !== yearOpens) return false;
+  return (u?.streakCount || 0) > 1
+      || (u?.longestStreak || 0) > 1
+      || u?.hasPendingStreakReset === true;
+}
+
+export interface SeasonOpenResult {
+  termId: string;
+  /** Accounts whose stale pre-term counters were zeroed. */
+  cleared: number;
+  /** Accounts already credited for the opening day, clamped to 1 rather than
+   *  zeroed. See the comment on the clamp arm below. */
+  bridged: number;
+}
+
+/**
+ * Opens a term's season, clearing streak state left over from before it.
+ *
+ * startNewSeason closes a season; nothing opened one. closableTerm() only ever
+ * returns a term whose live end is already past, so the FIRST term of a
+ * calendar - which has no predecessor - can never be closed, startNewSeason
+ * never fires at the year's open, and whatever counters an account carried into
+ * the new year survive into day 1. Combined with activeDaysBetween reporting a
+ * gap of ONE across the whole paused preseason, that is how a student read 2 on
+ * the opening day of term 1 while every other student read 1.
+ *
+ * Writes no archive cards. A term that genuinely ended was already archived by
+ * startNewSeason in the same rollover pass; the pre-calendar window is not a
+ * season and has no board worth filing.
+ *
+ * SELECTIVE BY DESIGN. It touches only accounts whose last credited day
+ * predates the term, so it is safe to deploy in the middle of an already
+ * running term: a student who earned today's streak legitimately has
+ * lastActiveDate >= termStart and is left alone. A blanket zeroing would wipe
+ * the day for the whole cohort.
+ *
+ * Idempotent per term via app_settings/streak.seasonOpenedFor, mirroring
+ * seasonClosedFor.
+ */
+export async function openSeason(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { serverTimestamp(): any; delete(): any },
+  opts: {
+    termId: string;
+    /** The term's startDate, 'YYYY-MM-DD'. The boundary that defines "stale". */
+    termStart: string;
+    /**
+     * terms[0].startDate - the academic YEAR's opening day. When it equals
+     * termStart this is the year's first term, and the bridged sweep below is
+     * armed. Omitted or different, the sweep is off: on term 2's first day a
+     * streak above 1 is legitimate.
+     */
+    yearOpens?: string | null;
+    /**
+     * Today as 'YYYY-MM-DD'. Enables the already-credited check, which is what
+     * stops this zeroing a row that can no longer recompute itself today.
+     */
+    creditedDay?: string | null;
+    performedBy?: string;
+  },
+): Promise<SeasonOpenResult> {
+  const { termId, termStart, yearOpens, creditedDay, performedBy } = opts;
+  const sweepBridged = !!yearOpens && yearOpens === termStart;
+
+  const usersSnap = await db.collection('users').get();
+
+  let batch = db.batch();
+  let ops = 0;
+  let cleared = 0;
+  let bridged = 0;
+  const flush = async (force = false) => {
+    if (ops >= 400 || (force && ops > 0)) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  };
+
+  for (const doc of usersSnap.docs) {
+    const u = doc.data() as any;
+    const stale = hasPreTermStreakState(u, termStart);
+    const wasBridged = sweepBridged && hasBridgedSeasonOpen(u, yearOpens as string);
+    if (!stale && !wasBridged) continue;
+
+    const streakCount = u.streakCount || 0;
+    const longestStreak = u.longestStreak || 0;
+
+    // Bank the peak before zeroing it. bestStreakAllTime is the only streak
+    // number that survives a rollover, and nothing may lower longestStreak
+    // without raising it first or "الأطول" loses the record permanently.
+    const seasonPeak = Math.max(longestStreak, streakCount);
+    const bankedBest = Math.max(u.bestStreakAllTime || 0, seasonPeak);
+
+    // Has this account already been credited for the day being opened?
+    //
+    // It matters because shared/streakApi.ts returns early when
+    // streak_history/{uid}_{date} exists - only the heartbeat is refreshed, and
+    // NOTHING recomputes the counters until tomorrow. Zero such a row and the
+    // student reads 0 for the rest of the day they actually earned.
+    //
+    // This also closes a race the staleness arm has on its own: the users scan
+    // above is a snapshot, so a student who visits between that read and this
+    // write would otherwise take the zero patch over a row that has since
+    // gained today's marker.
+    let creditedToday = false;
+    if (creditedDay) {
+      const hist = await db.collection('streak_history').doc(`${doc.id}_${creditedDay}`).get();
+      creditedToday = hist.exists;
+    }
+
+    if (wasBridged || creditedToday) {
+      batch.update(doc.ref, {
+        streakCount: 1,
+        longestStreak: 1,
+        // Set to the credited day, NEVER nulled. The other arm nulls it so the
+        // next visit reads `!processedLastDate` and starts at 1; this account
+        // has already had that visit today, so nulling it would strand it at 0
+        // until tomorrow. Writing the day is not merely safe, it is the truth:
+        // the streak_history marker we just read is the proof it was active
+        // then. That also corrects the race case, whose stored date is still
+        // the stale one this scan snapshotted.
+        ...(creditedDay ? { lastActiveDate: creditedDay } : {}),
+        freezeTokens: 3,
+        bestStreakAllTime: bankedBest,
+        hasPendingStreakReset: FieldValue.delete(),
+      });
+      ops++;
+      bridged++;
+
+      // Annotate the audit trail, never rewrite it. The original
+      // method/streakBefore/streakAfter are the evidence that the buggy branch
+      // ran; overwriting them would make the log agree with a state that never
+      // happened. A row that carries only these fields - which is what a merge
+      // creates where the dev surface wrote no trail at all - reads
+      // unambiguously as a repair rather than a crediting event.
+      //
+      // Guarded on creditedDay: it is the document id, and a caller that armed
+      // the sweep without passing a day would otherwise throw here.
+      if (creditedDay) {
+        batch.set(
+          db.collection('streakLog').doc(doc.id).collection('days').doc(creditedDay),
+          {
+            date: creditedDay,
+            repairedAt: FieldValue.serverTimestamp(),
+            repairReason: 'preseason_bridge',
+            repairedFrom: streakCount,
+            repairedTo: 1,
+            ...(performedBy ? { repairedBy: performedBy } : {}),
+          },
+          { merge: true },
+        );
+        ops++;
+      }
+    } else {
+      batch.update(doc.ref, {
+        streakCount: 0,
+        longestStreak: 0,
+        lastActiveDate: null,
+        freezeTokens: 3,
+        bestStreakAllTime: bankedBest,
+        hasPendingStreakReset: FieldValue.delete(),
+      });
+      ops++;
+      cleared++;
+    }
+
+    // The flag guarded a streak this has just zeroed, so it can no longer be
+    // forgiven into anything. Left behind it strands the student on a permanent
+    // "you are about to lose your streak" banner.
+    batch.delete(db.collection('pending_streak_resets').doc(doc.id));
+    ops++;
+
+    await flush();
+  }
+  await flush(true);
+
+  await db.collection('app_settings').doc('streak').set(
+    {
+      seasonOpenedFor: termId,
+      seasonOpenedAt: FieldValue.serverTimestamp(),
+      ...(performedBy ? { seasonOpenedBy: performedBy } : {}),
+    },
+    { merge: true },
+  );
+
+  return { termId, cleared, bridged };
+}

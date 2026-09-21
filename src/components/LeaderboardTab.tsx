@@ -14,12 +14,16 @@ interface LeaderboardTabProps {
 }
 
 const STREAK_LIMIT = 20;
+/** Over-fetch so graduated students, who are filtered client-side below, cannot
+ *  eat slots and leave the board rendering short of STREAK_LIMIT. */
+const STREAK_OVERFETCH = 10;
 const MCQ_LIMIT = 10;
 
 /** One row, shared by both boards so they cannot drift apart again. */
 interface RowData {
   key: string;
-  rank: number;
+  /** Absent when the rank count query failed - the row still renders. */
+  rank?: number;
   name?: string;
   photoUrl?: string | null;
   isMe: boolean;
@@ -37,12 +41,14 @@ function formatDate(iso: string): string {
   return `${y}/${parseInt(m, 10)}/${parseInt(d, 10)}`;
 }
 
-function rankBadge(rank: number) {
+function rankBadge(rank?: number) {
   switch (rank) {
     case 1: return <Crown className="w-5 h-5 text-yellow-500" />;
     case 2: return <Medal className="w-5 h-5 text-slate-400" />;
     case 3: return <Medal className="w-5 h-5 text-amber-700" />;
-    default: return <span className="font-bold text-slate-400 px-1">{rank}</span>;
+    // A detached self-row whose rank query failed still belongs on the board;
+    // it just cannot say where.
+    default: return <span className="font-bold text-slate-400 px-1">{rank ?? '—'}</span>;
   }
 }
 
@@ -207,30 +213,50 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       where('role', '==', 'student'),
       where('stageId', '==', effectiveStageId),
       orderBy('streakCount', 'desc'),
-      limit(STREAK_LIMIT),
+      limit(STREAK_LIMIT + STREAK_OVERFETCH),
     ));
     // Graduated students keep read-only access in their final stage, so the
     // stage query still returns them. Filtered here rather than with a where
     // clause, because an inequality would also drop everyone lacking the field.
+    // Trimmed AFTER the filter, not before: filtering a page that was already
+    // cut to STREAK_LIMIT is what let a graduate consume a slot and render the
+    // board one row short.
     const leaders: any[] = snap.docs
       .map(d => ({ uid: d.id, ...(d.data() as any) }))
       .filter(u => u.graduated !== true)
+      .slice(0, STREAK_LIMIT)
       .map((u, i) => ({ ...u, _rank: i + 1 }));
 
     // Append the signed-in user below the cut if they are not already listed.
     if (user && !leaders.some(l => (l.uid || l.userId) === user.uid) && (user.streakCount || 0) > 0) {
-      const countSnap = await getCountFromServer(query(
-        collection(db, 'users'),
-        where('role', '==', 'student'),
-        where('stageId', '==', effectiveStageId),
-        where('streakCount', '>', user.streakCount || 0),
-      ));
+      // Its own try/catch, the way ProfileScreen already does it. This count
+      // needs a composite index of its own - two equalities plus an inequality
+      // and no orderBy, so the DESC index serving the list query above does not
+      // cover it. While that index was missing it threw FAILED_PRECONDITION, and
+      // letting it reach the caller's catch CLEARED the twenty rows already
+      // fetched: the whole board read "no students in this stage yet" for every
+      // viewer outside the top 20.
+      let myRank: number | undefined;
+      try {
+        const countSnap = await getCountFromServer(query(
+          collection(db, 'users'),
+          where('role', '==', 'student'),
+          where('stageId', '==', effectiveStageId),
+          where('streakCount', '>', user.streakCount || 0),
+        ));
+        myRank = countSnap.data().count + 1;
+      } catch (err) {
+        console.warn('Could not read streak rank:', err);
+      }
       leaders.push({
         uid: user.uid, name: user.name, photoUrl: user.photoUrl,
         streakCount: user.streakCount || 0,
+        // App.tsx hydrates this onto the profile; without it the detached row's
+        // "best this season" subtitle reads back the current streak instead.
+        longestStreak: user.longestStreak || 0,
         hideNameOnLeaderboard: user.hideNameOnLeaderboard,
         hidePhotoOnLeaderboard: user.hidePhotoOnLeaderboard,
-        _rank: countSnap.data().count + 1,
+        _rank: myRank,
         _detached: true,
       });
     }
@@ -278,12 +304,19 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       const data = mine.exists() ? mine.data() : null;
 
       if (data?.mcqRankScore != null) {
-        const countSnap = await getCountFromServer(query(
-          collection(db, 'userMCQStats'),
-          where('stageId', '==', effectiveStageId),
-          where('mcqRankScore', '>', data.mcqRankScore),
-        ));
-        leaders.push({ id: mine.id, ...data, _rank: countSnap.data().count + 1, _detached: true });
+        // Same guard as the streak board above, and the same missing index.
+        let myRank: number | undefined;
+        try {
+          const countSnap = await getCountFromServer(query(
+            collection(db, 'userMCQStats'),
+            where('stageId', '==', effectiveStageId),
+            where('mcqRankScore', '>', data.mcqRankScore),
+          ));
+          myRank = countSnap.data().count + 1;
+        } catch (err) {
+          console.warn('Could not read MCQ rank:', err);
+        }
+        leaders.push({ id: mine.id, ...data, _rank: myRank, _detached: true });
       } else {
         // No answers yet - nothing to rank.
         setMcqUnranked(true);
@@ -295,6 +328,17 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
   };
 
   const fetchLeaderboard = async () => {
+    // where('stageId', '==', null) is not an error - it matches nothing, so it
+    // renders the same "no students in this stage" as a genuinely empty stage.
+    // A master admin whose picker has not resolved yet lands here while
+    // StageSettings shows stage 1 as selected, which reads as a broken board.
+    if (!effectiveStageId) {
+      setStreakLeaders([]);
+      setMcqLeaders([]);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     setLoading(true);
     try {
       // Which archive to show still comes from app_settings; WHETHER to show it
@@ -347,12 +391,15 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     hidePhoto: l.hidePhotoOnLeaderboard,
     detached: l._detached,
     primary: <><Flame className="w-5 h-5 text-orange-500" />{l.streakCount || 0}</>,
-    secondary: `${l.streakCount || 0} ${isRtl ? 'أيام' : 'days'}`,
+    // The season's peak, not the headline a second time. Archived rows already
+    // carry longestStreak (shared/seasonReset.ts writes it onto topStudents[])
+    // and it was never shown anywhere; live rows read it off the user doc.
+    secondary: `${isRtl ? 'أطول هذا الموسم' : 'best this season'}: ${Math.max(l.longestStreak || 0, l.streakCount || 0)} ${isRtl ? 'يوم' : 'days'}`,
   }));
 
   const mcqRows: RowData[] = mcqLeaders.map(l => ({
     key: `${l.userId}-${l._rank}`,
-    rank: l._rank!,
+    rank: l._rank,
     name: l.profile?.name,
     photoUrl: l.profile?.photoUrl || (l.profile as any)?.photoURL,
     isMe: user?.uid === l.userId,
@@ -420,7 +467,14 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
             <Loader2 className="w-8 h-8 text-sky-600 dark:text-sky-400 animate-spin" />
           </div>
         ) : rows.length === 0 ? (
-          activeTab === 'mcq' && mcqUnranked ? (
+          !effectiveStageId ? (
+            <EmptyState
+              icon={Users}
+              text={isRtl
+                ? 'اختر المرحلة من الإعدادات لعرض لوحة الصدارة'
+                : 'Pick a stage in Settings to see the leaderboard'}
+            />
+          ) : activeTab === 'mcq' && mcqUnranked ? (
             <EmptyState
               icon={Target}
               text={isRtl

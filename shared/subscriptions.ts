@@ -23,11 +23,18 @@ import {
  * Server-side plan table. Mirrors PLAN_CONFIG in src/types.ts, which is the
  * client's copy — the client's is for display, this one is what money is
  * checked against, so never trust a plan or amount sent by the browser.
+ *
+ * A month here is 30 days, not a calendar month: 30/90/180/360. That is what
+ * makes the struck-through anchor on the plan cards exact — it is derived as
+ * monthly.price * (days / 30), so the annual card reads 24,000 crossed out
+ * against 12,000. Setting annual to 365 would print 24,333 and a 986/month
+ * hint, both of which read as arithmetic noise rather than a discount.
  */
 export const PLAN_CONFIG: Record<string, { days: number; price: number }> = {
-  monthly: { days: 30, price: 1000 },
-  seasonal: { days: 90, price: 3000 },
-  semi_annual: { days: 180, price: 5000 },
+  monthly: { days: 30, price: 2000 },
+  seasonal: { days: 90, price: 5000 },
+  semi_annual: { days: 180, price: 9000 },
+  annual: { days: 360, price: 12000 },
 };
 
 export type SubscriptionEvent = 'activated' | 'expired' | 'approved' | 'rejected';

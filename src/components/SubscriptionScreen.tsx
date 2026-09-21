@@ -5,7 +5,7 @@ import {
   Loader2, ChevronLeft, ChevronRight, Sparkles, Shield, ArrowRight,
   MessageSquare, Send, Copy, Check, ImagePlus, Trash2
 } from 'lucide-react';
-import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan, Subscription, UserProfile } from '../types';
+import { Language, TRANSLATIONS, PLAN_CONFIG, planAnchorPrice, SubscriptionPlan, Subscription, UserProfile } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 import {
   EMPTY_PAYMENT_CONTACT, PaymentContact, RECEIPT_ACCEPT,
@@ -194,10 +194,13 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
     }
   };
 
+  // bestValue follows the arithmetic, not the position: annual is 1,000/month
+  // against semi-annual's 1,500, so it carries the badge now.
   const plans: { key: SubscriptionPlan; badge?: string; highlight?: boolean }[] = [
     { key: 'monthly' },
     { key: 'seasonal', badge: t.popular, highlight: true },
-    { key: 'semi_annual', badge: t.bestValue },
+    { key: 'semi_annual' },
+    { key: 'annual', badge: t.bestValue },
   ];
 
   const statusIcons: Record<string, React.ReactNode> = {
@@ -218,6 +221,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
     monthly: t.monthly,
     seasonal: t.seasonal,
     semi_annual: t.semiAnnual,
+    annual: t.annual,
   };
 
   const paymentLabels: Record<string, string> = {
@@ -320,6 +324,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                 const label = isRtl ? config.labelAr : config.labelEn;
                 const isSelected = selectedPlan === plan.key;
                 const perMonth = Math.round(config.price / (config.days / 30));
+                const anchor = planAnchorPrice(plan.key);
                 
                 return (
                   <motion.button
@@ -338,7 +343,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                   >
                     {plan.badge && (
                       <span className={`absolute -top-2.5 ${isRtl ? 'right-4' : 'left-4'} px-3 py-0.5 rounded-full text-[11px] font-bold text-white ${
-                        plan.key === 'semi_annual'
+                        plan.key === 'annual'
                           ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
                           : 'bg-gradient-to-r from-orange-500 to-rose-500'
                       }`}>
@@ -371,6 +376,11 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                         </div>
                       </div>
                       <div className="text-left rtl:text-right">
+                        {anchor > config.price && (
+                          <div className="text-xs text-slate-400 dark:text-slate-500 line-through leading-none mb-0.5">
+                            {anchor.toLocaleString()}
+                          </div>
+                        )}
                         <span className="text-xl font-extrabold text-slate-900 dark:text-white">
                           {config.price.toLocaleString()}
                         </span>

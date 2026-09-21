@@ -21,12 +21,18 @@ HOW TO DEPLOY
 
    If the panel offers "Main File" / "JS File" instead, set it to:  index.js
 
-3. Make sure the panel runs `npm install`. Most Node eggs do this on
+3. Set the Node version to 20 or newer - 22 is what the bundle is built for.
+   On a Pterodactyl-style panel this is the egg's Docker image or a "Node
+   version" startup variable. On Node 19 and below every dependency install
+   prints EBADENGINE warnings and the bot warns at boot; it may run, but
+   firebase's own packages do not support it.
+
+4. Make sure the panel runs `npm install`. Most Node eggs do this on
    (Re)install. If yours does not, open the Console tab and run:
 
        npm install
 
-4. Start the server.
+5. Start the server.
 
 
 ENVIRONMENT VARIABLES  (you said these are already set — check them anyway)
@@ -39,15 +45,21 @@ REQUIRED. The bot exits immediately with a named error if any is missing.
   ^ Do not leave the bucket blank and do not guess
     "mylectures-app.appspot.com" — that name does not exist for this project.
 
-  ...plus credentials, in ONE of two shapes. See the next section.
+  ...plus credentials, in ONE of three shapes. See the next section.
 
-  FIREBASE_SERVICE_ACCOUNT  the whole service-account .json    (recommended)
+  FIREBASE_SERVICE_ACCOUNT_B64   the .json, base64-encoded    (recommended)
+
+  ...or...
+
+  FIREBASE_SERVICE_ACCOUNT  the whole service-account .json
 
   ...or...
 
   FIREBASE_PROJECT_ID       mylectures-app
   FIREBASE_CLIENT_EMAIL     the service account address
   FIREBASE_PRIVATE_KEY      the full PEM, ONE line, newlines as literal \n
+
+  Set exactly ONE of the three. If both blob variables are set, _B64 wins.
 
 
 
@@ -62,22 +74,40 @@ OPTIONAL
 
 ABOUT THE CREDENTIALS
 ---------------------
-This is the one that usually goes wrong, and there are now two ways to give
+This is the one that usually goes wrong, and there are now three ways to give
 it. Prefer the first.
 
-1. FIREBASE_SERVICE_ACCOUNT   (recommended)
+Generate the values with, from the repo:
 
-   Open the service-account .json and paste the ENTIRE contents into the
-   field — starting with { and ending with }. It is one line already, so
-   there is nothing for the panel to wrap or truncate.
+    npx tsx scripts/makeServiceAccountBlob.ts
 
-   The reason to prefer it is not tidiness. The private key inside that file
-   is a JSON string, so the bot recovers its newlines with JSON.parse, by
-   spec. Nothing anywhere in the path has to guess what an escape meant.
+It writes serviceAccountKey.json and serviceAccountKey.b64.txt from the
+credentials already in .env. It rotates nothing and prints a fingerprint
+rather than the key. Delete both files afterwards.
 
-   When this is set, the three variables below are not read at all.
+1. FIREBASE_SERVICE_ACCOUNT_B64   (recommended)
 
-2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY
+   The contents of serviceAccountKey.b64.txt, on one line.
+
+   The reason to prefer it is narrow and practical: base64 contains no quote,
+   no backslash, no newline and no typographic quote. Those four characters
+   are the only things that have ever damaged this value in a panel field, so
+   there is nothing left for a field to get wrong.
+
+2. FIREBASE_SERVICE_ACCOUNT
+
+   The contents of serviceAccountKey.json - or of the .json downloaded from
+   the Firebase console - starting with { and ending with }.
+
+   This works, and it is now REPAIRED rather than rejected when it arrives
+   damaged: an escaped copy ({\"project_id\":...), a value the panel stored
+   with its quotes, one that has been through something that autocorrects
+   quotes, or a blob that was encoded twice. The boot line says which repair
+   was needed, under "repairedBy".
+
+   It is still the form a field can truncate, which is why 1 exists.
+
+3. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY
 
    The same three variables server.ts and every script in scripts/ use.
    The PEM goes on ONE line, with the newlines written as the two
@@ -85,20 +115,36 @@ it. Prefer the first.
 
        -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n
 
-   The bot now repairs the usual damage on the way in — double-escaped
-   \\n, quotes the panel stored as part of the value, a multi-line
-   paste, even the separators collapsed to spaces — and names what it
-   could not repair. You no longer have to get this exactly right. It is
-   still the form that gets mangled, which is why 1 exists.
+   The bot repairs the usual damage on the way in - double-escaped \\n,
+   quotes the panel stored as part of the value, a multi-line paste, even
+   the separators collapsed to spaces - and names what it could not repair.
+   You no longer have to get this exactly right. It is still the form that
+   gets mangled most, because a PEM is nothing but the four characters a
+   text field damages.
 
-Either way, the boot line carries a FINGERPRINT of the key that loaded — its
-length and last six characters, never the key:
+
+Whichever you use, the boot line says where the credentials came from, what
+had to be repaired on the way in, and a FINGERPRINT of the key that loaded -
+its length and last six characters, never the key:
 
   {"level":"info","event":"boot","projectId":"mylectures-app",
-   "clientEmail":"...","keyFingerprint":"1624 base64 chars, ending ...QmVnAQ"}
+   "clientEmail":"...","keyFingerprint":"1624 base64 chars, ending ...QmVnAQ",
+   "credentialSource":"FIREBASE_SERVICE_ACCOUNT_B64","repairedBy":"base64"}
 
-That is what to check when the key is intact but belongs to the wrong service
-account, which boots cleanly and then fails as a permission denial on a write.
+  credentialSource  which variable was read. _B64 wins if both are set.
+
+  repairedBy        "none" or "base64" means the panel value arrived intact.
+                    Anything else - "escaped", "unquoted", "smart-quotes",
+                    "double-encoded" - means the panel is storing a DAMAGED
+                    value that the bot repaired on the way in. It boots, but
+                    fix it at the source: the next mangling may not be
+                    repairable, and this line is the only thing that will
+                    ever tell you.
+
+  keyFingerprint    what to check when the key is intact but belongs to the
+                    wrong service account, which boots cleanly and then
+                    fails much later as a permission denial on a write.
+
 
 
 WHAT YOU SHOULD SEE IN THE CONSOLE
@@ -151,13 +197,93 @@ TROUBLESHOOTING
     half pasted. The message says which. Switching to
     FIREBASE_SERVICE_ACCOUNT retires this whole class of failure.
 
-"[env] FIREBASE_SERVICE_ACCOUNT is set but is not valid JSON"
-    A partial paste. It must start with { and end with }.
+"[env] FIREBASE_SERVICE_ACCOUNT: The service-account credentials could not
+be read: ..."
+    The value in the panel is damaged in a way the bot could not repair, and
+    the message NAMES which way - too short, does not close, starts with the
+    wrong character, single quotes, typographic quotes, not a service-account
+    file at all. It also prints the shape of what arrived with the key
+    redacted, so you can see the damage without pasting a credential
+    anywhere.
+
+    This replaces the old "is not valid JSON" message, which reported
+    JSON.parse's "position 1" - a single message V8 emits for at least six
+    unrelated manglings (an escaped copy, single quotes, unquoted keys, a
+    literal \n, typographic quotes, a value cut off after the first
+    character). It named none of them, which is why the bot sat in a crash
+    loop for an hour. Those shapes are now repaired where they can be.
+
+    The fix that ends this permanently is FIREBASE_SERVICE_ACCOUNT_B64.
+
+"[env] Node vNN is below the supported >=20"
+    A warning, not a failure - the bot keeps running. The bundle is built for
+    node22 and firebase's own packages declare >=20, so raise the Node
+    version in the panel's startup/image settings. On an old Node the failure,
+    when it comes, will not mention the version.
+
 
 "error:1E08010C:DECODER routines::unsupported"
     Should no longer be reachable from a mangled variable. If it appears, the
     value is PEM-shaped and correctly formed but is not a usable key — the
     right shape with the wrong contents.
+
+"tg.token_rejected" / "Telegram 401: Unauthorized"
+    Telegram refused TELEGRAM_BOT_TOKEN. The log line says which of the two
+    401s it is, because they need opposite fixes:
+
+      "...has been REVOKED or regenerated"
+          The token is well formed and Telegram does not accept it. Someone
+          pressed "Revoke current token" in @BotFather, or regenerated it.
+          Open @BotFather -> /mybots -> your bot -> API Token, copy the
+          current token, and put it in the panel. Nothing in the bot can
+          work around this.
+
+      "...could not read this token as a token at all"
+          The value reached Telegram damaged. Re-copy it whole.
+
+    The boot line above it carries botTokenFingerprint - the bot id and the
+    last four characters - so you can tell whether the panel is even holding
+    the token you think it is. The id before the colon is the bot's public
+    user id, not a secret.
+
+"[env] TELEGRAM_BOT_TOKEN has only N characters after the colon"
+"[env] TELEGRAM_BOT_TOKEN looks like a link to the bot"
+"[env] TELEGRAM_BOT_TOKEN has no colon in it"
+    The shape is checked before the token is ever sent, because a damaged one
+    comes back from Telegram as 404 Not Found - which reads as "the API moved"
+    rather than "your variable is wrong". The message names what it found.
+
+
+"tg.network_retry" / "tg.unreachable"
+    The bot cannot reach api.telegram.org. It does NOT exit - it keeps
+    retrying with a growing backoff and connects by itself when the network
+    comes back. Each line carries errCode, and the code is the whole
+    diagnosis:
+
+      ENOTFOUND / EAI_AGAIN   DNS. Usually the container's networking is
+                              still coming up; it fixes itself within a
+                              minute. If it never does, the container has no
+                              working resolver.
+      ECONNREFUSED            Something refused the connection. If this
+                              persists for more than a few minutes, the HOST
+                              is blocking outbound traffic to Telegram and
+                              nothing in the bot can change that - you need a
+                              different host or an egress proxy.
+      ETIMEDOUT / UND_ERR_*   Attempted, nothing came back. Either of the
+                              above, or a slow link.
+      ECONNRESET              Dropped mid-connection. Usually transient.
+
+    Before this was handled the bot exited about two seconds after start, and
+    a host that aborts automatic restarts for anything crashing inside its
+    first minute then left the container dead until someone looked.
+
+"boot.delaying_exit"
+    A network failure got past the retries, so the bot is deliberately
+    staying alive until it has been up for 70 seconds before exiting - below
+    that, the panel treats it as a crash loop and refuses to restart it.
+    Only network failures do this; a bad token exits immediately, because a
+    container restarting forever hides the message that says what is wrong.
+
 
 409 Conflict
     Something else holds the update stream — the old Cloud Function, a second

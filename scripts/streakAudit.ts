@@ -2,6 +2,7 @@
  * Audits and repairs the streak system's stored history.
  *
  *   npx tsx scripts/streakAudit.ts                                    # report only
+ *   npx tsx scripts/streakAudit.ts --only preseason                    # the day-1 bug
  *   npx tsx scripts/streakAudit.ts --commit                           # apply repairs
  *   npx tsx scripts/streakAudit.ts --archive semester_123 --commit
  *   npx tsx scripts/streakAudit.ts --backfill-stage stage_3 --commit
@@ -30,9 +31,20 @@
  *   4. best            users.bestStreakAllTime backfilled from the highest value the
  *                      account can prove: its live counters and every archived card.
  *                      Without this the new all-time field starts at 0 for everyone.
+ *
+ *   5. preseason       accounts whose lastActiveDate predates the RUNNING term, which
+ *                      the year's opening day silently incremented instead of starting
+ *                      fresh: every preseason day is paused, so activeDaysBetween reads
+ *                      a gap of one from any of them, and closableTerm can never close
+ *                      a first term so startNewSeason never zeroed them. Needs no
+ *                      archive, so it runs before the archive is resolved.
  */
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { hasBridgedSeasonOpen, hasPreTermStreakState, openSeason } from '../shared/seasonReset.js';
+import { getEffectiveDateString } from '../shared/streakApi.js';
+import { loadCalendar } from '../shared/seasonRollover.js';
+import { baghdadToday, resolvePhase, seasonOpeningDay } from '../shared/academicCalendar.js';
 import 'dotenv/config';
 
 // ---------------------------------------------------------------------------
@@ -48,7 +60,7 @@ const has = (name: string) => argv.includes(`--${name}`);
 const commit = has('commit');
 const archiveIdFlag = flag('archive');
 const backfillStage = flag('backfill-stage');
-const only = flag('only'); // archive-stage | cards | pending | best
+const only = flag('only'); // archive-stage | cards | pending | best | preseason
 
 const runs = (pass: string) => !only || only === pass;
 
@@ -83,6 +95,122 @@ async function writeAll(label: string, ops: ((b: FirebaseFirestore.WriteBatch) =
 }
 
 async function main() {
+  // -------------------------------------------------------------------------
+  // PASS 5 - streak state left over from before the running term opened
+  //
+  // First, and outside the archive requirement below: the case this exists for
+  // is a calendar's FIRST term, where there is no closed season and so no
+  // archive to audit against.
+  // -------------------------------------------------------------------------
+  if (runs('preseason')) {
+    console.log('== 5. pre-term streak state ==');
+
+    const calendar = await loadCalendar(db);
+    const today = baghdadToday(calendar.timezone);
+    const phase = resolvePhase(calendar, today);
+
+    if (!phase.term || phase.isPaused) {
+      console.log(`  ${today} is ${phase.phase}${phase.isPaused ? ' (paused)' : ''} - no running term to measure against.`);
+      console.log('');
+    } else {
+      const termStart = phase.term.startDate;
+      const yearOpens = seasonOpeningDay(calendar);
+      // The bridged sweep is armed only while opening the YEAR's first term.
+      // On term 2's opening day a streak above 1 is legitimate.
+      const sweepBridged = !!yearOpens && yearOpens === termStart;
+
+      const usersSnap = await db.collection('users').get();
+      const affected = usersSnap.docs.filter(d => hasPreTermStreakState(d.data(), termStart));
+      const bridged = sweepBridged
+        ? usersSnap.docs.filter(d => hasBridgedSeasonOpen(d.data(), yearOpens as string))
+        : [];
+
+      const listRows = (docs: FirebaseFirestore.QueryDocumentSnapshot[]) => {
+        for (const d of docs.slice(0, 50)) {
+          const u = d.data() as any;
+          console.log(
+            `    ${d.id}` +
+            `  streak=${u.streakCount || 0}` +
+            `  longest=${u.longestStreak || 0}` +
+            `  best=${u.bestStreakAllTime || 0}` +
+            `  lastActive=${u.lastActiveDate ?? 'null'}` +
+            `  ${u.name || ''}`,
+          );
+        }
+        if (docs.length > 50) console.log(`    ... and ${docs.length - 50} more`);
+      };
+
+      console.log(`  term ${phase.term.id} opened ${termStart}; ${usersSnap.size} account(s) scanned`);
+
+      if (affected.length === 0) {
+        console.log('  no account carries streak state from before the term opened.');
+      } else {
+        console.log(`  ${affected.length} account(s) carry pre-term state:\n`);
+        listRows(affected);
+      }
+
+      // The accounts the staleness test above cannot see: the bridge overwrote
+      // their lastActiveDate with the opening day itself, which reads as "this
+      // season" and skips them. They are clamped to 1, not zeroed - zeroing a
+      // row that already holds today's streak_history marker strands it at 0
+      // until tomorrow.
+      if (!sweepBridged) {
+        if (yearOpens) {
+          console.log(`  (bridged sweep off - ${termStart} is not the year's opening day ${yearOpens})`);
+        }
+      } else if (bridged.length === 0) {
+        console.log(`  no account was bridged into the opening day ${yearOpens}.`);
+      } else {
+        console.log(`\n  ${bridged.length} account(s) were bridged into the opening day:\n`);
+        listRows(bridged);
+      }
+
+      if (affected.length > 0 || bridged.length > 0) {
+        if (commit) {
+          // Reuses the rollover's own patch, so the repair and the thing that
+          // prevents a recurrence cannot drift. It also stamps seasonOpenedFor,
+          // which is what stops the next rollover redoing this.
+          const result = await openSeason(db, FieldValue, {
+            termId: phase.term.id,
+            termStart,
+            // Without this the bridged sweep is disarmed and the pass silently
+            // repairs only half of what it just listed.
+            yearOpens,
+            // The day record-activity is CURRENTLY crediting, not the calendar
+            // date. The 2-hour grace window means that between 00:00 and 02:00
+            // Baghdad they differ - and an operator running this at 01:00 would
+            // otherwise stamp lastActiveDate a day into the future and look for
+            // the wrong streak_history marker.
+            creditedDay: getEffectiveDateString(),
+            performedBy: 'scripts/streakAudit.ts',
+          });
+          console.log(
+            `\n  -> cleared ${result.cleared} account(s), clamped ${result.bridged}; ` +
+            `seasonOpenedFor = ${result.termId}`,
+          );
+          // A repair that writes less than it just listed is the dangerous
+          // failure here: it prints a healthy-looking summary, stamps
+          // seasonOpenedFor so the cron will not revisit, and leaves the rows
+          // on screen still wrong. Say so loudly and exit non-zero.
+          if (result.cleared < affected.length || result.bridged < bridged.length) {
+            console.error(
+              `\n  MISMATCH: listed ${affected.length} stale and ${bridged.length} bridged, ` +
+              `but wrote ${result.cleared} and ${result.bridged}. Re-run after fixing.`,
+            );
+            process.exit(1);
+          }
+        } else {
+          console.log('\n  DRY RUN - rerun with --commit to repair these and bank their peaks.');
+        }
+      }
+      console.log('');
+    }
+
+    // Nothing else this pass needs, and the archive lookup below would exit 1
+    // on a project whose first season has not closed yet.
+    if (only === 'preseason') return;
+  }
+
   // -------------------------------------------------------------------------
   // Which archive are we auditing against?
   // -------------------------------------------------------------------------

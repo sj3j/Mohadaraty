@@ -5,7 +5,8 @@ import crypto from "crypto";
 import { startNewSeason } from "../shared/seasonReset.js";
 import { runSeasonRollover, resolveCurrentPhase, syncPhaseMirror, loadCalendar } from "../shared/seasonRollover.js";
 import { submitProgression, ProgressionError } from "../shared/progressionSubmit.js";
-import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError } from "../shared/googleLogin.js";
+import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError,
+  claimAccountWithGoogle, asGoogleLoginError, discardPopupIdentity } from "../shared/googleLogin.js";
 import {
   resolveStudentLogin,
   resolveSessionUid,
@@ -55,14 +56,22 @@ import {
   SubscriptionCtx,
 } from "../shared/subscriptions.js";
 import { createSimosanHandlers } from "../shared/simosanApi.js";
+import { createStreakHandlers } from "../shared/streakApi.js";
 import { createMcqHandlers } from "../shared/mcqApi.js";
 import { createTimetableHandlers } from "../shared/timetableApi.js";
+import { createIapHandlers } from "../shared/iapApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "../shared/masterAdmins.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const app = express();
-app.use(express.json());
+// The `verify` hook captures the raw bytes for RevenueCat's webhook signature,
+// which is an HMAC over "<timestamp>.<raw body>" and cannot be recomputed from
+// the parsed object. Done here, on the ONE global parser, rather than by
+// mounting express.raw() on that path - a path-mounted parser has to be ordered
+// identically in server.ts and api/index.ts, and that is exactly the drift
+// PITFALLS.md records under "Dual API surfaces".
+app.use(express.json({ verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
 // Capacitor serves the bundled app from https://localhost (Android) and
 // capacitor://localhost (iOS), so every /api call from the native build is a
 // cross-origin request. Without these headers the WebView blocks them all and
@@ -379,8 +388,17 @@ app.post("/api/admin/users/merge", verifyAuth, async (req, res) => {
       return res.status(400).json({ error: "primaryUid and secondaryUid must differ" });
     }
 
-    await mergeUserAccounts(admin.firestore(), admin.auth(), keepUid, deleteUid);
-    res.json({ success: true });
+    // The students half is what stops the duplicate coming straight back:
+    // without it the losing roster row stays live and the next sign-in on
+    // that address mints the second account again.
+    const report = await mergeUserAccounts(
+      admin.firestore(), admin.auth(), keepUid, deleteUid, {
+        keepStudentId: req.body?.keepStudentId,
+        deleteStudentId: req.body?.deleteStudentId,
+        FieldValue: admin.firestore.FieldValue as any,
+        reason: `admin:${user.email || user.uid}`,
+      });
+    res.json({ success: true, ...report });
   } catch (error) {
     console.error("Merge user accounts error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -629,6 +647,10 @@ app.post("/api/admin/signup/:email/:action", verifyAuth, verifyAdmin, async (req
       reviewerStageId: reviewer.managedStageId || null,
       isMasterAdmin: isMaster,
       reason: req.body?.reason,
+      // A namesake in the same stage blocks approval unless the reviewer
+      // says otherwise. Two identical three-part names in one cohort is
+      // possible, so this has to exist - as a decision, not a default.
+      force: req.body?.force === true,
     });
     return res.json({ success: true, ...result });
   } catch (error: any) {
@@ -663,6 +685,8 @@ app.post("/api/google-login", async (req, res) => {
     // studentId is the students/ document id the server resolved to - which
     // for a roster account that linked a Gmail is NOT the address Google
     // asserted. The client needs it for its own whitelist lookups.
+    await discardPopupIdentity(db, admin.auth(), identity, result.uid);
+
     res.json({ token: result.customToken, studentId: result.email });
   } catch (error: any) {
     if (error instanceof GoogleLoginError) {
@@ -672,6 +696,47 @@ app.post("/api/google-login", async (req, res) => {
     }
     console.error("Google login error:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// The other half of NO_ACCOUNT. A staff-created account is a students/ document
+// with a hashed password whose Auth record carries no email at all, so Firebase
+// cannot see that it and a Google identity are the same person - the join is
+// ours to make. Public for the same reason /api/login is: it IS an
+// authentication, and it demands two independent proofs (a Google-verified
+// mailbox, and the roster password) before it links anything.
+app.post("/api/google-claim", async (req, res) => {
+  try {
+    const { idToken, googleIdToken, identifier, password } = req.body || {};
+    const db = admin.firestore();
+
+    const identity = await verifyGoogleIdentity({
+      adminAuth: admin.auth(),
+      oauthClient: googleOAuthClient,
+      audience: GOOGLE_WEB_CLIENT_ID,
+      idToken,
+      googleIdToken,
+    });
+
+    const result = await claimAccountWithGoogle(db, admin.auth(), identity,
+      { identifier, password },
+      {
+        masterAdminEmails: [...MASTER_ADMIN_EMAILS],
+        syncUserStage: (uid, source) => syncUserStage(db, uid, source),
+        FieldValue: admin.firestore.FieldValue as any,
+      });
+
+    await discardPopupIdentity(db, admin.auth(), identity, result.uid);
+
+    res.json({
+      token: result.customToken,
+      studentId: result.email,
+      alreadyOwned: result.alreadyOwned,
+    });
+  } catch (error: any) {
+    const wrapped = asGoogleLoginError(error);
+    if (wrapped.status >= 500) console.error("Google claim error:", error);
+    return res.status(wrapped.status).json({ error: wrapped.message, code: wrapped.code });
   }
 });
 
@@ -1176,270 +1241,22 @@ app.post("/api/check-whitelist", async (req, res) => {
 });
 
 // --- Streak System Backend ---
-
-const getBaghdadDate = (date = new Date()) => {
-  return date.toLocaleDateString("en-CA", {
-    timeZone: "Asia/Baghdad"
-  }); // returns "YYYY-MM-DD"
-};
-
-const getEffectiveDateString = (gracePeriodHours: number = 2) => {
-  const now = new Date();
-  
-  // Get current hour in Baghdad (0-23)
-  const timeStr = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Baghdad", hourCycle: "h23", hour: "2-digit" });
-  const hour = parseInt(timeStr.split(":")[0], 10);
-  
-  if (hour >= 0 && hour < gracePeriodHours) {
-    now.setDate(now.getDate() - 1);
-  }
-  
-  return getBaghdadDate(now);
-};
-
-app.post("/api/record-activity", verifyAuth, async (req, res) => {
-  try {
-    const user = (req as any).user;
-    const db = admin.firestore();
-    
-    // Whether streaks count today is derived from the academic calendar, not
-    // from a stored flag, so a break pauses the app whether or not the nightly
-    // rollover ever ran. Resolved against the day being CREDITED (grace period
-    // applied), so the gate and the streak arithmetic always agree on the date.
-    const settingsSnap = await db.collection('app_settings').doc('streak').get();
-    const graceHours = settingsSnap.exists ? (settingsSnap.data()?.gracePeriodHours ?? 2) : 2;
-    const { calendar, phase } = await resolveCurrentPhase(db, getEffectiveDateString(graceHours));
-    if (phase.isPaused) {
-      return res.json({
-        success: true,
-        vacationMode: true,
-        phase: phase.phase,
-        resumesOn: phase.nextStart,
-        message: "The competition is paused for the break. Streaks are frozen.",
-      });
-    }
-
-    const userRef = db.collection('users').doc(user.uid);
-    
-    const txResult = await db.runTransaction(async (t) => {
-      const appSettingsDoc = await t.get(db.collection('app_settings').doc('streak'));
-      const gracePeriodHours = appSettingsDoc.exists ? (appSettingsDoc.data()?.gracePeriodHours ?? 2) : 2;
-      const globalFreeze = appSettingsDoc.exists ? (appSettingsDoc.data()?.globalFreezeActive ?? false) : false;
-      const globalFreezeDate = appSettingsDoc.exists ? appSettingsDoc.data()?.globalFreezeDate : null;
-      
-      const effectiveDate = getEffectiveDateString(gracePeriodHours);
-      const historyId = `${user.uid}_${effectiveDate}`;
-      const historyRef = db.collection('streak_history').doc(historyId);
-      const pendingDocRef = db.collection('pending_streak_resets').doc(user.uid);
-      
-      const userDoc = await t.get(userRef);
-      const historyDoc = await t.get(historyRef);
-      const pendingDoc = await t.get(pendingDocRef);
-      
-      if (!userDoc.exists) {
-        throw new Error("User not found");
-      }
-      
-      if (historyDoc.exists) {
-        if (historyDoc.data()?.freezeUsed === true) {
-           t.update(historyRef, { freezeUsed: false });
-        }
-        t.update(userRef, { lastActiveAt: admin.firestore.FieldValue.serverTimestamp() });
-        return { freezeUsed: false };
-      }
-
-      const data = userDoc.data()!;
-      let streakCount = data.streakCount || 0;
-      let longestStreak = data.longestStreak || 0;
-      let freezeTokens = data.freezeTokens ?? 1;
-      let hasUsedFreeze = false;
-      const lastActiveDate = data.lastActiveDate;
-      const initialStreakCount = streakCount;
-      const initialFreezeTokens = freezeTokens;
-      let method = 'normal';
-      let missedDaysForLog = 0;
-      
-      let processedLastDate = lastActiveDate;
-      if (processedLastDate && processedLastDate.includes("T")) {
-        processedLastDate = processedLastDate.split("T")[0];
-      }
-
-      if (globalFreeze && globalFreezeDate && processedLastDate) {
-         // Treat frozen date as if student was active
-         // Don't penalize for missing that day if the gap spans across the globalFreezeDate
-         // Just a simple safety mechanism, if processedLastDate is before globalFreezeDate
-         // and effective date is after or equal, we fast forward processedLastDate
-         if (processedLastDate < globalFreezeDate && effectiveDate >= globalFreezeDate) {
-             processedLastDate = globalFreezeDate;
-             method = 'global_freeze';
-         }
-      }
-
-      if (!processedLastDate) {
-        streakCount = 1;
-      } else {
-        // Paused days are not misses: a student active on the last live day
-        // before a break and again on the first day of the new term is one day
-        // apart. Without this every student loses their streak across a break
-        // the rollover failed to archive.
-        const daysDiff = activeDaysBetween(calendar, processedLastDate, effectiveDate);
-
-        if (daysDiff === 1) {
-          streakCount += 1;
-        } else if (daysDiff > 1) {
-          const missedDays = daysDiff - 1;
-          missedDaysForLog = missedDays;
-          
-          if (freezeTokens >= missedDays) {
-            freezeTokens -= missedDays;
-            streakCount += 1;
-            hasUsedFreeze = true;
-            if (method !== 'global_freeze') method = 'freeze_token';
-            
-            // Stamp only the LIVE days that were missed. Walking raw calendar
-            // days here would mark break days as covered by a freeze token,
-            // which is both wrong on the streak calendar and off by however
-            // long the break was.
-            let gapDate = processedLastDate;
-            for (let stamped = 0; stamped < missedDays; ) {
-              gapDate = addDays(gapDate, 1);
-              if (gapDate >= effectiveDate) break;
-              if (!isLiveDay(calendar, gapDate)) continue;
-              stamped++;
-
-              const gapHistoryRef = db.collection('streak_history').doc(`${user.uid}_${gapDate}`);
-              t.set(gapHistoryRef, {
-                userId: user.uid,
-                date: gapDate,
-                wasActive: true,
-                freezeUsed: true,
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
-              });
-            }
-          } else {
-            const previousStreak = streakCount;
-            streakCount = 1;
-
-            let canCreatePending = false;
-            if (!data.hasPendingStreakReset) {
-                canCreatePending = true;
-            } else if (pendingDoc.exists) {
-                const pData = pendingDoc.data();
-                if (pData && pData.expiresAt) {
-                    const exp = pData.expiresAt.toDate ? pData.expiresAt.toDate() : new Date(pData.expiresAt);
-                    if (exp < new Date()) canCreatePending = true;
-                }
-            } else {
-                canCreatePending = true; // flag is true but doc doesn't exist
-            }
-
-            if (canCreatePending) {
-              const expiresAt = new Date();
-              expiresAt.setDate(expiresAt.getDate() + 7);
-
-              t.set(pendingDocRef, {
-                 userId: user.uid,
-                 email: user.email || '',
-                 name: data.name || '',
-                 missedDays: missedDays,
-                 streakAtRisk: previousStreak,
-                 dateRecorded: effectiveDate,
-                 expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
-                 createdAt: admin.firestore.FieldValue.serverTimestamp()
-              });
-            }
-            method = 'pending_loss';
-          }
-        }
-      }
-      
-      longestStreak = Math.max(longestStreak, streakCount);
-      // Per-season peak (longestStreak) is zeroed by startNewSeason; this one is
-      // not, and is what the profile's "الأطول" reads.
-      const bestStreakAllTime = Math.max(data.bestStreakAllTime || 0, streakCount);
-
-      const updateData: any = {
-        streakCount,
-        longestStreak,
-        bestStreakAllTime,
-        freezeTokens,
-        lastActiveDate: effectiveDate,
-        lastActiveAt: admin.firestore.FieldValue.serverTimestamp()
-      };
-      if (method === 'pending_loss' && !data.hasPendingStreakReset) {
-         updateData.hasPendingStreakReset = true;
-      }
-      
-      t.update(userRef, updateData);
-      
-      t.set(historyRef, {
-        userId: user.uid,
-        date: effectiveDate,
-        wasActive: true,
-        freezeUsed: false,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
-      });
-      
-      const streakLogRef = db.collection('streakLog').doc(user.uid).collection('days').doc(effectiveDate);
-      t.set(streakLogRef, {
-        date: effectiveDate,
-        recordedAt: admin.firestore.FieldValue.serverTimestamp(),
-        streakBefore: initialStreakCount,
-        streakAfter: streakCount,
-        method: method,
-        tokensBefore: initialFreezeTokens,
-        tokensAfter: freezeTokens,
-        missedDays: missedDaysForLog,
-        gracePeriodApplied: getBaghdadDate() !== effectiveDate
-      }, { merge: true });
-      
-      return { freezeUsed: hasUsedFreeze };
-    });
-    
-    const updatedUser = await userRef.get();
-    res.json({ 
-      success: true, 
-      streakCount: updatedUser.data()?.streakCount, 
-      freezeUsed: txResult?.freezeUsed || false
-    });
-  } catch (error) {
-    console.error("Error recording activity:", error);
-    res.status(500).json({ error: "Failed to record activity" });
-  }
-});
-
-app.get("/api/streak-history/:uid", verifyAuth, async (req, res) => {
-  try {
-    const authUser = (req as any).user;
-    const targetUid = req.params.uid;
-    const db = admin.firestore();
-    
-    if (authUser.uid !== targetUid) {
-       const userDoc = await db.collection('users').doc(authUser.uid).get();
-       const role = userDoc.data()?.role;
-       if (role !== 'admin' && role !== 'moderator') {
-          return res.status(403).json({ error: 'Forbidden' });
-       }
-    }
-
-    const snapshot = await db.collection('streak_history')
-      .where('userId', '==', targetUid)
-      .get();
-      
-    const history = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        ...data,
-        timestamp: data.timestamp?.toDate() ? data.timestamp.toDate().toISOString() : new Date().toISOString()
-      };
-    });
-    
-    res.json({ history });
-  } catch (error) {
-    console.error("Error fetching streak history:", error);
-    res.status(500).json({ error: "Failed to fetch streak history" });
-  }
-});
+//
+// Handlers live in shared/streakApi.ts and are mounted identically in
+// server.ts. They had already drifted - production grew a globalFreeze
+// gap-skip and a streakLog audit trail that dev never had, dev grew a recovery
+// push production never sent - which is exactly what a shared factory prevents.
+// verifyAuth / verifyAdmin stay per-surface: those genuinely differ.
+const streak = createStreakHandlers({ admin });
+app.post("/api/record-activity", verifyAuth, streak.recordActivity);
+app.get("/api/streak-history/:uid", verifyAuth, streak.history);
+app.post("/api/admin/time-freeze", verifyAuth, verifyAdmin, streak.timeFreeze);
+app.post("/api/admin/grant-freeze", verifyAuth, verifyAdmin, streak.grantFreeze);
+app.post("/api/admin/grant-freeze-global", verifyAuth, verifyAdmin, streak.grantFreezeGlobal);
+app.post("/api/admin/streak-recovery", verifyAuth, verifyAdmin, streak.recovery);
+app.post("/api/admin/resolve-pending-streak", verifyAuth, verifyAdmin, streak.resolvePending);
+app.post("/api/admin/fix-calendar", verifyAuth, verifyAdmin, streak.fixCalendar);
+app.post("/api/cron/streak-warnings", streak.warningsCron);
 
 // Ends the current season: archives BOTH boards into each student's profile
 // with their final rank, zeroes the live boards, and starts the new season.
@@ -1639,305 +1456,6 @@ app.post("/api/admin/wipe-year", verifyAuth, verifyAdmin, async (req, res) => {
     }
     console.error("Year wipe error:", error);
     return res.status(500).json({ error: error?.message || "Internal server error" });
-  }
-});
-
-app.post("/api/admin/time-freeze", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const db = admin.firestore();
-    const appSettingsDoc = await db.collection('app_settings').doc('streak').get();
-    const gracePeriodHours = appSettingsDoc.exists ? (appSettingsDoc.data()?.gracePeriodHours ?? 2) : 2;
-    const effectiveDate = getEffectiveDateString(gracePeriodHours);
-    
-    const d = new Date(`${effectiveDate}T12:00:00Z`);
-    d.setDate(d.getDate() - 1);
-    const yesterdayStr = getBaghdadDate(d);
-
-    const usersRef = db.collection('users');
-    const snapshot = await usersRef.get();
-    
-    const batches = [];
-    let currentBatch = db.batch();
-    let countInBatch = 0;
-    let totalUpdated = 0;
-    
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.streakCount > 0) {
-        let processedLastDate = data.lastActiveDate;
-        if (processedLastDate && typeof processedLastDate === 'string' && processedLastDate.includes("T")) {
-          processedLastDate = processedLastDate.split("T")[0];
-        }
-        
-        if (!processedLastDate || processedLastDate < yesterdayStr) {
-          currentBatch.update(doc.ref, { lastActiveDate: yesterdayStr });
-          countInBatch++;
-          totalUpdated++;
-          
-          if (countInBatch >= 400) {
-            batches.push(currentBatch.commit());
-            currentBatch = db.batch();
-            countInBatch = 0;
-          }
-        }
-      }
-    });
-    
-    if (countInBatch > 0) {
-      batches.push(currentBatch.commit());
-    }
-    
-    await Promise.all(batches);
-    
-    res.json({ success: true, count: totalUpdated });
-  } catch (e) {
-    console.error("Error freezing time", e);
-    res.status(500).json({ error: "Error freezing time" });
-  }
-});
-
-app.post("/api/admin/grant-freeze-global", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const db = admin.firestore();
-    const usersRef = db.collection('users');
-    const snapshot = await usersRef.get();
-    
-    const batches = [];
-    let currentBatch = db.batch();
-    let count = 0;
-    let countInBatch = 0;
-    
-    snapshot.forEach(doc => {
-      currentBatch.update(doc.ref, { freezeTokens: 3 });
-      count++;
-      countInBatch++;
-      
-      if (countInBatch >= 400) {
-        batches.push(currentBatch.commit());
-        currentBatch = db.batch();
-        countInBatch = 0;
-      }
-    });
-    
-    if (countInBatch > 0) {
-      batches.push(currentBatch.commit());
-    }
-    
-    await Promise.all(batches);
-    
-    res.json({ success: true, count });
-  } catch (e) {
-    console.error("Error granting global freeze tokens", e);
-    res.status(500).json({ error: "Error granting global freeze tokens" });
-  }
-});
-
-app.post("/api/admin/grant-freeze", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const { userUid, amount } = req.body;
-    const db = admin.firestore();
-    const userRef = db.collection('users').doc(userUid);
-    
-    await db.runTransaction(async (t) => {
-      const doc = await t.get(userRef);
-      if (!doc.exists) throw new Error("Not found");
-      const currentTokens = doc.data()?.freezeTokens ?? 1;
-      const newTokens = Math.min(currentTokens + amount, 3);
-      t.update(userRef, { freezeTokens: newTokens });
-    });
-    res.json({ success: true });
-  } catch (e) {
-    console.error("Error recovering streak", e);
-    res.status(500).json({ error: "Error recovering streak" });
-  }
-});
-
-app.post("/api/admin/streak-recovery", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const { userUid, studentEmail, newStreak, reason } = req.body;
-    const db = admin.firestore();
-    const adminUser = (req as any).user;
-    const userRef = db.collection('users').doc(userUid);
-    
-    await db.runTransaction(async (t) => {
-      const doc = await t.get(userRef);
-      if (!doc.exists) throw new Error("Not found");
-      const oldStreak = doc.data()?.streakCount || 0;
-      
-      t.update(userRef, {
-        streakCount: newStreak,
-        longestStreak: Math.max(doc.data()?.longestStreak || 0, newStreak),
-        bestStreakAllTime: Math.max(doc.data()?.bestStreakAllTime || 0, newStreak)
-      });
-      
-      const recoveryRef = db.collection('streak_recoveries').doc();
-      t.set(recoveryRef, {
-        studentEmail,
-        userId: userUid,
-        oldStreak,
-        newStreak,
-        reason,
-        recoveredBy: adminUser.email,
-        recoveredAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    });
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: "Error recovering streak" });
-  }
-});
-
-app.post("/api/admin/resolve-pending-streak", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const { userUid, action } = req.body;
-    const db = admin.firestore();
-    const userRef = db.collection('users').doc(userUid);
-    const pendingRef = db.collection('pending_streak_resets').doc(userUid);
-
-    await db.runTransaction(async (t) => {
-      const pendingDoc = await t.get(pendingRef);
-      if (!pendingDoc.exists) throw new Error("Pending streak reset not found");
-
-      const pendingData = pendingDoc.data();
-      const userDoc = await t.get(userRef);
-      const currentTokens = userDoc.exists ? (userDoc.data()?.freezeTokens || 0) : 0;
-
-      if (action === 'reset') {
-        // It was already reset when the opportunity was created. Just clean up.
-        t.update(userRef, {
-          hasPendingStreakReset: admin.firestore.FieldValue.delete()
-        });
-
-      } else if (action === 'forgive') {
-        let newStreakCount = userDoc.exists ? (userDoc.data()?.streakCount || 0) : 0;
-
-        if (pendingData && pendingData.dateRecorded && pendingData.missedDays) {
-          const missedDays = pendingData.missedDays;
-          const streakAtRisk = pendingData.streakAtRisk || 0;
-          
-          // Add the restored streak to their current progress
-          newStreakCount += streakAtRisk;
-          
-          let d = new Date(`${pendingData.dateRecorded}T12:00:00Z`);
-          for (let i = 0; i < missedDays; i++) {
-            d.setDate(d.getDate() - 1);
-            const gapY = d.getUTCFullYear();
-            const gapM = d.getUTCMonth() + 1;
-            const gapD = d.getUTCDate();
-            const gapDateStr = `${gapY}-${gapM.toString().padStart(2, '0')}-${gapD.toString().padStart(2, '0')}`;
-            
-            const gapHistoryRef = db.collection('streak_history').doc(`${userUid}_${gapDateStr}`);
-            t.set(gapHistoryRef, {
-              userId: userUid,
-              date: gapDateStr,
-              wasActive: true,
-              freezeUsed: true,
-              timestamp: admin.firestore.FieldValue.serverTimestamp()
-            });
-          }
-        }
-
-        const longestStreak = Math.max(userDoc.data()?.longestStreak || 0, newStreakCount);
-
-        t.update(userRef, {
-          streakCount: newStreakCount,
-          longestStreak,
-          bestStreakAllTime: Math.max(userDoc.data()?.bestStreakAllTime || 0, newStreakCount),
-          hasPendingStreakReset: admin.firestore.FieldValue.delete()
-        });
-      } else {
-        throw new Error("Invalid action");
-      }
-
-      t.delete(pendingRef);
-    });
-
-    res.json({ success: true });
-  } catch (error: any) {
-    console.error("Error resolving pending streak", error);
-    res.status(500).json({ error: error.message || "Error resolving pending streak" });
-  }
-});
-
-app.post("/api/admin/fix-calendar", verifyAuth, verifyAdmin, async (req, res) => {
-  try {
-    const { userUid } = req.body;
-    const db = admin.firestore();
-    
-    const today = new Date();
-    const datesToCheck: string[] = [];
-    for (let i = 1; i <= 10; i++) {
-      const d = new Date(today);
-      d.setUTCDate(d.getUTCDate() - i);
-      const y = d.getUTCFullYear();
-      const m = d.getUTCMonth() + 1;
-      const day = d.getUTCDate();
-      const dateStr = `${y}-${m.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-      datesToCheck.push(dateStr);
-    }
-
-    let fixedCount = 0;
-    await db.runTransaction(async (t) => {
-      const userRef = db.collection('users').doc(userUid);
-      
-      datesToCheck.reverse(); // oldest to newest
-      
-      for (const dateStr of datesToCheck) {
-        const docRef = db.collection('streak_history').doc(`${userUid}_${dateStr}`);
-        const docSnap = await t.get(docRef);
-        if (!docSnap.exists) {
-          t.set(docRef, {
-            userId: userUid,
-            date: dateStr,
-            wasActive: true,
-            freezeUsed: true,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
-          });
-          fixedCount++;
-        }
-      }
-    });
-    res.json({ success: true, fixedCount });
-  } catch (e: any) {
-    console.error(e);
-    res.status(500).json({ error: e.message || "Error" });
-  }
-});
-
-app.post("/api/cron/streak-warnings", async (req, res) => {
-  if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET && process.env.CRON_SECRET) {
-    return res.status(403).send("Forbidden");
-  }
-  
-  try {
-    const db = admin.firestore();
-    const effectiveDate = getEffectiveDateString();
-    
-    const usersSnap = await db.collection('users').where('fcmToken', '!=', null).get();
-    
-    const tokens: string[] = [];
-    usersSnap.forEach(doc => {
-      const data = doc.data();
-      if (data.lastActiveDate !== effectiveDate && data.fcmToken) {
-        tokens.push(data.fcmToken);
-      }
-    });
-    
-    if (tokens.length > 0) {
-      const message = {
-        notification: {
-          title: "لا تنسَ نشاطك اليومي 🔥",
-          body: "ستريكك في خطر! افتح التطبيق الآن لتحافظ عليه.",
-        },
-        tokens: tokens,
-      };
-      await admin.messaging().sendEachForMulticast(message);
-    }
-    
-    res.json({ success: true, notifiedCount: tokens.length });
-  } catch (e) {
-    console.error("Cron streak warnings error", e);
-    res.status(500).json({ error: "Error sending warnings" });
   }
 });
 
@@ -2326,6 +1844,17 @@ app.post('/api/subscriptions/:id/approve', verifyAuth, verifyAdmin, requireSubsc
         error: 'ZainCash payments settle automatically; re-check the payment instead',
       });
     }
+    // Apple, for the same reason and one more. StoreKit already took the money
+    // and RevenueCat is the only thing that knows whether it stuck, so approving
+    // by hand would grant access nobody verified; and activateSubscription would
+    // then stack PLAN_CONFIG.days onto an expiry Apple owns and moves every
+    // renewal, leaving the row permanently disagreeing with the App Store.
+    // /api/iap/sync is the way to re-check one.
+    if (subData.paymentMethod === 'apple_iap') {
+      return res.status(400).json({
+        error: 'Apple subscriptions settle automatically; re-sync the purchase instead',
+      });
+    }
     if (subData.status !== 'pending') {
       return res.status(400).json({ error: 'Subscription is not pending' });
     }
@@ -2466,5 +1995,17 @@ app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
  * moderator and support alike. Mirrored in server.ts. */
 const timetable = createTimetableHandlers({ admin });
 app.post("/api/timetable/parse", verifyAuth, verifyAdmin, timetable.parse);
+
+/* Apple In-App Purchase. Handlers live in shared/iapApi.ts and are mounted
+ * identically in server.ts - keep these four lines in step across both files.
+ *
+ * The webhook takes NO auth middleware on purpose: RevenueCat is not a Firebase
+ * user and holds no ID token. It authenticates with a shared header and an
+ * optional HMAC, verified inside the handler, which FAILS CLOSED when the
+ * secret is unset. */
+const iap = createIapHandlers({ admin, notify: notifySubscription });
+app.post("/api/iap/identity", verifyAuth, iap.identity);
+app.post("/api/iap/sync", verifyAuth, iap.sync);
+app.post("/api/iap/webhook", iap.webhook);
 
 export default app;

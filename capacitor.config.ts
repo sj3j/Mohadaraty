@@ -25,8 +25,23 @@ const config: CapacitorConfig = {
     allowMixedContent: false,
   },
 
+  ios: {
+    // The WebView does not inset its own content; the app shell already
+    // handles the safe area itself (App.tsx's root carries
+    // paddingTop: env(safe-area-inset-top), and pb-[104px] for the floating
+    // nav). Letting WKWebView add its own inset on top would double both.
+    contentInset: 'never',
+  },
+
   server: {
     androidScheme: 'https',
+    // Same reason as androidScheme above, and it is NOT cosmetic here either:
+    // src/lib/hash.ts hashes passwords with crypto.subtle, which refuses to run
+    // outside a secure context, so login itself depends on this. Capacitor's
+    // default iOS scheme is `capacitor://localhost`; pinning it to https keeps
+    // the origin shape identical on both platforms, which also keeps one CORS
+    // allowlist and one set of Firebase authorized domains valid for both.
+    iosScheme: 'https',
     // Keep top-level navigation inside the app; outward links open in a browser
     // sheet rather than replacing the app shell with a page it cannot leave.
     allowNavigation: [],

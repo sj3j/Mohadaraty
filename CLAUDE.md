@@ -18,9 +18,9 @@ that's always loaded:
 `server.ts` is the **dev** server, run via `npm run dev` (tsx). `api/index.ts` is
 what actually serves **production** — `vercel.json` rewrites `/api/*` to it.
 
-They used to disagree by 14 routes. **As of the chat removal they carry the same
-57 paths**, and the only difference left is server.ts's `"*"` SPA catch-all,
-which Vercel does not need. Re-check with
+They used to disagree by 14 routes. **They now carry the same 66 paths**
+(`/api/google-claim` was the most recent addition to both), and the only
+difference left is server.ts's `"*"` SPA catch-all, which Vercel does not need. Re-check with
 
     grep -oE "app\.(get|post|put|delete|patch|all)\(\s*[\"'\`][^\"'\`]*" server.ts
 
@@ -28,6 +28,14 @@ against the same over `api/index.ts` before trusting that number again.
 
 **A change to one needs the same change to the other.** Always check both before
 concluding a route does or does not exist.
+
+**A matching path list does not mean matching behaviour.** The ten streak routes
+kept identical paths while their bodies drifted badly - production grew a
+`globalFreeze` gap-skip and a `streakLog` audit trail dev never had, dev grew a
+recovery push production never sent, and the two computed the same "effective
+date" by different means. They now live in `shared/streakApi.ts` behind
+`createStreakHandlers()`, mounted as one line each from both files, the way
+`shared/simosanApi.ts` already does it. Prefer that to copying a handler.
 
 ## Rules in the repo are not rules in production
 
@@ -449,6 +457,24 @@ found exactly one diverged card in 50 and that is the shape to expect.
 `isAdmin()`, and an admin client used that to overwrite a finished season three
 weeks after the fact.
 
+**A season has to be OPENED as well as closed.** `closableTerm()` only ever
+returns a term whose live end has passed, so a calendar's *first* term has no
+predecessor, `startNewSeason` never fires at the year's open, and whatever an
+account carried in survives into day 1. Compounding it, `resolvePhase` marks
+every preseason day paused and `activeDaysBetween` skips paused days - so a
+`lastActiveDate` from *last June* read as a one-day gap and `record-activity`
+incremented it. One student opened term 1 on 2 with everyone else on 1.
+`openSeason()` (`shared/seasonReset.ts`) is the missing half: idempotent via
+`app_settings/streak.seasonOpenedFor`, called from `runSeasonRollover` after the
+close pass, and **selective** - it clears only accounts whose `lastActiveDate`
+predates the term, so it is safe to run mid-term without wiping the day the
+cohort legitimately earned. `startsFreshSeason()` is the same rule enforced per
+request, because the rollover cron fails closed without `CRON_SECRET`.
+It is scoped to the YEAR's opening boundary, never a term boundary inside it -
+closing term 1 *is* a closable term, so `npm run test:calendar`'s "a break costs
+no streak days" must keep passing. Repair a live database with
+`npm run streak:audit -- --only preseason [--commit]`.
+
 **`longestStreak` is per-season and is zeroed by the reset.** The all-time record
 lives in `bestStreakAllTime`, which is deliberately absent from the reset patch and
 is raised there from the closing season before `longestStreak` goes to 0. Anything
@@ -472,6 +498,42 @@ wrong stage permanently (`scripts/importRoster.ts:18-21`).
 docs carry an `expiresAt` that nothing reads, and the only other clear is a manual
 admin action, so 325 accounts once sat flagged for four months. The reset now deletes
 the doc and the `hasPendingStreakReset` flag together.
+
+## The MCQ board is filtered on a COPY of the stage
+
+`LeaderboardTab` scopes the MCQ board with
+`where('stageId','==',effectiveStageId)` + `orderBy('mcqRankScore','desc')` on
+`userMCQStats`. That `stageId` is a **denormalised copy** of `users.stageId`,
+kept because a board cannot otherwise be scoped without reading every user
+document.
+
+A copy has to be written by every path that moves a student, and one was not:
+`shared/progressionSubmit.ts` wrote `users/` and `students/` and left the stats
+row filed under the stage the student had just left. `stagePromotion.ts` (the
+bulk path) always re-filed it, so only students who went through the
+**self-service** progression flow drifted.
+
+**The symptom is specific and misleading.** They keep their place on the STREAK
+board, which reads `users/` directly, and disappear from the MCQ board for the
+stage they are actually in — while padding the board of the stage they left.
+That reads as "the MCQ leaderboard is broken for stage N", not as one stale
+field, and nothing in the console looks wrong: every document involved is
+individually healthy. The indexes are deployed and the rules are fine.
+
+    npm run stage:audit                 # dry run - always the default
+    npm run stage:audit -- --commit     # re-file the stale rows
+
+`scripts/stageConsistency.ts` reports both directions separately, because they
+are different failures: **stale** (the copy names a stage the student has left)
+and **missing** (no copy at all — `mcqAnswerService` omits the field when the
+user document had no stage at the time, so the student is on no board at all).
+Rows whose `users/` document is gone are left alone; an account merge or a purge
+owns those.
+
+The existence check on the stats document in `progressionSubmit` is not
+optional: a student who has never answered an MCQ has no row, and `update()` on
+a missing document fails the **whole** batch — which would take the promotion
+down with it. Pinned by `npm run test:progression`.
 
 ## Offline: absence is only meaningful from the server
 
@@ -557,6 +619,98 @@ The `isMasterAdmin` boolean on `users/` is a UI convenience
 (`src/lib/permissions.ts`) set by `scripts/assignStageRepresentatives.mjs`; it is
 never the authority. Nothing security-relevant reads it.
 
+## Duplicate accounts: the app used to create them on purpose
+
+The single most important fact here, because it makes the obvious fix
+impossible: **there is no Firebase email/password account anywhere in this
+project.** `createUserWithEmailAndPassword` and `admin.auth().createUser` appear
+zero times. A staff-created account is a `students/{id}` document holding a
+hashed `password`; its Auth record is materialised by `signInWithCustomToken`
+with **uid = that document id** and **no `email` property at all**.
+
+So Firebase sees a roster identity and a Google identity as unrelated
+principals. `auth/account-exists-with-different-credential` is structurally
+unreachable, and Firebase-level account linking has nothing to link. The join is
+ours to make, and it lives in `students.googleEmail`.
+
+**The duplicate was the happy path, not an accident.** A student with a roster
+account pressed "Continue with Google" with a personal Gmail;
+`resolveGoogleLogin` missed on the doc id and on `googleEmail`, threw
+`NO_ACCOUNT`, and `LoginScreen` opened `SignupScreen` *prefilled with that
+Gmail*. `createSignupRequest` checked only `students/{email}` by doc id, so the
+request was filed, a representative approved it, and a second `students` row, a
+second `users` doc and a second streak came into existence. The remedy already
+existed - `linkGoogleAccount` - but only in Settings, reachable only **after** a
+password login, which is exactly what this student could not do.
+
+`/api/google-claim` (`claimAccountWithGoogle`) is the missing half. It demands
+**two independent proofs**, and neither alone is sufficient: `verifyGoogleIdentity`
+for the mailbox (it refuses an unverified email - without it anyone could claim a
+classmate's address) and `resolveStudentLogin` for the account. It then calls the
+same `linkGoogleToStudent` core the Settings page uses, so the conflict guards
+cannot drift, and mints the token under the **existing** uid.
+
+**`examCode` is never an identifier.** It is reissued every year, so it
+identifies a year's enrolment rather than a person - matching on it would both
+miss a real duplicate whose code has rolled over and fuse two students holding
+the same stale number. Nothing matches, merges or authenticates on it;
+`findStudentCandidates` takes email, login code or folded name and never has. A
+negative test in `scripts/signup.test.ts` pins that two students sharing a code
+are neither flagged nor blocked.
+
+### What makes a merge stick
+
+`mergeUserAccounts` folded the `users` doc and stopped, leaving the losing
+`students` row live at the address it is keyed by - so the student signed in
+again and minted the duplicate straight back. The loser is now **retired in
+place** (`isActive:false` + `mergedInto`) and its address copied onto the
+survivor as `googleEmail`: the duplicate becomes the link. Retired rather than
+deleted, on the same reasoning as a subject split.
+
+**The ordering trap this creates is the whole game.** `resolveGoogleLogin`
+checks the students doc id *before* it reads `isActive`, so a retired row would
+be found first and reported as `DISABLED` - undoing the very link the merge
+created. `followMerge()` (`shared/studentLookup.ts`) is applied at all three
+lookup sites, and in the Google path it runs **before** the `isActive` check.
+One hop only; a cycle is ignored.
+
+The merge is not transactional and cannot be - it spans a dozen collections - so
+an `accountMerges` row is written before it starts and closed after, and a
+re-run is a no-op. Two latent bugs were fixed on the way, both of which would
+have corrupted a bulk run: the `streak_history` re-key split the doc id on `_`
+although a roster uid **is** an email address, and the source delete sat
+*outside* the guard that noticed. It also silently dropped a live subscription,
+the academic record (`degrees/{uid}/exams`), and the season and year archives.
+
+    npm run accounts:duplicates            # dry run - always the default
+    npm run accounts:duplicates -- --commit
+
+Four passes, and the split is the design. **A, B, C are structural** (several
+users docs for one students row; a users doc matching no students row; a linked
+`googleEmail` that is itself another row) - each is a join on a value the system
+wrote, so a match is a fact, and only these are merged by `--commit`. **D is a
+judgement** - the same folded name twice in one stage, which is the shape the
+signup funnel produced and has no structural key at all. It is reported for a
+representative who knows the cohort to settle in إدارة الطلاب, never auto-merged
+at any flag. The winner is the **oldest** `students` row: the roster row
+predates the self-signup that duplicated it, and unlike activity it is not
+something the student can change.
+
+`StudentManagement` grouped strictly on `users.email`, so a roster uid and a
+Google uid for one student could never appear in the same merge dialog. It now
+unions the three structural links, and merges **every** duplicate rather than
+the first one `find` returned - a student holding three users docs merged two
+and reported success.
+
+### The third Auth record
+
+`src/lib/googleSignIn.ts` runs `signInWithPopup` on a throwaway secondary app.
+Deleting that app does **not** delete the Auth user it created - that record is
+project-wide - so every web Google sign-in left an orphan. `discardPopupIdentity`
+removes it, guarded on **owns no `users` doc AND is not the uid being signed
+in**: a master admin's Google uid *is* their real account, so an unconditional
+delete would remove a live administrator.
+
 ## Known hazard: two identity spaces
 
 Roster students sign in with a **custom token whose UID is their college email**
@@ -574,35 +728,220 @@ older `semesterArchives.topStudents[].userId` hold a mix of uids and emails; and
 Unifying this touches 423 auth users and every uid-keyed collection. Do not attempt
 it as a side effect of another change.
 
-## No purchase surface in the store build
+What has changed since that was written: the app no longer *creates* new pairs -
+see "Duplicate accounts" above - and `shared/adminUsers.ts` is no longer the only
+path that reconciles two accounts. `/api/google-claim` links them before a second
+one exists, which is the cheap half; the merge remains the only repair for the
+pairs already in the data.
 
-The app sells access on the **web**; the Android build cannot, because Play
-requires its own billing for in-app digital purchases and forbids steering users
-to pay elsewhere. Three layers keep that true, and all three matter:
+## Three build targets, and what each may sell
 
-1. **Build-time exclusion.** `SubscriptionScreen`, `SubscriptionManagement`,
-   `SubscriptionPaywall` and `SimosanAdminScreen` are aliased to stubs for
-   `mode === 'native'` in `vite.config.ts`. A runtime `IS_STORE_BUILD` guard is
-   not enough - the stores scan the artefact, and hidden UI is still *in* it.
-2. **Vocabulary lives in `src/i18n/payments.ts`**, which is aliased to an empty
-   object for native. The entire subscription vocabulary now lives there -
-   including `subscriptionRequired`, `askRepresentative` and `subscriptionActive`,
-   which used to sit in `TRANSLATIONS` because the old stubs rendered them.
-3. **The stubs speak in ACCESS terms**, not quieter purchase terms. They say
-   only what the account's state is (`accessActive` / `accessInactive`,
-   `accessUntil`) and who changes it (`accessManagedByRep`) - both true, neither
-   a transaction. In store builds the settings row is "حالة الوصول / Access"
-   with a key icon rather than "الاشتراك / Subscription" with a payment card,
-   and the profile badge reads "مفعّل / ACTIVE" rather than "SUBSCRIBED".
+The two stores want opposite things, which is why there is no single
+"store build" any more:
+
+| `--mode` | Artefact | Sells | Rail |
+| --- | --- | --- | --- |
+| *(none)* | web | yes | ZainCash + Super Qi |
+| `native` | Android APK/AAB | **nothing** | - |
+| `ios` | App Store `.ipa` | yes | Apple IAP via RevenueCat |
+
+Play requires its own billing for in-app digital purchases *and* forbids
+steering users to pay elsewhere, so the Android build has no purchase surface
+at all. Apple requires digital access to be sold **through** its billing - so
+hiding the paywall on iOS is its own rejection. Same policy family, opposite
+obligations.
+
+**Two flags, not one** (`src/lib/platform.ts`). `IS_STORE_BUILD`
+(`__NATIVE_BUILD__`) means "inside an app binary" and is true for both native
+targets - it is what `src/lib/apiBase.ts` keys the absolute API base off, and
+what gates screens stubbed on both. `CAN_SELL` (`!IS_STORE_BUILD || IS_IOS_BUILD`)
+means "may show purchase vocabulary and a route to a buy flow". Every runtime
+check that softens "الاشتراك / Subscription" into "حالة الوصول / Access", or
+hides the row that reaches the paywall, means the second one. Asking
+`IS_STORE_BUILD` there ships an iOS app that cannot be bought from
+(`ProfileScreen.tsx`, `settings/SettingsScreen.tsx`). The two rows that open a
+*stubbed* screen - إدارة الاشتراكات and استخدام سيموسان - correctly stay on
+`IS_STORE_BUILD`.
+
+Three layers keep each artefact honest:
+
+1. **Build-time exclusion**, `vite.config.ts`'s alias array, now in three
+   groups. `SubscriptionManagement` + `SimosanAdminScreen` → stubs on **both**
+   native targets (an admin ledger and a dollar dashboard belong in neither).
+   `SubscriptionScreen` / `SubscriptionPaywall` / `i18n/payments` → inert stubs
+   on Android, and → `src/ios/*.ios.tsx` + `src/i18n/paymentsIos.ts` on iOS. A
+   runtime guard is not enough: the stores scan the artefact, and hidden UI is
+   still *in* it.
+2. **Vocabulary is per-target.** One specifier, three files:
+   `src/i18n/payments.ts` (web), `src/native-stubs/payments.ts` (`{}`),
+   `src/i18n/paymentsIos.ts` (Apple only). The iOS file carries **no price
+   literals and no currency codes** - every figure a student sees is
+   RevenueCat's localized `priceString`, which is Apple's own price in the
+   viewer's storefront. `PLAN_CONFIG`'s IQD figures are the web rail's.
+3. **The Android stubs speak in ACCESS terms**, not quieter purchase terms:
+   `accessActive` / `accessInactive` / `accessUntil` / `accessManagedByRep`,
+   all true, none a transaction. **iOS says the true thing instead** - there
+   really is a subscription, bought through Apple, so the badge reads
+   "مشترك / SUBSCRIBED" and the settings row says "الاشتراك / Subscription".
 
 The distinction being drawn: *stating that an account lacks access* is a fact
-about the account. *Telling the user where to go and pay for it* is steering,
-which is prohibited whether or not the app handles the money. Keep new copy on
-the first side of that line.
+about the account. *Telling the user where to go and pay for it* is steering -
+prohibited by both stores whether or not the app handles the money, and
+**not** what Apple's own IAP sheet or its
+`itms-apps://apps.apple.com/account/subscriptions` link are. Keep new copy on
+the right side of that line for the target it ships in.
 
-`npm run check:payment-surface` only flags gateway names, currency codes and
-price fields, so it passing is **necessary but not sufficient** - it would not
-have caught a "Subscription" row with a credit-card icon.
+`npm run check:payment-surface` (Android) and `check:payment-surface:ios` run
+the same scanner against the two artefacts. It flags gateway names, currency
+codes, price fields, the Super Qi wallet, off-store contact links and the
+receipt storage path - so it passing is **necessary but not sufficient**: it
+would not catch a "Subscription" row with a credit-card icon.
+
+Exemptions are **per rule, not per file**, and each is pinned to a
+`manualChunks` entry so nothing else can hide behind it:
+
+- `legal-pages` is excused the gateway-name rule, because a privacy policy has
+  to name its processors truthfully. It is still checked for currency codes.
+- `support-contact` (`src/lib/support.ts`) is excused the off-store-contact
+  rule. The support desk's Telegram and WhatsApp are spelled with the same
+  `t.me/` and `wa.me/` literals `src/lib/paymentContact.ts` builds the
+  *seller's* from, so no pattern separates them.
+- `revenuecat` is excused the gateway-name rule, because the SDK enumerates
+  every store it supports, Stripe included. That chunk is created **only** when
+  `isIos` - without the guard it existed on Android too, empty of SDK, and
+  Rollup filled it with Vite's shared preload helper, so the exemption would
+  have excused 9KB of unrelated runtime on the one target that may not sell.
+
+The privacy policy's processor list is per-platform for the same reason and
+must stay in step: ZainCash (web), Apple + RevenueCat (iOS), nothing (Android).
+
+## iOS push needs a real FCM token, and does not have one yet
+
+`useNativePush` uses `@capacitor/push-notifications`, which returns whatever the
+OS hands back: on Android an **FCM registration token**, on iOS a raw **APNs
+device token**. The plugin calls `registerForRemoteNotifications` and has no
+Firebase dependency, so nothing converts one into the other. Every sender in
+`functions/index.js` goes through `admin.messaging()`, which only accepts the
+former.
+
+**The hook therefore publishes nothing on iOS, and that is deliberate.** The
+naive version hardcoded `platform: 'android'` and wrote the token regardless,
+which is worse than useless rather than merely ineffective: `fcm_tokens/{uid}`
+is **one document per user**, and the senders prune on failure -
+`functions/index.js` deletes that document on
+`messaging/registration-token-not-registered`. So a student who installed the
+iOS app would overwrite the FCM token their Android phone had registered, every
+send would fail, and the prune would take the working Android token with it.
+"iOS push does not work yet" would have become "this student gets no
+notifications on any device".
+
+iOS still registers with the OS, so the permission prompt and the foreground
+listeners behave normally; only the publish is skipped, behind
+`Capacitor.getPlatform()`.
+
+Closing it is **three things, and none of them is just an npm install**:
+
+1. `@capacitor-firebase/messaging`, which brings the `FirebaseMessaging` pod and
+   exchanges the APNs token for an FCM one. Keep Android on the existing plugin
+   - it works today for 423 accounts, and a swap risks it for no gain.
+2. An **APNs auth key** (`.p8`) uploaded to the Firebase console. Without it FCM
+   has nothing to talk to APNs with, and the exchange fails at runtime with
+   nothing a build would catch. This is a THIRD `.p8` - not the App Store
+   Connect API key and not the In-App Purchase key.
+3. The **Push Notifications capability** on the App target, which means an
+   `App.entitlements` file (the project has none) and a provisioning profile
+   minted with push enabled.
+
+Until all three land, treat iOS push as absent rather than broken.
+
+## The Apple rail: RevenueCat, and why it is a sibling not a caller
+
+`shared/iap.ts` (pure logic + entitlement application), `shared/iapApi.ts`
+(three routes, mounted one line each from both surfaces), `src/lib/iap.ts` (the
+only module that touches the SDK), `src/ios/SubscriptionScreen.ios.tsx` (the
+paywall). `@revenuecat/purchases-capacitor` is pinned at **11.3.2** - the last
+line peering `@capacitor/core >=7.0.0`; 12.x needs Capacitor 8.
+
+**The App User ID is an opaque server-minted hash, never the Firebase uid.** A
+roster student's uid IS their college email, so using it would ship ~400 real
+addresses into RevenueCat's dashboard, exports and webhook payloads.
+`rcAppUserIdFor()` is `sha256(uid)`, so it never has to be stored to be trusted;
+`rcLinks/{rcAppUserId}` exists only for the reverse direction, which a hash
+cannot give. `/api/iap/identity` writes both **before a purchase is possible** -
+a payment that arrived before the link existed would be unattributable - and
+`/api/iap/sync` re-ensures it, so a lost link is recoverable rather than an
+orphaned payment. `rcAppUserId` is frozen against self-edit in `firestore.rules`
+beside the three subscription fields: a student who could point it at another
+account would have that account's subscription applied to their own.
+
+**The client never asserts entitlement.** `purchase()` and `restore()` return
+only enough to stop a spinner; what grants access is `/api/iap/sync` asking
+RevenueCat with the **secret** key. That also closes the window between a
+purchase completing on the device and the webhook landing, which is most of the
+time a student spends watching that spinner.
+
+**`applyAppleEntitlement` is a SIBLING of `activateSubscription`, not a caller** -
+the single most important decision here. `activateSubscription` stacks
+`PLAN_CONFIG.days` onto an existing end date and overwrites the three
+`users/{uid}` fields unconditionally. That is right for a one-off ZainCash
+payment and wrong three ways for Apple: the expiry belongs to Apple and moves
+every renewal (stacking drifts further from the truth each period), it
+supersedes only `existingSubs.docs[0]`, and it would let a 1-month Apple
+purchase **shorten** a live 1-year ZainCash subscription.
+`recomputeUserAccess()` takes `max(endDate)` across every active row instead,
+which can only raise access - so the two rails coexist without either knowing
+about the other. `npm run test:iap` pins both directions.
+
+`functions/index.js`'s `expireSubscriptions` carries a checked copy of that
+recompute for the same reason (functions/ deploys as its own package, so
+`../shared` is not on disk - the same constraint as the master-admin list). It
+used to blanket-clear the three fields, which with two rails revokes access the
+other one was paid for.
+
+**One row per account, at `subscriptions/apple_{rcAppUserId}`.** Apple
+auto-renew is one continuous subscription; a row per renewal would count the
+same student once a month in توزيع المشتركين. The doc id is deterministic, which
+is also free idempotency. `amount` is **0** on purpose: Apple settles in the
+buyer's own currency net of commission and this ledger's `totalRevenue` is IQD,
+so the admin dashboard shows the count alone and App Store Connect stays where
+Apple revenue is read.
+
+**`CANCELLATION` is a GRANT.** In Apple's vocabulary it means auto-renew was
+turned off, not that access ends now - the student keeps the period they paid
+for. A refund arrives as the same event with a past `expiration_at_ms`, so the
+grant-to-stored-expiry rule revokes it with no special case. `BILLING_ISSUE` is
+ignored because Apple retries for up to 60 days with access intact; cutting off
+at the first failed charge would punish an expired card. `EXPIRATION` is what
+actually ends it.
+
+**An unmapped product fails OPEN on access and LOUD on the label.** A product
+added in App Store Connect before `PRODUCT_PLAN_MAP` learns about it still
+grants access, with an `adminAlerts` row and a `notes` field naming it.
+Refusing a student who paid is a refund and a support ticket; a mislabelled plan
+is a reporting problem. Same philosophy as the timetable's amber audience.
+
+**The webhook fails CLOSED.** With `REVENUECAT_WEBHOOK_AUTH` unset it answers
+503 rather than trusting the delivery - `header !== SECRET && SECRET` is a no-op
+when the secret is missing. It takes **no auth middleware**: RevenueCat is not a
+Firebase user and holds no ID token. `iapEvents/{eventId}` is the idempotency
+key, because RevenueCat retries reuse `event.id`. The raw body for the optional
+HMAC comes from the `verify` hook on the **one global** `express.json()` in each
+route file - a path-mounted `express.raw()` would put an ordering requirement in
+two files that must not drift.
+
+Apple is never hand-approvable, for ZainCash's reason plus one: approving would
+route through `activateSubscription` and stack days onto an expiry Apple owns.
+Both surfaces refuse it; `needsManualApproval` filters it out of the queue.
+
+**The App Store review screenshot is generated, not photographed.**
+`scripts/paywallPreview/` renders the real `SubscriptionScreen.ios.tsx` with
+only the store boundary mocked, so it cannot drift from what ships, and taking
+one does not need a Mac. Its vite root is the **repo**, not the preview folder:
+rooted at the folder, Tailwind v4's content detection scans only that folder and
+emits a stylesheet that styles nothing. Prices come from `PAYWALL_PRICES`
+because they belong to App Store Connect.
+
+    PAYWALL_PRICES='{"com.mohadaraty.app.1month":"$1.99", ...}' npm run build:paywall
 
 ## The manual payment method: Super Qi / Qi Card
 

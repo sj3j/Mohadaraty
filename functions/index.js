@@ -630,8 +630,51 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 // ============================================================================
 
 /**
+ * Recompute users/{uid}'s access cache from the subscription rows that still
+ * exist, instead of blanket-clearing it.
+ *
+ * A checked copy of recomputeUserAccess() in shared/iap.ts - functions/ deploys
+ * as its own package, so ../shared is not on disk here, the same constraint
+ * that forces the master-admin list to be duplicated in this file.
+ *
+ * It exists because an account can now hold TWO live subscriptions from
+ * different rails: a web ZainCash one and an Apple IAP one. Expiring either and
+ * clearing isSubscribed unconditionally would revoke access the other has
+ * genuinely paid for. Taking max(endDate) over what is still active can only
+ * raise access, never lower it below what someone bought.
+ */
+async function recomputeUserAccessAfterExpiry(userId) {
+  const live = await db.collection('subscriptions')
+    .where('userId', '==', userId)
+    .where('status', '==', 'active')
+    .get();
+
+  let bestEnd = null;
+  let bestPlan = null;
+  const nowMs = Date.now();
+
+  for (const doc of live.docs) {
+    const data = doc.data();
+    const end = data.endDate && data.endDate.toDate ? data.endDate.toDate() : null;
+    // No endDate means open-ended, which outranks any date.
+    if (!end) return { isSubscribed: true, subscriptionEnd: null, subscriptionPlan: data.plan || null };
+    if (end.getTime() <= nowMs) continue;
+    if (!bestEnd || end > bestEnd) { bestEnd = end; bestPlan = data.plan || null; }
+  }
+
+  return bestEnd
+    ? {
+        isSubscribed: true,
+        subscriptionEnd: admin.firestore.Timestamp.fromDate(bestEnd),
+        subscriptionPlan: bestPlan,
+      }
+    : { isSubscribed: false, subscriptionEnd: null, subscriptionPlan: null };
+}
+
+/**
  * Runs daily to expire subscriptions that have passed their end date.
- * Updates the subscription status to 'inactive' and clears user subscription flags.
+ * Updates the subscription status to 'inactive' and recomputes the user's
+ * access cache from whatever is left.
  */
 exports.expireSubscriptions = onSchedule('every 24 hours', async (event) => {
   const now = admin.firestore.Timestamp.now();
@@ -662,16 +705,27 @@ exports.expireSubscriptions = onSchedule('every 24 hours', async (event) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    // Update user document to remove active status
+    // Recompute rather than clear: this student may hold a second, still-live
+    // subscription on the other rail, and taking access away from someone who
+    // paid for it is the expensive direction to get wrong.
+    //
+    // The row being expired here is still status 'active' - the batch has not
+    // committed - so the query below sees it. It is excluded by DATE instead:
+    // its endDate is what put it in this loop, so the "end <= now" skip drops
+    // it. Any other row of this user's that is still in the future survives.
+    const remaining = await recomputeUserAccessAfterExpiry(data.userId);
+    const stillLive = remaining.isSubscribed;
     const userRef = db.collection('users').doc(data.userId);
-    currentBatch.update(userRef, {
+    currentBatch.update(userRef, stillLive ? remaining : {
       isSubscribed: false,
       subscriptionEnd: null,
       subscriptionPlan: null
     });
 
-    // Send expiry notification
-    const fcmDoc = await db.collection('fcm_tokens').doc(data.userId).get();
+    // Only tell them it ended if it actually ended for them.
+    const fcmDoc = stillLive
+      ? { exists: false }
+      : await db.collection('fcm_tokens').doc(data.userId).get();
     if (fcmDoc.exists && fcmDoc.data().token) {
        admin.messaging().send({
           token: fcmDoc.data().token,

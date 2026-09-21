@@ -28,6 +28,7 @@ public/pdfjs
 .env
 .env.*
 !.env.example
+serviceAccountKey*
 *serviceAccount*.json
 *service-account*.json
 firebase-adminsdk*.json

@@ -1,4 +1,5 @@
 import { env } from './env.ts';
+import { causeChain, networkCause } from './net.ts';
 
 /**
  * Structured JSON logging to stdout, one line per event.
@@ -39,8 +40,27 @@ export const log = {
   error: (event: string, fields?: Record<string, unknown>) => emit('error', event, fields),
 };
 
-/** Errors carry no stack by default - a stack per Telegram 400 is noise. */
-export const errFields = (error: unknown): Record<string, unknown> => ({
-  err: error instanceof Error ? error.message : String(error),
-  stack: env.logLevel === 'debug' && error instanceof Error ? error.stack : undefined,
-});
+/**
+ * Errors carry no stack by default - a stack per Telegram 400 is noise.
+ *
+ * The cause chain is NOT optional, though. `fetch` rejects with
+ * `TypeError: fetch failed` and puts the actual failure - ENOTFOUND,
+ * ECONNREFUSED, a TLS error - in `.cause`, so logging only `.message` records
+ * that something network-shaped went wrong and nothing about what. That is how
+ * a boot failure ends up indistinguishable from a blocked host.
+ */
+export const errFields = (error: unknown): Record<string, unknown> => {
+  const chain = causeChain(error);
+  const cause = chain[1];
+  const system = networkCause(error);
+  return {
+    err: error instanceof Error ? error.message : String(error),
+    // Only when it adds something: a Telegram 400 has no cause and should not
+    // grow an empty field per line.
+    errCause: cause && cause.message !== (error as Error)?.message ? cause.message : undefined,
+    errCode: system?.code,
+    errSyscall: system?.syscall,
+    errHostname: system?.hostname,
+    stack: env.logLevel === 'debug' && error instanceof Error ? error.stack : undefined,
+  };
+};

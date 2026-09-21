@@ -335,7 +335,7 @@ service cloud.firestore {
              (!('permissions' in data) || data.permissions is map) &&
              (!('isSubscribed' in data) || data.isSubscribed is bool) &&
              (!('subscriptionEnd' in data) || data.subscriptionEnd == null || data.subscriptionEnd is timestamp) &&
-             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual']);
+             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']);
     }
 
     function isWhitelisted() {
@@ -613,7 +613,15 @@ service cloud.firestore {
                         // gateway. /api/zaincash/init refuses to start a second
                         // one while it is set, so a client that could clear it
                         // could mint duplicate transactions at will.
-                        && request.resource.data.get('pendingZainCashRef', '') == resource.data.get('pendingZainCashRef', ''));
+                        && request.resource.data.get('pendingZainCashRef', '') == resource.data.get('pendingZainCashRef', '')
+                        // The RevenueCat App User ID this account's Apple
+                        // purchases are filed under, written by
+                        // /api/iap/identity. A student who could set it to
+                        // another account's value would have that account's
+                        // subscription applied to their own the next time
+                        // /api/iap/sync ran - so this freeze is what stops a
+                        // one-field edit from stealing a purchase.
+                        && request.resource.data.get('rcAppUserId', '') == resource.data.get('rcAppUserId', ''));
                       // Progression is recorded by /api/progression/submit with the
                       // Admin SDK, which also has to write students/{email}.stageId -
                       // a student cannot, and syncUserStage would otherwise revert the
@@ -624,6 +632,20 @@ service cloud.firestore {
     match /streak_history/{docId} {
       allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow write: if false; // Only Cloud Functions / Admin SDK
+    }
+
+    // Per-day audit of how every streak day was credited: which branch ran, the
+    // counters either side of it, and whether the grace period applied.
+    // scripts/streakAudit.ts points operators here to reconstruct a disputed
+    // card, and StreakManagement shows it when a student queries their streak.
+    //
+    // It had NO match block at all, which is not the same as being closed:
+    // Firestore denies a path with no matching rule while the Admin SDK ignores
+    // rules entirely, so the server wrote a complete audit trail that no client
+    // could ever read - the same shape the timetable collections failed in.
+    match /streakLog/{userId}/days/{date} {
+      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == userId);
+      allow write: if false; // Admin SDK only - it is evidence, not state
     }
 
     match /streak_recoveries/{docId} {
@@ -953,6 +975,20 @@ service cloud.firestore {
       allow write: if isOwner(userId) || isAdmin();
     }
     
+    // What a duplicate-account merge moved, written before it starts and closed
+    // after it finishes. The merge spans a dozen collections and cannot be
+    // transactional, so this row is how a crash halfway through is told apart
+    // from a merge that never ran - and how a wrongly paired merge is traced.
+    //
+    // Admin SDK only, and it needs a match block to be readable AT ALL: a
+    // collection with no rule is denied to every client while the Admin SDK
+    // ignores rules entirely, which is how streakLog ended up as a complete
+    // audit trail that the screens meant to settle a dispute could not read.
+    match /accountMerges/{mergeId} {
+      allow read: if isMasterAdmin();
+      allow write: if false; // Admin SDK only - it is evidence, not state
+    }
+
     match /adminLogs/{logId} {
       // Support WRITES here and cannot read: its actions - seating a
       // representative, editing another stage's roster - are exactly what the
@@ -1010,6 +1046,29 @@ service cloud.firestore {
       allow update: if isMasterAdmin();
       // No deletes
       allow delete: if false;
+    }
+
+    // Apple IAP, server-only on both counts.
+    //
+    // These are written exclusively by the Admin SDK (shared/iapApi.ts), which
+    // bypasses rules entirely - so the blocks exist to DENY clients, not to
+    // permit the server. They are spelled out rather than left absent because
+    // Firestore denies an unmatched path either way, and an explicit block is
+    // what npm run check:rules can see; a missing one reads as an oversight the
+    // next time someone audits this file.
+
+    // Idempotency ledger. RevenueCat retries a failed delivery with the same
+    // event.id, and a doc here is what stops the retry applying twice.
+    match /iapEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    // RevenueCat App User ID -> Firebase uid. The webhook has only the opaque
+    // hash and needs the uid; the hash is one-way, so this is the only route
+    // back. Readable by nobody: it maps an account identifier to a college
+    // email for every roster student in the app.
+    match /rcLinks/{rcAppUserId} {
+      allow read, write: if false;
     }
   }
 }

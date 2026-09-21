@@ -32,11 +32,15 @@ import type { PaymentMethod, Subscription, SubscriptionPlan } from '../types';
 export const isRealSubscription = (s: Pick<Subscription, 'status'>): boolean =>
   s.status === 'active' || s.status === 'inactive';
 
-/** Still waiting on a human. ZainCash is excluded because it settles itself -
- *  an in-flight or abandoned gateway payment is nobody's queue item. */
+/** Still waiting on a human. ZainCash and Apple are excluded because they
+ *  settle themselves - an in-flight or abandoned gateway payment is nobody's
+ *  queue item, and an Apple row only ever exists because StoreKit already took
+ *  the money and RevenueCat told us so. */
+const SELF_SETTLING: readonly PaymentMethod[] = ['zaincash', 'apple_iap'];
+
 export const needsManualApproval = (
   s: Pick<Subscription, 'status' | 'paymentMethod'>,
-): boolean => s.status === 'pending' && s.paymentMethod !== 'zaincash';
+): boolean => s.status === 'pending' && !SELF_SETTLING.includes(s.paymentMethod);
 
 /**
  * How many distinct people these rows belong to.
@@ -60,8 +64,8 @@ const millis = (value: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const PLANS: readonly SubscriptionPlan[] = ['monthly', 'seasonal', 'semi_annual'];
-const METHODS: readonly PaymentMethod[] = ['zaincash', 'superkey', 'admin_grant'];
+const PLANS: readonly SubscriptionPlan[] = ['monthly', 'seasonal', 'semi_annual', 'annual'];
+const METHODS: readonly PaymentMethod[] = ['zaincash', 'superkey', 'admin_grant', 'apple_iap'];
 
 export interface SubscriptionStats {
   /** Distinct students who ever reached a real subscription - paid or granted. */

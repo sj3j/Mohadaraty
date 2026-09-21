@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Crown, Sparkles, Shield, Clock } from 'lucide-react';
-import { Language, TRANSLATIONS, PLAN_CONFIG, SubscriptionPlan } from '../types';
+import { Language, TRANSLATIONS, PLAN_CONFIG, planAnchorPrice, SubscriptionPlan } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 
 interface SubscriptionPaywallProps {
@@ -17,7 +17,8 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
   const plans: { key: SubscriptionPlan; badge?: string; highlight?: boolean }[] = [
     { key: 'monthly' },
     { key: 'seasonal', badge: t.popular, highlight: true },
-    { key: 'semi_annual', badge: t.bestValue },
+    { key: 'semi_annual' },
+    { key: 'annual', badge: t.bestValue },
   ];
 
   return (
@@ -75,6 +76,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
               {plans.map((plan, index) => {
                 const config = PLAN_CONFIG[plan.key];
                 const label = isRtl ? config.labelAr : config.labelEn;
+                const anchor = planAnchorPrice(plan.key);
                 
                 return (
                   <motion.div
@@ -105,6 +107,11 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
                         </div>
                       </div>
                       <div className="text-left rtl:text-right">
+                        {anchor > config.price && (
+                          <div className="text-xs text-slate-400 dark:text-slate-500 line-through leading-none mb-0.5">
+                            {anchor.toLocaleString()}
+                          </div>
+                        )}
                         <span className="text-2xl font-extrabold text-slate-900 dark:text-white">
                           {config.price.toLocaleString()}
                         </span>

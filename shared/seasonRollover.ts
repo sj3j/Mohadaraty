@@ -24,8 +24,9 @@ import {
   closableTerm,
   resolvePhase,
   seasonNameFor,
+  seasonOpeningDay,
 } from './academicCalendar.js';
-import { startNewSeason } from './seasonReset.js';
+import { openSeason, startNewSeason } from './seasonReset.js';
 
 export interface RolloverResult {
   today: string;
@@ -34,6 +35,13 @@ export interface RolloverResult {
   activeTermId: string | null;
   /** Term id archived by this run, or null when there was nothing to close. */
   archived: string | null;
+  /** Term id whose season this run opened, or null when nothing needed it. */
+  opened?: string | null;
+  /** Accounts whose pre-term streak state the open pass cleared. */
+  openCleared?: number;
+  /** Accounts the open pass clamped to 1 because they had already been
+   *  credited for the opening day. */
+  openBridged?: number;
   seasonId?: string;
   streakArchived?: number;
   mcqArchived?: number;
@@ -112,6 +120,7 @@ export async function runSeasonRollover(
   const settingsRef = db.collection('app_settings').doc('streak');
   const settingsSnap = await settingsRef.get();
   const seasonClosedFor = settingsSnap.exists ? settingsSnap.data()?.seasonClosedFor : null;
+  const seasonOpenedFor = settingsSnap.exists ? settingsSnap.data()?.seasonOpenedFor : null;
 
   const term = closableTerm(calendar, today, seasonClosedFor);
 
@@ -127,6 +136,44 @@ export async function runSeasonRollover(
     archived = term.id;
   }
 
+  // Open the running term AFTER closing whatever ended, so a close in the same
+  // pass has already zeroed everyone and this finds nothing left to do.
+  //
+  // This is the half that never existed. closableTerm() can only return a term
+  // that has ENDED, so the first term of a calendar is never closed and its
+  // season was never started either - stale counters from before the academic
+  // year simply carried into day 1, where the paused preseason reads as a
+  // one-day gap and increments them.
+  let opened: string | null = null;
+  let openCleared = 0;
+  let openBridged = 0;
+  const yearOpens = seasonOpeningDay(calendar);
+  // The stamp must not hide a SAME-DAY second pass. A repair run by hand before
+  // the fixed build reached production stamps the term while production is
+  // still minting bridged rows - and the bridge can only be created on the
+  // year's opening day, so on that one day a year this re-runs regardless of
+  // the stamp. Costs one extra users scan annually; buys "the cron repairs this
+  // even if the operator did it in the wrong order" as a property of the code
+  // rather than of the runbook.
+  const mustReopen = seasonOpenedFor !== phase.term?.id || today === yearOpens;
+  if (phase.term && !phase.isPaused && mustReopen) {
+    const openResult = await openSeason(db, FieldValue, {
+      termId: phase.term.id,
+      termStart: phase.term.startDate,
+      yearOpens,
+      // Safe as the plain calendar date ONLY because the cron is scheduled at
+      // 01:00 UTC = 04:00 Baghdad (vercel.json), which is outside the 2-hour
+      // grace window - so the day being credited and the calendar day agree.
+      // Move that schedule earlier and this has to become the effective date,
+      // the way scripts/streakAudit.ts computes it.
+      creditedDay: today,
+      performedBy: opts.performedBy,
+    });
+    opened = openResult.termId;
+    openCleared = openResult.cleared;
+    openBridged = openResult.bridged;
+  }
+
   await syncPhaseMirror(db, FieldValue, phase);
 
   return {
@@ -135,6 +182,9 @@ export async function runSeasonRollover(
     isPaused: phase.isPaused,
     activeTermId: phase.term?.id ?? null,
     archived,
+    opened,
+    openCleared,
+    openBridged,
     ...(reset || {}),
   };
 }

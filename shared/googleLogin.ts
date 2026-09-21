@@ -19,10 +19,25 @@
  * token straight here means only one identity is ever created.
  */
 
+import {
+  StudentRecord,
+  LoginError,
+  followMerge,
+  resolveStudentLogin,
+  resolveSessionUid,
+} from './studentLookup.js';
+import { linkGoogleToStudent, FieldValueLike } from './accountSelfService.js';
+
 export interface GoogleIdentity {
   email: string;
   name: string | null;
   emailVerified: boolean;
+  /**
+   * The uid of the throwaway Firebase account the WEB popup created, when the
+   * caller sent a Firebase token. Absent on the native path, which never mints
+   * one. See discardPopupIdentity.
+   */
+  popupUid?: string;
 }
 
 export class GoogleLoginError extends Error {
@@ -44,6 +59,7 @@ export async function verifyGoogleIdentity(opts: {
   let email: string | undefined;
   let name: string | null = null;
   let emailVerified = false;
+  let popupUid: string | undefined;
 
   if (googleIdToken) {
     const ticket = await oauthClient.verifyIdToken({ idToken: googleIdToken, audience });
@@ -56,6 +72,7 @@ export async function verifyGoogleIdentity(opts: {
     email = decoded?.email;
     name = decoded?.name ?? null;
     emailVerified = decoded?.email_verified === true;
+    popupUid = decoded?.uid;
   } else {
     throw new GoogleLoginError('Missing idToken', 400);
   }
@@ -70,7 +87,46 @@ export async function verifyGoogleIdentity(opts: {
     throw new GoogleLoginError('Email is not verified with Google.', 401, 'EMAIL_NOT_VERIFIED');
   }
 
-  return { email: email.toLowerCase().trim(), name, emailVerified };
+  return { email: email.toLowerCase().trim(), name, emailVerified, popupUid };
+}
+
+/**
+ * Deletes the Firebase account the web popup created on its way to a token.
+ *
+ * src/lib/googleSignIn.ts runs signInWithPopup on a throwaway secondary app so
+ * the current session is never disturbed - but deleting that app does not delete
+ * the Auth USER it created, which is project-wide. Every web Google sign-in
+ * therefore left a third Auth record per student: the roster uid, the
+ * custom-token session, and this orphan. It holds no data, so nothing breaks
+ * while it exists; it is simply a growing set of accounts that are not accounts.
+ *
+ * TWO GUARDS, both load-bearing. A master admin's Google uid IS their real
+ * account - they have no students document and resolveGoogleLogin issues their
+ * token under the uid of whichever users doc carries their address - so deleting
+ * "the popup account" unconditionally would delete a live administrator. Never
+ * touch the uid the session is being issued for, and never touch a uid that owns
+ * a users document.
+ *
+ * Best effort: a failure here must never fail the sign-in it follows.
+ */
+export async function discardPopupIdentity(
+  db: FirebaseFirestore.Firestore,
+  adminAuth: { deleteUser(uid: string): Promise<void> },
+  identity: GoogleIdentity,
+  targetUid: string,
+): Promise<boolean> {
+  const popupUid = identity.popupUid;
+  if (!popupUid || popupUid === targetUid) return false;
+
+  try {
+    const userDoc = await db.collection('users').doc(popupUid).get();
+    if (userDoc.exists) return false;
+    await adminAuth.deleteUser(popupUid);
+    return true;
+  } catch (error) {
+    console.error('Discarding the popup identity failed (ignored):', error);
+    return false;
+  }
 }
 
 export interface GoogleLoginResult {
@@ -123,8 +179,15 @@ export async function resolveGoogleLogin(
 
       const studentDoc = await db.collection('students').doc(emailLower).get();
       if (studentDoc.exists) {
-        studentId = studentDoc.id;
-        studentData = studentDoc.data();
+        // Follow a merge BEFORE reading isActive. A merge retires the losing row
+        // in place (isActive:false + mergedInto) and copies its address onto the
+        // survivor as googleEmail; reading isActive first would find the retired
+        // row here, throw DISABLED, and undo the link the merge just created.
+        const resolved = await followMerge(
+          db, { id: studentDoc.id, data: studentDoc.data() || {} });
+        studentId = resolved.id;
+        studentData = resolved.data;
+        if (resolved.id !== studentDoc.id) identityKey = resolved.id;
       } else {
         // Not a document id - but it may be an address someone linked to a
         // roster account. Checked only after the id lookup misses, so the
@@ -161,4 +224,90 @@ export async function resolveGoogleLogin(
 
   const customToken = await adminAuth.createCustomToken(targetUid, { email: identityKey });
   return { customToken, uid: targetUid, email: identityKey };
+}
+
+/**
+ * Links a verified Google identity onto an EXISTING roster account, then signs
+ * them into it. The other half of NO_ACCOUNT.
+ *
+ * Why this exists: a staff-created account is a `students/{id}` document with a
+ * hashed password. Its Auth record is materialised by signInWithCustomToken with
+ * uid = that document id and NO `email` property at all, so Firebase cannot see
+ * that a Google identity and a roster identity are the same person - and
+ * `auth/account-exists-with-different-credential` is unreachable here. The join
+ * has to be made in our own data. resolveGoogleLogin already reads it
+ * (students.googleEmail); nothing could WRITE it without first being signed in,
+ * which is precisely what the student in this state cannot do. So Google
+ * sign-in threw NO_ACCOUNT, the app offered signup, and the second account was
+ * born.
+ *
+ * Two independent proofs are required and neither alone is sufficient:
+ *
+ *   the mailbox   verifyGoogleIdentity, run by the caller, which refuses a
+ *                 token whose email Google has not verified. Without it anyone
+ *                 could claim a classmate's address.
+ *   the account   the roster password, checked by resolveStudentLogin. Without
+ *                 it proving ownership of any mailbox would attach it to any
+ *                 account that could be named.
+ *
+ * `examCode` is deliberately not accepted as an identifier: it is reissued every
+ * year, so it identifies a year's enrolment, never a person. resolveStudentLogin
+ * takes email, login code or folded name and has never taken it.
+ */
+export async function claimAccountWithGoogle(
+  db: FirebaseFirestore.Firestore,
+  adminAuth: { createCustomToken(uid: string, claims?: object): Promise<string> },
+  identity: GoogleIdentity,
+  input: { identifier?: string; password?: string },
+  opts: {
+    masterAdminEmails: string[];
+    syncUserStage: (uid: string, source: any) => Promise<void>;
+    FieldValue: FieldValueLike;
+  },
+): Promise<GoogleLoginResult & { alreadyOwned: boolean }> {
+  const identifier = (input.identifier || '').trim();
+  const password = (input.password || '').trim();
+  if (!identifier || !password) {
+    throw new GoogleLoginError('أدخل بيانات حسابك الحالي وكلمة المرور.', 400, 'MISSING_FIELDS');
+  }
+
+  // A master admin has no students document at all - resolveGoogleLogin bypasses
+  // the whitelist for them - so there is nothing here to claim, and letting the
+  // attempt through would only report BAD_CREDENTIALS against a row that cannot
+  // exist. Send them back to the ordinary Google button, which already works.
+  if (opts.masterAdminEmails.includes(identity.email)) {
+    throw new GoogleLoginError('هذا الحساب يسجّل الدخول عبر Google مباشرة.', 409, 'NOT_CLAIMABLE');
+  }
+
+  // Throws BAD_CREDENTIALS / DISABLED / AMBIGUOUS_IDENTIFIER on its own terms.
+  const resolved: StudentRecord = await resolveStudentLogin(db, identifier, password);
+  const student = await followMerge(db, resolved);
+
+  // Same conflict guards as the settings-page link, by construction.
+  const link = await linkGoogleToStudent(db, student, identity, opts.FieldValue);
+
+  const { uid, emailClaim } = await resolveSessionUid(
+    db, student, (u, source) => opts.syncUserStage(u, source));
+
+  const customToken = await adminAuth.createCustomToken(uid, { email: emailClaim });
+  return { customToken, uid, email: emailClaim, alreadyOwned: link.alreadyOwned };
+}
+
+/**
+ * Re-raises the errors the claim path borrows from other modules as this
+ * module's own, so a route only has to catch GoogleLoginError.
+ *
+ * LoginError and SelfServiceError both already carry `status` and `code`, and
+ * both are structurally identical to GoogleLoginError - they are separate
+ * classes only because they live in separate modules.
+ */
+export function asGoogleLoginError(error: any): GoogleLoginError {
+  if (error instanceof GoogleLoginError) return error;
+  if (error instanceof LoginError) {
+    return new GoogleLoginError(error.message, error.status, error.code);
+  }
+  if (error && typeof error.status === 'number' && typeof error.message === 'string') {
+    return new GoogleLoginError(error.message, error.status, error.code);
+  }
+  return new GoogleLoginError('Internal server error', 500);
 }
