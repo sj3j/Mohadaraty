@@ -5,7 +5,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { Language, UserProfile } from '../types';
-import { IS_STORE_BUILD } from '../lib/platform';
+import { CAN_SELL } from '../lib/platform';
 import {
   Shield, Loader2, AlertCircle, Pencil, Camera, Check, X,
   Info, Flame, Crown, CreditCard, Palmtree, Settings as SettingsIcon,
@@ -400,16 +400,19 @@ export default function ProfileScreen({
               </span>
             ) : null}
 
-            {/* Store builds say ACTIVE, not SUBSCRIBED. The badge is the last
-                purchase-flavoured word left on a screen a reviewer will open,
-                and "active" states the same account fact without implying a
-                transaction the app is not allowed to offer. */}
+            {/* The Android build says ACTIVE, not SUBSCRIBED. The badge is the
+                last purchase-flavoured word left on a screen a reviewer will
+                open, and "active" states the same account fact without implying
+                a transaction that build is not allowed to offer.
+                CAN_SELL, not IS_STORE_BUILD: on iOS the account really does
+                hold a subscription bought through Apple, so "SUBSCRIBED" is
+                simply the true word there. */}
             {subscriptionActive && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-xs font-black">
                 <Crown className="w-3.5 h-3.5" strokeWidth={2.5} />
-                {IS_STORE_BUILD
-                  ? (isRtl ? 'مفعّل' : 'ACTIVE')
-                  : (isRtl ? 'مشترك' : 'SUBSCRIBED')}
+                {CAN_SELL
+                  ? (isRtl ? 'مشترك' : 'SUBSCRIBED')
+                  : (isRtl ? 'مفعّل' : 'ACTIVE')}
               </span>
             )}
           </div>
@@ -495,7 +498,12 @@ export default function ProfileScreen({
         </div>
 
         {/* ---- subscription --------------------------------------------- */}
-        {(!isMasterAdminUser && user.role !== 'admin' && !IS_STORE_BUILD) && (
+        {/* CAN_SELL, not !IS_STORE_BUILD. On Android this row is hidden
+            because the build sells nothing and pointing anyone at a way to
+            pay would be steering. On iOS it is the route to the Apple
+            paywall - hiding it there ships an app that cannot be bought
+            from, which is a rejection of its own. */}
+        {(!isMasterAdminUser && user.role !== 'admin' && CAN_SELL) && (
           <ProfileGroup title={isRtl ? 'الاشتراك' : 'Subscription'}>
             <ProfileRow
               isRtl={isRtl}

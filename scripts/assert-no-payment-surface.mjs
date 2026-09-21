@@ -42,26 +42,7 @@ const DIST = path.resolve(process.argv[2] || 'dist');
 //     what the stores forbid is taking real money outside their billing.
 //   - "price" in an app that also has non-monetary prices.
 //   - A support contact link that is not a contact-to-buy flow.
-const FORBIDDEN_CONTENT = [
-  //  on both sides so a provider name is matched as a WORD. Without it this
-  // fired on the xlsx library's Excel fill patterns - "HorzStripe",
-  // "ThinVertStripe", "ReverseDiagStripe" - which have nothing to do with
-  // Stripe the payment processor. That is the "cries wolf" failure this file
-  // warns about two comments up: seven bogus hits on a dependency nobody can
-  // change, on the one check standing between a release and a policy strike.
-  //
-  // Real integrations still match: "stripe.com", "Stripe(", "paypal.me" all
-  // have a boundary on each side.
-  { label: 'payment gateway name', re: /(stripe|paypal|zaincash|paddle|lemonsqueezy)/i },
-  { label: 'currency code', re: /\b(IQD|USD|EGP|SAR|AED)\b/ },
-  { label: 'real-money order field', re: /finalPrice[A-Z]{3}/ },
-];
-
-// Matched against file NAMES — payment provider button artwork is the classic
-// one, because images survive minification untouched and keep their filenames.
-const FORBIDDEN_FILENAMES = [/stripe|paypal|zaincash/i];
-
-// Chunks exempt from the content scan.
+// Chunks exempt from a content rule.
 //
 // Privacy policy and terms pages legitimately NAME payment processors: an
 // accurate privacy policy has to disclose who processes payments on your
@@ -71,7 +52,69 @@ const FORBIDDEN_FILENAMES = [/stripe|paypal|zaincash/i];
 //
 // Pin those pages into their own chunk (a bundler `manualChunks` entry) so this
 // exemption stays honest and nothing else can hide behind it.
-const EXEMPT_CHUNKS = [/^assets\/legal-/];
+const LEGAL_CHUNK = [/^assets\/legal-/];
+
+// The RevenueCat SDK, which ships only in the iOS bundle. It enumerates every
+// store it supports - Stripe among them - so it trips the gateway-name rule
+// legitimately, and ONLY that rule: it is exempted per-RULE, not per-file, so a
+// currency code or provider-named asset inside it would still fail.
+// vite.config.ts pins it into its own chunk for exactly this reason.
+const REVENUECAT_CHUNK = [/^assets\/revenuecat-/];
+
+// The support desk's own Telegram and WhatsApp (src/lib/support.ts). The
+// comment at the top of this file already names "a support contact link that is
+// not a contact-to-buy flow" as a false positive to avoid, and this is it - but
+// it is spelled with the same t.me/ and wa.me/ literals the SELLER's payment
+// contact uses (src/lib/paymentContact.ts builds `https://wa.me/${digits}` and
+// `https://t.me/${username}` from settings/payment_contact), so no pattern can
+// separate them. vite.config.ts pins support.ts into its own chunk; the rule
+// keeps its teeth everywhere else.
+const SUPPORT_CHUNK = [/^assets\/support-contact-/];
+
+const FORBIDDEN_CONTENT = [
+  // \b on both sides so a provider name is matched as a WORD. Without it this
+  // fired on the xlsx library's Excel fill patterns - "HorzStripe",
+  // "ThinVertStripe", "ReverseDiagStripe" - which have nothing to do with
+  // Stripe the payment processor. That is the "cries wolf" failure this file
+  // warns about two comments up: seven bogus hits on a dependency nobody can
+  // change, on the one check standing between a release and a policy strike.
+  //
+  // Real integrations still match: "stripe.com", "Stripe(", "paypal.me" all
+  // have a boundary on each side.
+  {
+    label: 'payment gateway name',
+    re: /\b(stripe|paypal|zaincash|paddle|lemonsqueezy)\b/i,
+    exempt: [...LEGAL_CHUNK, ...REVENUECAT_CHUNK],
+  },
+  { label: 'currency code', re: /\b(IQD|USD|EGP|SAR|AED)\b/, exempt: LEGAL_CHUNK },
+  { label: 'real-money order field', re: /finalPrice[A-Z]{3}/, exempt: LEGAL_CHUNK },
+
+  // The three rules below are about STEERING rather than about a gateway, and
+  // they apply to BOTH store targets.
+  //
+  // iOS may sell - through Apple - so the gateway rules above stopped being the
+  // whole story the moment an iOS build existed. What neither store permits is
+  // pointing a user at a way to pay that is not the store's own: Apple
+  // Guideline 3.1.1 and Play's Payments policy say the same thing in different
+  // words. The manual Super Qi transfer is exactly that, and so is the seller's
+  // WhatsApp/Telegram number, which exists only so a student can arrange one.
+  //
+  // These pass today because src/i18n/payments.ts, src/lib/paymentContact.ts
+  // and src/services/subscriptionService.ts all leave the native graph with the
+  // two components that import them. They are written down so that stays true
+  // by rule rather than by luck.
+  { label: 'manual-transfer wallet', re: /\bsuper\s*qi\b|\bsuperkey\b|سوبر كي/i, exempt: LEGAL_CHUNK },
+  { label: 'off-store contact channel', re: /\b(t|wa)\.me\//i, exempt: [...LEGAL_CHUNK, ...SUPPORT_CHUNK] },
+  { label: 'payment receipt storage path', re: /payment_receipts/, exempt: LEGAL_CHUNK },
+];
+
+// Matched against file NAMES — payment provider button artwork is the classic
+// one, because images survive minification untouched and keep their filenames.
+//
+// Never exempted. A file called stripe-logo.png inside the legal chunk would
+// still be a payment button; the honest-exemption argument above is about prose
+// naming a processor, not about artwork.
+const FORBIDDEN_FILENAMES = [/stripe|paypal|zaincash/i];
 
 // Only text-bearing assets are scanned for content; everything is name-checked.
 const TEXT_EXT = new Set([
@@ -99,7 +142,6 @@ for (const file of walk(DIST)) {
   const rel = path.relative(DIST, file);
   // Normalised because path.relative yields backslashes on Windows.
   const relPosix = rel.split(path.sep).join('/');
-  if (EXEMPT_CHUNKS.some((re) => re.test(relPosix))) continue;
 
   for (const re of FORBIDDEN_FILENAMES) {
     if (re.test(path.basename(file))) {
@@ -116,7 +158,11 @@ for (const file of walk(DIST)) {
     continue;
   }
 
-  for (const { label, re } of FORBIDDEN_CONTENT) {
+  for (const { label, re, exempt } of FORBIDDEN_CONTENT) {
+    // Per-RULE, so exempting the legal pages from "names a processor" does not
+    // also exempt them from everything else, and so the RevenueCat chunk is
+    // excused only for the one rule it legitimately trips.
+    if (exempt?.some((ex) => ex.test(relPosix))) continue;
     const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
     const matches = text.match(new RegExp(re.source, flags));
     if (matches) {

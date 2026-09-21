@@ -600,35 +600,86 @@ older `semesterArchives.topStudents[].userId` hold a mix of uids and emails; and
 Unifying this touches 423 auth users and every uid-keyed collection. Do not attempt
 it as a side effect of another change.
 
-## No purchase surface in the store build
+## Three build targets, and what each may sell
 
-The app sells access on the **web**; the Android build cannot, because Play
-requires its own billing for in-app digital purchases and forbids steering users
-to pay elsewhere. Three layers keep that true, and all three matter:
+The two stores want opposite things, which is why there is no single
+"store build" any more:
 
-1. **Build-time exclusion.** `SubscriptionScreen`, `SubscriptionManagement`,
-   `SubscriptionPaywall` and `SimosanAdminScreen` are aliased to stubs for
-   `mode === 'native'` in `vite.config.ts`. A runtime `IS_STORE_BUILD` guard is
-   not enough - the stores scan the artefact, and hidden UI is still *in* it.
-2. **Vocabulary lives in `src/i18n/payments.ts`**, which is aliased to an empty
-   object for native. The entire subscription vocabulary now lives there -
-   including `subscriptionRequired`, `askRepresentative` and `subscriptionActive`,
-   which used to sit in `TRANSLATIONS` because the old stubs rendered them.
-3. **The stubs speak in ACCESS terms**, not quieter purchase terms. They say
-   only what the account's state is (`accessActive` / `accessInactive`,
-   `accessUntil`) and who changes it (`accessManagedByRep`) - both true, neither
-   a transaction. In store builds the settings row is "حالة الوصول / Access"
-   with a key icon rather than "الاشتراك / Subscription" with a payment card,
-   and the profile badge reads "مفعّل / ACTIVE" rather than "SUBSCRIBED".
+| `--mode` | Artefact | Sells | Rail |
+| --- | --- | --- | --- |
+| *(none)* | web | yes | ZainCash + Super Qi |
+| `native` | Android APK/AAB | **nothing** | - |
+| `ios` | App Store `.ipa` | yes | Apple IAP via RevenueCat |
+
+Play requires its own billing for in-app digital purchases *and* forbids
+steering users to pay elsewhere, so the Android build has no purchase surface
+at all. Apple requires digital access to be sold **through** its billing - so
+hiding the paywall on iOS is its own rejection. Same policy family, opposite
+obligations.
+
+**Two flags, not one** (`src/lib/platform.ts`). `IS_STORE_BUILD`
+(`__NATIVE_BUILD__`) means "inside an app binary" and is true for both native
+targets - it is what `src/lib/apiBase.ts` keys the absolute API base off, and
+what gates screens stubbed on both. `CAN_SELL` (`!IS_STORE_BUILD || IS_IOS_BUILD`)
+means "may show purchase vocabulary and a route to a buy flow". Every runtime
+check that softens "الاشتراك / Subscription" into "حالة الوصول / Access", or
+hides the row that reaches the paywall, means the second one. Asking
+`IS_STORE_BUILD` there ships an iOS app that cannot be bought from
+(`ProfileScreen.tsx`, `settings/SettingsScreen.tsx`). The two rows that open a
+*stubbed* screen - إدارة الاشتراكات and استخدام سيموسان - correctly stay on
+`IS_STORE_BUILD`.
+
+Three layers keep each artefact honest:
+
+1. **Build-time exclusion**, `vite.config.ts`'s alias array, now in three
+   groups. `SubscriptionManagement` + `SimosanAdminScreen` → stubs on **both**
+   native targets (an admin ledger and a dollar dashboard belong in neither).
+   `SubscriptionScreen` / `SubscriptionPaywall` / `i18n/payments` → inert stubs
+   on Android, and → `src/ios/*.ios.tsx` + `src/i18n/paymentsIos.ts` on iOS. A
+   runtime guard is not enough: the stores scan the artefact, and hidden UI is
+   still *in* it.
+2. **Vocabulary is per-target.** One specifier, three files:
+   `src/i18n/payments.ts` (web), `src/native-stubs/payments.ts` (`{}`),
+   `src/i18n/paymentsIos.ts` (Apple only). The iOS file carries **no price
+   literals and no currency codes** - every figure a student sees is
+   RevenueCat's localized `priceString`, which is Apple's own price in the
+   viewer's storefront. `PLAN_CONFIG`'s IQD figures are the web rail's.
+3. **The Android stubs speak in ACCESS terms**, not quieter purchase terms:
+   `accessActive` / `accessInactive` / `accessUntil` / `accessManagedByRep`,
+   all true, none a transaction. **iOS says the true thing instead** - there
+   really is a subscription, bought through Apple, so the badge reads
+   "مشترك / SUBSCRIBED" and the settings row says "الاشتراك / Subscription".
 
 The distinction being drawn: *stating that an account lacks access* is a fact
-about the account. *Telling the user where to go and pay for it* is steering,
-which is prohibited whether or not the app handles the money. Keep new copy on
-the first side of that line.
+about the account. *Telling the user where to go and pay for it* is steering -
+prohibited by both stores whether or not the app handles the money, and
+**not** what Apple's own IAP sheet or its
+`itms-apps://apps.apple.com/account/subscriptions` link are. Keep new copy on
+the right side of that line for the target it ships in.
 
-`npm run check:payment-surface` only flags gateway names, currency codes and
-price fields, so it passing is **necessary but not sufficient** - it would not
-have caught a "Subscription" row with a credit-card icon.
+`npm run check:payment-surface` (Android) and `check:payment-surface:ios` run
+the same scanner against the two artefacts. It flags gateway names, currency
+codes, price fields, the Super Qi wallet, off-store contact links and the
+receipt storage path - so it passing is **necessary but not sufficient**: it
+would not catch a "Subscription" row with a credit-card icon.
+
+Exemptions are **per rule, not per file**, and each is pinned to a
+`manualChunks` entry so nothing else can hide behind it:
+
+- `legal-pages` is excused the gateway-name rule, because a privacy policy has
+  to name its processors truthfully. It is still checked for currency codes.
+- `support-contact` (`src/lib/support.ts`) is excused the off-store-contact
+  rule. The support desk's Telegram and WhatsApp are spelled with the same
+  `t.me/` and `wa.me/` literals `src/lib/paymentContact.ts` builds the
+  *seller's* from, so no pattern separates them.
+- `revenuecat` is excused the gateway-name rule, because the SDK enumerates
+  every store it supports, Stripe included. That chunk is created **only** when
+  `isIos` - without the guard it existed on Android too, empty of SDK, and
+  Rollup filled it with Vite's shared preload helper, so the exemption would
+  have excused 9KB of unrelated runtime on the one target that may not sell.
+
+The privacy policy's processor list is per-platform for the same reason and
+must stay in step: ZainCash (web), Apple + RevenueCat (iOS), nothing (Android).
 
 ## The manual payment method: Super Qi / Qi Card
 

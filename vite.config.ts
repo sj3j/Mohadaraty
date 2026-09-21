@@ -6,6 +6,27 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+
+  // Three targets, not two.
+  //
+  //   mode 'native'  -> the Android APK/AAB. Sells NOTHING: Play forbids taking
+  //                     real money outside its own billing AND forbids steering
+  //                     users elsewhere, so the whole purchase surface is
+  //                     aliased away.
+  //   mode 'ios'     -> the App Store .ipa. Sells through APPLE's billing via
+  //                     RevenueCat, which Apple requires. So it keeps a paywall
+  //                     - just not the web one: ZainCash, Super Qi, the receipt
+  //                     upload and the seller's WhatsApp/Telegram number are
+  //                     Guideline 3.1.1 violations in an iOS binary for exactly
+  //                     the reason they are Play violations in the APK.
+  //   default        -> the web build, bound by neither.
+  //
+  // `isBundled` is "inside an app binary", which is what the store scanners
+  // read and what IS_STORE_BUILD has always meant. `isIos` is the narrower
+  // "may sell, through Apple".
+  const isIos = mode === 'ios';
+  const isBundled = mode === 'native' || isIos;
+
   return {
     base: './',
     build: {
@@ -23,6 +44,30 @@ export default defineConfig(({mode}) => {
           // keeps the exemption honest: nothing else can hide behind it.
           manualChunks(id) {
             if (id.includes('/src/components/legal/')) return 'legal-pages';
+            // Same device, same reason. RevenueCat's SDK enumerates every store
+            // it supports - Stripe among them - so it trips the scanner's
+            // payment-gateway-name rule legitimately. Pinning it into its own
+            // chunk is what lets that one rule be exempted for this one chunk
+            // without opening a hole anything else could hide in. The currency
+            // and filename rules still apply to it.
+            //
+            // Guarded on isIos, and that guard is the honest part. The SDK is
+            // tree-shaken out of the web and Android graphs entirely (verified:
+            // zero hits for RevenueCat, getOfferings or PURCHASES_ERROR_CODE in
+            // a native build), which left this rule naming an EMPTY chunk that
+            // Rollup then filled with Vite's shared preload helper - so the
+            // scanner's exemption would have been attached to 9KB of unrelated
+            // runtime on the one target that may not sell at all. Now the chunk
+            // exists only where the SDK does.
+            if (isIos && id.includes('node_modules/@revenuecat/')) return 'revenuecat';
+            // The support desk's own Telegram and WhatsApp. A support contact
+            // link is not a contact-to-BUY flow and both stores allow it, but
+            // it is written with the same `t.me/` / `wa.me/` literals the
+            // seller's payment contact uses (src/lib/paymentContact.ts) - so
+            // the scanner cannot tell them apart by pattern. Pinning it into
+            // its own chunk is what lets that one rule be exempted here
+            // without also excusing the payment rail.
+            if (id.includes('/src/lib/support.ts')) return 'support-contact';
             return undefined;
           },
         }
@@ -40,7 +85,7 @@ export default defineConfig(({mode}) => {
         // app updates silently never take effect. selfDestroying emits a worker
         // that unregisters itself and deletes every cache instead, which also
         // rescues devices already stuck on the old precaching SW.
-        selfDestroying: mode === 'native',
+        selfDestroying: isBundled,
         workbox: {
           inlineWorkboxRuntime: true,
           importScripts: ['/firebase-messaging-sw.js'],
@@ -162,7 +207,13 @@ export default defineConfig(({mode}) => {
       // supplied a key. Both Gemini pipelines are server-side now, so no key
       // belongs in this bundle - and re-adding a define here would silently
       // publish it again.
-      '__NATIVE_BUILD__': JSON.stringify(mode === 'native'),
+      // True for BOTH bundled targets. This is what src/lib/platform.ts reads as
+      // IS_STORE_BUILD and what src/lib/apiBase.ts keys the absolute API base
+      // off - both of which are about "running inside an app binary", which iOS
+      // is. What iOS is NOT is "cannot sell"; that distinction is CAN_SELL,
+      // derived from the flag below.
+      '__NATIVE_BUILD__': JSON.stringify(isBundled),
+      '__IOS_BUILD__': JSON.stringify(isIos),
     },
     resolve: {
       // Array form so the native entries can match on a REGEX. Vite resolves
@@ -176,13 +227,39 @@ export default defineConfig(({mode}) => {
       alias: [
         { find: '@', replacement: path.resolve(__dirname, '.') },
 
-        // Compile-time removal of the real-money purchase surface.
+        // Compile-time swapping of the real-money purchase surface.
         //
         // Both stores enforce their payments policy by scanning the uploaded
         // artefact. IS_STORE_BUILD only ever hid the UI at runtime, so the
         // native bundle still carried "ZainCash", "Pay with ZainCash" and
         // "IQD" - scripts/assert-no-payment-surface.mjs failed on exactly
         // that, with 21 hits.
+        //
+        // Three groups below, because the two stores want opposite things.
+        // Play: do not sell here at all. Apple: sell here, through us. So the
+        // same three specifiers resolve to inert stubs on Android and to an
+        // Apple-native paywall on iOS, while the admin surfaces go to stubs on
+        // both.
+        //
+        // -- BOTH bundled targets: the admin/dollar surfaces ----------------
+        //
+        // These are excluded from iOS for the same reason as Android and NOT
+        // for the payments-policy reason: they are an admin ledger of real
+        // transactions and a spend dashboard denominated in dollars. Neither
+        // has any business in a student's phone on either platform, and
+        // SimosanAdminScreen in particular is what the currency rule catches.
+        ...(isBundled ? [
+          {
+            find: /^.*\/components\/SubscriptionManagement$/,
+            replacement: path.resolve(__dirname, 'src/native-stubs/SubscriptionManagement.tsx'),
+          },
+          {
+            find: /^.*\/components\/SimosanAdminScreen$/,
+            replacement: path.resolve(__dirname, 'src/native-stubs/SimosanAdminScreen.tsx'),
+          },
+        ] : []),
+
+        // -- ANDROID ONLY: no purchase surface at all -----------------------
         //
         // src/services/subscriptionService.ts is deliberately not listed:
         // these two components are its only importers, so replacing them
@@ -193,10 +270,6 @@ export default defineConfig(({mode}) => {
             replacement: path.resolve(__dirname, 'src/native-stubs/SubscriptionScreen.tsx'),
           },
           {
-            find: /^.*\/components\/SubscriptionManagement$/,
-            replacement: path.resolve(__dirname, 'src/native-stubs/SubscriptionManagement.tsx'),
-          },
-          {
             find: /^.*\/components\/SubscriptionPaywall$/,
             replacement: path.resolve(__dirname, 'src/native-stubs/SubscriptionPaywall.tsx'),
           },
@@ -204,12 +277,31 @@ export default defineConfig(({mode}) => {
             find: /^.*\/i18n\/payments$/,
             replacement: path.resolve(__dirname, 'src/native-stubs/payments.ts'),
           },
-          // Simosan's spend dashboard reports dollars against a monthly
-          // ceiling. Same hazard as the screens above: admin-only React is
-          // still in the artefact the scanner reads.
+        ] : []),
+
+        // -- iOS ONLY: an APPLE purchase surface ----------------------------
+        //
+        // Same three specifiers, different destinations. The iOS components
+        // live under src/ios/ and are reachable ONLY through these aliases, so
+        // the web and Android graphs never see them - the same mechanism that
+        // already drops subscriptionService.ts above.
+        //
+        // The iOS components must never import src/services/subscriptionService
+        // or src/lib/paymentContact: doing so pulls ZainCash, the receipt
+        // upload and the seller's WhatsApp/Telegram number straight back into
+        // the .ipa. scripts/assert-no-payment-surface.mjs is the backstop.
+        ...(isIos ? [
           {
-            find: /^.*\/components\/SimosanAdminScreen$/,
-            replacement: path.resolve(__dirname, 'src/native-stubs/SimosanAdminScreen.tsx'),
+            find: /^.*\/components\/SubscriptionScreen$/,
+            replacement: path.resolve(__dirname, 'src/ios/SubscriptionScreen.ios.tsx'),
+          },
+          {
+            find: /^.*\/components\/SubscriptionPaywall$/,
+            replacement: path.resolve(__dirname, 'src/ios/SubscriptionPaywall.ios.tsx'),
+          },
+          {
+            find: /^.*\/i18n\/payments$/,
+            replacement: path.resolve(__dirname, 'src/i18n/paymentsIos.ts'),
           },
         ] : []),
       ],

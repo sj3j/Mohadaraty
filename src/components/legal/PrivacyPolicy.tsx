@@ -10,11 +10,18 @@ import { LegalShell, Section, Bullets, useLegalLang } from './LegalShell';
  * recordings, Firebase for auth/storage/messaging, and the stage-scoped access
  * rules in firestore.rules.
  *
- * It names ZainCash, truthfully, as the processor for website payments. That is
- * why src/components/legal/ is pinned into its own `legal-` chunk in
- * vite.config.ts: scripts/assert-no-payment-surface.mjs exempts that chunk
- * precisely so an accurate disclosure is possible without weakening the check
- * that keeps a purchase FLOW out of the store build.
+ * It names the payment processors truthfully, and they now differ per platform:
+ * ZainCash on the website, Apple's In-App Purchase in the iOS app (with
+ * RevenueCat recording what an account holds), and NOTHING in the Android app,
+ * which sells nothing at all. That is why src/components/legal/ is pinned into
+ * its own `legal-` chunk in vite.config.ts: scripts/assert-no-payment-surface.mjs
+ * exempts that chunk precisely so an accurate disclosure is possible without
+ * weakening the check that keeps a purchase FLOW out of the build that may not
+ * have one.
+ *
+ * Keep this list in step with what each build actually does. Apple reviews the
+ * policy against the app's own privacy declarations, and a policy that omits
+ * the processor handling the money is a rejection.
  */
 export default function PrivacyPolicy() {
   const [lang, setLang] = useLegalLang();
@@ -22,7 +29,7 @@ export default function PrivacyPolicy() {
 
   if (isRtl) {
     return (
-      <LegalShell lang={lang} setLang={setLang} title="سياسة الخصوصية" updated="آخر تحديث: ٤ أيلول ٢٠٢٦">
+      <LegalShell lang={lang} setLang={setLang} title="سياسة الخصوصية" updated="آخر تحديث: ٢١ أيلول ٢٠٢٦">
         <Section heading="من نحن">
           <p>
             «محاضراتي» تطبيق تديره إدارة الكلية لتوصيل المحاضرات والتسجيلات والإعلانات
@@ -69,7 +76,10 @@ export default function PrivacyPolicy() {
             'Google Firebase — الحسابات وقاعدة البيانات وتخزين الملفات والإشعارات.',
             'Cloudflare R2 — تخزين التسجيلات الصوتية.',
             'Vercel — استضافة الموقع والواجهة البرمجية.',
-            'ZainCash — معالجة الدفع في نسخة الموقع فقط. تطبيق الأندرويد لا يتضمن أي عملية دفع.',
+            'ZainCash — معالجة الدفع في نسخة الموقع فقط.',
+            'Apple — معالجة عمليات الشراء داخل تطبيق iOS. تتم الدفعة لدى Apple ولا نطّلع على بيانات بطاقتك.',
+            'RevenueCat — تسجيل الاشتراك الفعّال لحسابك في تطبيق iOS.',
+            'تطبيق الأندرويد لا يتضمن أي عملية دفع.',
           ]} />
         </Section>
 
@@ -110,7 +120,7 @@ export default function PrivacyPolicy() {
   }
 
   return (
-    <LegalShell lang={lang} setLang={setLang} title="Privacy Policy" updated="Last updated: 4 September 2026">
+    <LegalShell lang={lang} setLang={setLang} title="Privacy Policy" updated="Last updated: 21 September 2026">
       <Section heading="Who we are">
         <p>
           MyLecture is an app run by the college administration to deliver lectures,
@@ -157,7 +167,10 @@ export default function PrivacyPolicy() {
           'Google Firebase — accounts, database, file storage and notifications.',
           'Cloudflare R2 — storage for audio recordings.',
           'Vercel — website and API hosting.',
-          'ZainCash — payment processing on the website only. The Android app contains no payment flow.',
+          'ZainCash — payment processing on the website only.',
+          'Apple — In-App Purchase processing in the iOS app. Apple takes the payment; we never see your card details.',
+          'RevenueCat — records which subscription an account holds, for purchases made in the iOS app.',
+          'The Android app contains no payment flow.',
         ]} />
       </Section>
 

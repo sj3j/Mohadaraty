@@ -18,6 +18,7 @@ import { useNativePush } from './hooks/useNativePush';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail } from '../shared/masterAdmins';
 import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
+import { IAP_ENABLED, identifyIap, signOutIap } from './lib/iap';
 import AdminGradesScreen from './components/grades/AdminGradesScreen';
 import AdminQuestionBankScreen from './components/questionBank/AdminQuestionBankScreen';
 import StudentGradesScreen from './components/grades/StudentGradesScreen';
@@ -516,6 +517,38 @@ export default function App() {
       }
     };
   }, []);
+
+  /**
+   * Apple In-App Purchase identity, iOS only.
+   *
+   * Deliberately its OWN effect rather than a few lines inside the auth
+   * listener above. That listener is the boot path, and the offline rules in
+   * CLAUDE.md apply to it: anything awaited in there can hang forever without a
+   * network, and a throw on the wrong line used to sign people out
+   * irrecoverably. Nothing here is awaited by the listener and nothing here can
+   * reject into it.
+   *
+   * Everything in src/lib/iap.ts is a no-op unless __IOS_BUILD__ is true, so on
+   * web and Android this effect resolves immediately and the SDK is not even in
+   * the bundle - the dynamic import behind that build-time constant is dropped
+   * by the bundler.
+   *
+   * Keyed on uid, not on `user`: the users/{uid} listener re-fires that object
+   * on every profile write (streaks, favourites), and re-running a store
+   * handshake on each of those would be pointless traffic.
+   */
+  useEffect(() => {
+    if (!IAP_ENABLED) return;
+    if (user?.uid) {
+      // identifyIap configures the SDK, mints the opaque App User ID through
+      // /api/iap/identity, logs in, and then reconciles - so a purchase made on
+      // another device, or a renewal that happened while the app was closed,
+      // lands without waiting for the next webhook.
+      identifyIap().catch(err => console.warn('[iap] identify failed', err));
+    } else {
+      signOutIap().catch(err => console.warn('[iap] signOut failed', err));
+    }
+  }, [user?.uid]);
 
   // Streak Logic
   useEffect(() => {

@@ -4,7 +4,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { Language, UserProfile } from '../../types';
 import { SETTINGS_ICONS } from '../../lib/settingsIcons';
-import { IS_STORE_BUILD } from '../../lib/platform';
+import { CAN_SELL, IS_STORE_BUILD } from '../../lib/platform';
 import SettingsGroup from './SettingsGroup';
 import SettingsRow from './SettingsRow';
 import SettingsToggle from './SettingsToggle';
@@ -275,18 +275,22 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                 label={isRtl ? 'السعيّات والدرجات' : 'Grades'}
                 onClick={() => onOpen('studentGrades')}
               />
-              {/* Store builds cannot sell anything, so this row must not read
-                  as a shop. It becomes an access-status row - same destination,
-                  no purchase language and no card iconography - because a
-                  student still needs to see whether their account is active
-                  and until when. */}
+              {/* The ANDROID build cannot sell anything, so there this row must
+                  not read as a shop. It becomes an access-status row - same
+                  destination, no purchase language and no card iconography -
+                  because a student still needs to see whether their account is
+                  active and until when.
+                  CAN_SELL, not IS_STORE_BUILD: iOS is a store build that sells,
+                  through Apple, and this row is how a student reaches the
+                  paywall. Softening it there would hide the purchase flow
+                  Apple requires the app to have. */}
               <SettingsRow
                 isRtl={isRtl}
-                icon={IS_STORE_BUILD ? SETTINGS_ICONS.access : SETTINGS_ICONS.subscription}
+                icon={CAN_SELL ? SETTINGS_ICONS.subscription : SETTINGS_ICONS.access}
                 label={
-                  IS_STORE_BUILD
-                    ? (isRtl ? 'حالة الوصول' : 'Access')
-                    : (isRtl ? 'الاشتراك' : 'Subscription')
+                  CAN_SELL
+                    ? (isRtl ? 'الاشتراك' : 'Subscription')
+                    : (isRtl ? 'حالة الوصول' : 'Access')
                 }
                 onClick={() => onOpen('subscription')}
               />

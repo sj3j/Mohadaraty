@@ -221,6 +221,10 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A cron route guarded by `header !== SECRET && SECRET` fails OPEN when the
   secret is unset. Fail closed on a missing secret, the way the destructive
   routes already do.
+- A webhook needing the RAW body takes the `verify` hook on the existing
+  global `express.json()`, never a path-mounted `express.raw()` — the latter's
+  ordering has to be reproduced identically in both route files, which is the
+  drift this section exists about.
 
 ## Env, secrets & config
 - A PEM/secret pasted into a single-line hosting-panel field arrives
@@ -259,6 +263,24 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   screen with access-only wording; review the copy too.
 - Hidden/dead UI still ships inside the compiled artifact — verify by
   scanning the built output, not just by confirming the runtime guard exists.
+- One boolean cannot mean both "inside an app binary" and "may not sell" —
+  Play forbids selling, Apple requires it, so a second store target splits
+  every runtime `IS_STORE_BUILD` check into those two meanings. Getting it
+  wrong hides the paywall from the build that is obliged to have one.
+- A `manualChunks` entry that names a dependency creates that chunk even
+  where the dependency is tree-shaken away, and Rollup then fills the empty
+  chunk with shared runtime — so a scanner exemption keyed to the chunk NAME
+  silently starts excusing unrelated code. Gate the chunk on the same build
+  condition as the dependency.
+- A scanner exemption must be per-RULE, not per-file: exempting the legal
+  pages because a privacy policy may name a processor also exempted them from
+  every other rule.
+- A pattern that catches the seller's contact link catches the SUPPORT team's
+  too — same `t.me/` / `wa.me/` literals, opposite legitimacy. Pin the
+  legitimate one into its own chunk rather than weakening the rule.
+- The privacy policy's processor list is per-platform once the platforms
+  differ; a policy still saying "the app contains no payment flow" after one
+  of them gained one is both false and an App Store rejection.
 
 ## Tooling & test coverage
 - `tsc --noEmit` on a large codebase can hit the default V8 heap and exit
