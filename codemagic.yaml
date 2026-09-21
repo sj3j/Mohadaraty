@@ -1,0 +1,156 @@
+# Codemagic CI for the iOS rail.
+#
+# WHAT THIS BUILDS, AND WHY IT IS NOT THE ANDROID PIPELINE
+#
+# There are three build targets (vite.config.ts): the web build sells through
+# ZainCash and Super Qi, the `native` (Android) build sells NOTHING because Play
+# forbids selling outside its own billing, and the `ios` build sells through
+# Apple because Apple requires it. They are different artefacts with different
+# compliance rules, so they get different pipelines. Nothing here is shared with
+# the Android workflow on purpose.
+#
+# The compliance gate below is the load-bearing step. See CLAUDE.md, "No
+# purchase surface in the store build".
+
+workflows:
+  ios-release:
+    name: iOS - App Store / TestFlight
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+
+    integrations:
+      # The App Store Connect API key as it is NAMED in
+      # Codemagic -> Teams -> Integrations -> Developer Portal.
+      # This is NOT the RevenueCat In-App Purchase .p8 - that one is uploaded
+      # to the RevenueCat dashboard and must never reach this repo or Codemagic.
+      app_store_connect: Codemagic
+
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.mohadaraty.app
+      groups:
+        # Must contain VITE_REVENUECAT_IOS_KEY (starts `appl_`). It is the
+        # PUBLIC SDK key: it can only read offerings and start a purchase Apple
+        # itself must then authorise, exactly like the Firebase web key already
+        # committed in firebase-applet-config.json. The secret `sk_` key belongs
+        # on Vercel and must never be added to this group.
+        - revenuecat
+      vars:
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        BUNDLE_ID: "com.mohadaraty.app"
+      xcode: latest
+      cocoapods: default
+      node: 20
+
+    scripts:
+      # ---------------------------------------------------------------------
+      # Preflight. Both of these fail the build in seconds rather than after a
+      # twenty-minute archive, and both guard a failure that is SILENT at build
+      # time and only visible to a student holding the finished app.
+      # ---------------------------------------------------------------------
+      - name: Preflight - the RevenueCat public key must be present
+        script: |
+          # src/lib/iap.ts:121 only console.warn()s when this is missing, so a
+          # keyless build SUCCEEDS and ships an app whose store never loads.
+          # Vite inlines VITE_-prefixed vars at build time; there is no runtime
+          # recovery. Fail here instead.
+          if [ -z "$VITE_REVENUECAT_IOS_KEY" ]; then
+            echo "VITE_REVENUECAT_IOS_KEY is not set."
+            echo "Add it to the 'revenuecat' environment group in Codemagic."
+            exit 1
+          fi
+          case "$VITE_REVENUECAT_IOS_KEY" in
+            appl_*) ;;
+            *) echo "VITE_REVENUECAT_IOS_KEY does not start with 'appl_'."
+               echo "That is the shape of an iOS PUBLIC SDK key. A key starting"
+               echo "'sk_' is the SECRET key and must never be inlined."
+               exit 1 ;;
+          esac
+
+      - name: Preflight - GoogleService-Info.plist must be committed
+        script: |
+          # @capacitor-firebase/authentication and push both need it. Without
+          # it the app builds, installs, and then fails Google sign-in on the
+          # device with nothing a build log would have shown.
+          # It is client config and public by design, exactly like the already
+          # committed android/app/google-services.json.
+          if [ ! -f ios/App/App/GoogleService-Info.plist ]; then
+            echo "ios/App/App/GoogleService-Info.plist is missing."
+            echo "Download it from the Firebase console (iOS app, bundle"
+            echo "com.mohadaraty.app) and commit it."
+            exit 1
+          fi
+
+      - name: Install node dependencies
+        script: npm ci
+
+      - name: Build the web bundle and sync it into the Xcode project
+        script: npm run ios:sync
+
+      # ---------------------------------------------------------------------
+      # THE COMPLIANCE GATE. Do not remove, do not move above ios:sync.
+      #
+      # It scans ios/App/App/public - the bundle that actually ships inside the
+      # .ipa - for ZainCash, Super Qi, the receipt-upload path and the seller's
+      # WhatsApp/Telegram contact. Apple Guideline 3.1.1 forbids steering a user
+      # to pay outside Apple's billing, and a runtime guard does not help: the
+      # stores scan the artefact, and hidden UI is still IN it.
+      #
+      # It must run AFTER ios:sync, because ios/App/App/public does not exist
+      # until cap sync copies it there. The script exits 1 on a missing
+      # directory rather than reporting zero violations, so a mis-ordered
+      # pipeline fails loudly instead of passing without having scanned
+      # anything - no extra existence check is needed here, and adding one
+      # would only shadow that error message.
+      # ---------------------------------------------------------------------
+      - name: Store-compliance gate - no off-Apple purchase surface
+        script: npm run check:payment-surface:ios
+
+      - name: Install CocoaPods dependencies
+        # `npx cap sync ios` already runs this, but it is cheap and it is the
+        # step that fails loudly if CocoaPods was not on PATH during the sync.
+        script: |
+          cd ios/App && pod install
+
+      - name: Set a unique build number
+        script: |
+          # Every TestFlight upload needs a CFBundleVersion no previous upload
+          # used; a repeat is rejected with "an attribute with a value that has
+          # already been used". The checked-in value is a literal 1.
+          #
+          # agvtool is not used: VERSIONING_SYSTEM is not set to apple-generic
+          # in this project, so agvtool would rewrite the Info.plist literal
+          # instead of the build setting Info.plist actually interpolates
+          # ($(CURRENT_PROJECT_VERSION)).
+          #
+          # $BUILD_NUMBER is Codemagic's own per-workflow counter. If a build is
+          # ever uploaded from outside Codemagic, switch to:
+          #   app-store-connect get-latest-testflight-build-number "$APP_APPLE_ID"
+          # and add one to it.
+          sed -i '' "s/CURRENT_PROJECT_VERSION = .*;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/g" \
+            ios/App/App.xcodeproj/project.pbxproj
+          grep -n "CURRENT_PROJECT_VERSION" ios/App/App.xcodeproj/project.pbxproj
+
+      - name: Fetch the signing profiles
+        script: xcode-project use-profiles
+
+      - name: Build the .ipa
+        script: |
+          xcode-project build-ipa \
+            --workspace "$XCODE_WORKSPACE" \
+            --scheme "$XCODE_SCHEME"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - ios/App/build/**/*.dSYM
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        # No `email` block here on purpose: THIS REPO IS PUBLIC, and a
+        # notification address committed to it is a published address. Set
+        # build notifications in the Codemagic UI instead.

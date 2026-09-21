@@ -316,6 +316,31 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - `@types/react` is absent, so JSX gives `key` no special handling on a typed
   component — a props interface must declare `key?: string` or every
   `.map()` render site fails `tsc`. See `LectureCardProps`.
+- An Xcode scheme Xcode created for you is NOT in the repo: it is written to
+  `xcuserdata/`, which `ios/.gitignore` excludes, so it exists on the machine
+  that opened the project and nowhere else. `xcode-project build-ipa --scheme App`
+  on a fresh CI clone then fails with "scheme not found" — a failure that cannot
+  reproduce locally, because locally the file is there. Commit
+  `App.xcodeproj/xcshareddata/xcschemes/App.xcscheme`.
+- `CURRENT_PROJECT_VERSION` checked in as a literal `1` uploads to TestFlight
+  exactly once; the second build is rejected for reusing a build number, after
+  the archive has already been paid for. Stamp it in CI. `agvtool` is the usual
+  answer and is the wrong one here — this project never sets
+  `VERSIONING_SYSTEM = apple-generic`, so agvtool rewrites the Info.plist
+  literal instead of the build setting `$(CURRENT_PROJECT_VERSION)` that
+  Info.plist actually interpolates.
+- The compliance gate scans a directory the build produces
+  (`ios/App/App/public`, written by `cap sync`), so a CI pipeline that orders it
+  before the sync scans nothing. `assert-no-payment-surface.mjs` exits 1 on a
+  missing directory rather than reporting zero violations, which is the only
+  reason a mis-ordered pipeline fails loudly instead of passing vacuously —
+  keep that arm if the script is ever rewritten, and do not add a redundant
+  existence check in the pipeline that shadows its error message.
+- A build-time key read through `import.meta.env` that the code only
+  `console.warn`s about when missing (`src/lib/iap.ts`) produces a SUCCESSFUL
+  build and a broken app — Vite inlines the value, so there is no runtime
+  recovery and no failing test. Assert the variable in CI before the build, not
+  after it.
 - Pinning a fixture to the wall clock is not enough when the code under test
   applies a GRACE WINDOW: `streak.test.ts` opened its term on the Baghdad date
   while record-activity was still crediting yesterday, so every run between
