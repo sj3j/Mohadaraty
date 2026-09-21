@@ -361,6 +361,16 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   on a sibling element must stay a DOM sibling, not a child — a child's
   transform becomes the sibling's containing block.
 
+- A cross-platform push plugin returns a DIFFERENT KIND of token per platform:
+  `@capacitor/push-notifications` yields an FCM token on Android and a raw APNs
+  token on iOS. Publishing the iOS one to a per-user `fcm_tokens/{uid}` doc
+  overwrites the working Android token, and the sender's prune-on-failure then
+  DELETES it - so adding a platform silently removes notifications from a device
+  that had them. Gate the publish on `Capacitor.getPlatform()`.
+- `ITSAppUsesNonExemptEncryption` absent from Info.plist stalls EVERY TestFlight
+  upload on a manual export-compliance prompt, which defeats an automated
+  pipeline without failing it.
+
 ## Store compliance (Play / App Store)
 - A build-time UI exclusion (aliasing a screen to a stub) is necessary but
   not sufficient for "no purchase surface in this build" — a scanner that

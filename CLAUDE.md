@@ -815,6 +815,45 @@ Exemptions are **per rule, not per file**, and each is pinned to a
 The privacy policy's processor list is per-platform for the same reason and
 must stay in step: ZainCash (web), Apple + RevenueCat (iOS), nothing (Android).
 
+## iOS push needs a real FCM token, and does not have one yet
+
+`useNativePush` uses `@capacitor/push-notifications`, which returns whatever the
+OS hands back: on Android an **FCM registration token**, on iOS a raw **APNs
+device token**. The plugin calls `registerForRemoteNotifications` and has no
+Firebase dependency, so nothing converts one into the other. Every sender in
+`functions/index.js` goes through `admin.messaging()`, which only accepts the
+former.
+
+**The hook therefore publishes nothing on iOS, and that is deliberate.** The
+naive version hardcoded `platform: 'android'` and wrote the token regardless,
+which is worse than useless rather than merely ineffective: `fcm_tokens/{uid}`
+is **one document per user**, and the senders prune on failure -
+`functions/index.js` deletes that document on
+`messaging/registration-token-not-registered`. So a student who installed the
+iOS app would overwrite the FCM token their Android phone had registered, every
+send would fail, and the prune would take the working Android token with it.
+"iOS push does not work yet" would have become "this student gets no
+notifications on any device".
+
+iOS still registers with the OS, so the permission prompt and the foreground
+listeners behave normally; only the publish is skipped, behind
+`Capacitor.getPlatform()`.
+
+Closing it is **three things, and none of them is just an npm install**:
+
+1. `@capacitor-firebase/messaging`, which brings the `FirebaseMessaging` pod and
+   exchanges the APNs token for an FCM one. Keep Android on the existing plugin
+   - it works today for 423 accounts, and a swap risks it for no gain.
+2. An **APNs auth key** (`.p8`) uploaded to the Firebase console. Without it FCM
+   has nothing to talk to APNs with, and the exchange fails at runtime with
+   nothing a build would catch. This is a THIRD `.p8` - not the App Store
+   Connect API key and not the In-App Purchase key.
+3. The **Push Notifications capability** on the App target, which means an
+   `App.entitlements` file (the project has none) and a provisioning profile
+   minted with push enabled.
+
+Until all three land, treat iOS push as absent rather than broken.
+
 ## The Apple rail: RevenueCat, and why it is a sibling not a caller
 
 `shared/iap.ts` (pure logic + entitlement application), `shared/iapApi.ts`
