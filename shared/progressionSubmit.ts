@@ -157,6 +157,25 @@ export async function submitProgression(
     }
   }
 
+  // The MCQ leaderboard's stage filter reads a DENORMALISED copy of the stage on
+  // userMCQStats, not users.stageId - so a promotion that updates only users/
+  // and students/ leaves the student filed under the stage they just left. They
+  // then vanish from their new stage's MCQ board while still appearing on the
+  // streak board (which reads users/ directly), which reads as "the MCQ
+  // leaderboard is broken for stage N" rather than as a stale field.
+  //
+  // stagePromotion.ts already re-files it for the bulk path; this is the same
+  // write for the self-service one. update() on a missing document fails the
+  // whole batch, so the existence check is not optional - a student who has
+  // never answered an MCQ has no stats document.
+  const statsRef = db.collection('userMCQStats').doc(uid);
+  if ((await statsRef.get()).exists) {
+    batch.set(statsRef, {
+      stageId: outcome.stageId,
+      lastUpdated: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
   await batch.commit();
 
   const landed = stages.find(s => s.id === outcome.stageId) || null;

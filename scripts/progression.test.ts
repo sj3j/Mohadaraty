@@ -387,5 +387,53 @@ const stayDoc = (await db.doc('users/u_repstay').get()).data() || {};
 check('a representative sitting a resit keeps their role', stayDoc.role === 'admin');
 check('and keeps managing their stage', stayDoc.managedStageId === 'stage_3');
 
+
+// ---------------------------------------------------------------------------
+// THE MCQ BOARD'S STAGE COPY HAS TO MOVE WITH THE STUDENT
+//
+// LeaderboardTab filters the MCQ board on userMCQStats.stageId - a denormalised
+// copy of users.stageId, kept because a board cannot otherwise be scoped without
+// reading every user. This path wrote users/ and students/ and left that copy
+// naming the stage the student had just left, so they vanished from their new
+// stage's MCQ board while still appearing on the streak board (which reads
+// users/ directly). That reads as "the MCQ leaderboard is broken for stage N",
+// not as one stale field.
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('MCQ leaderboard stage copy:');
+
+await db.doc('users/u_mcq').set({
+  uid: 'u_mcq', email: 'u_mcq@x.com', stageId: 'stage_3', role: 'student',
+});
+await db.doc('userMCQStats/u_mcq').set({
+  userId: 'u_mcq', stageId: 'stage_3', mcqRankScore: 400,
+  totalFirstAttemptCorrect: 20, totalFirstAttemptAnswered: 25,
+});
+
+const mcqRes = await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_mcq', round: 'first', answer: 'passed',
+});
+check('the student is promoted', mcqRes.stageId === 'stage_4', String(mcqRes.stageId));
+
+const movedStats = (await db.doc('userMCQStats/u_mcq').get()).data() || {};
+check('their MCQ stats row is re-filed under the new stage',
+  movedStats.stageId === 'stage_4', String(movedStats.stageId));
+check('and the score they earned is untouched by the re-filing',
+  movedStats.mcqRankScore === 400 && movedStats.totalFirstAttemptCorrect === 20);
+
+// A student who has never answered an MCQ has no stats document at all, and
+// update() on a missing document fails the WHOLE batch - which would take the
+// promotion down with it.
+await db.doc('users/u_nomcq').set({
+  uid: 'u_nomcq', email: 'u_nomcq@x.com', stageId: 'stage_3', role: 'student',
+});
+const noStats = await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_nomcq', round: 'first', answer: 'passed',
+});
+check('a student with no MCQ stats row still promotes cleanly',
+  noStats.stageId === 'stage_4', String(noStats.stageId));
+check('and no empty stats row is invented for them',
+  !(await db.doc('userMCQStats/u_nomcq').get()).exists);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
