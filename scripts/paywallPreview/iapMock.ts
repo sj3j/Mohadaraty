@@ -16,25 +16,32 @@ import type { PurchasesPackage } from '@revenuecat/purchases-capacitor';
 declare const __PREVIEW_PRICES__: Record<string, string>;
 declare const __PREVIEW_ACTIVE__: boolean;
 
-const PRODUCTS: { id: string; identifier: string; ar: string; en: string }[] = [
-  { id: 'com.mohadaraty.app.1month', identifier: '$rc_monthly', ar: 'شهر واحد', en: '1 Month' },
-  { id: 'com.mohadaraty.app.3months', identifier: '$rc_three_month', ar: '٣ أشهر', en: '3 Months' },
-  { id: 'com.mohadaraty.app.6months', identifier: '$rc_six_month', ar: '٦ أشهر', en: '6 Months' },
-  { id: 'com.mohadaraty.app.1year', identifier: '$rc_annual', ar: 'سنة كاملة', en: '1 Year' },
+/**
+ * The real offering, as configured in RevenueCat.
+ *
+ * `title` is deliberately the App Store Connect display name VERBATIM,
+ * including the fact that three are English and one is Arabic. The screen is
+ * supposed to ignore it in favour of PLAN_CONFIG's localised label, so leaving
+ * the inconsistency here is what proves it does.
+ */
+const PRODUCTS: { id: string; identifier: string; title: string }[] = [
+  { id: 'com.mohadaraty.app.1month', identifier: '$rc_monthly', title: 'شهري' },
+  { id: 'com.mohadaraty.app.3months', identifier: '$rc_three_month', title: '3 Months' },
+  { id: 'com.mohadaraty.app.6months', identifier: '$rc_six_month', title: '6 Months' },
+  { id: 'com.mohadaraty.app.1year', identifier: '$rc_annual', title: '1 Year' },
 ];
 
 export const IAP_ENABLED = true;
 export const MANAGE_SUBSCRIPTION_URL = 'itms-apps://apps.apple.com/account/subscriptions';
 
 export async function getPlans(): Promise<PurchasesPackage[]> {
-  const lang = document.documentElement.getAttribute('data-preview-lang') === 'en' ? 'en' : 'ar';
   return PRODUCTS.map(p => ({
     identifier: p.identifier,
     packageType: p.identifier,
     offeringIdentifier: 'default',
     product: {
       identifier: p.id,
-      title: lang === 'en' ? p.en : p.ar,
+      title: p.title,
       description: '',
       priceString: __PREVIEW_PRICES__[p.id] ?? '',
     },

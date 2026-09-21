@@ -20,11 +20,14 @@ import { defineConfig } from 'vite';
  *
  *   PAYWALL_PRICES='{"com.mohadaraty.app.1month":"$1.99", ...}' npm run preview:paywall
  */
+/** The App Store Connect tiers as of the first submission. Override with
+ *  PAYWALL_PRICES rather than editing these, and update them here only when the
+ *  tiers themselves change - a stale default is worse than an obvious one. */
 const DEFAULT_PRICES: Record<string, string> = {
-  'com.mohadaraty.app.1month': '—',
-  'com.mohadaraty.app.3months': '—',
-  'com.mohadaraty.app.6months': '—',
-  'com.mohadaraty.app.1year': '—',
+  'com.mohadaraty.app.1month': '$1.99',
+  'com.mohadaraty.app.3months': '$4.99',
+  'com.mohadaraty.app.6months': '$7.99',
+  'com.mohadaraty.app.1year': '$9.99',
 };
 
 const prices = process.env.PAYWALL_PRICES

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Crown, KeyRound, Loader2, RotateCcw, ExternalLink, AlertCircle } from 'lucide-react';
 import type { PurchasesPackage } from '@revenuecat/purchases-capacitor';
-import { Language, TRANSLATIONS, UserProfile } from '../types';
+import { Language, PLAN_CONFIG, SubscriptionPlan, TRANSLATIONS, UserProfile } from '../types';
+import { planForProduct } from '../../shared/iap';
 import { hasSubscriptionAccess, hasLiveSubscription } from '../../shared/subscriptionAccess';
 import {
   MANAGE_SUBSCRIPTION_URL, getPlans, purchase, restore, syncEntitlement,
@@ -37,6 +38,30 @@ import {
  */
 
 type Busy = null | { kind: 'loading' } | { kind: 'buying'; id: string } | { kind: 'restoring' };
+
+/**
+ * What to call a plan.
+ *
+ * NOT `pkg.product.title`. That is the display name typed into App Store
+ * Connect, it is a single string with no localisation, and ours are currently
+ * mixed - "1 Year", "6 Months", "3 Months" and then "شهري". An Arabic student
+ * would read three English rows and one Arabic one.
+ *
+ * The product id already tells us which plan this is, and PLAN_CONFIG already
+ * carries both languages for the web paywall, so the label follows the app's
+ * language like every other string. The PRICE still comes from the store and
+ * always will - that is the number Apple requires be accurate, and the one we
+ * are not entitled to invent.
+ *
+ * Falls back to the store's own title for a product PLAN_CONFIG has not been
+ * taught about, which is the same fail-open rule shared/iap.ts applies to the
+ * entitlement itself.
+ */
+function planLabel(productId: string, title: string, isRtl: boolean): string {
+  const plan = planForProduct(productId) as SubscriptionPlan | null;
+  if (!plan || !PLAN_CONFIG[plan]) return title;
+  return isRtl ? PLAN_CONFIG[plan].labelAr : PLAN_CONFIG[plan].labelEn;
+}
 
 export default function SubscriptionScreen({ user, lang }: { user: UserProfile | null; lang: Language }) {
   const t = TRANSLATIONS[lang] as any;
@@ -189,7 +214,7 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
               >
                 <span className="min-w-0">
                   <span className="block text-sm font-black text-slate-900 dark:text-stone-100 truncate">
-                    {pkg.product.title}
+                    {planLabel(pkg.product.identifier, pkg.product.title, isRtl)}
                   </span>
                   {pkg.product.description && (
                     <span className="block text-xs font-bold text-slate-400 truncate">
