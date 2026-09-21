@@ -341,6 +341,20 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   build and a broken app — Vite inlines the value, so there is no runtime
   recovery and no failing test. Assert the variable in CI before the build, not
   after it.
+- Dropping `GoogleService-Info.plist` into `ios/App/App/` is NOT enough. The
+  Capacitor project is `objectVersion = 48` with no
+  `PBXFileSystemSynchronizedRootGroup`, so it is a classic Xcode project:
+  on-disk presence does nothing, and a resource absent from the
+  `PBXResourcesBuildPhase` is simply absent from the `.ipa`. `cap sync` does not
+  add it either. The file needs a `PBXFileReference`, a `PBXBuildFile`, an entry
+  in the App group's children, and one in the Resources phase — four edits, or
+  Firebase aborts at launch. Folder-synchronisation advice written for modern
+  Xcode projects does not apply here.
+- `ios/App/App.xcodeproj/project.pbxproj` is checked out **CRLF** on Windows,
+  so any anchor-based edit written with `\n` silently matches nothing. Detect
+  the file's own ending and insert with it, and make the script refuse rather
+  than guess when the anchor is absent — a half-applied pbxproj edit is far more
+  expensive than a failed one.
 - Pinning a fixture to the wall clock is not enough when the code under test
   applies a GRACE WINDOW: `streak.test.ts` opened its term on the Baghdad date
   while record-activity was still crediting yesterday, so every run between
