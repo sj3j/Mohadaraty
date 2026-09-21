@@ -4,7 +4,8 @@
  * field.
  *
  * Run with:  npx tsx scripts/makeServiceAccountBlob.ts
- * Writes:    serviceAccountKey.json  (gitignored AND dockerignored)
+ * Writes:    serviceAccountKey.json     the blob         (git+dockerignored)
+ *            serviceAccountKey.b64.txt  the same, base64 (git+dockerignored)
  *
  * WHY THIS EXISTS
  *
@@ -14,6 +15,17 @@
  * JSON blob the key is a JSON *string*, so its newlines survive via JSON.parse
  * by spec - there is no hand-rolled unescaping anywhere in the path for a text
  * field to break.
+ *
+ * WHY THERE IS ALSO A BASE64 COPY
+ *
+ * Because the blob was not enough. A panel handed one back escaped
+ * (`{\"project_id\":...`) and the bot exited on every boot with JSON.parse's
+ * `position 1` - a message V8 emits for six unrelated manglings, so it named
+ * none of them. bot/src/serviceAccount.ts now repairs that shape, but repair is
+ * the second-best answer: base64 contains no quote, backslash, newline or smart
+ * quote, so there is nothing in it for a text field to damage in the first
+ * place. Paste the .b64.txt into FIREBASE_SERVICE_ACCOUNT_B64 and the whole
+ * class of failure is gone rather than handled.
  *
  * This generates nothing new and rotates nothing. It is a reformat of
  * credentials that are already on this machine, so the existing key keeps
@@ -27,6 +39,7 @@ import { writeFileSync } from 'node:fs';
 import { normalizePrivateKey, describePrivateKey } from '../bot/src/privateKey.ts';
 
 const OUT = 'serviceAccountKey.json';
+const OUT_B64 = 'serviceAccountKey.b64.txt';
 
 const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
@@ -60,14 +73,25 @@ const blob = { project_id: projectId, client_email: clientEmail, private_key: pr
 
 // One line: the panel field is single-line, and a pretty-printed blob pasted
 // into one arrives with its newlines eaten.
-writeFileSync(OUT, JSON.stringify(blob), { encoding: 'utf8' });
+const json = JSON.stringify(blob);
+const base64 = Buffer.from(json, 'utf8').toString('base64');
 
-console.log(`Wrote ${OUT}`);
+writeFileSync(OUT, json, { encoding: 'utf8' });
+writeFileSync(OUT_B64, base64, { encoding: 'utf8' });
+
+console.log(`Wrote ${OUT} and ${OUT_B64}`);
 console.log(`  project:     ${projectId}`);
 console.log(`  client:      ${clientEmail}`);
 console.log(`  private key: ${describePrivateKey(privateKey)}`);
-console.log(`  blob length: ${JSON.stringify(blob).length} characters, on one line`);
+console.log(`  blob:        ${json.length} characters, on one line`);
+console.log(`  base64:      ${base64.length} characters, on one line`);
 console.log('');
-console.log('Open it, copy the WHOLE line into the panel\'s FIREBASE_SERVICE_ACCOUNT');
-console.log('field, then delete the file. It is gitignored and dockerignored, but');
-console.log('it is still a private key sitting in your working tree.');
+console.log(`PREFER the base64: copy the WHOLE line of ${OUT_B64} into the panel's`);
+console.log('FIREBASE_SERVICE_ACCOUNT_B64 field. It has no quote, backslash or newline');
+console.log('in it, so there is nothing a single-line field can damage.');
+console.log('');
+console.log(`If the panel already holds a working ${OUT} blob in FIREBASE_SERVICE_ACCOUNT,`);
+console.log('leave it - that still works. Set one or the other, not both: _B64 wins.');
+console.log('');
+console.log('Delete BOTH files afterwards. They are gitignored and dockerignored, but');
+console.log('they are still a private key sitting in your working tree.');

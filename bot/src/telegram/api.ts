@@ -1,5 +1,6 @@
 import { env } from '../env.ts';
 import { log, errFields } from '../log.ts';
+import { isNetworkError, describeNetworkFailure } from '../net.ts';
 import {
   TelegramApiError, TG_LIMITS,
   type TgChat, type TgChatMember, type TgFile, type TgInputMedia,
@@ -42,12 +43,36 @@ async function parseResponse<T>(response: Response, method: string): Promise<T> 
   return body.result as T;
 }
 
+export const TELEGRAM_HOST = 'api.telegram.org';
+
+/**
+ * How long one call may take before it is abandoned.
+ *
+ * `fetch` has no default timeout, so a connection that is accepted and then
+ * ignored hangs the caller forever - at boot that is a container that is up,
+ * silent, and doing nothing, which is worse than a crash because nothing
+ * restarts it. getUpdates is the exception by design: it is a long poll, so
+ * its budget is whatever it asked Telegram to hold the connection open for,
+ * plus a margin for the round trip.
+ */
+function timeoutFor(payload: unknown): number {
+  const longPoll = (payload as { timeout?: unknown } | undefined)?.timeout;
+  return typeof longPoll === 'number' ? (longPoll + 15) * 1000 : 30_000;
+}
+
 /**
  * One Bot API call, with 429 handled by honouring `retry_after` exactly.
  *
  * Deliberately does NOT stack exponential backoff on top of retry_after:
  * Telegram is telling us precisely when it will accept the call again, and
  * waiting longer than that just slows the mirror down for no benefit.
+ *
+ * NETWORK failures are retried separately, and they are not the same thing. A
+ * `TypeError: fetch failed` is not a TelegramApiError, so it used to fall
+ * straight through this catch with no retry at all: the poll loop absorbed
+ * that further up, but nothing at boot did, and one unresolvable DNS lookup
+ * was enough to kill the process two seconds after start - too fast for the
+ * host's own restart policy to take it seriously.
  */
 async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<T> {
   try {
@@ -55,6 +80,7 @@ async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload ?? {}),
+      signal: AbortSignal.timeout(timeoutFor(payload)),
     });
     return await parseResponse<T>(response, method);
   } catch (error) {
@@ -66,19 +92,51 @@ async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<
       await new Promise(resolve => setTimeout(resolve, waitMs));
       return call<T>(method, payload, attempt + 1);
     }
+    if (isNetworkError(error) && attempt < 4) {
+      const waitMs = Math.min(15_000, 2 ** attempt * 1000);
+      log.warn('tg.network_retry', {
+        method, waitMs, attempt,
+        detail: describeNetworkFailure(error, TELEGRAM_HOST),
+        ...errFields(error),
+      });
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      return call<T>(method, payload, attempt + 1);
+    }
     throw error;
   }
 }
 
-/** Multipart variant, for bytes Telegram cannot fetch by URL. */
+/**
+ * Multipart variant, for bytes Telegram cannot fetch by URL.
+ *
+ * A longer timeout than `call`, because this one is pushing a file up a link
+ * whose speed is not ours to know - 30s would abandon a large photo on a slow
+ * host and then retry it from the beginning, which is slower than waiting.
+ */
+const MULTIPART_TIMEOUT_MS = 120_000;
+
 async function callMultipart<T>(method: string, form: FormData, attempt = 0): Promise<T> {
   try {
-    const response = await fetch(`${BASE}/${method}`, { method: 'POST', body: form });
+    const response = await fetch(`${BASE}/${method}`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(MULTIPART_TIMEOUT_MS),
+    });
     return await parseResponse<T>(response, method);
   } catch (error) {
     if (error instanceof TelegramApiError && error.isRetryable && attempt < 3) {
       const waitMs = error.retryAfter != null ? error.retryAfter * 1000 : 2 ** attempt * 1000;
       log.warn('tg.rate_limited', { method, waitMs, attempt });
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      return callMultipart<T>(method, form, attempt + 1);
+    }
+    if (isNetworkError(error) && attempt < 3) {
+      const waitMs = Math.min(15_000, 2 ** attempt * 1000);
+      log.warn('tg.network_retry', {
+        method, waitMs, attempt,
+        detail: describeNetworkFailure(error, TELEGRAM_HOST),
+        ...errFields(error),
+      });
       await new Promise(resolve => setTimeout(resolve, waitMs));
       return callMultipart<T>(method, form, attempt + 1);
     }
