@@ -60,7 +60,10 @@ export interface Subject {
 // Subscription types
 export type SubscriptionPlan = 'monthly' | 'seasonal' | 'semi_annual' | 'annual';
 export type SubscriptionStatus = 'active' | 'inactive' | 'pending' | 'cancelled';
-export type PaymentMethod = 'zaincash' | 'superkey' | 'admin_grant';
+/** `apple_iap` rows are written ONLY by the server, from RevenueCat
+ *  (shared/iap.ts). They carry amount 0 - Apple settles in the buyer's own
+ *  currency net of commission, and this ledger's revenue is IQD. */
+export type PaymentMethod = 'zaincash' | 'superkey' | 'admin_grant' | 'apple_iap';
 
 export interface Subscription {
   id: string;

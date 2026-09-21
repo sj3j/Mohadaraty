@@ -41,6 +41,7 @@ import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { createStreakHandlers } from "./shared/streakApi.js";
 import { createMcqHandlers } from "./shared/mcqApi.js";
 import { createTimetableHandlers } from "./shared/timetableApi.js";
+import { createIapHandlers } from "./shared/iapApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
@@ -100,7 +101,13 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
   
-  app.use(express.json());
+  // The `verify` hook captures the raw bytes for RevenueCat's webhook signature,
+  // which is an HMAC over "<timestamp>.<raw body>" and cannot be recomputed from
+  // the parsed object. Done here, on the ONE global parser, rather than by
+  // mounting express.raw() on that path - a path-mounted parser has to be ordered
+  // identically in server.ts and api/index.ts, and that is exactly the drift
+  // PITFALLS.md records under "Dual API surfaces".
+  app.use(express.json({ verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
 // Capacitor serves the bundled app from https://localhost (Android) and
 // capacitor://localhost (iOS), so every /api call from the native build is a
 // cross-origin request. Without these headers the WebView blocks them all and
@@ -1855,6 +1862,17 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
           error: 'ZainCash payments settle automatically; re-check the payment instead',
         });
       }
+      // Apple, for the same reason and one more. StoreKit already took the money
+      // and RevenueCat is the only thing that knows whether it stuck, so approving
+      // by hand would grant access nobody verified; and activateSubscription would
+      // then stack PLAN_CONFIG.days onto an expiry Apple owns and moves every
+      // renewal, leaving the row permanently disagreeing with the App Store.
+      // /api/iap/sync is the way to re-check one.
+      if (subData.paymentMethod === 'apple_iap') {
+        return res.status(400).json({
+          error: 'Apple subscriptions settle automatically; re-sync the purchase instead',
+        });
+      }
       if (subData.status !== 'pending') {
         return res.status(400).json({ error: 'Subscription is not pending' });
       }
@@ -1995,6 +2013,19 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
    * moderator and support alike. Mirrored in api/index.ts. */
   const timetable = createTimetableHandlers({ admin });
   app.post("/api/timetable/parse", verifyAuth, verifyAdmin, timetable.parse);
+
+  /* Apple In-App Purchase. Handlers live in shared/iapApi.ts and are mounted
+   * identically in api/index.ts - keep these four lines in step across both
+   * files.
+   *
+   * The webhook takes NO auth middleware on purpose: RevenueCat is not a
+   * Firebase user and holds no ID token. It authenticates with a shared header
+   * and an optional HMAC, verified inside the handler, which FAILS CLOSED when
+   * the secret is unset. */
+  const iap = createIapHandlers({ admin, notify: notifySubscription });
+  app.post("/api/iap/identity", verifyAuth, iap.identity);
+  app.post("/api/iap/sync", verifyAuth, iap.sync);
+  app.post("/api/iap/webhook", iap.webhook);
 
   // --- Vite Middleware for Development / Static Serving for Production ---
   if (process.env.NODE_ENV !== "production") {

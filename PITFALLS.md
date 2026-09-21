@@ -70,6 +70,18 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   churn. Rule out a missing rule before blaming the SDK.
 
 ## Data model & consistency
+- Two payment rails on one account means no expiry path may CLEAR the access
+  cache — it must recompute `max(endDate)` over the rows that remain, or
+  expiring one revokes access the other was paid for.
+- An external subscription's expiry belongs to the store that sells it: apply
+  it, never stack a local duration onto it, or the row drifts a little further
+  from the truth at every renewal.
+- An auto-renewing subscription is ONE row updated in place, not a row per
+  period — a row per renewal makes a per-person breakdown count the same
+  person once a month.
+- Revenue in a second currency does not belong in a single-currency total;
+  store 0 and show the count alone rather than a converted figure nobody can
+  reconcile against the provider's own report.
 - A denormalized counter/aggregate written by two different code paths
   (season-end archives, streak resets, etc.) will diverge unless *both*
   writes come from one in-memory pass — if they can't, add an audit script,
@@ -225,6 +237,9 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   global `express.json()`, never a path-mounted `express.raw()` — the latter's
   ordering has to be reproduced identically in both route files, which is the
   drift this section exists about.
+- A webhook sender is not a Firebase user and holds no ID token; authenticate
+  it with a shared header (+ HMAC) verified inside the handler, and never
+  reach for `verifyAuth` on that route.
 
 ## Env, secrets & config
 - A PEM/secret pasted into a single-line hosting-panel field arrives

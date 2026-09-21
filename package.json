@@ -45,6 +45,7 @@
     "test:subscriptions": "npx tsx scripts/subscriptionStats.test.ts",
     "test:masters": "npx tsx scripts/masterAdmins.test.ts",
     "test:access": "npx tsx scripts/subscriptionAccess.test.ts",
+    "test:iap": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/iap.test.ts\"",
     "test:roster": "npx tsx scripts/roster.test.ts",
     "streak:audit": "npx tsx scripts/streakAudit.ts",
     "purge:chat": "npx tsx scripts/purgeChat.ts",

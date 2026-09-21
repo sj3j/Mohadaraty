@@ -681,6 +681,95 @@ Exemptions are **per rule, not per file**, and each is pinned to a
 The privacy policy's processor list is per-platform for the same reason and
 must stay in step: ZainCash (web), Apple + RevenueCat (iOS), nothing (Android).
 
+## The Apple rail: RevenueCat, and why it is a sibling not a caller
+
+`shared/iap.ts` (pure logic + entitlement application), `shared/iapApi.ts`
+(three routes, mounted one line each from both surfaces), `src/lib/iap.ts` (the
+only module that touches the SDK), `src/ios/SubscriptionScreen.ios.tsx` (the
+paywall). `@revenuecat/purchases-capacitor` is pinned at **11.3.2** - the last
+line peering `@capacitor/core >=7.0.0`; 12.x needs Capacitor 8.
+
+**The App User ID is an opaque server-minted hash, never the Firebase uid.** A
+roster student's uid IS their college email, so using it would ship ~400 real
+addresses into RevenueCat's dashboard, exports and webhook payloads.
+`rcAppUserIdFor()` is `sha256(uid)`, so it never has to be stored to be trusted;
+`rcLinks/{rcAppUserId}` exists only for the reverse direction, which a hash
+cannot give. `/api/iap/identity` writes both **before a purchase is possible** -
+a payment that arrived before the link existed would be unattributable - and
+`/api/iap/sync` re-ensures it, so a lost link is recoverable rather than an
+orphaned payment. `rcAppUserId` is frozen against self-edit in `firestore.rules`
+beside the three subscription fields: a student who could point it at another
+account would have that account's subscription applied to their own.
+
+**The client never asserts entitlement.** `purchase()` and `restore()` return
+only enough to stop a spinner; what grants access is `/api/iap/sync` asking
+RevenueCat with the **secret** key. That also closes the window between a
+purchase completing on the device and the webhook landing, which is most of the
+time a student spends watching that spinner.
+
+**`applyAppleEntitlement` is a SIBLING of `activateSubscription`, not a caller** -
+the single most important decision here. `activateSubscription` stacks
+`PLAN_CONFIG.days` onto an existing end date and overwrites the three
+`users/{uid}` fields unconditionally. That is right for a one-off ZainCash
+payment and wrong three ways for Apple: the expiry belongs to Apple and moves
+every renewal (stacking drifts further from the truth each period), it
+supersedes only `existingSubs.docs[0]`, and it would let a 1-month Apple
+purchase **shorten** a live 1-year ZainCash subscription.
+`recomputeUserAccess()` takes `max(endDate)` across every active row instead,
+which can only raise access - so the two rails coexist without either knowing
+about the other. `npm run test:iap` pins both directions.
+
+`functions/index.js`'s `expireSubscriptions` carries a checked copy of that
+recompute for the same reason (functions/ deploys as its own package, so
+`../shared` is not on disk - the same constraint as the master-admin list). It
+used to blanket-clear the three fields, which with two rails revokes access the
+other one was paid for.
+
+**One row per account, at `subscriptions/apple_{rcAppUserId}`.** Apple
+auto-renew is one continuous subscription; a row per renewal would count the
+same student once a month in توزيع المشتركين. The doc id is deterministic, which
+is also free idempotency. `amount` is **0** on purpose: Apple settles in the
+buyer's own currency net of commission and this ledger's `totalRevenue` is IQD,
+so the admin dashboard shows the count alone and App Store Connect stays where
+Apple revenue is read.
+
+**`CANCELLATION` is a GRANT.** In Apple's vocabulary it means auto-renew was
+turned off, not that access ends now - the student keeps the period they paid
+for. A refund arrives as the same event with a past `expiration_at_ms`, so the
+grant-to-stored-expiry rule revokes it with no special case. `BILLING_ISSUE` is
+ignored because Apple retries for up to 60 days with access intact; cutting off
+at the first failed charge would punish an expired card. `EXPIRATION` is what
+actually ends it.
+
+**An unmapped product fails OPEN on access and LOUD on the label.** A product
+added in App Store Connect before `PRODUCT_PLAN_MAP` learns about it still
+grants access, with an `adminAlerts` row and a `notes` field naming it.
+Refusing a student who paid is a refund and a support ticket; a mislabelled plan
+is a reporting problem. Same philosophy as the timetable's amber audience.
+
+**The webhook fails CLOSED.** With `REVENUECAT_WEBHOOK_AUTH` unset it answers
+503 rather than trusting the delivery - `header !== SECRET && SECRET` is a no-op
+when the secret is missing. It takes **no auth middleware**: RevenueCat is not a
+Firebase user and holds no ID token. `iapEvents/{eventId}` is the idempotency
+key, because RevenueCat retries reuse `event.id`. The raw body for the optional
+HMAC comes from the `verify` hook on the **one global** `express.json()` in each
+route file - a path-mounted `express.raw()` would put an ordering requirement in
+two files that must not drift.
+
+Apple is never hand-approvable, for ZainCash's reason plus one: approving would
+route through `activateSubscription` and stack days onto an expiry Apple owns.
+Both surfaces refuse it; `needsManualApproval` filters it out of the queue.
+
+**The App Store review screenshot is generated, not photographed.**
+`scripts/paywallPreview/` renders the real `SubscriptionScreen.ios.tsx` with
+only the store boundary mocked, so it cannot drift from what ships, and taking
+one does not need a Mac. Its vite root is the **repo**, not the preview folder:
+rooted at the folder, Tailwind v4's content detection scans only that folder and
+emits a stylesheet that styles nothing. Prices come from `PAYWALL_PRICES`
+because they belong to App Store Connect.
+
+    PAYWALL_PRICES='{"com.mohadaraty.app.1month":"$1.99", ...}' npm run build:paywall
+
 ## The manual payment method: Super Qi / Qi Card
 
 ZainCash settles itself - the gateway calls back and `shared/subscriptions.ts`

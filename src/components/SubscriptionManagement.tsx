@@ -220,6 +220,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
   const paymentLabel = (method: string) => {
     const labels: Record<string, string> = {
       zaincash: t.zaincash, superkey: t.superkey, admin_grant: t.adminGrant,
+      apple_iap: t.appleIap,
     };
     return labels[method] || method;
   };
@@ -333,14 +334,23 @@ export default function SubscriptionManagement({ user, lang, onClose }: Subscrip
           <div className="p-4 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
             <h3 className="font-bold text-sm text-slate-900 dark:text-white mb-3">{t.paymentMethodStats}</h3>
             <div className="space-y-2">
-              {(['zaincash', 'superkey', 'admin_grant'] as const).map(method => {
+              {(['zaincash', 'superkey', 'admin_grant', 'apple_iap'] as const).map(method => {
                 const { count, revenue } = stats.byPayment[method];
+                // Apple rows carry amount 0 on purpose: StoreKit settles in the
+                // buyer's own currency, net of Apple's commission, and this
+                // column is IQD. Printing "0 د.ع" beside a real subscriber
+                // count would read as a bug, and printing a converted figure
+                // would be a number we made up - so the count stands alone and
+                // App Store Connect is where that revenue is read.
+                const moneyless = method === 'apple_iap' || method === 'admin_grant';
                 return (
                   <div key={method} className="flex items-center justify-between">
                     <span className="text-sm text-slate-600 dark:text-slate-400">{paymentLabel(method)}</span>
                     <div className="text-right rtl:text-left">
                       <span className="text-sm font-bold text-slate-900 dark:text-white">{count}</span>
-                      <span className="text-xs text-slate-400 mr-2 rtl:ml-2">({revenue.toLocaleString()} {t.iqd})</span>
+                      {!moneyless && (
+                        <span className="text-xs text-slate-400 mr-2 rtl:ml-2">({revenue.toLocaleString()} {t.iqd})</span>
+                      )}
                     </div>
                   </div>
                 );

@@ -613,7 +613,15 @@ service cloud.firestore {
                         // gateway. /api/zaincash/init refuses to start a second
                         // one while it is set, so a client that could clear it
                         // could mint duplicate transactions at will.
-                        && request.resource.data.get('pendingZainCashRef', '') == resource.data.get('pendingZainCashRef', ''));
+                        && request.resource.data.get('pendingZainCashRef', '') == resource.data.get('pendingZainCashRef', '')
+                        // The RevenueCat App User ID this account's Apple
+                        // purchases are filed under, written by
+                        // /api/iap/identity. A student who could set it to
+                        // another account's value would have that account's
+                        // subscription applied to their own the next time
+                        // /api/iap/sync ran - so this freeze is what stops a
+                        // one-field edit from stealing a purchase.
+                        && request.resource.data.get('rcAppUserId', '') == resource.data.get('rcAppUserId', ''));
                       // Progression is recorded by /api/progression/submit with the
                       // Admin SDK, which also has to write students/{email}.stageId -
                       // a student cannot, and syncUserStage would otherwise revert the
@@ -1024,6 +1032,29 @@ service cloud.firestore {
       allow update: if isMasterAdmin();
       // No deletes
       allow delete: if false;
+    }
+
+    // Apple IAP, server-only on both counts.
+    //
+    // These are written exclusively by the Admin SDK (shared/iapApi.ts), which
+    // bypasses rules entirely - so the blocks exist to DENY clients, not to
+    // permit the server. They are spelled out rather than left absent because
+    // Firestore denies an unmatched path either way, and an explicit block is
+    // what npm run check:rules can see; a missing one reads as an oversight the
+    // next time someone audits this file.
+
+    // Idempotency ledger. RevenueCat retries a failed delivery with the same
+    // event.id, and a doc here is what stops the retry applying twice.
+    match /iapEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    // RevenueCat App User ID -> Firebase uid. The webhook has only the opaque
+    // hash and needs the uid; the hash is one-way, so this is the only route
+    // back. Readable by nobody: it maps an account identifier to a college
+    // email for every roster student in the app.
+    match /rcLinks/{rcAppUserId} {
+      allow read, write: if false;
     }
   }
 }

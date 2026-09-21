@@ -39,6 +39,7 @@ export const PAYMENT_STRINGS = {
     choosePayment: 'اختر طريقة الدفع',
     zaincash: 'زين كاش',
     superkey: 'سوبر كي / كي كارد',
+    appleIap: 'آبل (App Store)',
     payWithZaincash: 'ادفع عبر زين كاش',
     payWithSuperkey: 'ادفع عبر سوبر كي',
     superkeyInstructions: 'أرسل المبلغ إلى حساب سوبر كي / كي كارد التالي:',
@@ -103,6 +104,7 @@ export const PAYMENT_STRINGS = {
     // Qi Card's own wallet app. The stored paymentMethod stays 'superkey'
     // because live subscriptions carry it; only the label is corrected.
     superkey: 'Super Qi / Qi Card',
+    appleIap: 'Apple (App Store)',
     payWithZaincash: 'Pay with ZainCash',
     payWithSuperkey: 'Pay with Super Qi',
     superkeyInstructions: 'Send the amount to this Super Qi / Qi Card account:',
