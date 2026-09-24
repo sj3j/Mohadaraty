@@ -9,6 +9,20 @@
       "*.local"
     ]
   },
+  "auth": {
+    "authorizedDomains": [
+      "localhost",
+      "mylectures-app.firebaseapp.com",
+      "mylectures-app.web.app",
+      "mohadaraty.vercel.app"
+    ],
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Mohadaraty"
+      }
+    }
+  },
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"

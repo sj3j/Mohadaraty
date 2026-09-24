@@ -563,6 +563,7 @@ service cloud.firestore {
                      (request.resource.data.role == assistantRole() && assistantRole() != '') ||
                      (request.resource.data.role in ['admin'] && isMasterAdmin()));
       allow update: if isMasterAdmin() || 
+                      ( (isMasterAdmin() || isSupport()) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stageId', 'updatedAt']) ) ||
                       (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['examCode', 'name', 'originalName'])) || 
                       // Appointing a moderator writes these three fields onto their
                       // user doc. Restricted to role == 'moderator' so a representative
