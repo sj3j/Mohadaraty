@@ -44,6 +44,8 @@ const errorMessages: Record<string, string> = {
     'تسجيل الدخول بالبريد الإلكتروني غير مفعّل',
   'OFFLINE':
     'لا يوجد اتصال بالإنترنت',
+  'BROKEN_MERGE_POINTER':
+    'حصل خطأ في ربط الحسابات. يرجى التواصل مع الإدارة',
 };
 
 interface SignInOutcome {
@@ -80,6 +82,8 @@ const signInWithRetry = async (
       const err = new Error(errorMsg);
       if (data.code === 'AMBIGUOUS_IDENTIFIER') {
         (err as any).code = 'AMBIGUOUS_IDENTIFIER';
+      } else if (data.code === 'BROKEN_MERGE_POINTER') {
+        (err as any).code = 'BROKEN_MERGE_POINTER';
       } else if (response.status === 401 || response.status === 404) {
         (err as any).code = 'auth/invalid-credential';
       } else if (response.status === 403) {
