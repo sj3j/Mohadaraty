@@ -14,7 +14,6 @@
 import { GoogleGenAI } from '@google/genai';
 import {
   GENERATION_LOCK_MS,
-  MAX_GENERATION_FAILURES,
   MCQ_MODEL,
   classifyFailure,
   type McqFailureReason,
@@ -260,28 +259,14 @@ export function createTimetableHandlers(deps: TimetableDeps) {
         if (data?.status === 'parsing' && startedMs > 0 && Date.now() - startedMs < GENERATION_LOCK_MS) {
           return 'already_parsing';
         }
-        /*
-         * The retry cap counts failures against ONE image. Uploading a new one
-         * clears it, because that is exactly what the cap's own message tells
-         * the user to do - and before this, doing so changed nothing and left
-         * them permanently locked out with no way back.
-         */
-        const failedOn = data?.failedPhotoUrl;
-        const staleCount = !!failedOn && failedOn !== photoUrl;
-        const failureCount = staleCount ? 0 : (Number(data?.failureCount) || 0);
-        if (failureCount >= MAX_GENERATION_FAILURES) {
-          return 'too_many_failures';
-        }
         tx.set(draftRef, {
           stageId,
           status: 'parsing',
           startedAt: admin.firestore.FieldValue.serverTimestamp(),
-          ...(staleCount ? { failureCount: 0 } : {}),
         }, { merge: true });
         return 'ok';
       });
       if (claim === 'already_parsing') return res.status(409).json({ error: 'already_parsing' });
-      if (claim === 'too_many_failures') return res.status(409).json({ error: 'too_many_failures' });
 
       try {
         const imageRes = await fetch(photoUrl);

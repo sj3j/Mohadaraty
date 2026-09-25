@@ -34,10 +34,6 @@ export const MCQ_QUESTION_COUNT = 20;
  *  inlined rather than uploaded. */
 export const MAX_INLINE_PDF_BYTES = 20 * 1024 * 1024;
 
-/** A lecture that fails this many times stops being retried. Without a cap a
- *  genuinely unprocessable PDF burns the daily free-tier quota that the other
- *  lectures need, one retry at a time, forever. */
-export const MAX_GENERATION_FAILURES = 3;
 
 /** How long a `generating` marker is trusted before it is treated as abandoned.
  *  Also the serialisation window - see the lock note in shared/mcqApi.ts. */

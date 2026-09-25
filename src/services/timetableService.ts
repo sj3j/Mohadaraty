@@ -138,24 +138,6 @@ export async function publishTimetable(
   await batch.commit();
 }
 
-/**
- * Clear the three-strike parse cap.
- *
- * The cap is meant to stop an unreadable image from draining the daily free
- * quota, but nothing except a SUCCESSFUL parse used to reset it - so a stage
- * that hit the cap could never parse again, and the message telling the user to
- * upload a clearer image was advice they could not act on. The server now
- * resets it automatically when the image changes; this is the manual escape for
- * when they want to retry the same one.
- */
-export async function resetTimetableFailures(stageId: string): Promise<void> {
-  await setDoc(doc(db, 'timetableDrafts', stageId), {
-    stageId,
-    failureCount: 0,
-    failureReason: deleteField(),
-    failedPhotoUrl: deleteField(),
-  }, { merge: true });
-}
 
 /** Take the week down. Students fall back to the original image through exactly
  *  the same path as "never published", so there is no third state to render. */

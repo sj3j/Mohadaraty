@@ -22,6 +22,23 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('Uncaught error:', error, errorInfo);
+
+    const isChunkError = 
+      error.message.includes('Failed to fetch dynamically imported module') ||
+      error.message.includes('Importing a module script failed');
+
+    if (isChunkError) {
+      const lastReload = parseInt(sessionStorage.getItem('chunk_reload_timestamp') || '0', 10);
+      const now = Date.now();
+      
+      // If the last reload was more than 10 seconds ago, we try reloading once
+      // to fetch the new chunks from the latest deployment.
+      if (now - lastReload > 10000) {
+        sessionStorage.setItem('chunk_reload_timestamp', now.toString());
+        window.location.reload();
+        return;
+      }
+    }
   }
 
   public render() {

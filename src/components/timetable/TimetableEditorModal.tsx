@@ -19,7 +19,7 @@ import { useBackDismiss } from '../../hooks/useBackDismiss';
 import { useStageContext } from '../../contexts/StageContext';
 import TimetableSessionRow from './TimetableSessionRow';
 import {
-  publishTimetable, requestTimetableParse, resetTimetableFailures,
+  publishTimetable, requestTimetableParse,
   saveDraftSessions, unpublishTimetable, watchDraftTimetable,
   TimetableUnavailableError,
 } from '../../services/timetableService';
@@ -63,8 +63,7 @@ export default function TimetableEditorModal({
   const [isPublishing, setIsPublishing] = useState(false);
   const [showImage, setShowImage] = useState(false);
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  /** The three-strike cap has been hit, so offer the way out of it. */
-  const [capReached, setCapReached] = useState(false);
+
   /** How many sessions the last parse reported storing. Compared against what
    *  the listener actually delivers - see the reconcile effect below. */
   const [parsedCount, setParsedCount] = useState(0);
@@ -156,7 +155,6 @@ export default function TimetableEditorModal({
     if (!effectiveStageId) return;
     setIsParsing(true);
     setMessage(null);
-    setCapReached(false);
     setNeedsReload(false);
     setParsedCount(0);
     try {
@@ -183,7 +181,6 @@ export default function TimetableEditorModal({
       // A provider error carries its code on `.code`; everything else throws a
       // plain Error whose message IS the code.
       const code = err instanceof TimetableUnavailableError ? err.code : err?.message;
-      if (code === 'too_many_failures') setCapReached(true);
       setMessage({
         kind: 'err',
         text:
@@ -204,29 +201,14 @@ export default function TimetableEditorModal({
                   ? (isRtl ? 'ارفع صورة الجدول أولاً.' : 'Upload the timetable image first.')
                   : code === 'already_parsing'
                     ? (isRtl ? 'التحليل جارٍ بالفعل.' : 'A parse is already running.')
-                    : code === 'too_many_failures'
-                      ? (isRtl
-                        ? 'توقف التحليل بعد ثلاث محاولات فاشلة على هذه الصورة. ارفع صورة أوضح، أو أعد المحاولة على أي حال.'
-                        : 'Parsing stopped after three failed attempts on this image. Upload a clearer one, or retry anyway.')
-                      : (isRtl ? 'تعذّر تحليل الصورة.' : 'Could not parse the image.'),
+                    : (isRtl ? 'تعذّر تحليل الصورة.' : 'Could not parse the image.'),
       });
     } finally {
       setIsParsing(false);
     }
   };
 
-  /** Clear the cap so the button works again. The server also clears it by
-   *  itself as soon as a different image is uploaded. */
-  const handleResetFailures = async () => {
-    if (!effectiveStageId) return;
-    try {
-      await resetTimetableFailures(effectiveStageId);
-      setCapReached(false);
-      setMessage(null);
-    } catch (err) {
-      console.error('[timetable] reset failed', err);
-    }
-  };
+
 
   const handlePublish = async () => {
     if (!effectiveStageId || !user) return;
@@ -359,13 +341,6 @@ export default function TimetableEditorModal({
                   {isRtl ? 'إعادة تحميل الصفحة' : 'Reload the page'}
                 </button>
               )}
-              {capReached && (
-                <button
-                  onClick={handleResetFailures}
-                  className="block mt-2 px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-zinc-700"
-                >
-                  {isRtl ? 'إعادة المحاولة على أي حال' : 'Retry anyway'}
-                </button>
               )}
             </div>
           )}
