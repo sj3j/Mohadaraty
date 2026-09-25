@@ -341,7 +341,6 @@ export default function TimetableEditorModal({
                   {isRtl ? 'إعادة تحميل الصفحة' : 'Reload the page'}
                 </button>
               )}
-              )}
             </div>
           )}
 
