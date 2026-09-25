@@ -8,6 +8,7 @@
 import { GoogleGenAI } from '@google/genai';
 import {
   GENERATION_LOCK_MS,
+  MAX_GENERATION_FAILURES,
   MAX_INLINE_PDF_BYTES,
   MCQ_MODEL,
   MCQ_RESPONSE_SCHEMA,
@@ -111,6 +112,7 @@ export function createMcqHandlers(deps: McqDeps) {
       if (data?.status === 'ready' && Array.isArray(data.questions) && data.questions.length) {
         return res.json({ ok: true, alreadyReady: true, count: data.questions.length });
       }
+
 
       /*
        * Serialisation lock.

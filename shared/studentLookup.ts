@@ -39,35 +39,22 @@ export const BAD_CREDENTIALS = 'الباسورد أو الإيميل خطأ';
  * `isActive` - otherwise the deactivated loser is found first and the student is
  * told their account is disabled, which undoes the very link the merge created.
  *
- * Follows the full merge chain iteratively (A → B → C) with cycle detection via
- * a visited-set. A broken pointer (target document missing) throws a
- * BROKEN_MERGE_POINTER LoginError so the student sees a clear admin-contact
- * message rather than silent misbehaviour.
+ * Exactly one hop. A chain would mean a survivor was itself later merged, which
+ * the merge refuses to create; following one anyway would turn a corrupted pair
+ * into an infinite loop at the login path of all places. A pointer at a missing
+ * or self-referential document is ignored, leaving the original record to fail
+ * on its own merits.
  */
 export async function followMerge(
   db: FirebaseFirestore.Firestore,
   record: StudentRecord,
 ): Promise<StudentRecord> {
-  let current = record;
-  const visited = new Set<string>([current.id]);
-  
-  while (true) {
-    const target = (current.data?.mergedInto || '').trim().toLowerCase();
-    if (!target || target === current.id) return current;
+  const target = (record.data?.mergedInto || '').trim().toLowerCase();
+  if (!target || target === record.id) return record;
 
-    if (visited.has(target)) {
-      console.warn(`[followMerge] Cycle detected in merges for ${record.id}: ${[...visited, target].join(' -> ')}`);
-      return current; // Break cycle, return last valid record
-    }
-    visited.add(target);
-
-    const doc = await db.collection('students').doc(target).get();
-    if (!doc.exists) {
-      console.warn(`[followMerge] Broken merge pointer for ${current.id}: target ${target} not found`);
-      throw new LoginError('حصل خطأ في ربط الحسابات، يرجى التواصل مع الإدارة', 500, 'BROKEN_MERGE_POINTER');
-    }
-    current = { id: doc.id, data: doc.data() || {} };
-  }
+  const doc = await db.collection('students').doc(target).get();
+  if (!doc.exists) return record;
+  return { id: doc.id, data: doc.data() || {} };
 }
 
 /**
@@ -110,38 +97,25 @@ export async function findStudentCandidates(
   const raw = (identifier || '').trim();
   if (!raw) return [];
 
-  let candidates: StudentRecord[] = [];
-
   if (raw.includes('@')) {
     const doc = await db.collection('students').doc(raw.toLowerCase()).get();
-    if (doc.exists) {
-      candidates.push({ id: doc.id, data: doc.data() || {} });
-    }
-  } else {
-    if (looksLikeLoginCode(raw)) {
-      const byCode = await db.collection('students')
-        .where('loginCodeKey', '==', loginCodeKeyFor(raw)).limit(10).get();
-      if (!byCode.empty) candidates = toRecords(byCode);
-    }
-
-    if (candidates.length === 0) {
-      const key = nameKeyFor(raw);
-      if (key) {
-        const byName = await db.collection('students')
-          .where('nameKey', '==', key).limit(10).get();
-        candidates = toRecords(byName);
-      }
-    }
+    if (!doc.exists) return [];
+    // The typed address may be the one a merge retired. Follow it, so a student
+    // who still types their old email reaches the account that absorbed it.
+    return [await followMerge(db, { id: doc.id, data: doc.data() || {} })];
   }
 
-  if (candidates.length === 0) return [];
+  if (looksLikeLoginCode(raw)) {
+    const byCode = await db.collection('students')
+      .where('loginCodeKey', '==', loginCodeKeyFor(raw)).limit(10).get();
+    if (!byCode.empty) return toRecords(byCode);
+  }
 
-  // Resolve all candidates through the merge chain and deduplicate
-  const resolved = await Promise.all(candidates.map(r => followMerge(db, r)));
-  const unique = new Map<string, StudentRecord>();
-  for (const r of resolved) unique.set(r.id, r);
-
-  return Array.from(unique.values());
+  const key = nameKeyFor(raw);
+  if (!key) return [];
+  const byName = await db.collection('students')
+    .where('nameKey', '==', key).limit(10).get();
+  return toRecords(byName);
 }
 
 /**

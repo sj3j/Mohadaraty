@@ -160,6 +160,13 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
           case 'translated_lecture':
             msg = 'لا يمكن توليد أسئلة من محاضرة مترجمة.';
             break;
+
+          case 'unavailable':
+            msg = 'الخدمة مزدحمة أو غير متاحة مؤقتاً. حاول بعد قليل.';
+            break;
+          case 'Internal server error':
+            msg = 'حدث خطأ في الاتصال بالخادم. إذا استمرت المشكلة، يرجى إعادة تشغيل الخادم.';
+            break;
           default:
             msg = 'تعذّر توليد الأسئلة. حاول لاحقاً.';
         }

@@ -374,28 +374,17 @@ export async function mergeUserAccounts(
 
     if (loserSnap.exists && keeperSnap.exists) {
       const keeperData = keeperSnap.data() || {};
-      const loserData = loserSnap.data() || {};
-      const keeperUpdates: any = {};
-
       // Only a real address is worth carrying over, and only onto a survivor that
       // has not already linked one - overwriting an existing googleEmail would
       // silently retarget a link the student made themselves. A synthetic roster
       // id is not a mailbox and nobody can sign in with it.
       const isSynthetic = deleteStudentId.endsWith('@' + ROSTER_EMAIL_DOMAIN);
       if (!isSynthetic && !(keeperData.googleEmail || '').trim()) {
-        keeperUpdates.googleEmail = deleteStudentId;
-        keeperUpdates.googleLinkedAt = stamp();
+        await db.collection('students').doc(keepStudentId).set({
+          googleEmail: deleteStudentId,
+          googleLinkedAt: stamp(),
+        }, { merge: true });
         report.linkedGoogleEmail = deleteStudentId;
-      }
-
-      // UX Guard: Carry over the password ONLY if the survivor completely lacks one.
-      // Never overwrite a survivor's working password.
-      if (!keeperData.password && loserData.password) {
-        keeperUpdates.password = loserData.password;
-      }
-
-      if (Object.keys(keeperUpdates).length > 0) {
-        await db.collection('students').doc(keepStudentId).set(keeperUpdates, { merge: true });
       }
 
       await db.collection('students').doc(deleteStudentId).set({

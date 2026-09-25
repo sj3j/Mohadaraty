@@ -36,7 +36,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const isMasterAdmin = isMasterAdminEmail(user?.email) || user?.isMasterAdmin;
-  const { effectiveStageId, groupConfig, stages } = useStageContext();
+  const { effectiveStageId, groupConfig } = useStageContext();
   const [showGroupSettings, setShowGroupSettings] = useState(false);
 
   // Group/subgroup options come from the stage config, not a hardcoded A-D list.
@@ -93,8 +93,6 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'codes'>('roster');
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
   const [isFetchingProfile, setIsFetchingProfile] = useState(false);
-  const [transferringStudent, setTransferringStudent] = useState<Student | null>(null);
-  const [transferStageId, setTransferStageId] = useState('');
   
 
 
@@ -585,20 +583,6 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                             : <KeyRound className="w-4 h-4" />}
                         </button>
                       )}
-                      {!student.isAuthAccountOnly && (isMasterAdmin || user?.role === 'support') && (
-                        <button
-                          onClick={() => {
-                            setTransferringStudent(student);
-                            setTransferStageId(effectiveStageId || '');
-                          }}
-                          className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
-                          title={isRtl ? 'نقل الطالب لمرحلة أخرى' : 'Transfer Stage'}
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                          </svg>
-                        </button>
-                      )}
                       <button
                         onClick={() => {
                           setPanel('add');
@@ -731,40 +715,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       setError(err.message || (isRtl ? 'فشل حذل الطالب' : 'Failed to delete student'));
     }
   };
-  const handleTransferStage = async () => {
-    if (!transferringStudent || !transferStageId || transferStageId === effectiveStageId) {
-      setTransferringStudent(null);
-      return;
-    }
-    
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      const targetId = transferringStudent.baseStudentId || transferringStudent.id;
-      
-      const updateData = {
-        stageId: transferStageId,
-        updatedAt: serverTimestamp()
-      };
-      
-      await updateDoc(doc(db, 'students', targetId), updateData);
-      
-      if (transferringStudent.userUid) {
-        await updateDoc(doc(db, 'users', transferringStudent.userUid), updateData);
-      }
-      
-      await logAdminAction('TRANSFER_STUDENT', `Transferred student ${targetId} to stage ${transferStageId}`);
-      
-      setSuccess(isRtl ? 'تم نقل الطالب بنجاح' : 'Student transferred successfully');
-      setTransferringStudent(null);
-      fetchStudents();
-    } catch (err: any) {
-      console.error('Error transferring student:', err);
-      setError(err.message || (isRtl ? 'فشل نقل الطالب' : 'Failed to transfer student'));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+
+
 
 
 
@@ -1763,80 +1715,6 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
               )}
             </div>
             )}
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {transferringStudent && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-[24px] shadow-2xl overflow-hidden flex flex-col"
-          >
-            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-zinc-800">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <svg className="w-6 h-6 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                </svg>
-                {isRtl ? 'نقل الطالب لمرحلة أخرى' : 'Transfer Student to Stage'}
-              </h2>
-              <button
-                onClick={() => setTransferringStudent(null)}
-                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="p-6">
-              <p className="text-sm text-slate-600 dark:text-zinc-400 mb-6">
-                {isRtl 
-                  ? `قم باختيار المرحلة الجديدة التي تريد نقل الطالب "${transferringStudent.name}" إليها. درجاته السابقة ستبقى محفوظة في مرحلتها الأصلية.`
-                  : `Select the new stage for student "${transferringStudent.name}". Their previous degrees will remain intact in their original stage.`}
-              </p>
-
-              {error && (
-                <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-xl text-sm flex items-start gap-3 border border-red-200 dark:border-red-900/50">
-                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                  <p>{error}</p>
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <select
-                  value={transferStageId}
-                  onChange={(e) => setTransferStageId(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-stone-100 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                >
-                  <option value="" disabled>{isRtl ? 'اختر المرحلة...' : 'Select Stage...'}</option>
-                  {stages.map(stage => (
-                    <option key={stage.id} value={stage.id} disabled={stage.id === effectiveStageId}>
-                      {isRtl ? stage.nameAr : stage.nameEn} {stage.id === effectiveStageId ? (isRtl ? '(المرحلة الحالية)' : '(Current Stage)') : ''}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="flex gap-3 pt-4">
-                  <button
-                    onClick={() => setTransferringStudent(null)}
-                    disabled={isSubmitting}
-                    className="flex-1 px-4 py-2.5 border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-slate-300 rounded-xl hover:bg-slate-50 dark:hover:bg-zinc-800 font-bold transition-colors"
-                  >
-                    {isRtl ? 'إلغاء' : 'Cancel'}
-                  </button>
-                  <button
-                    onClick={handleTransferStage}
-                    disabled={isSubmitting || !transferStageId || transferStageId === effectiveStageId}
-                    className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-                    {isRtl ? 'تأكيد النقل' : 'Confirm Transfer'}
-                  </button>
-                </div>
-              </div>
             </div>
           </motion.div>
         </div>

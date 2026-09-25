@@ -40,7 +40,6 @@ workflows:
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.mohadaraty.app"
-        create_if_missing: true
       xcode: latest
       cocoapods: default
       node: 20
