@@ -28,7 +28,7 @@ android {
         // a patch. Bumping it also makes a student's "I'm on 1.1" mean something
         // again - Settings shows neither field, so triage otherwise has to ask
         // for the Play "app version" or the install date.
-        versionCode 6
+        versionCode 7
         versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
