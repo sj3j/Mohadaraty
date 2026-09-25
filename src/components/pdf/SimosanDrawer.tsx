@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useMotionValue } from 'motion/react';
-import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag } from 'lucide-react';
+import { db, auth } from '../../lib/firebase';
+import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import {
   AskError, askSimosan, fetchSimosanState, formatReset, parseCitations,
   watchLecture, watchMessages,
@@ -418,8 +420,29 @@ interface BubbleProps {
 
 function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
   const mine = m.role === 'user';
+  
+  const handleReport = async () => {
+    if (mine) return;
+    const reason = window.prompt(isRtl ? 'سبب الإبلاغ عن هذا المحتوى:' : 'Reason for reporting this content:');
+    if (!reason?.trim()) return;
+    
+    try {
+      await addDoc(collection(db, 'ai_reports'), {
+        messageId: m.id,
+        text: m.text,
+        reason: reason.trim(),
+        reportedBy: auth.currentUser?.uid || 'unknown',
+        reportedAt: serverTimestamp(),
+      });
+      alert(isRtl ? 'تم إرسال البلاغ بنجاح.' : 'Report submitted successfully.');
+    } catch (e) {
+      console.error('Failed to report:', e);
+      alert(isRtl ? 'حدث خطأ أثناء الإبلاغ.' : 'An error occurred while reporting.');
+    }
+  };
+
   return (
-    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex flex-col ${mine ? 'items-end' : 'items-start'} mb-4`}>
       <div
         className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm font-bold leading-relaxed ${
           mine
@@ -448,6 +471,17 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
           <SimosanMarkdown text={m.text} isRtl={isRtl} onJumpToPage={onJumpToPage} />
         )}
       </div>
+      
+      {!mine && !m.pending && (
+        <button 
+          onClick={handleReport}
+          aria-label={isRtl ? 'الإبلاغ عن المحتوى' : 'Report content'}
+          className="mt-1.5 text-xs text-slate-400 hover:text-rose-500 transition-colors flex items-center gap-1 opacity-60 hover:opacity-100 px-2"
+        >
+          <Flag className="w-3 h-3" />
+          <span>{isRtl ? 'إبلاغ' : 'Report'}</span>
+        </button>
+      )}
     </div>
   );
 }

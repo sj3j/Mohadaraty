@@ -1,9 +1,10 @@
 import React from 'react';
 import PrivacyPolicy from './PrivacyPolicy';
 import AccountDeletion from './AccountDeletion';
+import TermsOfUse from './TermsOfUse';
 
 /**
- * The two pages Google Play must be able to open without an account.
+ * The pages Google Play must be able to open without an account.
  *
  * There is no router in this app - App.tsx switches on a `currentTab` state -
  * so these are matched on the pathname instead. vercel.json rewrites every
@@ -15,5 +16,6 @@ export function resolveLegalPath(pathname: string): React.ReactNode | null {
 
   if (path === '/privacy' || path === '/privacy-policy') return <PrivacyPolicy />;
   if (path === '/delete-account' || path === '/account-deletion') return <AccountDeletion />;
+  if (path === '/terms' || path === '/terms-of-use') return <TermsOfUse />;
   return null;
 }

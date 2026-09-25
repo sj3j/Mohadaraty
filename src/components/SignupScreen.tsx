@@ -271,7 +271,20 @@ export default function SignupScreen({ lang, onBackToLogin, prefill, onClaimExis
           {/* Same help as the login screen: most people who reach this form do
               so because they could not sign in, and an existing account is the
               answer for a good share of them. */}
-          <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
+          <div className="mt-2">
+            <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
+          </div>
+
+          <div className="mt-4 text-center text-xs font-bold text-slate-400 dark:text-slate-500 leading-relaxed">
+            {isRtl ? 'بإنشاء حساب، فإنك توافق على ' : 'By creating an account, you agree to our '}
+            <a href="/terms" className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 underline underline-offset-2">
+              {isRtl ? 'شروط الاستخدام' : 'Terms of Use'}
+            </a>
+            {isRtl ? ' و ' : ' and '}
+            <a href="/privacy" className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 underline underline-offset-2">
+              {isRtl ? 'سياسة الخصوصية' : 'Privacy Policy'}
+            </a>
+          </div>
         </div>
       </motion.div>
 

@@ -317,84 +317,97 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
               </p>
             </div>
 
-            {/* Plan Cards */}
-            <div className="space-y-3 mb-8">
-              {plans.map((plan, index) => {
-                const config = PLAN_CONFIG[plan.key];
-                const label = isRtl ? config.labelAr : config.labelEn;
-                const isSelected = selectedPlan === plan.key;
-                const perMonth = Math.round(config.price / (config.days / 30));
-                const anchor = planAnchorPrice(plan.key);
-                
-                return (
-                  <motion.button
-                    key={plan.key}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.05 * index }}
-                    onClick={() => setSelectedPlan(plan.key)}
-                    className={`relative w-full p-4 rounded-2xl border-2 text-right rtl:text-right transition-all ${
-                      isSelected
-                        ? plan.highlight
-                          ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-500 shadow-lg shadow-orange-500/10 ring-2 ring-orange-400/30'
-                          : 'border-sky-400 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-500 shadow-lg shadow-sky-500/10 ring-2 ring-sky-400/30'
-                        : 'border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-slate-300 dark:hover:border-zinc-600'
-                    }`}
-                  >
-                    {plan.badge && (
-                      <span className={`absolute -top-2.5 ${isRtl ? 'right-4' : 'left-4'} px-3 py-0.5 rounded-full text-[11px] font-bold text-white ${
-                        plan.key === 'annual'
-                          ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
-                          : 'bg-gradient-to-r from-orange-500 to-rose-500'
-                      }`}>
-                        {plan.badge}
-                      </span>
-                    )}
+            {/* Store build message (Compliance: No prices, no plans, no 'Ask Representative') */}
+            {IS_STORE_BUILD ? (
+              <div className="text-center py-12 px-4 rounded-2xl bg-slate-50 dark:bg-zinc-800/50 border border-slate-100 dark:border-zinc-800">
+                <Shield className="w-12 h-12 mx-auto mb-4 text-slate-400 dark:text-slate-500" />
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
+                  {isRtl ? 'حسابك تتم إدارته بواسطة ممثل المرحلة' : 'Account managed by your stage representative'}
+                </h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                  {isRtl 
+                    ? 'يتم منح وتفعيل الوصول إلى الميزات الإضافية حصراً من خلال ممثل المرحلة أو مسؤولي المشروع. لا تتوفر أي عمليات شراء داخل هذا التطبيق.'
+                    : 'Access to additional features is provisioned exclusively by your stage representative or project administrators. No in-app purchases are available.'}
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Plan Cards */}
+                <div className="space-y-3 mb-8">
+                  {plans.map((plan, index) => {
+                    const config = PLAN_CONFIG[plan.key];
+                    const label = isRtl ? config.labelAr : config.labelEn;
+                    const isSelected = selectedPlan === plan.key;
+                    const perMonth = Math.round(config.price / (config.days / 30));
+                    const anchor = planAnchorPrice(plan.key);
                     
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                    return (
+                      <motion.button
+                        key={plan.key}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.05 * index }}
+                        onClick={() => setSelectedPlan(plan.key)}
+                        className={`relative w-full p-4 rounded-2xl border-2 text-right rtl:text-right transition-all ${
                           isSelected
                             ? plan.highlight
-                              ? 'border-orange-500 bg-orange-500'
-                              : 'border-sky-500 bg-sky-500'
-                            : 'border-slate-300 dark:border-zinc-600'
-                        }`}>
-                          {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-base text-slate-900 dark:text-white">{label}</h3>
-                          <div className="flex items-center gap-1.5 mt-0.5 text-slate-500 dark:text-slate-400 text-xs">
-                            <Clock className="w-3 h-3" />
-                            <span>{config.days} {t.days}</span>
-                            {config.days > 30 && (
-                              <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                ({perMonth.toLocaleString()} {t.pricePerMonth})
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-left rtl:text-right">
-                        {anchor > config.price && (
-                          <div className="text-xs text-slate-400 dark:text-slate-500 line-through leading-none mb-0.5">
-                            {anchor.toLocaleString()}
-                          </div>
+                              ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-500 shadow-lg shadow-orange-500/10 ring-2 ring-orange-400/30'
+                              : 'border-sky-400 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-500 shadow-lg shadow-sky-500/10 ring-2 ring-sky-400/30'
+                            : 'border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-slate-300 dark:hover:border-zinc-600'
+                        }`}
+                      >
+                        {plan.badge && (
+                          <span className={`absolute -top-2.5 ${isRtl ? 'right-4' : 'left-4'} px-3 py-0.5 rounded-full text-[11px] font-bold text-white ${
+                            plan.key === 'annual'
+                              ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                              : 'bg-gradient-to-r from-orange-500 to-rose-500'
+                          }`}>
+                            {plan.badge}
+                          </span>
                         )}
-                        <span className="text-xl font-extrabold text-slate-900 dark:text-white">
-                          {config.price.toLocaleString()}
-                        </span>
-                        <span className="text-xs text-slate-500 dark:text-slate-400"> {t.iqd}</span>
-                      </div>
-                    </div>
-                  </motion.button>
-                );
-              })}
-            </div>
+                        
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                              isSelected
+                                ? plan.highlight
+                                  ? 'border-orange-500 bg-orange-500'
+                                  : 'border-sky-500 bg-sky-500'
+                                : 'border-slate-300 dark:border-zinc-600'
+                            }`}>
+                              {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
+                            </div>
+                            <div>
+                              <h3 className="font-bold text-base text-slate-900 dark:text-white">{label}</h3>
+                              <div className="flex items-center gap-1.5 mt-0.5 text-slate-500 dark:text-slate-400 text-xs">
+                                <Clock className="w-3 h-3" />
+                                <span>{config.days} {t.days}</span>
+                                {config.days > 30 && (
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                                    ({perMonth.toLocaleString()} {t.pricePerMonth})
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-left rtl:text-right">
+                            {anchor > config.price && (
+                              <div className="text-xs text-slate-400 dark:text-slate-500 line-through leading-none mb-0.5">
+                                {anchor.toLocaleString()}
+                              </div>
+                            )}
+                            <span className="text-xl font-extrabold text-slate-900 dark:text-white">
+                              {config.price.toLocaleString()}
+                            </span>
+                            <span className="text-xs text-slate-500 dark:text-slate-400"> {t.iqd}</span>
+                          </div>
+                        </div>
+                      </motion.button>
+                    );
+                  })}
+                </div>
 
-            {/* Payment Section */}
-            {!IS_STORE_BUILD && (
-              <>
+                {/* Payment Section */}
                 {viewState === 'plans' && (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     <h3 className="font-bold text-slate-900 dark:text-white mb-3">{t.choosePayment}</h3>
@@ -627,14 +640,6 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                   </motion.div>
                 )}
               </>
-            )}
-
-            {/* Store build message */}
-            {IS_STORE_BUILD && (
-              <div className="text-center py-6 px-4 rounded-2xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300">
-                <Shield className="w-8 h-8 mx-auto mb-3 text-slate-400" />
-                <p className="font-medium">{t.askRepresentative}</p>
-              </div>
             )}
 
             {/* Error */}

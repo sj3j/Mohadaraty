@@ -71,15 +71,11 @@ export default function PrivacyPolicy() {
         </Section>
 
         <Section heading="مزوّدو الخدمة">
-          <p>نعتمد على خدمات تعالج البيانات نيابةً عنا:</p>
+          <p>نعتمد على مزودي خدمات سحابية وبنية تحتية موثوقين لمعالجة البيانات نيابةً عنا:</p>
           <Bullets items={[
-            'Google Firebase — الحسابات وقاعدة البيانات وتخزين الملفات والإشعارات.',
-            'Cloudflare R2 — تخزين التسجيلات الصوتية.',
-            'Vercel — استضافة الموقع والواجهة البرمجية.',
-            'ZainCash — معالجة الدفع في نسخة الموقع فقط.',
-            'Apple — معالجة عمليات الشراء داخل تطبيق iOS. تتم الدفعة لدى Apple ولا نطّلع على بيانات بطاقتك.',
-            'RevenueCat — تسجيل الاشتراك الفعّال لحسابك في تطبيق iOS.',
-            'تطبيق الأندرويد لا يتضمن أي عملية دفع.',
+            'خدمات البنية التحتية — لإدارة الحسابات، وقواعد البيانات، وتخزين الملفات والتسجيلات الصوتية، واستضافة الموقع، وإرسال الإشعارات.',
+            'بوابات الدفع الإلكتروني — لمعالجة عمليات الدفع وإدارة الاشتراكات (في نسخة الموقع الإلكتروني وتطبيق iOS فقط). تتم جميع عمليات الدفع عبر بوابات آمنة تابعة لجهات خارجية، ولا نطّلع على بيانات بطاقتك أو معلوماتك المالية مطلقاً.',
+            'تطبيق الأندرويد لا يتضمن أي عملية دفع أو شراء داخلي.',
           ]} />
         </Section>
 
@@ -162,15 +158,11 @@ export default function PrivacyPolicy() {
       </Section>
 
       <Section heading="Service providers">
-        <p>We rely on services that process data on our behalf:</p>
+        <p>We rely on trusted cloud and infrastructure service providers to process data on our behalf:</p>
         <Bullets items={[
-          'Google Firebase — accounts, database, file storage and notifications.',
-          'Cloudflare R2 — storage for audio recordings.',
-          'Vercel — website and API hosting.',
-          'ZainCash — payment processing on the website only.',
-          'Apple — In-App Purchase processing in the iOS app. Apple takes the payment; we never see your card details.',
-          'RevenueCat — records which subscription an account holds, for purchases made in the iOS app.',
-          'The Android app contains no payment flow.',
+          'Infrastructure services — for managing accounts, databases, file and audio storage, website hosting, and sending notifications.',
+          'Payment gateways — for processing payments and managing subscriptions (on the website and iOS app only). All payments are handled by secure third-party gateways; we never see or store your card or financial details.',
+          'The Android app contains no payment or in-app purchase flow.',
         ]} />
       </Section>
 

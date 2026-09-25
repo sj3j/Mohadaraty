@@ -581,6 +581,17 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
         <div className="mt-3">
           <FaqTrigger lang={lang} onClick={() => setShowFaq(true)} />
         </div>
+
+        <div className="mt-6 text-center text-xs font-bold text-slate-400 dark:text-slate-500 leading-relaxed">
+          {isRtl ? 'بتسجيل الدخول، فإنك توافق على ' : 'By continuing, you agree to our '}
+          <a href="/terms" className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 underline underline-offset-2">
+            {isRtl ? 'شروط الاستخدام' : 'Terms of Use'}
+          </a>
+          {isRtl ? ' و ' : ' and '}
+          <a href="/privacy" className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 underline underline-offset-2">
+            {isRtl ? 'سياسة الخصوصية' : 'Privacy Policy'}
+          </a>
+        </div>
       </div>
 
       <FaqSheet open={showFaq} onClose={() => setShowFaq(false)} lang={lang} />
