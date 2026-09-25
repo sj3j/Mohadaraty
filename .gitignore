@@ -106,3 +106,7 @@ serviceAccountKey*
 *serviceAccount*.json
 *service-account*.json
 firebase-adminsdk*.json
+
+# JDK
+jdk21/
+jdk21.zip

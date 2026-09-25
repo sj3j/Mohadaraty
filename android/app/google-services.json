@@ -1,0 +1,130 @@
+{
+  "project_info": {
+    "project_number": "449403914422",
+    "project_id": "mylectures-app",
+    "storage_bucket": "mylectures-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:449403914422:android:921bae0b5d68a980dd7e17",
+        "android_client_info": {
+          "package_name": "com.mohadaraty.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "449403914422-1c18mj5o91i1vaddfea0grslfeash14s.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "762a1545ec9c7cc28b06cbf12dfacfdb13c3911c"
+          }
+        },
+        {
+          "client_id": "449403914422-8l3sqrqeb00n5tcvcbi5am49u31h8gac.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "e3d05027d31819d1709529742fe2905967aec69b"
+          }
+        },
+        {
+          "client_id": "449403914422-pkl1659nddp538pviirhsgfidt0ov1f8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "a70bccdb3727b411c5ab9c14373bd8a15ba9c762"
+          }
+        },
+        {
+          "client_id": "449403914422-qlm3did5b9m8bobb24l84qn4i0kplrvk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "49ec2827cbd5ec408644efb4317a3050d8b993a9"
+          }
+        },
+        {
+          "client_id": "449403914422-th7nuq5k9b9fi22137uhm08hhpf13260.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mohadaraty.app",
+            "certificate_hash": "69752853c73668e46ee313489c1a2d776ad46710"
+          }
+        },
+        {
+          "client_id": "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDgwJ7zAG1a4ibbty_8NsvEHez_iJg3FpU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "449403914422-t0r3el0q4fssjajcs0rob9gs7fiunk7r.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.myLectureV2"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:449403914422:android:f1d07c462e945b75dd7e17",
+        "android_client_info": {
+          "package_name": "com.mylecture.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "449403914422-cmqn9l6nf045ov2ikb0u6rl4msube01g.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mylecture.app",
+            "certificate_hash": "69752853c73668e46ee313489c1a2d776ad46710"
+          }
+        },
+        {
+          "client_id": "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDgwJ7zAG1a4ibbty_8NsvEHez_iJg3FpU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "449403914422-t0r3el0q4fssjajcs0rob9gs7fiunk7r.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.myLectureV2"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

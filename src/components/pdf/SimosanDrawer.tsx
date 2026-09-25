@@ -38,7 +38,6 @@ export default function SimosanDrawer({
   const [draft, setDraft] = useState('');
   const [selection, setSelection] = useState<string | null>(seedSelection || null);
   const [streaming, setStreaming] = useState('');
-  const [pending, setPending] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AskError | null>(null);
   const [readOnly, setReadOnly] = useState(false);
@@ -81,7 +80,7 @@ export default function SimosanDrawer({
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming, pending]);
+  }, [messages, streaming]);
 
   useEffect(() => {
     if (seedSelection) setTimeout(() => inputRef.current?.focus(), 150);
@@ -108,7 +107,7 @@ export default function SimosanDrawer({
 
     setBusy(true);
     setError(null);
-    setPending(text);
+    setMessages(prev => [...prev, { id: '_p', role: 'user', text: text }]);
     setStreaming('');
     setDraft('');
     const usedSelection = selection;
@@ -139,7 +138,6 @@ export default function SimosanDrawer({
             // Firestore listener already holds them - dropping the optimistic
             // copies here avoids rendering each turn twice.
             setStreaming('');
-            setPending(null);
             if (done.offTopic) {
               setError(new AskError('internal'));
               setStreaming('');
@@ -154,7 +152,6 @@ export default function SimosanDrawer({
         setDraft(text);
         setSelection(usedSelection);
       }
-      setPending(null);
       setStreaming('');
     } finally {
       setBusy(false);
@@ -302,7 +299,7 @@ export default function SimosanDrawer({
             </p>
           </div>
 
-          {messages.length === 0 && !pending && (
+          {messages.length === 0 && !busy && (
             <div className="pt-6 text-center">
               <p className="text-sm font-bold text-slate-400 dark:text-slate-500 leading-relaxed" dir="auto">
                 {isRtl
@@ -314,9 +311,6 @@ export default function SimosanDrawer({
 
           {messages.map((m) => <Bubble key={m.id} m={m} isRtl={isRtl} onJumpToPage={onJumpToPage} />)}
 
-          {pending && (
-            <Bubble m={{ id: '_p', role: 'user', text: pending }} isRtl={isRtl} onJumpToPage={onJumpToPage} />
-          )}
           {(streaming || busy) && (
             <Bubble
               m={{ id: '_s', role: 'model', text: streaming, pending: !streaming }}
