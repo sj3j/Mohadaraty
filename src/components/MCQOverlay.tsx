@@ -125,14 +125,46 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
       const generated = await generateMCQsForLecture(lecture.id);
       setQuestions(generated);
       setRoute('intro');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
       // Neutral for provider faults; the raw code would name the vendor.
-      setGenerateError(
-        err instanceof AIUnavailableError
-          ? AI_UNAVAILABLE_MESSAGE
-          : 'تعذّر توليد الأسئلة. حاول لاحقاً.',
-      );
+      // For other failures, show the staff a message they can act on rather
+      // than a single catch-all that hides what went wrong.
+      let msg: string;
+      if (err instanceof AIUnavailableError) {
+        msg = AI_UNAVAILABLE_MESSAGE;
+      } else {
+        const code = err?.message || '';
+        switch (code) {
+          case 'pdf_unreachable':
+            msg = 'تعذّر الوصول إلى ملف PDF. تأكد أن الرابط صالح وأعد المحاولة.';
+            break;
+          case 'pdf_too_large':
+            msg = 'ملف PDF كبير جداً للمعالجة. الحد الأقصى 20 ميغابايت.';
+            break;
+          case 'invalid_response':
+            msg = 'الذكاء الاصطناعي أرجع ردّاً غير صالح. أعد المحاولة.';
+            break;
+          case 'already_generating':
+            msg = 'التوليد جارٍ بالفعل. انتظر قليلاً.';
+            break;
+          case 'queue_busy':
+            msg = 'هناك محاضرة أخرى قيد التوليد الآن. حاول بعد دقيقة.';
+            break;
+          case 'lecture_not_found':
+            msg = 'المحاضرة غير موجودة.';
+            break;
+          case 'lecture_has_no_pdf':
+            msg = 'المحاضرة لا تحتوي على ملف PDF.';
+            break;
+          case 'translated_lecture':
+            msg = 'لا يمكن توليد أسئلة من محاضرة مترجمة.';
+            break;
+          default:
+            msg = 'تعذّر توليد الأسئلة. حاول لاحقاً.';
+        }
+      }
+      setGenerateError(msg);
       setRoute('intro');
     }
   };
