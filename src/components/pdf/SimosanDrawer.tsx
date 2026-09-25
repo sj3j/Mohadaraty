@@ -73,7 +73,23 @@ export default function SimosanDrawer({
   useEffect(() => watchLecture(lectureId, setThreadId), [lectureId]);
   useEffect(() => {
     if (!threadId) { setMessages([]); return; }
-    return watchMessages(lectureId, threadId, setMessages);
+    return watchMessages(lectureId, threadId, (snapshotMsgs) => {
+      setMessages((prev) => {
+        if (snapshotMsgs.length === 0 && prev.length > 0 && prev[prev.length - 1].id === '_p') {
+          return prev;
+        }
+        
+        // Fix Firestore batch sorting inversion for the first turn
+        if (snapshotMsgs.length >= 2 && snapshotMsgs[0].role === 'model' && snapshotMsgs[1].role === 'user') {
+          const corrected = [...snapshotMsgs];
+          corrected[0] = snapshotMsgs[1];
+          corrected[1] = snapshotMsgs[0];
+          return corrected;
+        }
+
+        return snapshotMsgs;
+      });
+    });
   }, [lectureId, threadId]);
 
   // Keep the newest turn in view as it streams in.
