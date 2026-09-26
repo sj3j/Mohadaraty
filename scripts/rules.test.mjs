@@ -437,8 +437,8 @@ await check('a student CANNOT smuggle a tally edit alongside a reaction',
   assertFails(updateDoc(doc(student, 'announcements/ann_poll'), {
     'reactions.👍': ['stu_uid'], 'poll.totalVoters': 999,
   })));
-await check('a student CAN still react, which the poll rules must not have broken',
-  assertSucceeds(updateDoc(doc(student, 'announcements/ann_poll'), { 'reactions.👍': ['stu_uid'] })));
+await check('a student CANNOT react directly anymore (must use API)',
+  assertFails(updateDoc(doc(student, 'announcements/ann_poll'), { 'reactions.👍': ['stu_uid'] })));
 
 // ---------------------------------------------------------------------------
 // Telegram mirror configuration.

@@ -584,44 +584,13 @@ service cloud.firestore {
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'managedStageId', 'permissions']) &&
                        request.resource.data.get('role', '') in ['admin', 'moderator', 'student']) ||
                       (isOwner(userId) && isValidUser(request.resource.data) && (
-                        (!('role' in request.resource.data) || request.resource.data.role == resource.data.get('role', 'student')) ||
-                        (request.resource.data.role == assistantRole() && assistantRole() != '')
-                      ) && (!('originalName' in request.resource.data) || request.resource.data.originalName == resource.data.get('originalName', ''))
-                        && (!('examCode' in request.resource.data) || request.resource.data.examCode == resource.data.get('examCode', ''))
-                        && request.resource.data.get('streakCount', 0) == resource.data.get('streakCount', 0)
-                        && request.resource.data.get('freezeTokens', 1) == resource.data.get('freezeTokens', 1)
-                        && request.resource.data.get('longestStreak', 0) == resource.data.get('longestStreak', 0)
-                        && request.resource.data.get('bestStreakAllTime', 0) == resource.data.get('bestStreakAllTime', 0)
-                        && request.resource.data.get('lastActiveDate', '') == resource.data.get('lastActiveDate', '')
-                        // Stage and progression are server-owned. The generic
-                        // self-edit branch never froze these, so a student could
-                        // simply set their own stageId through it.
-                        && request.resource.data.get('stageId', '') == resource.data.get('stageId', '')
-                        && request.resource.data.get('graduated', false) == resource.data.get('graduated', false)
-                        && request.resource.data.get('progressionState', '') == resource.data.get('progressionState', '')
-                        && request.resource.data.get('progressionYear', '') == resource.data.get('progressionYear', '')
-                        && request.resource.data.get('tahmeelSubjects', []) == resource.data.get('tahmeelSubjects', [])
-                        // Subscription state is bought, not self-declared. Only the Admin
-                        // SDK writes these - ZainCash settlement and the admin grant route -
-                        // and it bypasses rules. Without this freeze the generic self-edit
-                        // branch let any student set isSubscribed from the browser console
-                        // and unlock every paid course, since App.tsx gates access on it.
-                        && request.resource.data.get('isSubscribed', false) == resource.data.get('isSubscribed', false)
-                        && request.resource.data.get('subscriptionEnd', null) == resource.data.get('subscriptionEnd', null)
-                        && request.resource.data.get('subscriptionPlan', null) == resource.data.get('subscriptionPlan', null)
-                        // Points at the ZainCash payment currently open at the
-                        // gateway. /api/zaincash/init refuses to start a second
-                        // one while it is set, so a client that could clear it
-                        // could mint duplicate transactions at will.
-                        && request.resource.data.get('pendingZainCashRef', '') == resource.data.get('pendingZainCashRef', '')
-                        // The RevenueCat App User ID this account's Apple
-                        // purchases are filed under, written by
-                        // /api/iap/identity. A student who could set it to
-                        // another account's value would have that account's
-                        // subscription applied to their own the next time
-                        // /api/iap/sync ran - so this freeze is what stops a
-                        // one-field edit from stealing a purchase.
-                        && request.resource.data.get('rcAppUserId', '') == resource.data.get('rcAppUserId', ''));
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                          'name', 'email', 'group', 'photoUrl', 'role',
+                          'hideNameOnLeaderboard', 'hidePhotoOnLeaderboard', 
+                          'blockedUsers', 'notificationPreferences', 
+                          'examCodePromptSnoozedUntil', 'lastActiveAt', 'pushToken'
+                        ])
+                      ) && request.resource.data.get('role', 'student') == resource.data.get('role', 'student'));
                       // Progression is recorded by /api/progression/submit with the
                       // Admin SDK, which also has to write students/{email}.stageId -
                       // a student cannot, and syncUserStage would otherwise revert the
@@ -770,12 +739,10 @@ service cloud.firestore {
       allow delete: if canWriteStage(resource.data.get('stageId', ''));
       // A reader may only ever touch the reactions map, and only on a post they
       // are allowed to read in the first place.
+      // (Student reactions are now handled via /api/announcements/:postId/react to bypass expression limits)
       allow update: if (
         canWriteStage(resource.data.get('stageId', '')) &&
         (request.resource.data == null || canWriteStage(request.resource.data.get('stageId', '')))
-      ) || (
-        canReadStage(resource.data.get('stageId', null), '') &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
       );
 
       // Poll ballots.

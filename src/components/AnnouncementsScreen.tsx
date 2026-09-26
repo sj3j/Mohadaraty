@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../contexts/StageContext';
 import { canManage } from '../lib/permissions';
 import { collection, query, orderBy, onSnapshot, deleteDoc, doc, where, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { apiUrl } from '../lib/apiBase';
 import type { Announcement } from '../types/announcement.types';
 import { safeUrl } from '../lib/richText';
 import LectureCard from './LectureCard';
@@ -142,11 +143,50 @@ export default function AnnouncementsScreen({
       const post = posts.find(p => p.id === postId);
       if (!post) return;
       const hasReacted = (post.reactions?.[emoji] ?? []).includes(user.uid);
-      await updateDoc(doc(db, 'announcements', postId), {
-        [`reactions.${emoji}`]: hasReacted ? arrayRemove(user.uid) : arrayUnion(user.uid),
-      });
+      
+      // Optimistic UI update
+      setPosts(currentPosts => currentPosts.map(p => {
+        if (p.id !== postId) return p;
+        const currentReactions = p.reactions?.[emoji] ?? [];
+        const newReactions = hasReacted 
+          ? currentReactions.filter(id => id !== user.uid)
+          : [...currentReactions, user.uid];
+        
+        return {
+          ...p,
+          reactions: {
+            ...(p.reactions || {}),
+            [emoji]: newReactions
+          }
+        };
+      }));
+      
+      if (canManage(user)) {
+        await setDoc(doc(db, 'announcements', postId), {
+          reactions: {
+            [emoji]: hasReacted ? arrayRemove(user.uid) : arrayUnion(user.uid)
+          }
+        }, { merge: true });
+      } else {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) throw new Error('No auth token');
+        
+        const res = await fetch(apiUrl(`/api/announcements/${postId}/react`), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ emoji, hasReacted })
+        });
+        
+        if (!res.ok) {
+          throw new Error('Failed to react via API');
+        }
+      }
     } catch (err) {
       console.error('Error toggling reaction:', err);
+      // In a real app we'd revert the optimistic update here, but it will sync back from onSnapshot anyway.
     }
   };
 

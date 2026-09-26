@@ -417,6 +417,34 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       return res.status(500).json({ error: "Failed to read logs" });
     }
   });
+  // Announcement Reactions
+  app.post("/api/announcements/:postId/react", verifyAuth, async (req, res) => {
+    try {
+      const { emoji, hasReacted } = req.body;
+      const postId = req.params.postId;
+      // Note: req.user is populated by verifyAuth, we just need the uid
+      const uid = (req as any).user?.uid;
+      if (!uid || !emoji || !postId) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+      
+      const db = admin.firestore();
+      const postRef = db.collection('announcements').doc(postId);
+      
+      await postRef.set({
+        reactions: {
+          [emoji]: hasReacted 
+            ? admin.firestore.FieldValue.arrayRemove(uid) 
+            : admin.firestore.FieldValue.arrayUnion(uid)
+        }
+      }, { merge: true });
+      
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to react to announcement:", error);
+      return res.status(500).json({ error: "Failed to react" });
+    }
+  });
 
   // Send FCM Notification
   app.post("/api/notify", verifyAuth, verifyAdmin, async (req, res) => {

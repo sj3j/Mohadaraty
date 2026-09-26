@@ -11,7 +11,9 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  persistentSingleTabManager,
 } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
 import { getStorage } from 'firebase/storage';
 import { getMessaging, isSupported } from 'firebase/messaging';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
@@ -57,7 +59,13 @@ export const auth = initializeAuth(app, {
  */
 export const db = initializeFirestore(
   app,
-  { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) },
+  { 
+    localCache: persistentLocalCache({ 
+      tabManager: Capacitor.isNativePlatform() 
+        ? persistentSingleTabManager() 
+        : persistentMultipleTabManager() 
+    }) 
+  },
   firebaseConfig.firestoreDatabaseId,
 );
 
