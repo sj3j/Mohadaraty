@@ -211,7 +211,7 @@ export interface UserProfile {
    * than the one in managedStageId, which for a promoted representative is
    * retained as a presentational home stage. See src/lib/permissions.ts.
    */
-  role: 'admin' | 'moderator' | 'support' | 'student';
+  role: 'admin' | 'moderator' | 'support' | 'student' | 'observer';
   isMasterAdmin?: boolean;
   photoUrl?: string;
   completedWeeklyTasks?: string[];

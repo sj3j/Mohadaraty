@@ -54,6 +54,17 @@ service cloud.firestore {
       );
     }
 
+    function isObserver() {
+      return isAuthenticated() && (
+        (request.auth.token.email != null &&
+          request.auth.token.email.lower() in [
+            'info@alsafwa.edu.iq'
+          ]) ||
+        ('role' in request.auth.token && request.auth.token.role == 'observer') ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'observer')
+      );
+    }
+
     // Role recorded on the caller's allowed_admins entry, or '' when absent.
     // Docs created before assistants existed have no role field and default to 'admin'.
     function assistantRole() {
@@ -280,7 +291,7 @@ service cloud.firestore {
     function canReadStage(stageId, subjectId) {
       return hasAccess() && (
         stageId == null || stageId == '' ||
-        isMasterAdmin() ||
+        isMasterAdmin() || isObserver() ||
         // Assigned staff, representative or moderator. Not isRepresentativeFor():
         // that excludes moderators, and a moderator's own stageId is often not
         // the stage they were appointed to moderate.
@@ -350,7 +361,7 @@ service cloud.firestore {
     // without this canReadStage() would refuse them every stage including the
     // one they came from.
     function hasAccess() {
-      return isAdmin() || isWhitelisted() || isSupport();
+      return isAdmin() || isWhitelisted() || isSupport() || isObserver();
     }
 
     // Gates `subjects` and stages/{id}.groupConfig. Support is granted the same
@@ -429,7 +440,7 @@ service cloud.firestore {
     //   telegram_state  - the bot's getUpdates offset and its single-instance
     //                     lease. No client business at all, in either direction.
     match /admin_config/{docId} {
-      allow read: if isMasterAdmin() && docId in ['telegram', 'telegram_status'];
+      allow read: if (isMasterAdmin() || isObserver()) && docId in ['telegram', 'telegram_status'];
       allow write: if isMasterAdmin() && docId == 'telegram';
     }
 
@@ -447,7 +458,7 @@ service cloud.firestore {
     // subgroup, not already a student) before it exists. Readable only by staff:
     // a request carries an applicant's email and hash.
     match /signup_requests/{email} {
-      allow read: if isAdmin() || isModerator();
+      allow read: if isAdmin() || isModerator() || isObserver();
       allow write: if false;
     }
 
@@ -458,7 +469,7 @@ service cloud.firestore {
                     && request.resource.data.reason is string;
       // Moderators are the ones who actually watch user content, so they must
       // be able to triage - isAdmin() alone deliberately excludes them.
-      allow read: if isAdmin() || isModerator();
+      allow read: if isAdmin() || isModerator() || isObserver();
       allow update, delete: if isMasterAdmin();
     }
 
@@ -476,14 +487,14 @@ service cloud.firestore {
     // and there is no legitimate client writer. Matches mcqHistory and
     // yearHistory below, which were already write:false.
     match /users/{userId}/streakHistory/{document=**} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
       allow write: if false;
     }
 
     // Archived MCQ season results shown on the student's own profile.
     // Written only by the Admin SDK during a season reset.
     match /users/{userId}/mcqHistory/{document=**} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
       allow write: if false;
     }
 
@@ -492,7 +503,7 @@ service cloud.firestore {
     // is the student's only record of the year - client writes are refused so it
     // cannot be forged after the evidence is gone.
     match /users/{userId}/yearHistory/{document=**} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
       allow write: if false;
     }
 
@@ -544,7 +555,7 @@ service cloud.firestore {
     match /students/{email} {
       allow get, list: if (isAuthenticated() && (request.auth.uid == email
             || (request.auth.token.email != null && request.auth.token.email.lower() == email)))
-        || canManageStudentsOn(resource.data.get('stageId', ''));
+        || canManageStudentsOn(resource.data.get('stageId', '')) || isObserver();
 
       allow create: if canManageStudentsOn(request.resource.data.get('stageId', ''));
 
@@ -599,7 +610,7 @@ service cloud.firestore {
     }
 
     match /streak_history/{docId} {
-      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow read: if isAuthenticated() && (isAdmin() || isObserver() || resource.data.userId == request.auth.uid);
       allow write: if false; // Only Cloud Functions / Admin SDK
     }
 
@@ -613,12 +624,12 @@ service cloud.firestore {
     // rules entirely, so the server wrote a complete audit trail that no client
     // could ever read - the same shape the timetable collections failed in.
     match /streakLog/{userId}/days/{date} {
-      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == userId);
+      allow read: if isAuthenticated() && (isAdmin() || isObserver() || request.auth.uid == userId);
       allow write: if false; // Admin SDK only - it is evidence, not state
     }
 
     match /streak_recoveries/{docId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() || isObserver();
       allow write: if false; // Only via API
     }
 
@@ -627,7 +638,7 @@ service cloud.firestore {
     // own "about to lose your streak" banner; while it was admin-only that read
     // was permission-denied for every student and the banner never appeared.
     match /pending_streak_resets/{docId} {
-      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow read: if isAuthenticated() && (isAdmin() || isObserver() || resource.data.userId == request.auth.uid);
       allow write: if false; // Only via API
     }
 
@@ -654,7 +665,7 @@ service cloud.firestore {
     // The hole being closed is the write: any representative could put a grade
     // onto any student in any stage.
     match /degrees/{studentId}/exams/{examId} {
-      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == studentId);
+      allow read: if isAdmin() || isObserver() || (isAuthenticated() && request.auth.uid == studentId);
       // A new degree must name a stage the writer manages. No legacy arm here
       // on purpose - see isLegacyGradeDoc.
       allow create: if canManageGradesOn(gradeStageOf(request.resource.data));
@@ -673,7 +684,7 @@ service cloud.firestore {
     // the Arabic for "batch not found". A scoped read would turn that into an
     // opaque permission error. The client already filters history by stage.
     match /degreeBatches/{batchId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() || isObserver();
       allow create: if canManageGradesOn(gradeStageOf(request.resource.data));
       allow update: if
         (isLegacyGradeDoc(resource.data) ? isAdmin() : canManageGradesOn(gradeStageOf(resource.data))) &&
@@ -759,7 +770,7 @@ service cloud.firestore {
       // permit nothing but `reactions`. A student cannot inflate a tally,
       // because a student cannot write the field that holds it.
       match /votes/{voterId} {
-        allow read: if isStaff() || (isAuthenticated() && request.auth.uid == voterId);
+        allow read: if isStaff() || isObserver() || (isAuthenticated() && request.auth.uid == voterId);
         allow write: if isAuthenticated()
           && request.auth.uid == voterId
           && canReadStage(get(/databases/$(database)/documents/announcements/$(postId)).data.get('stageId', null), '');
@@ -839,7 +850,7 @@ service cloud.firestore {
     }
 
     match /userMCQAnswers/{userId}/lectures/{document=**} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
       allow write: if (isAuthenticated() && request.auth.uid == userId) || isAdmin();
     }
 
@@ -873,7 +884,7 @@ service cloud.firestore {
     // and an admin can investigate a report; written only by the API, so a
     // student cannot forge an assistant turn or trim history to underpay.
     match /aiChats/{userId}/{document=**} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
       allow write: if false;
     }
 
@@ -997,7 +1008,7 @@ service cloud.firestore {
     // it when ticked for manageSubscriptions, which is what lets the statistics
     // reduce over the whole collection.
     match /subscriptions/{subId} {
-      allow read: if isMasterAdmin() || supportCan('manageSubscriptions') ||
+      allow read: if isMasterAdmin() || isObserver() || supportCan('manageSubscriptions') ||
                      (isAuthenticated() && resource.data.userId == request.auth.uid);
       // Students create their own pending row for the manual (Super Qi) flow.
       // Every other creator - the grant route, ZainCash init - is the Admin SDK,

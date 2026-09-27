@@ -214,6 +214,11 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
     email: 'supsubs@x.com', role: 'support', managedStageId: 'stage_4',
   });
 
+  // An observer (read-only master admin)
+  await setDoc(doc(db, 'users/observer_uid'), {
+    role: 'observer', email: 'info@alsafwa.edu.iq',
+  });
+
   // Where students are told to send a Super Qi transfer, and a settings doc that
   // is not - so the narrowing can be told apart from locking settings/* wholesale.
   await setDoc(doc(db, 'settings/payment_contact'), {
@@ -249,6 +254,7 @@ const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
+const observer = ctxFor('observer_uid', 'info@alsafwa.edu.iq');
 
 console.log('\nModerator is walled off from student data');
 await check('moderator CANNOT read students',
@@ -693,6 +699,20 @@ await check('a second master admin CAN write the academic calendar',
   })));
 await check('an ordinary address is still NOT a master admin',
   assertFails(getDoc(doc(ctxFor('nobody_uid', 'nobody@gmail.com'), 'students/other@x.com'))));
+
+console.log('\nObserver (read-only master admin) can read everything but write nothing');
+await check('observer CAN read any stage',
+  assertSucceeds(getDoc(doc(observer, 'students/other@x.com'))));
+await check('observer CANNOT write the academic calendar',
+  assertFails(setDoc(doc(observer, 'app_settings/academicCalendar'), {
+    yearLabel: '2026-2027', timezone: 'Asia/Baghdad',
+    terms: [{ id: 't1', nameAr: 'x', nameEn: 'x', startDate: '2026-09-20', endDate: '2026-12-31', examsStart: null, examsEnd: null }],
+  })));
+await check('observer CANNOT delete a student',
+  assertFails(deleteDoc(doc(observer, 'students/other@x.com'))));
+await check('observer CANNOT overwrite a stage timetable',
+  assertFails(setDoc(doc(observer, 'timetables/stage_3'), { stageId: 'stage_3', sessions: [] })));
+
 
 // The arm every student depends on at login must survive the scoping.
 await check('a student CAN still read their OWN record',

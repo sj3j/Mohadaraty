@@ -24,8 +24,15 @@ const MASTER_ADMIN_EMAILS = [
   'jempe.kn@gmail.com',
 ];
 
+const OBSERVER_EMAILS = [
+  'info@alsafwa.edu.iq',
+];
+
 const isMasterAdminEmail = (email) =>
   !!email && MASTER_ADMIN_EMAILS.includes(String(email).toLowerCase());
+
+const isObserverEmail = (email) =>
+  !!email && OBSERVER_EMAILS.includes(String(email).toLowerCase());
 
 /**
  * Device tokens for everyone who wants `preferenceKey` notifications.
@@ -616,6 +623,8 @@ exports.syncRole = onDocumentWritten({
 
   if (isMasterAdminEmail(email)) {
     role = 'master_admin';
+  } else if (isObserverEmail(email)) {
+    role = 'observer';
   }
 
   await admin.auth().setCustomUserClaims(uid, {

@@ -97,6 +97,9 @@ const has = (list: readonly string[], capability: Capability): boolean =>
 export const isMasterAdmin = (user?: UserProfile | null): boolean =>
   !!user?.isMasterAdmin;
 
+export const isObserver = (user?: UserProfile | null): boolean =>
+  user?.role === 'observer';
+
 /** A stage representative. */
 export const isRepresentative = (user?: UserProfile | null): boolean =>
   user?.role === 'admin';
@@ -117,12 +120,12 @@ export const isSupport = (user?: UserProfile | null): boolean =>
 
 /** Anyone with a back-office role. Use for "show the admin surface at all". */
 export const isStaff = (user?: UserProfile | null): boolean =>
-  isRepresentative(user) || isModerator(user) || isSupport(user);
+  isRepresentative(user) || isModerator(user) || isSupport(user) || isObserver(user);
 
 /** Staff whose reach is not limited to a single stage, so the viewing-stage
  *  picker is theirs and effectiveStageId follows it. */
 export const isCrossStage = (user?: UserProfile | null): boolean =>
-  isMasterAdmin(user) || isSupport(user);
+  isMasterAdmin(user) || isSupport(user) || isObserver(user);
 
 /**
  * Can this user perform `capability`?
@@ -136,6 +139,7 @@ export const isCrossStage = (user?: UserProfile | null): boolean =>
 export function canManage(user: UserProfile | null | undefined, capability: Capability): boolean {
   if (!user) return false;
   if (isMasterAdmin(user)) return true;
+  if (isObserver(user)) return false;
 
   // Ahead of every role arm: nothing below the master admin reaches these, so
   // no stored map and no role can turn one on.
@@ -221,7 +225,7 @@ export const canManageSubscriptions = (user?: UserProfile | null): boolean =>
 
 /** Master-admin-exclusive. Deliberately left as aliases rather than routed
  *  through canManage, so there is no stored key that could ever turn them on. */
-export const canViewAdminLogs = isMasterAdmin;
+export const canViewAdminLogs = (user?: UserProfile | null) => isMasterAdmin(user) || isObserver(user);
 export const canManageCalendar = isMasterAdmin;
 export const canManageSimosanBilling = isMasterAdmin;
 export const canManageTelegramMirror = isMasterAdmin;

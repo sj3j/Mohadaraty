@@ -25,3 +25,10 @@ export const MASTER_ADMIN_EMAILS = [
  */
 export const isMasterAdminEmail = (email?: string | null): boolean =>
   !!email && (MASTER_ADMIN_EMAILS as readonly string[]).includes(email.toLowerCase());
+
+export const OBSERVER_EMAILS = [
+  'info@alsafwa.edu.iq',
+] as const;
+
+export const isObserverEmail = (email?: string | null): boolean =>
+  !!email && (OBSERVER_EMAILS as readonly string[]).includes(email.toLowerCase());
