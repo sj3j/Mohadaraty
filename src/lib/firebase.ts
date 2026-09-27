@@ -62,7 +62,7 @@ export const db = initializeFirestore(
   { 
     localCache: persistentLocalCache({ 
       tabManager: Capacitor.isNativePlatform() 
-        ? persistentSingleTabManager() 
+        ? persistentSingleTabManager({ forceOwnership: false }) 
         : persistentMultipleTabManager() 
     }) 
   },

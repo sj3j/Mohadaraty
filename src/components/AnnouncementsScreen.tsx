@@ -161,7 +161,7 @@ export default function AnnouncementsScreen({
         };
       }));
       
-      if (canManage(user)) {
+      if (canManage(user, 'manageAnnouncements')) {
         await setDoc(doc(db, 'announcements', postId), {
           reactions: {
             [emoji]: hasReacted ? arrayRemove(user.uid) : arrayUnion(user.uid)
