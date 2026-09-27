@@ -8,7 +8,7 @@ import { apiUrl } from '../lib/apiBase';
 import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError,
   GoogleTokenBody } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
-import { isMasterAdminEmail } from '../../shared/masterAdmins';
+import { isMasterAdminEmail, isObserverEmail } from '../../shared/masterAdmins';
 import SignupScreen from './SignupScreen';
 import ClaimAccountScreen from './ClaimAccountScreen';
 import FaqSheet, { FaqTrigger } from './support/FaqSheet';
@@ -164,9 +164,12 @@ async function ensureUserDoc(opts: {
   let managedStageId: string | null = null;
 
   const isMasterAdmin = isMasterAdminEmail(resolvedId);
+  const isObserver = isObserverEmail(resolvedId);
 
   if (isMasterAdmin) {
     userRole = 'admin'; // syncRole promotes this to master_admin from the claim.
+  } else if (isObserver) {
+    userRole = 'observer';
   } else {
     const allowedDoc = await getDoc(doc(db, 'allowed_admins', resolvedId));
     if (allowedDoc.exists()) {

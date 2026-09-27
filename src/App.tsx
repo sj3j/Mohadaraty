@@ -16,7 +16,7 @@ import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
-import { isMasterAdminEmail } from '../shared/masterAdmins';
+import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
 import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
 import { IAP_ENABLED, identifyIap, signOutIap } from './lib/iap';
 import AdminGradesScreen from './components/grades/AdminGradesScreen';
@@ -242,6 +242,7 @@ export default function App() {
           console.warn('Could not read ID token claims (likely offline); continuing without them.', err);
         }
         const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || isMasterAdminEmail(userEmail);
+        const isObserver = tokenResult?.claims.role === 'observer' || isObserverEmail(userEmail);
         
         let studentData: any = null;
 
@@ -259,7 +260,7 @@ export default function App() {
           }
         }
 
-        if (!isMasterAdmin && userEmail) {
+        if (!isMasterAdmin && !isObserver && userEmail) {
           try {
             const emailLower = userEmail.toLowerCase();
             
@@ -368,7 +369,7 @@ export default function App() {
             // then fallback to the default generated name.
             const resolvedName = (!isDefaultName && userDoc.data().name) 
               ? userDoc.data().name 
-              : (studentData?.name && studentData.name !== 'Admin' && studentData.name !== 'Moderator' ? studentData.name : (userDoc.data().name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : 'Student')));
+              : (studentData?.name && studentData.name !== 'Admin' && studentData.name !== 'Moderator' ? studentData.name : (userDoc.data().name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : isObserver ? 'Observer' : 'Student')));
 
             const masterAdminPermissions = isMasterAdmin ? {
               manageLectures: true,
@@ -383,7 +384,7 @@ export default function App() {
               uid: firebaseUser.uid,
               name: resolvedName,
               email: firebaseUser.email || userDoc.data().email || firebaseUser.uid || '',
-              role: isMasterAdmin ? 'admin' : (whitelistRole || userDoc.data().role || 'student'),
+              role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (whitelistRole || userDoc.data().role || 'student'),
               isMasterAdmin,
               photoUrl: userDoc.data().photoUrl || firebaseUser.photoURL || undefined,
               streakCount: userDoc.data().streakCount || 0,
@@ -445,9 +446,9 @@ export default function App() {
 
             setUser({
               uid: firebaseUser.uid,
-              name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : 'Student'),
+              name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : isObserver ? 'Observer' : 'Student'),
               email: firebaseUser.email || firebaseUser.uid || '',
-              role: isMasterAdmin ? 'admin' : (studentData?.role || 'student'),
+              role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (studentData?.role || 'student'),
               isMasterAdmin,
               photoUrl: firebaseUser.photoURL || undefined,
               examCode: studentData?.examCode || undefined,
@@ -480,9 +481,9 @@ export default function App() {
 
           setUser({
             uid: firebaseUser.uid,
-            name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : 'Student'),
+            name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : isObserver ? 'Observer' : 'Student'),
             email: firebaseUser.email || '',
-            role: isMasterAdmin ? 'admin' : (studentData?.role || 'student'),
+            role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (studentData?.role || 'student'),
             isMasterAdmin,
             photoUrl: firebaseUser.photoURL || undefined,
             examCode: studentData?.examCode || undefined,

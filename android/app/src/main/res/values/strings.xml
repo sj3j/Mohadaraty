@@ -4,4 +4,5 @@
     <string name="title_activity_main">محاضراتي</string>
     <string name="package_name">com.mohadaraty.app</string>
     <string name="custom_url_scheme">com.mohadaraty.app</string>
+    <string name="default_web_client_id">449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com</string>
 </resources>

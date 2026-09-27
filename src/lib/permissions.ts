@@ -139,7 +139,7 @@ export const isCrossStage = (user?: UserProfile | null): boolean =>
 export function canManage(user: UserProfile | null | undefined, capability: Capability): boolean {
   if (!user) return false;
   if (isMasterAdmin(user)) return true;
-  if (isObserver(user)) return false;
+  if (isObserver(user)) return true;
 
   // Ahead of every role arm: nothing below the master admin reaches these, so
   // no stored map and no role can turn one on.
