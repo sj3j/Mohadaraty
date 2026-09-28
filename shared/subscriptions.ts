@@ -18,6 +18,7 @@ import {
   parseOrderId,
   tagOrderId,
 } from './zaincash.js';
+import type * as admin from 'firebase-admin';
 
 /**
  * Server-side plan table. Mirrors PLAN_CONFIG in src/types.ts, which is the
@@ -46,7 +47,7 @@ export type NotifyFn = (
 ) => Promise<void>;
 
 export interface SubscriptionCtx {
-  db: FirebaseFirestore.Firestore;
+  db: admin.firestore.Firestore;
   FieldValue: { serverTimestamp(): any; delete(): any };
   Timestamp: { now(): any; fromDate(d: Date): any };
   /** Optional: omitted in tests, supplied by the route files in production. */
@@ -141,7 +142,7 @@ async function claimForSettlement(
   ctx: SubscriptionCtx,
   subId: string,
   eventId: string,
-): Promise<{ data: FirebaseFirestore.DocumentData } | { conflict: SettlementOutcome } | null> {
+): Promise<{ data: admin.firestore.DocumentData } | { conflict: SettlementOutcome } | null> {
   const ref = ctx.db.collection('subscriptions').doc(subId);
   return ctx.db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -276,7 +277,7 @@ async function probeSettlement(
   ctx: SubscriptionCtx,
   cfg: ZainCashConfig,
   subId: string,
-  sub: FirebaseFirestore.DocumentData,
+  sub: admin.firestore.DocumentData,
 ): Promise<SettlementOutcome> {
   const probe: ZainCashEvent = {
     eventType: 'STATUS_CHANGED',
@@ -337,7 +338,7 @@ export async function reconcilePendingZainCash(
   const minAgeMs = opts.minAgeMs ?? 2 * 60 * 1000;
   const cutoff = Date.now() - minAgeMs;
 
-  let query: FirebaseFirestore.Query = ctx.db
+  let query: admin.firestore.Query = ctx.db
     .collection('subscriptions')
     .where('status', '==', 'pending');
   if (opts.userId) query = query.where('userId', '==', opts.userId);

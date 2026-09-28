@@ -139,16 +139,23 @@ export default function AnnouncementsScreen({
 
   const handleReaction = async (postId: string, emoji: string) => {
     if (!user) return;
+    
+    const post = posts.find(p => p.id === postId);
+    if (!post) return;
+    const oldReactions = post.reactions; // Capture exact previous state for this post
+    
     try {
-      const post = posts.find(p => p.id === postId);
-      if (!post) return;
-      const hasReacted = (post.reactions?.[emoji] ?? []).includes(user.uid);
+      const hasReacted = (oldReactions?.[emoji] ?? []).includes(user.uid);
       
       // Optimistic UI update
       setPosts(currentPosts => currentPosts.map(p => {
         if (p.id !== postId) return p;
         const currentReactions = p.reactions?.[emoji] ?? [];
-        const newReactions = hasReacted 
+        
+        // Compute the true state right at the moment of update to avoid stale closures
+        const currentlyHasReacted = currentReactions.includes(user.uid);
+        
+        const newReactions = currentlyHasReacted 
           ? currentReactions.filter(id => id !== user.uid)
           : [...currentReactions, user.uid];
         
@@ -177,7 +184,7 @@ export default function AnnouncementsScreen({
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ emoji, hasReacted })
+          body: JSON.stringify({ emoji })
         });
         
         if (!res.ok) {
@@ -186,7 +193,12 @@ export default function AnnouncementsScreen({
       }
     } catch (err) {
       console.error('Error toggling reaction:', err);
-      // In a real app we'd revert the optimistic update here, but it will sync back from onSnapshot anyway.
+      // Revert the optimistic update for this specific post
+      setPosts(currentPosts => currentPosts.map(p => {
+        if (p.id !== postId) return p;
+        return { ...p, reactions: oldReactions };
+      }));
+      window.alert(isRtl ? 'فشل حفظ التفاعل. يرجى المحاولة مرة أخرى.' : 'Failed to save reaction. Please try again.');
     }
   };
 

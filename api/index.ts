@@ -35,6 +35,7 @@ import { deleteUserAccount, mergeUserAccounts } from "../shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "../shared/yearWipe.js";
 import { summariseYear } from "../shared/yearSummary.js";
 import { deleteWipedFiles } from "../shared/yearWipeFiles.js";
+import { handleAnnouncementReact } from "../shared/announcementReact.js";
 import { OAuth2Client } from "google-auth-library";
 import { activeDaysBetween, addDays, isLiveDay, finalTermOf } from "../shared/academicCalendar.js";
 import {
@@ -467,6 +468,9 @@ app.get("/api/get-upload-url", verifyAuth, verifyAdmin, async (req, res) => {
     res.status(500).json({ error: "Failed to generate upload URL" });
   }
 });
+
+// Announcement Reactions
+app.post("/api/announcements/:postId/react", verifyAuth, handleAnnouncementReact);
 
 // Send FCM Notification
 app.post("/api/notify", verifyAuth, verifyAdmin, async (req, res) => {

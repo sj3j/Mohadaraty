@@ -23,10 +23,11 @@ import {
   applyAppleEntitlement,
   readSubscriberEntitlement,
 } from './iap.js';
+import type { SubscriptionEvent } from './subscriptions.js';
 
 export interface IapDeps {
   admin: any;
-  notify?: (userId: string, event: string, plan?: string) => Promise<void>;
+  notify?: (userId: string, event: SubscriptionEvent, plan?: string) => Promise<void>;
   /** Overridable for tests; defaults to the real REST API. */
   fetchSubscriber?: (rcAppUserId: string) => Promise<any>;
 }

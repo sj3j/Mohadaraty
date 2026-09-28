@@ -46,6 +46,7 @@ import { createIapHandlers } from "./shared/iapApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
+import { handleAnnouncementReact } from "./shared/announcementReact.js";
 import { OAuth2Client } from "google-auth-library";
 import { activeDaysBetween, addDays, isLiveDay, finalTermOf } from "./shared/academicCalendar.js";
 import {
@@ -418,33 +419,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
   });
   // Announcement Reactions
-  app.post("/api/announcements/:postId/react", verifyAuth, async (req, res) => {
-    try {
-      const { emoji, hasReacted } = req.body;
-      const postId = req.params.postId;
-      // Note: req.user is populated by verifyAuth, we just need the uid
-      const uid = (req as any).user?.uid;
-      if (!uid || !emoji || !postId) {
-        return res.status(400).json({ error: "Missing required fields" });
-      }
-      
-      const db = admin.firestore();
-      const postRef = db.collection('announcements').doc(postId);
-      
-      await postRef.set({
-        reactions: {
-          [emoji]: hasReacted 
-            ? admin.firestore.FieldValue.arrayRemove(uid) 
-            : admin.firestore.FieldValue.arrayUnion(uid)
-        }
-      }, { merge: true });
-      
-      return res.json({ success: true });
-    } catch (error) {
-      console.error("Failed to react to announcement:", error);
-      return res.status(500).json({ error: "Failed to react" });
-    }
-  });
+  app.post("/api/announcements/:postId/react", verifyAuth, handleAnnouncementReact);
 
   // Send FCM Notification
   app.post("/api/notify", verifyAuth, verifyAdmin, async (req, res) => {

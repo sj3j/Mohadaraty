@@ -18,6 +18,9 @@ export const PRODUCT_PLAN_MAP: Record<string, string> = {
   'com.mohadaraty.app.1year': 'annual',
 };
 
+import type * as admin from 'firebase-admin';
+import type { SubscriptionEvent } from './subscriptions.js';
+
 /**
  * Which plan a product is, or null if we have never heard of it.
  *
@@ -126,10 +129,10 @@ export function readSubscriberEntitlement(
 }
 
 export interface IapCtx {
-  db: FirebaseFirestore.Firestore;
+  db: admin.firestore.Firestore;
   FieldValue: { serverTimestamp(): any; delete(): any };
   Timestamp: { now(): any; fromDate(d: Date): any };
-  notify?: (userId: string, event: string, plan?: string) => Promise<void>;
+  notify?: (userId: string, event: SubscriptionEvent, plan?: string) => Promise<void>;
 }
 
 /**
