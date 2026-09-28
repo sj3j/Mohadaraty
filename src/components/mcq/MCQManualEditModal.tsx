@@ -35,7 +35,7 @@ export default function MCQManualEditModal({ question, onClose, onSubmit, isSubm
   ]);
 
   const addChoice = () => {
-    const nextLabel = String.fromCharCode(65 + choices.length); // A, B, C...
+    const nextLabel = String.fromCharCode(65 + choices.length) as "A" | "B" | "C" | "D" | "E"; // A, B, C...
     setChoices([...choices, { label: nextLabel, text: '' }]);
   };
 
@@ -46,10 +46,10 @@ export default function MCQManualEditModal({ question, onClose, onSubmit, isSubm
     }
     const newChoices = choices
       .filter((_, i) => i !== indexToRemove)
-      .map((c, i) => ({ ...c, label: String.fromCharCode(65 + i) })); // Re-assign labels A, B, C...
+      .map((c, i) => ({ ...c, label: String.fromCharCode(65 + i) as "A" | "B" | "C" | "D" | "E" })); // Re-assign labels A, B, C...
     const removedChoiceLabel = choices[indexToRemove].label;
     if (correctAnswer === removedChoiceLabel) {
-      setCorrectAnswer(newChoices[0].label);
+      setCorrectAnswer(newChoices[0].label as any);
     }
     setChoices(newChoices);
   };

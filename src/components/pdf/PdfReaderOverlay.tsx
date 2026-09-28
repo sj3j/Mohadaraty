@@ -292,7 +292,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           ...PDFJS_DOC_OPTIONS,
           data: freshBytes(buf),
         }).promise;
-        if (cancelled) { doc.destroy(); return; }
+        if (cancelled) { (doc as any).destroy(); return; }
 
         const sizes: { w: number; h: number }[] = [];
         for (let i = 1; i <= doc.numPages; i++) {
@@ -300,7 +300,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           const v = p.getViewport({ scale: 1, rotation: 0 });
           sizes.push({ w: v.width, h: v.height });
         }
-        if (cancelled) { doc.destroy(); return; }
+        if (cancelled) { (doc as any).destroy(); return; }
 
         fingerprint.current = doc.fingerprints?.[0] ?? '';
 
@@ -358,7 +358,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   }, [pdfUrl, lectureId]);
 
   // Tear the document down explicitly - the worker holds page resources.
-  useEffect(() => () => { try { pdfDoc?.destroy(); } catch { /* already gone */ } }, [pdfDoc]);
+  useEffect(() => () => { try { (pdfDoc as any)?.destroy(); } catch { /* already gone */ } }, [pdfDoc]);
 
   // Remember where the reader was left.
   useEffect(() => {

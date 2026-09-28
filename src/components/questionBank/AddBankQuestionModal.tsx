@@ -81,7 +81,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
   useEffect(() => {
     if (isOpen) {
       if (initialData) {
-        setScope(initialData.scope);
+        setScope(initialData.scope as QuestionScope);
         setSubjectId(initialData.subjectId || '');
         setLectureId(initialData.lectureId || '');
         setTags(new Set(initialData.tags || []));

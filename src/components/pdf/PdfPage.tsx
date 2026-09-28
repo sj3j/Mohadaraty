@@ -385,7 +385,7 @@ export default React.memo(function PdfPage({
     paint();
   }, [scale, rotation, ready, paint]);
 
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = (e: React.MouseEvent) => {
     const h = handleRef.current;
     if (!h || h.hasText || !onPinPoint) return;
     // Only pages with no text layer accept pins - elsewhere this would fight

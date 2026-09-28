@@ -361,6 +361,9 @@ export interface Student {
    */
   googleEmail?: string;
   googleLinkedAt?: any;
+  role?: string;
+  longestStreak?: number;
+  freezeTokens?: number;
 }
 
 export interface Homework {

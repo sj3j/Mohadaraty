@@ -337,7 +337,7 @@ export default function AdminGradesScreen({ isOpen, onClose, user }: AdminGrades
       matchedUserId: null,
       matchedUserName: null,
       matchScore: 0,
-      originalRowData: {}
+      originalRow: {}
     }, ...prev]);
   };
 

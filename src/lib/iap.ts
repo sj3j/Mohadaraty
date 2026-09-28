@@ -57,14 +57,14 @@ const ERR_PAYMENT_PENDING = '20';
 const ERR_PRODUCT_ALREADY_PURCHASED = '6';
 
 /** One import, one configure, however many callers. */
-let pluginPromise: Promise<any> | null = null;
+let pluginPromise: Promise<{ Purchases: any } | null> | null = null;
 let configured = false;
 
-async function sdk(): Promise<any | null> {
+async function sdk(): Promise<{ Purchases: any } | null> {
   if (!IAP_ENABLED) return null;
   if (!pluginPromise) {
     pluginPromise = import('@revenuecat/purchases-capacitor')
-      .then(m => m.Purchases)
+      .then(m => ({ Purchases: m.Purchases }))
       .catch(err => {
         // A missing native plugin must degrade to "no store", never crash the
         // app shell - the reader, lectures and streaks have nothing to do with
@@ -115,7 +115,8 @@ async function postJson(path: string, body?: unknown): Promise<any | null> {
  */
 export async function configureIap(): Promise<void> {
   if (!IAP_ENABLED || configured) return;
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases) return;
   if (!PUBLIC_API_KEY) {
     console.warn('[iap] VITE_REVENUECAT_IOS_KEY is not set - the store will not load');
@@ -142,7 +143,8 @@ export async function configureIap(): Promise<void> {
 export async function identifyIap(): Promise<void> {
   if (!IAP_ENABLED) return;
   await configureIap();
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases || !configured) return;
 
   const identity = await postJson('/api/iap/identity');
@@ -162,7 +164,8 @@ export async function identifyIap(): Promise<void> {
 
 export async function signOutIap(): Promise<void> {
   if (!IAP_ENABLED || !configured) return;
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases) return;
   try {
     await Purchases.logOut();
@@ -190,7 +193,8 @@ export async function syncEntitlement(): Promise<{
 export async function getPlans(): Promise<PurchasesPackage[]> {
   if (!IAP_ENABLED) return [];
   await configureIap();
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases || !configured) return [];
   try {
     const offerings = await Purchases.getOfferings();
@@ -214,7 +218,8 @@ export type PurchaseOutcome =
 
 export async function purchase(pkg: PurchasesPackage): Promise<PurchaseOutcome> {
   if (!IAP_ENABLED) return { status: 'failed', message: 'unsupported' };
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases || !configured) return { status: 'failed', message: 'unconfigured' };
   try {
     const result = await Purchases.purchasePackage({ aPackage: pkg });
@@ -238,7 +243,8 @@ export async function purchase(pkg: PurchasesPackage): Promise<PurchaseOutcome> 
  */
 export async function restore(): Promise<{ restored: boolean }> {
   if (!IAP_ENABLED) return { restored: false };
-  const Purchases = await sdk();
+  const sdkModule = await sdk();
+  const Purchases = sdkModule?.Purchases;
   if (!Purchases || !configured) return { restored: false };
   try {
     await Purchases.restorePurchases();

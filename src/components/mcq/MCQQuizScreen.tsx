@@ -432,7 +432,7 @@ ${questionText}`;
             return (
               <div 
                 key={question.id} 
-                ref={el => questionRefs.current[index] = el}
+                ref={el => { questionRefs.current[index] = el; }}
                 className="bg-white dark:bg-zinc-800 rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-100 dark:border-zinc-700 relative overflow-hidden"
               >
                 {/* Meta details */}
