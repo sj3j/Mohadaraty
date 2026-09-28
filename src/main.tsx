@@ -24,6 +24,14 @@ if ('serviceWorker' in navigator) {
   registerSW({ immediate: true });
 }
 
+if (import.meta.env.VITE_ENABLE_VCONSOLE === 'true') {
+  import('vconsole').then(({ default: VConsole }) => {
+    new VConsole();
+  }).catch((err) => {
+    console.error('Failed to load vconsole', err);
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

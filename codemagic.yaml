@@ -27,6 +27,7 @@ workflows:
       vars:
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
+        VITE_ENABLE_VCONSOLE: "true"
       xcode: latest
       cocoapods: default
       node: 20
