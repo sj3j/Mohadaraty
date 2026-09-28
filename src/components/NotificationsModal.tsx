@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { X, Bell, BookOpen, Clock, ShieldAlert } from 'lucide-react';
+import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
@@ -32,7 +32,7 @@ interface NotificationsModalProps {
 
 interface NotificationItem {
   id: string;
-  type: 'homework' | 'system' | 'report';
+  type: 'homework' | 'system' | 'report' | 'support_ticket';
   title: string;
   body: string;
   createdAt: any;
@@ -154,19 +154,29 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                const data = docSnap.data();
                let title = isRtl ? 'تنبيه نظام' : 'System Alert';
                let body = data.reason ? `السبب: ${data.reason}` : 'هناك تنبيه يتطلب المراجعة';
+               let itemType: 'system' | 'report' | 'support_ticket' = 'system';
+               let itemIcon: any = ShieldAlert;
                
                if (data.type === 'question_report') {
                  title = isRtl ? 'تبليغ عن سؤال' : 'Question Report';
                  body = `سؤال: ${data.questionStem ? data.questionStem.substring(0, 50) + '...' : 'غير معروف'}`;
+                 itemType = 'report';
+               } else if (data.type === 'support_ticket') {
+                 title = isRtl ? `تذكرة دعم (${data.ticketId || 'جديدة'})` : `Support Ticket (${data.ticketId || 'New'})`;
+                 const sender = data.senderName || (isRtl ? 'زائر' : 'Visitor');
+                 const preview = data.message ? (data.message.length > 50 ? `${data.message.substring(0, 50)}...` : data.message) : '';
+                 body = `${sender}: ${preview}`;
+                 itemType = 'support_ticket';
+                 itemIcon = LifeBuoy;
                }
                
                items.push({
                  id: docSnap.id,
-                 type: data.type === 'question_report' ? 'report' : 'system',
+                 type: itemType,
                  title,
                  body,
                  createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now(),
-                 icon: ShieldAlert,
+                 icon: itemIcon,
                  extraData: data
                });
              });
@@ -227,7 +237,9 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                 className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 flex gap-4 items-start shadow-sm hover:shadow-md transition-all cursor-pointer group"
               >
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                  (item.type === 'system' || item.type === 'report')
+                  item.type === 'support_ticket'
+                    ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'
+                    : (item.type === 'system' || item.type === 'report')
                     ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
                     : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400'
                 }`}>
@@ -247,7 +259,7 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                     {item.body}
                   </p>
                   
-                  {item.type === 'report' && item.extraData && isExpanded && (
+                  {(item.type === 'report' || item.type === 'support_ticket') && item.extraData && isExpanded && (
                     <div 
                       className="mt-3 opacity-100 transition-opacity"
                       onClick={(e) => e.stopPropagation()}
@@ -256,11 +268,35 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                         <div>
                           <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'بواسطة:' : 'By:')} </span>
                           <span className="font-bold">{item.extraData.reportedByName || item.extraData.reportedBy}</span>
+                          {item.extraData.email && (
+                            <span className="text-xs text-sky-600 dark:text-sky-400 ms-2 font-mono" dir="ltr">
+                              ({item.extraData.email})
+                            </span>
+                          )}
                         </div>
+                        {item.extraData.categoryLabel && (
+                          <div>
+                            <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'التصنيف:' : 'Category:')} </span>
+                            <span className="px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-800 dark:text-sky-300 text-xs font-semibold">
+                              {item.extraData.categoryLabel}
+                            </span>
+                          </div>
+                        )}
                         <div>
-                          <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'السبب:' : 'Reason:')} </span>
-                          <span className="break-words">{item.extraData.reason}</span>
+                          <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'التفاصيل:' : 'Details:')} </span>
+                          <span className="break-words">{item.extraData.fullMessage || item.extraData.message || item.extraData.reason}</span>
                         </div>
+                        
+                        {item.type === 'support_ticket' && item.extraData.email && (
+                          <div className="pt-2">
+                            <a
+                              href={`mailto:${item.extraData.email}?subject=${encodeURIComponent(isRtl ? `رد بخصوص تذكرة الدعم ${item.extraData.ticketId}` : `Response to Support Ticket ${item.extraData.ticketId}`)}`}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition-colors"
+                            >
+                              <span>{isRtl ? 'الرد عبر البريد الإلكتروني' : 'Reply via Email'}</span>
+                            </a>
+                          </div>
+                        )}
                         
                         {(user.role === 'admin' || user.isMasterAdmin) && (
                           <div className="mt-4 pt-3 border-t border-slate-200 dark:border-zinc-700">

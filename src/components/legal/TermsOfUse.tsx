@@ -7,7 +7,7 @@ export default function TermsOfUse() {
 
   if (isRtl) {
     return (
-      <LegalShell lang={lang} setLang={setLang} title="شروط الاستخدام" updated="آخر تحديث: ٢٥ أيلول ٢٠٢٦">
+      <LegalShell lang={lang} setLang={setLang} title="شروط الاستخدام" updated="آخر تحديث: ٢٨ أيلول ٢٠٢٦">
         <Section heading="قبول الشروط">
           <p>
             مرحباً بك في «محاضراتي». باستخدامك لهذا التطبيق أو الموقع الإلكتروني، فإنك توافق على الالتزام بشروط الاستخدام التالية. إذا كنت لا توافق على هذه الشروط، يُرجى عدم استخدام خدماتنا.
@@ -16,7 +16,7 @@ export default function TermsOfUse() {
 
         <Section heading="الحسابات والتسجيل">
           <p>
-            تُنشأ الحسابات في التطبيق عادةً عن طريق إدارة الكلية أو ممثل المرحلة، أو من خلال طلب تسجيل توافق عليه الإدارة. أنت مسؤول عن:
+            تُنشأ الحسابات في التطبيق عن طريق ممثلي المراحل أو المشرفين الأكاديميين من قوائم الطلبة، أو من خلال طلب تسجيل مباشر. أنت مسؤول عن:
           </p>
           <Bullets items={[
             'تقديم معلومات دقيقة وصحيحة.',
@@ -31,10 +31,10 @@ export default function TermsOfUse() {
         <Section heading="الاشتراكات والمدفوعات">
           <p>بعض الميزات والمحتويات تتطلب وصولاً أو اشتراكاً فعّالاً:</p>
           <Bullets items={[
-            'تتم إدارة الوصول للاشتراكات في نظامنا الأساسي بواسطة إدارة الكلية (خارج التطبيق).',
+            'تتم إدارة الوصول للاشتراكات في نظامنا الأساسي بواسطة المشرفين الأكاديميين للمراحل.',
             'قد يوفر التطبيق (في نسخة iOS فقط) عمليات شراء واشتراكات داخل التطبيق عبر نظام Apple In-App Purchases. تخضع هذه العمليات لشروط وأحكام Apple.',
-            'تطبيق الأندرويد لا يحتوي على أي عمليات شراء داخلي، وتتم إدارة الوصول فيه عبر الإدارة حصراً.',
-            'كافة المبالغ المدفوعة غير قابلة للاسترداد، ما لم ينص القانون المعمول به على خلاف ذلك.',
+            'تطبيق الأندرويد لا يحتوي على أي عمليات شراء داخلي، وتتم إدارة الوصول فيه عبر المشرفين حصراً.',
+            'كافة المبالغ المدفوعة غير قابلة للاسترداد، ما لم ينص القانون المعمول به أو سياسات متجر التطبيقات على خلاف ذلك.',
           ]} />
         </Section>
 
@@ -60,7 +60,11 @@ export default function TermsOfUse() {
             'مطورو التطبيق لا يدعون ملكية الملفات المرفوعة من قبل المستخدمين، ولا نقوم بمراقبة كل المحتوى مسبقاً.',
           ]} />
           <p>
-            نحن نحترم حقوق الملكية الفكرية. إذا كنت مالكاً لحقوق الطبع والنشر (مثل أستاذ جامعي أو إدارة الكلية) وتعتقد أن موادك تُنشر دون تصريح، يُرجى التواصل معنا على support@mohadaraty.com لإزالة المحتوى فوراً (طلب إزالة / حقوق نشر).
+            نحن نحترم حقوق الملكية الفكرية. إذا كنت مالكاً لحقوق الطبع والنشر وتعتقد أن موادك تُنشر دون تصريح، يُرجى التواصل معنا على{' '}
+            <a href="mailto:support@myvarmacy.com" className="font-mono text-sky-600 dark:text-sky-400 hover:underline" dir="ltr">
+              support@myvarmacy.com
+            </a>{' '}
+            لإزالة المحتوى فوراً (طلب إزالة / حقوق نشر).
           </p>
         </Section>
 
@@ -80,7 +84,7 @@ export default function TermsOfUse() {
             يُقدم التطبيق وخدماته على أساس "كما هو" و"كما هو متاح". لا نقدم أي ضمانات بأن الخدمة ستكون خالية من الأخطاء أو الانقطاعات.
           </p>
           <p>
-            إلى أقصى حد يسمح به القانون، لا نتحمل نحن ولا الكلية أي مسؤولية عن أي أضرار مباشرة، أو غير مباشرة، أو عرضية، أو تبعية ناتجة عن استخدامك للتطبيق، بما في ذلك على سبيل المثال لا الحصر: الفشل الأكاديمي، أو فقدان البيانات، أو توقف الخدمة.
+            إلى أقصى حد يسمح به القانون، لا نتحمل نحن ولا مشرفو المنصة أي مسؤولية عن أي أضرار مباشرة، أو غير مباشرة، أو عرضية، أو تبعية ناتجة عن استخدامك للتطبيق، بما في ذلك على سبيل المثال لا الحصر: الفشل الأكاديمي، أو فقدان البيانات، أو توقف الخدمة.
           </p>
         </Section>
 
@@ -94,7 +98,7 @@ export default function TermsOfUse() {
   }
 
   return (
-    <LegalShell lang={lang} setLang={setLang} title="Terms of Use" updated="Last updated: 25 September 2026">
+    <LegalShell lang={lang} setLang={setLang} title="Terms of Use" updated="Last updated: 28 September 2026">
       <Section heading="Acceptance of Terms">
         <p>
           Welcome to MyLecture. By accessing or using our application and website, you agree to be bound by these Terms of Use. If you do not agree to these terms, please do not use our services.
@@ -103,7 +107,7 @@ export default function TermsOfUse() {
 
       <Section heading="Accounts & Registration">
         <p>
-          Accounts in the app are generally created by your college administration or stage representative, or through an approved signup request. You are responsible for:
+          Accounts in the app are generally created by your stage representative or academic moderator from student rosters, or through an approved signup request. You are responsible for:
         </p>
         <Bullets items={[
           'Providing accurate and true information.',
@@ -116,12 +120,12 @@ export default function TermsOfUse() {
       </Section>
 
       <Section heading="Subscriptions & Payments">
-        <p>Some features and content require an active access or subscription:</p>
+        <p>Some features and content require active access or a valid subscription:</p>
         <Bullets items={[
-          'Subscription access on our primary platform is managed by the college administration (off-platform).',
+          'Subscription access on our primary platform is managed by stage academic moderators.',
           'The app may offer in-app purchases and subscriptions (on the iOS app only) via Apple In-App Purchases. These are subject to Apple’s terms and conditions.',
-          'The Android app contains no in-app purchases, and access is managed exclusively by the administration.',
-          'All payments made are final and non-refundable, unless otherwise required by applicable law.',
+          'The Android app contains no in-app purchases, and access is managed exclusively by stage moderators.',
+          'All payments made are final and non-refundable, unless otherwise required by applicable store policies or law.',
         ]} />
       </Section>
 
@@ -147,7 +151,11 @@ export default function TermsOfUse() {
           'The app developers do not claim ownership of user-uploaded files, nor do we pre-screen all content.',
         ]} />
         <p>
-          We respect intellectual property rights. If you are a copyright owner (e.g., a university professor or administration) and believe your work is being distributed without authorization, please contact us at support@mohadaraty.com for immediate takedown (DMCA / Copyright request).
+          We respect intellectual property rights. If you are a copyright owner and believe your work is being distributed without authorization, please contact us at{' '}
+          <a href="mailto:support@myvarmacy.com" className="font-mono text-sky-600 dark:text-sky-400 hover:underline" dir="ltr">
+            support@myvarmacy.com
+          </a>{' '}
+          for immediate takedown (DMCA / Copyright request).
         </p>
       </Section>
 
@@ -167,7 +175,7 @@ export default function TermsOfUse() {
           The app and its services are provided on an "as-is" and "as-available" basis. We do not guarantee that the service will be error-free or uninterrupted.
         </p>
         <p>
-          To the maximum extent permitted by law, neither we nor the college shall be liable for any direct, indirect, incidental, or consequential damages arising from your use of the app, including but not limited to: academic failure, loss of data, or service interruptions.
+          To the maximum extent permitted by law, neither we nor the platform moderators shall be liable for any direct, indirect, incidental, or consequential damages arising from your use of the app, including but not limited to: academic failure, loss of data, or service interruptions.
         </p>
       </Section>
 
@@ -179,3 +187,4 @@ export default function TermsOfUse() {
     </LegalShell>
   );
 }
+

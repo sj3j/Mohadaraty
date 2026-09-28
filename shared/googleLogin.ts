@@ -50,7 +50,7 @@ export class GoogleLoginError extends Error {
 export async function verifyGoogleIdentity(opts: {
   adminAuth: { verifyIdToken(t: string): Promise<any> };
   oauthClient: { verifyIdToken(o: { idToken: string; audience: string | string[] }): Promise<any> };
-  audience: string;
+  audience: string | string[];
   idToken?: string;
   googleIdToken?: string;
 }): Promise<GoogleIdentity> {

@@ -61,6 +61,7 @@ import { createStreakHandlers } from "../shared/streakApi.js";
 import { createMcqHandlers } from "../shared/mcqApi.js";
 import { createTimetableHandlers } from "../shared/timetableApi.js";
 import { createIapHandlers } from "../shared/iapApi.js";
+import { createSupportHandlers } from "../shared/supportApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "../shared/masterAdmins.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -158,6 +159,11 @@ const verifyAuth = async (req: express.Request, res: express.Response, next: exp
 const GOOGLE_WEB_CLIENT_ID =
   process.env.GOOGLE_WEB_CLIENT_ID ||
   "449403914422-jhmo0djasbes2584jg3ue8dcv48cd62i.apps.googleusercontent.com";
+const GOOGLE_CLIENT_IDS = [
+  GOOGLE_WEB_CLIENT_ID,
+  "449403914422-hu2lvvhvoeumim6tupbnrpf9cv7c6106.apps.googleusercontent.com", // iOS
+  "449403914422-1c18mj5o91i1vaddfea0grslfeash14s.apps.googleusercontent.com", // Android
+];
 const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 
 // The list itself lives in shared/masterAdmins.ts so server.ts, the client and
@@ -675,7 +681,7 @@ app.post("/api/google-login", async (req, res) => {
     const identity = await verifyGoogleIdentity({
       adminAuth: admin.auth(),
       oauthClient: googleOAuthClient,
-      audience: GOOGLE_WEB_CLIENT_ID,
+      audience: GOOGLE_CLIENT_IDS,
       idToken,
       googleIdToken,
     });
@@ -718,7 +724,7 @@ app.post("/api/google-claim", async (req, res) => {
     const identity = await verifyGoogleIdentity({
       adminAuth: admin.auth(),
       oauthClient: googleOAuthClient,
-      audience: GOOGLE_WEB_CLIENT_ID,
+      audience: GOOGLE_CLIENT_IDS,
       idToken,
       googleIdToken,
     });
@@ -916,7 +922,7 @@ app.post("/api/me/link-google", verifyAuth, async (req, res) => {
     const identity = await verifyGoogleIdentity({
       adminAuth: admin.auth(),
       oauthClient: googleOAuthClient,
-      audience: GOOGLE_WEB_CLIENT_ID,
+      audience: GOOGLE_CLIENT_IDS,
       idToken,
       googleIdToken,
     });
@@ -2015,5 +2021,9 @@ const iap = createIapHandlers({ admin, notify: notifySubscription });
 app.post("/api/iap/identity", verifyAuth, iap.identity);
 app.post("/api/iap/sync", verifyAuth, iap.sync);
 app.post("/api/iap/webhook", iap.webhook);
+
+/* Public Support Tickets. Persists inquiries to support_tickets and alerts staff. */
+const support = createSupportHandlers({ admin });
+app.post("/api/support/ticket", support.submitTicket);
 
 export default app;

@@ -56,15 +56,25 @@ export function LegalShell({
           {children}
         </div>
 
-        <footer className="mt-12 pt-6 border-t border-slate-200 dark:border-zinc-800 text-xs font-bold text-slate-400 space-y-1">
-          <p>{isRtl ? 'محاضراتي — منصة المحاضرات الجامعية' : 'MyLecture — university lecture platform'}</p>
-          <p dir="ltr">support@myvarmacy.com</p>
-          <p className="flex gap-3 pt-1">
+        <footer className="mt-12 pt-6 border-t border-slate-200 dark:border-zinc-800 text-xs font-bold text-slate-400 space-y-1.5">
+          <p>{isRtl ? 'محاضراتي — المنصة الطلابية للمحاضرات الجامعية' : 'MyLecture — University Student Platform'}</p>
+          <p dir="ltr">
+            <a href="mailto:support@myvarmacy.com" className="text-sky-600 dark:text-sky-400 hover:underline">
+              support@myvarmacy.com
+            </a>
+          </p>
+          <p className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
             <a href="/privacy" className="text-sky-600 dark:text-sky-400 hover:underline">
               {isRtl ? 'سياسة الخصوصية' : 'Privacy policy'}
             </a>
+            <a href="/terms" className="text-sky-600 dark:text-sky-400 hover:underline">
+              {isRtl ? 'شروط الاستخدام' : 'Terms of use'}
+            </a>
             <a href="/delete-account" className="text-sky-600 dark:text-sky-400 hover:underline">
               {isRtl ? 'حذف الحساب' : 'Delete account'}
+            </a>
+            <a href="/support" className="text-sky-600 dark:text-sky-400 hover:underline">
+              {isRtl ? 'مركز الدعم' : 'Support'}
             </a>
           </p>
         </footer>

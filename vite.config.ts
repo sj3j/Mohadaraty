@@ -43,7 +43,7 @@ export default defineConfig(({mode}) => {
           // on the website. Pinning the pages into a dedicated chunk is what
           // keeps the exemption honest: nothing else can hide behind it.
           manualChunks(id) {
-            if (id.includes('/src/components/legal/')) return 'legal-pages';
+            if (id.includes('/src/components/legal/') || id.includes('/src/pages/SupportPage')) return 'legal-pages';
             // Same device, same reason. RevenueCat's SDK enumerates every store
             // it supports - Stripe among them - so it trips the scanner's
             // payment-gateway-name rule legitimately. Pinning it into its own

@@ -17,95 +17,122 @@ export default function AccountDeletion() {
 
   if (isRtl) {
     return (
-      <LegalShell lang={lang} setLang={setLang} title="حذف الحساب" updated="آخر تحديث: ٤ أيلول ٢٠٢٦">
+      <LegalShell lang={lang} setLang={setLang} title="حذف الحساب" updated="آخر تحديث: ٢٨ أيلول ٢٠٢٦">
         <Section heading="التطبيق">
-          <p>«محاضراتي» — تطبيق المحاضرات الجامعية.</p>
+          <p>«محاضراتي» — المنصة الطلابية للمحاضرات الجامعية.</p>
         </Section>
 
         <Section heading="كيف تطلب حذف حسابك">
-          <p>من داخل التطبيق:</p>
-          <Bullets items={[
-            'افتح «الإعدادات».',
-            'اختر «الحساب وكلمة المرور».',
-            'اضغط «طلب حذف الحساب» وأكّد الطلب.',
-          ]} />
-          <p>
-            يصل الطلب إلى ممثل مرحلتك لمراجعته. يمكنك سحب الطلب من الصفحة نفسها ما دام
-            قيد المراجعة. إن تعذّر عليك الدخول إلى التطبيق، راسلنا من بريدك على{' '}
-            <span dir="ltr" className="font-mono">support@myvarmacy.com</span> واذكر اسمك
-            الكامل ومرحلتك.
-          </p>
+          <p>يمكنك طلب حذف حسابك وبياناتك نهائياً بإحدى الطريقتين:</p>
+          <div className="space-y-3">
+            <div>
+              <p className="font-bold text-slate-800 dark:text-stone-200 mb-1">١. من داخل التطبيق:</p>
+              <Bullets items={[
+                'افتح صفحة «الملف الشخصي» ثم «الإعدادات».',
+                'اختر «الحساب والأمان» (أو «إدارة الحساب»).',
+                'اضغط «طلب حذف الحساب» وأكّد الطلب.',
+              ]} />
+            </div>
+            <div>
+              <p className="font-bold text-slate-800 dark:text-stone-200 mb-1">٢. عبر المراسلة المباشرة (دون الحاجة لتثبيت التطبيق):</p>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                أرسل رسالة من بريدك الإلكتروني المسجل في التطبيق إلى:{' '}
+                <a href="mailto:support@myvarmacy.com" className="font-mono text-sky-600 dark:text-sky-400 hover:underline" dir="ltr">
+                  support@myvarmacy.com
+                </a>{' '}
+                واذكر اسمك الكامل ومرحلتك الدراسية، وسيتم تأكيد طلبك والبدء بالحذف فوراً.
+              </p>
+            </div>
+          </div>
         </Section>
 
         <Section heading="ما الذي يُحذف">
           <Bullets items={[
-            'ملفك الشخصي: الاسم المعروض، الصورة، المفضلة، المحاضرات المؤشرة، التفضيلات.',
-            'هوية الدخول — لن يعود بإمكانك تسجيل الدخول بأي وسيلة.',
-            'كلمة المرور ورمز الدخول وربط حساب Google.',
-            'رمز الإشعارات الخاص بجهازك.',
-            'إجاباتك في الاختبارات وإحصاءاتها وسجل نشاطك اليومي.',
+            'ملفك الشخصي: الاسم المعروض، الصورة الشخصية، المفضلة، المحاضرات المؤشرة، والتفضيلات.',
+            'هوية وبيانات الدخول — لن يعود بإمكانك تسجيل الدخول بأي وسيلة.',
+            'كلمة المرور المشفرة ورمز الدخول وربط حساب Google.',
+            'رمز الإشعارات ومعرف الجهاز الخاص بك.',
+            'إجاباتك وسجلاتك في بنوك الأسئلة والاختبارات وإحصاءاتها ودرجاتك ونشاطك وتفاعلك اليومي (الستريك).',
           ]} />
-          <p>رسائلك في الدردشة تبقى لأن طلبة آخرين شاركوا فيها، لكن يُزال اسمك عنها وتظهر باسم «طالب محذوف».</p>
         </Section>
 
         <Section heading="ما الذي يبقى، ولماذا">
           <p>
-            تحتفظ الكلية بسجل القيد الأكاديمي: الاسم والرقم الامتحاني والمرحلة والدرجات.
-            هذا سجل دراسي رسمي تصدره الكلية ولا يُعدّ بيانات حساب شخصي، وحذفه يعني إتلاف
-            نتائج امتحانية. لا يمكن استخدام هذا السجل لتسجيل الدخول بعد الحذف.
+            رسائلك وملاحظاتك السابقة في قنوات النقاش ومجموعات المشاركة العامة تبقى لضمان عدم انقطاع سياق الحديث لزملائك الطلبة المشاركين، ولكن يُزال اسمك وهويتك وكافة بياناتك الشخصية عنها نهائياً، وتظهر باسم مجهول («طالب محذوف») دون أي إمكانية للربط بحسابك السابق. لا يحتفظ التطبيق بأي سجلات شخصية أو بيانات قيد بعد إتمام الحذف.
           </p>
         </Section>
 
-        <Section heading="المدة">
-          <p>تُراجع الطلبات عادةً خلال أيام قليلة. الحذف نهائي ولا يمكن التراجع عنه بعد الموافقة.</p>
+        <Section heading="ملاحظة هامة بخصوص الاشتراكات">
+          <p>
+            حذف الحساب من خوادمنا لا يلغي التجديد التلقائي للاشتراكات المشتراة عبر متجر التطبيقات (Apple App Store أو Google Play). يجب إيقاف وإلغاء الاشتراك حصرياً من قِبل المستخدم عبر إعدادات الاشتراكات في حسابه بنظام التشغيل قبل حذف الحساب.
+          </p>
+        </Section>
+
+        <Section heading="المدة (SLA)">
+          <p>
+            تتم مراجعة ومعالجة طلبات الحذف وحذف كافة بياناتك وسجلاتك من قواعد البيانات بشكل نهائي خلال <strong>48 ساعة عمل</strong> كحد أقصى. الحذف نهائي ولا يمكن التراجع عنه أو استرجاع البيانات بعد إتمامه.
+          </p>
         </Section>
       </LegalShell>
     );
   }
 
   return (
-    <LegalShell lang={lang} setLang={setLang} title="Delete your account" updated="Last updated: 4 September 2026">
+    <LegalShell lang={lang} setLang={setLang} title="Delete your account" updated="Last updated: 28 September 2026">
       <Section heading="The app">
-        <p>MyLecture — the university lecture app.</p>
+        <p>MyLecture — University Student Platform.</p>
       </Section>
 
       <Section heading="How to request deletion">
-        <p>From inside the app:</p>
-        <Bullets items={[
-          'Open Settings.',
-          'Choose “Account & password”.',
-          'Tap “Request account deletion” and confirm.',
-        ]} />
-        <p>
-          The request goes to your stage representative for review. You can withdraw it from
-          the same screen while it is still pending. If you cannot sign in, write to us from
-          your own address at{' '}
-          <span dir="ltr" className="font-mono">support@myvarmacy.com</span> with your full
-          name and stage.
-        </p>
+        <p>You can request permanent deletion of your account and associated data using either method:</p>
+        <div className="space-y-3">
+          <div>
+            <p className="font-bold text-slate-800 dark:text-stone-200 mb-1">1. From inside the app:</p>
+            <Bullets items={[
+              'Open Profile and tap Settings.',
+              'Choose “Account & Security” (or “Account Management”).',
+              'Tap “Request account deletion” and confirm.',
+            ]} />
+          </div>
+          <div>
+            <p className="font-bold text-slate-800 dark:text-stone-200 mb-1">2. By email (without installing the app):</p>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Send an email request from your registered address to:{' '}
+              <a href="mailto:support@myvarmacy.com" className="font-mono text-sky-600 dark:text-sky-400 hover:underline" dir="ltr">
+                support@myvarmacy.com
+              </a>{' '}
+              specifying your full registered name and academic stage.
+            </p>
+          </div>
+        </div>
       </Section>
 
       <Section heading="What is deleted">
         <Bullets items={[
-          'Your profile: display name, photo, favourites, studied lectures, preferences.',
+          'Your profile: display name, photo, bookmarks, studied lectures, and preferences.',
           'Your sign-in identity — you will no longer be able to log in by any method.',
-          'Your password, login code, and any linked Google account.',
-          'Your device notification token.',
-          'Your quiz answers and statistics, and your daily activity history.',
+          'Hashed password, login code, and any linked Google credentials.',
+          'Your device push notification token and identifiers.',
+          'All quiz and question bank responses, statistics, saved grades, and daily streak activity history.',
         ]} />
       </Section>
 
-      <Section heading="What is kept, and why">
+      <Section heading="What is retained, and why">
         <p>
-          The college retains the academic enrolment record: name, exam number, stage and
-          grades. That is an official study record issued by the college rather than personal
-          account data, and deleting it would destroy examination results. It cannot be used
-          to sign in after deletion.
+          Messages and contributions in public study discussions remain to avoid breaking conversational context for peer students, but are stripped of all personal identity and attributed to an anonymous author (“Deleted Student”). No personal records or identifiable information are retained after deletion.
         </p>
       </Section>
 
-      <Section heading="Timing">
-        <p>Requests are normally reviewed within a few days. Deletion is permanent and cannot be undone once approved.</p>
+      <Section heading="Important note regarding subscriptions">
+        <p>
+          Deleting your account from our servers does not automatically cancel auto-renewing subscriptions managed by the App Store or Google Play. Subscriptions must be canceled directly by the user in their operating system account settings.
+        </p>
+      </Section>
+
+      <Section heading="Timing (SLA)">
+        <p>
+          Deletion requests are processed and all personal account data is permanently purged from our databases within <strong>48 hours</strong>. Deletion is irreversible once completed.
+        </p>
       </Section>
     </LegalShell>
   );

@@ -173,7 +173,7 @@ export default function HomeScreen({
             {getGreeting()}, {user?.name?.split(' ')[0] || (isRtl ? 'طالب' : 'Student')}
           </h1>
           <p className="text-slate-500 dark:text-slate-400 font-medium text-lg">
-            {isRtl ? 'قسم الصيدلة - جامعة الصفوة' : 'Pharmacy Department - Al-Safwa University'}
+            {isRtl ? 'المنصة الطلابية الجامعية' : 'University Student Platform'}
           </p>
         </div>
         

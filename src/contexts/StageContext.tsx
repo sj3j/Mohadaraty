@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback, ReactNode } from 'react';
 import {
   Stage, UserProfile, StageGroupConfig, DEFAULT_GROUP_CONFIG,
   CourseId, COURSE_IDS, DEFAULT_COURSE_ID,
@@ -70,7 +70,7 @@ interface StageContextType {
 const StageContext = createContext<StageContextType | undefined>(undefined);
 
 export function StageProvider({ children }: { children: ReactNode }) {
-  const [stages, setStages] = useState<Stage[]>([]);
+  const [stages, setStages] = useState<Stage[]>(DEFAULT_STAGES);
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
   const [currentAppStage, setCurrentAppStage] = useState<string | null>(() => {
     return localStorage.getItem('selectedAdminStage') || null;
@@ -97,29 +97,40 @@ export function StageProvider({ children }: { children: ReactNode }) {
   // snapshot from refetching a list that has already arrived.
   const activeUid = activeUser?.uid ?? null;
 
+  /**
+   * Adopts a stage list and reconciles the picker against it.
+   *
+   * currentAppStage comes from localStorage, which the client controls: a
+   * stale id that matches no stage produces exactly the same '—' as an empty
+   * list, so it is validated here rather than trusted.
+   */
+  const applyStageList = useCallback((list: Stage[]) => {
+    setStages(list);
+    setCurrentAppStage(prev => {
+      if (prev && list.some(st => st.id === prev)) return prev;
+      // Nothing stored yet. A support account promoted from a representative
+      // opens on the stage it used to represent - a home stage, not a limit -
+      // rather than being dropped on stage_3 with no idea why.
+      const home = activeUser?.role === 'support' ? activeUser.managedStageId : null;
+      if (home && list.some(st => st.id === home)) return home;
+      return list.find(st => st.id === 'stage_3')?.id || list[0]?.id || null;
+    });
+  }, [activeUser?.role, activeUser?.managedStageId]);
+
   useEffect(() => {
+    if (!activeUid) {
+      // On the login screen or before auth is ready, do NOT query Firestore.
+      // firestore.rules refuses `stages` reads to unauthenticated callers, which
+      // would log an expected permission-denied error. Default stages are used
+      // until a signed-in profile arrives.
+      applyStageList(DEFAULT_STAGES);
+      setIsLoadingStages(false);
+      loadedRef.current = false;
+      return;
+    }
+
     if (loadedRef.current) return;
     let cancelled = false;
-
-    /**
-     * Adopts a stage list and reconciles the picker against it.
-     *
-     * currentAppStage comes from localStorage, which the client controls: a
-     * stale id that matches no stage produces exactly the same '—' as an empty
-     * list, so it is validated here rather than trusted.
-     */
-    const applyStageList = (list: Stage[]) => {
-      setStages(list);
-      setCurrentAppStage(prev => {
-        if (prev && list.some(st => st.id === prev)) return prev;
-        // Nothing stored yet. A support account promoted from a representative
-        // opens on the stage it used to represent - a home stage, not a limit -
-        // rather than being dropped on stage_3 with no idea why.
-        const home = activeUser?.role === 'support' ? activeUser.managedStageId : null;
-        if (home && list.some(st => st.id === home)) return home;
-        return list.find(st => st.id === 'stage_3')?.id || list[0]?.id || null;
-      });
-    };
 
     const fetchStages = async () => {
       try {
@@ -172,12 +183,16 @@ export function StageProvider({ children }: { children: ReactNode }) {
 
         setStagesError('empty');
         applyStageList(DEFAULT_STAGES);
-      } catch (error) {
+      } catch (error: any) {
         if (cancelled) return;
         // Do NOT let this look like "there are no stages". loadedRef stays
         // false, so signing in retries; the fallback list is for display only
         // and is never written anywhere.
-        console.error('Failed to fetch stages:', error);
+        if (error?.code !== 'permission-denied') {
+          console.error('Failed to fetch stages:', error);
+        } else {
+          console.warn('Stages read denied; using fallback defaults.', error);
+        }
         setStagesError('denied');
         applyStageList(DEFAULT_STAGES);
       } finally {
@@ -191,8 +206,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
 
     fetchStages();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeUid]);
+  }, [activeUid, applyStageList]);
 
   const handleSetCurrentStage = (stageId: string | null) => {
     setCurrentAppStage(stageId);

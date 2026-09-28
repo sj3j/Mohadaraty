@@ -404,7 +404,7 @@ export const TRANSLATIONS = {
   ar: {
     ...PAYMENT_STRINGS.ar,
     appName: 'محاضراتي',
-    university: 'جامعة الصفوة',
+    university: 'المنصة الطلابية الجامعية',
     department: 'قسم الصيدلة',
     byFenix: 'بواسطة فينيكس',
     searchPlaceholder: 'البحث عن المحاضرات...',
@@ -560,7 +560,7 @@ export const TRANSLATIONS = {
   en: {
     ...PAYMENT_STRINGS.en,
     appName: 'محاضراتي',
-    university: 'ALSAFWA UNIVERSITY',
+    university: 'University Student Platform',
     department: 'Pharmacy Department',
     byFenix: 'By Fenix',
     searchPlaceholder: 'Search lectures...',

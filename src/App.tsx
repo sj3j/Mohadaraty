@@ -42,6 +42,7 @@ import HomeScreen from './components/HomeScreen';
 import LoginScreen from './components/LoginScreen';
 import OnboardingScreen from './components/OnboardingScreen';
 import { resolveLegalPath } from './components/legal';
+import SupportPage from './pages/SupportPage';
 import PasswordChangeGate from './components/PasswordChangeGate';
 import ExamCodePrompt, { shouldAskForExamCode } from './components/ExamCodePrompt';
 import OnboardingSlides from './components/OnboardingSlides';
@@ -763,9 +764,14 @@ export default function App() {
     }
   }, [user]);
 
-  // Google Play opens /privacy and /delete-account with no account at all, so
-  // these are answered before authentication is even consulted - ahead of the
-  // loading spinner, not just ahead of the login screen.
+  // Google Play and Apple App Store public routes (/privacy, /terms, /delete-account, /support)
+  // must be reachable without an account and render completely standalone ahead of auth,
+  // loading spinners, dashboards, and navigation bars (Guideline 1.5, 3.1.1, 3.1.2).
+  const currentPath = window.location.pathname.replace(/\/+$/, '').toLowerCase() || '/';
+  if (currentPath === '/support' || currentPath === '/support-center' || currentPath === '/help') {
+    return <SupportPage />;
+  }
+
   const legalPage = resolveLegalPath(window.location.pathname);
   if (legalPage) return legalPage;
 
