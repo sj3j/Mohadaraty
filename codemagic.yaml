@@ -106,6 +106,13 @@ workflows:
       node: 20
 
     scripts:
+      - name: Preflight - reject debug tools in release
+        script: |
+          if [ "$VITE_DEBUG" = "1" ] || [ "$VITE_ENABLE_VCONSOLE" = "true" ]; then
+            echo "Cannot build ios-release with VITE_DEBUG or VITE_ENABLE_VCONSOLE."
+            exit 1
+          fi
+
       - name: Preflight - the RevenueCat public key must be present
         script: |
           if [ -z "$VITE_REVENUECAT_IOS_KEY" ]; then
@@ -138,6 +145,13 @@ workflows:
 
       - name: Store-compliance gate - no off-Apple purchase surface
         script: npm run check:payment-surface:ios
+
+      - name: Store-compliance gate - reject debug console in release bundle
+        script: |
+          if grep -rqi "vconsole" ios/App/App/public/; then
+            echo "ERROR: vConsole was found inside ios/App/App/public/! Debug tools must never be bundled into ios-release."
+            exit 1
+          fi
 
       - name: Install CocoaPods dependencies
         script: |

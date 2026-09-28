@@ -4,8 +4,7 @@ import {
   indexedDBLocalPersistence, 
   browserLocalPersistence, 
   browserSessionPersistence,
-  inMemoryPersistence,
-  browserPopupRedirectResolver 
+  inMemoryPersistence
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -28,8 +27,7 @@ export const auth = initializeAuth(app, {
     browserLocalPersistence,
     browserSessionPersistence,
     inMemoryPersistence
-  ],
-  popupRedirectResolver: browserPopupRedirectResolver
+  ]
 });
 
 /**

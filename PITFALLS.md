@@ -65,6 +65,10 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   created - the record is project-wide. Discard it server-side, guarded on
   "owns no users doc AND is not the uid being signed in", because a master
   admin's Google uid IS their real account.
+- `browserPopupRedirectResolver` on iOS WebKit proactively inlines an untimed
+  Google API script → stalls `initializeAuth` on captive/cellular networks while
+  working offline. Omit it from `initializeAuth` when native uses Capacitor and
+  web uses an isolated scratch app.
 
 ## Security rules
 - A Firestore rule that branches `create` vs `update` on a ternary (e.g. by

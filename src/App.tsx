@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc } from 'firebase/firestore';
 import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType } from './types';
 import { useStageContext } from './contexts/StageContext';
@@ -15,6 +15,8 @@ import ProgressionScreen from './components/ProgressionScreen';
 import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
+import { useAuthWatchdog, safeSetStorageItem } from './hooks/useAuthWatchdog';
+import { logPerfMark } from './lib/perf';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
 import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
@@ -124,6 +126,7 @@ export default function App() {
     if (step !== 'none') setProgressionRound(step);
   }, [user, progressionGateNow, academicYearLabel, academicCalendar]);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const safeIsAuthReady = useAuthWatchdog(isAuthReady);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
@@ -197,9 +200,11 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
+    logPerfMark('auth-listener-started');
     let userUnsubscribe: (() => void) | undefined;
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      logPerfMark('auth-first-state');
       if (userUnsubscribe) {
         userUnsubscribe();
       }
@@ -224,6 +229,7 @@ export default function App() {
       }
 
       if (firebaseUser) {
+        safeSetStorageItem('wasSignedIn', 'true');
         const userEmail = firebaseUser.email || firebaseUser.uid;
         // Offline this needs an STS round-trip whenever the cached token is more
         // than an hour old, and the rejection used to escape the whole async
@@ -503,6 +509,7 @@ export default function App() {
           setIsAuthReady(true);
         });
       } else {
+        safeSetStorageItem('wasSignedIn', 'false');
         if (userUnsubscribe) {
           userUnsubscribe();
         }
@@ -591,7 +598,7 @@ export default function App() {
 
         // Check latest homework. Scoped to the reader's stage, or the badge
         // lights up for homework they will never see in the list.
-        if (user.role !== 'admin' && user.role !== 'master_admin' && effectiveStageId) {
+        if (!user.isMasterAdmin && user.role !== 'admin' && effectiveStageId) {
            const hwQuery = query(collection(db, 'homeworks'), where('stageId', '==', effectiveStageId), orderBy('createdAt', 'desc'), limit(1));
            const hwSnap = await getDocs(hwQuery);
            if (!hwSnap.empty) {
@@ -609,7 +616,7 @@ export default function App() {
         }
 
         // Check latest admin alert
-        if (user.role === 'admin' || user.role === 'master_admin') {
+        if (user.role === 'admin' || user.isMasterAdmin) {
           const adQuery = query(collection(db, 'adminAlerts'), orderBy('createdAt', 'desc'), limit(1));
           const adSnap = await getDocs(adQuery);
           if (!adSnap.empty) {
@@ -762,7 +769,7 @@ export default function App() {
   const legalPage = resolveLegalPath(window.location.pathname);
   if (legalPage) return legalPage;
 
-  if (!isAuthReady) {
+  if (!safeIsAuthReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-zinc-950">
         <Loader2 className="w-10 h-10 text-sky-600 dark:text-sky-400 animate-spin" />

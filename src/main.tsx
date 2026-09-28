@@ -1,3 +1,16 @@
+import { logPerfMark } from './lib/perf';
+
+logPerfMark('main-started');
+
+if (import.meta.env.VITE_ENABLE_VCONSOLE === 'true' || import.meta.env.VITE_DEBUG === '1') {
+  import('vconsole').then(({ default: VConsole }) => {
+    new VConsole();
+    logPerfMark('vconsole-mounted');
+  }).catch((err) => {
+    console.error('Failed to load vconsole', err);
+  });
+}
+
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
@@ -22,14 +35,6 @@ console.warn = (...args) => {
 // Register PWA Service Worker
 if ('serviceWorker' in navigator) {
   registerSW({ immediate: true });
-}
-
-if (import.meta.env.VITE_ENABLE_VCONSOLE === 'true') {
-  import('vconsole').then(({ default: VConsole }) => {
-    new VConsole();
-  }).catch((err) => {
-    console.error('Failed to load vconsole', err);
-  });
 }
 
 createRoot(document.getElementById('root')!).render(
