@@ -218,7 +218,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     try {
       const db = admin.firestore();
       const email = (user.email || '').toLowerCase();
-      const isMaster = isMasterAdminEmail(email);
+      const isEmailVerified = user.email_verified === true;
+      const isMaster = isMasterAdminEmail(email) && isEmailVerified;
 
       const userDoc = await db.collection('users').doc(user.uid).get();
 
@@ -259,8 +260,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     const user = (req as any).user;
     if (!user || (!user.email)) return res.status(401).json({ error: 'Unauthorized' });
 
-    if (!isMasterAdminEmail(user.email)) {
-        return res.status(403).json({ error: 'Not an admin email' });
+    if (user.email_verified !== true || !isMasterAdminEmail(user.email)) {
+        return res.status(403).json({ error: 'Not an authorized admin email' });
     }
 
     try {

@@ -616,20 +616,37 @@ exports.syncRole = onDocumentWritten({
   if (!event.data.after.exists) return; // Ignore deletes
   
   const uid = event.params.uid;
-  const newData = event.data.after.data();
+  let role = 'student';
 
-  const email = newData.email || "";
-  let role = newData.role ?? 'student';
+  try {
+    const authUser = await admin.auth().getUser(uid);
+    const email = (authUser.email || "").toLowerCase();
+    const isVerified = authUser.emailVerified === true;
 
-  if (isMasterAdminEmail(email)) {
-    role = 'master_admin';
-  } else if (isObserverEmail(email)) {
-    role = 'observer';
+    if (isVerified && isMasterAdminEmail(email)) {
+      role = 'master_admin';
+    } else if (isVerified && isObserverEmail(email)) {
+      role = 'observer';
+    } else {
+      const newData = event.data.after.data();
+      const requestedRole = newData.role ?? 'student';
+      // Never allow document write to escalate to master_admin or observer
+      if (requestedRole === 'master_admin' || requestedRole === 'observer') {
+        role = 'student';
+      } else {
+        role = requestedRole;
+      }
+    }
+
+    const existingClaims = authUser.customClaims || {};
+    await admin.auth().setCustomUserClaims(uid, {
+      ...existingClaims,
+      role: role,
+    });
+  } catch (err) {
+    console.error(`syncRole failed to verify user ${uid}:`, err);
+    return;
   }
-
-  await admin.auth().setCustomUserClaims(uid, {
-    role: role,
-  });
 });
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");

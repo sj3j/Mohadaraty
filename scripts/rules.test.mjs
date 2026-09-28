@@ -232,8 +232,8 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   });
 });
 
-const ctxFor = (uid, email) =>
-  testEnv.authenticatedContext(uid, { email }).firestore();
+const ctxFor = (uid, email, customClaims = {}) =>
+  testEnv.authenticatedContext(uid, { email, email_verified: true, ...customClaims }).firestore();
 
 const rep = ctxFor('rep_uid', 'rep@x.com');
 const resetUser = ctxFor('reset_uid', 'reset@x.com');
@@ -1124,6 +1124,20 @@ await check('the master admin CAN',
 // The narrowing is one document, not the whole settings/ wildcard.
 await check('a representative CAN still write another settings document',
   assertSucceeds(setDoc(doc(rep, 'settings/misc'), { anything: false })));
+
+console.log('\nSecurity Hardening: email_verified & users doc self-edits');
+const unverifiedMaster = testEnv.authenticatedContext('unverified_master_uid', {
+  email: MASTER_ADMIN_EMAILS[0],
+  email_verified: false,
+}).firestore();
+await check('unverified master admin email CANNOT read subscriptions ledger',
+  assertFails(getDocs(collection(unverifiedMaster, 'subscriptions'))));
+await check('a student CANNOT modify email in their users doc',
+  assertFails(updateDoc(doc(student, 'users/stu_uid'), { email: 'spoofed@admin.com' })));
+await check('a student CANNOT modify role in their users doc',
+  assertFails(updateDoc(doc(student, 'users/stu_uid'), { role: 'master_admin' })));
+await check('a student CAN update allowed profile fields (e.g. name)',
+  assertSucceeds(updateDoc(doc(student, 'users/stu_uid'), { name: 'Updated Student' })));
 
 await testEnv.cleanup();
 

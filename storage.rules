@@ -27,13 +27,14 @@ service firebase.storage {
     function isMasterAdmin() {
       return isAuthenticated() && (
         (request.auth.token.email != null &&
+          request.auth.token.email_verified == true &&
           request.auth.token.email.lower() in [
             'almdrydyl335@gmail.com',
             'dra016go@gmail.com',
             'jempe.kn@gmail.com'
           ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'master_admin') ||
-        (hasUserDoc() && userDoc().role == 'master_admin')
+        (hasUserDoc() && request.auth.token.email != null && request.auth.token.email_verified == true && userDoc().role == 'master_admin')
       );
     }
 

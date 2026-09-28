@@ -44,24 +44,30 @@ service cloud.firestore {
     function isMasterAdmin() {
       return isAuthenticated() && (
         (request.auth.token.email != null &&
+          request.auth.token.email_verified == true &&
           request.auth.token.email.lower() in [
             'almdrydyl335@gmail.com',
             'dra016go@gmail.com',
             'jempe.kn@gmail.com'
           ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'master_admin') ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'master_admin')
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         request.auth.token.email != null && request.auth.token.email_verified == true &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'master_admin')
       );
     }
 
     function isObserver() {
       return isAuthenticated() && (
         (request.auth.token.email != null &&
+          request.auth.token.email_verified == true &&
           request.auth.token.email.lower() in [
             'info@alsafwa.edu.iq'
           ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'observer') ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'observer')
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         request.auth.token.email != null && request.auth.token.email_verified == true &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'observer')
       );
     }
 
@@ -596,12 +602,12 @@ service cloud.firestore {
                        request.resource.data.get('role', '') in ['admin', 'moderator', 'student']) ||
                       (isOwner(userId) && isValidUser(request.resource.data) && (
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                          'name', 'email', 'group', 'photoUrl', 'role',
+                          'name', 'group', 'photoUrl',
                           'hideNameOnLeaderboard', 'hidePhotoOnLeaderboard', 
                           'blockedUsers', 'notificationPreferences', 
                           'examCodePromptSnoozedUntil', 'lastActiveAt', 'pushToken'
                         ])
-                      ) && request.resource.data.get('role', 'student') == resource.data.get('role', 'student'));
+                      ));
                       // Progression is recorded by /api/progression/submit with the
                       // Admin SDK, which also has to write students/{email}.stageId -
                       // a student cannot, and syncUserStage would otherwise revert the

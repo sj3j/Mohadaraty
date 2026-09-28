@@ -205,7 +205,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   try {
     const db = admin.firestore();
     const email = (user.email || '').toLowerCase();
-    const isMaster = isMasterAdminEmail(email);
+    const isEmailVerified = user.email_verified === true;
+    const isMaster = isMasterAdminEmail(email) && isEmailVerified;
 
     const userDoc = await db.collection('users').doc(user.uid).get();
 
@@ -255,8 +256,8 @@ app.post("/api/bootstrap-admin", verifyAuth, async (req, res) => {
   const user = (req as any).user;
   if (!user || !user.email) return res.status(401).json({ error: 'Unauthorized' });
 
-  if (!isMasterAdminEmail(user.email)) {
-    return res.status(403).json({ error: 'Not an admin email' });
+  if (user.email_verified !== true || !isMasterAdminEmail(user.email)) {
+    return res.status(403).json({ error: 'Not an authorized admin email' });
   }
 
   try {
@@ -1062,6 +1063,7 @@ app.patch("/api/admin/students/:email/toggle", verifyAuth, verifyAdmin, async (r
   try {
     const { email } = req.params;
     const { isActive } = req.body;
+
     const db = admin.firestore();
     await db.collection('students').doc(email).update({ isActive });
     res.json({ success: true });
@@ -1076,6 +1078,7 @@ app.delete("/api/admin/students/:email", verifyAuth, verifyAdmin, async (req, re
 
   try {
     const { email } = req.params;
+
     const db = admin.firestore();
     await db.collection('students').doc(email).delete();
     res.json({ success: true });
@@ -1121,6 +1124,7 @@ app.put("/api/admin/students/:email", verifyAuth, verifyAdmin, async (req, res) 
   try {
     const { email } = req.params;
     const { newEmail, name, password, examCode } = req.body;
+
     const db = admin.firestore();
     const oldEmailLower = email.toLowerCase();
     const newEmailLower = newEmail ? newEmail.toLowerCase() : oldEmailLower;

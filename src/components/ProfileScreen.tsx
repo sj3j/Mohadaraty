@@ -245,8 +245,6 @@ export default function ProfileScreen({
 
       await setDoc(doc(db, 'users', user.uid), {
         name: editName.trim(),
-        role: user.role,
-        email: user.email,
         group: editGroup.trim(),
         ...(photoUrl ? { photoUrl } : {})
       }, { merge: true });
