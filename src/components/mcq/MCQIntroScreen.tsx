@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Lecture, UserProfile } from '../../types';
-import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send } from 'lucide-react';
+import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
 import { canManageMcqSystem, isMasterAdmin, isStaff } from '../../lib/permissions';
@@ -22,10 +22,12 @@ interface Props {
   /** Staff generate directly. The server is the real gate - see canGenerate. */
   onGenerate: () => void;
   generateError: string | null;
+  isQuizLocked?: boolean;
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError }: Props) {
+export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked: propIsQuizLocked }: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
+  const isQuizLocked = propIsQuizLocked ?? Boolean(user?.pendingStageId);
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
 
@@ -128,7 +130,17 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
               the student's browser on a bundled API key. With no questions yet
               the student can ask for them; the mcqs listener flips this card to
               the start button the moment staff finish, with no refresh. */}
-          {questionsCount > 0 ? (
+          {isQuizLocked ? (
+            <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-center space-y-1.5 mt-2">
+              <Lock className="w-5 h-5 text-amber-600 dark:text-amber-400 mx-auto" />
+              <p className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                الاختبارات معطلة مؤقتاً
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                لا يمكن خوض الاختبارات أثناء فترة انتظار النتيجة النهائية. ستُتاح الاختبارات فور تأكيد نتيجتك.
+              </p>
+            </div>
+          ) : questionsCount > 0 ? (
             <button
               onClick={onStart}
               className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2"
@@ -218,12 +230,24 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
             </div>
             
             <div className="flex gap-2">
-              <button 
-                onClick={() => window.dispatchEvent(new CustomEvent('open-bank-quiz', { detail: { bankQuestions, lectureId: lecture.id } }))}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors"
-               >
-                 ابدأ اختبار ببنك الأسئلة
-              </button>
+              {isQuizLocked ? (
+                <div className="w-full p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-center space-y-1.5">
+                  <Lock className="w-5 h-5 text-amber-600 dark:text-amber-400 mx-auto" />
+                  <p className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                    بنك الأسئلة معطل مؤقتاً
+                  </p>
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    لا يمكن خوض اختبارات بنك الأسئلة أثناء فترة انتظار تأكيد النتيجة.
+                  </p>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => window.dispatchEvent(new CustomEvent('open-bank-quiz', { detail: { bankQuestions, lectureId: lecture.id } }))}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors"
+                >
+                  ابدأ اختبار ببنك الأسئلة
+                </button>
+              )}
             </div>
           </div>
         )}

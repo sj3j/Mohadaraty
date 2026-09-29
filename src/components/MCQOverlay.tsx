@@ -177,6 +177,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   };
 
   const handleStartQuiz = async () => {
+    if (user.pendingStageId) return;
     // A translated lecture is raw source material and never gets AI questions.
     // The intro screen hides the AI card for them, so this is unreachable
     // through the UI - it exists so the rule cannot be lost to a later UI edit.
@@ -204,13 +205,14 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
 
   useEffect(() => {
     const handleQuizSetup = (e: any) => {
+      if (user.pendingStageId) return;
       setRoute('bank_quiz_setup');
     };
     window.addEventListener('open-bank-quiz', handleQuizSetup);
     return () => {
       window.removeEventListener('open-bank-quiz', handleQuizSetup);
     }
-  }, []);
+  }, [user.pendingStageId]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-white dark:bg-zinc-900 flex flex-col" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -296,6 +298,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             onClose={onClose}
             user={user}
             userId={user.uid}
+            isQuizLocked={Boolean(user.pendingStageId)}
           />
         )}
 
@@ -338,7 +341,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
         {route === 'bank_quiz_setup' && (
           <BankQuizSetupScreen 
             bankQuestions={bankQuestions}
+            isQuizLocked={Boolean(user.pendingStageId)}
             onStartQuiz={(filtered) => {
+               if (user.pendingStageId) return;
                setBankQuizQuestions(filtered);
                setRoute('bank_quiz');
             }}

@@ -13,8 +13,8 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
 import { AcademicCalendar, progressionGate } from '../shared/academicCalendar';
-import { nextProgressionStep } from '../shared/progression';
-import { submitProgression, ProgressionError } from '../shared/progressionSubmit';
+import { nextProgressionStep, nextStageOf } from '../shared/progression';
+import { submitProgression, resetProgression, setPendingProgression, ProgressionError } from '../shared/progressionSubmit';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   console.error('Refusing to run: FIRESTORE_EMULATOR_HOST is not set.');
@@ -435,5 +435,79 @@ check('a student with no MCQ stats row still promotes cleanly',
 check('and no empty stats row is invented for them',
   !(await db.doc('userMCQStats/u_nomcq').get()).exists);
 
+console.log('\nRobust nextStageOf (gaps in stage orders):');
+const gappyStages = [
+  { id: 's1', order: 1 },
+  { id: 's2', order: 2 },
+  { id: 's4', order: 5 }, // gap: order 5 instead of 3
+];
+check('finds next higher stage despite order gap', nextStageOf(gappyStages, 's2')?.id === 's4');
+check('identifies true final stage', nextStageOf(gappyStages, 's4') === null);
+
+console.log('\nFinal stage edge cases (disallow tahmeel, allow mokamel):');
+await seedStudent('u_final2', 'final2@x.com', 'stage_5');
+await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_final2', round: 'first', answer: 'resit',
+});
+
+let finalTahmeelFailed = false;
+try {
+  await submitProgression(db, FieldValue as any, resitOpen, {
+    uid: 'u_final2', round: 'resit', answer: 'tahmeel', tahmeelSubjects: ['biochemistry_ii'],
+  });
+} catch (e) {
+  finalTahmeelFailed = e instanceof ProgressionError;
+}
+check('final stage student cannot submit tahmeel', finalTahmeelFailed);
+
+const mokamelRes = await submitProgression(db, FieldValue as any, resitOpen, {
+  uid: 'u_final2', round: 'resit', answer: 'mokamel',
+});
+check('final stage student can submit mokamel', mokamelRes.promoted === false && mokamelRes.graduated === false);
+const final2User = (await db.doc('users/u_final2').get()).data();
+check('mokamel keeps them active in final stage without graduating',
+  final2User?.stageId === 'stage_5' && final2User?.graduated === false && final2User?.progressionState === 'completed');
+
+console.log('\nReset Progression:');
+const resetRes = await resetProgression(db, FieldValue as any, { uid: 'u_pass' });
+check('resetProgression returns success', resetRes.success === true);
+const resetUser = (await db.doc('users/u_pass').get()).data();
+const resetStudent = (await db.doc('students/pass@x.com').get()).data();
+check('users progressionYear cleared', resetUser?.progressionYear === undefined);
+check('users progressionState cleared', resetUser?.progressionState === undefined);
+check('students progressionYear cleared', resetStudent?.progressionYear === undefined);
+check('student can answer again now', step('first_round', resetUser) === 'first');
+
+console.log('\nPending Stage & Provisional Access:');
+await seedStudent('u_pending', 'pending@x.com', 'stage_3');
+const pendingRes = await setPendingProgression(db, FieldValue as any, base, { uid: 'u_pending' });
+check('setPendingProgression sets stage_4 as pendingStageId', pendingRes.pendingStageId === 'stage_4');
+const userPendingData = (await db.doc('users/u_pending').get()).data();
+check('pendingStageId stored on users doc', userPendingData?.pendingStageId === 'stage_4');
+
+// Final stage cannot set pending stage
+let finalPendingFailed = false;
+try {
+  await setPendingProgression(db, FieldValue as any, base, { uid: 'u_final2' });
+} catch (e) {
+  finalPendingFailed = e instanceof ProgressionError;
+}
+check('final stage student cannot set pendingStageId', finalPendingFailed);
+
+// When progression is submitted, pendingStageId is cleared
+await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: 'u_pending', round: 'first', answer: 'passed',
+});
+const userPromotedData = (await db.doc('users/u_pending').get()).data();
+check('submitting progression cleared pendingStageId', userPromotedData?.pendingStageId === undefined);
+check('user was officially promoted to stage_4', userPromotedData?.stageId === 'stage_4');
+
+// When progression is reset, pendingStageId is cleared
+await db.doc('users/u_pending').set({ pendingStageId: 'stage_5' }, { merge: true });
+await resetProgression(db, FieldValue as any, { uid: 'u_pending' });
+const userResetData = (await db.doc('users/u_pending').get()).data();
+check('resetProgression cleared pendingStageId', userResetData?.pendingStageId === undefined);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
+

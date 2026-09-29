@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc } from 'firebase/firestore';
@@ -105,8 +105,18 @@ export default function App() {
    * which would rip the congratulations screen away before it is read.
    */
   const [progressionRound, setProgressionRound] = useState<ProgressionRound | null>(null);
+  const [forceShowProgression, setForceShowProgression] = useState(false);
 
   const [user, setUser] = useState<UserProfile | null>(null);
+
+  const isProgressionSnoozed = useMemo(() => {
+    if (!user) return false;
+    const raw = localStorage.getItem(`progression_snooze_${user.uid}`);
+    if (!raw) return false;
+    const until = parseInt(raw, 10);
+    return !isNaN(until) && Date.now() < until;
+  }, [user, progressionRound, forceShowProgression]);
+
   useEffect(() => {
     if (!user) { setProgressionRound(null); return; }
     const step = nextProgressionStep({
@@ -420,6 +430,7 @@ export default function App() {
               memberSince: studentData?.createdAt || userDoc.data().createdAt,
               permissions: masterAdminPermissions || userDoc.data().permissions || studentData?.permissions,
               stageId: userDoc.data().stageId || studentData?.stageId || undefined,
+              pendingStageId: userDoc.data().pendingStageId || undefined,
               managedStageId: userDoc.data().managedStageId || studentData?.managedStageId || undefined,
               tahmeelSubjects: userDoc.data().tahmeelSubjects || undefined,
               hasCompletedProgression: userDoc.data().hasCompletedProgression === true,
@@ -787,13 +798,18 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
-  if (progressionRound) {
+  const effectiveProgressionRound = progressionRound || (user?.pendingStageId ? (progressionGateNow === 'resit_round' ? 'resit' : 'first') : null);
+
+  if (effectiveProgressionRound && (!isProgressionSnoozed || forceShowProgression)) {
     return (
       <ProgressionScreen
         user={user}
         lang={lang}
-        round={progressionRound}
-        onDone={() => setProgressionRound(null)}
+        round={effectiveProgressionRound}
+        onDone={() => {
+          setProgressionRound(null);
+          setForceShowProgression(false);
+        }}
       />
     );
   }
@@ -904,6 +920,7 @@ export default function App() {
           setShowStreakManage={setShowStreakManage} 
           setShowAdminManage={setShowAdminManage} 
           initialTab={currentTab === 'home' ? 'lectures' : currentTab as any} 
+          onOpenProgression={() => setForceShowProgression(true)}
         />
       )}
       {currentTab === 'announcements' && (
@@ -924,6 +941,8 @@ export default function App() {
           hasUnreadInbox={hasUnreadInbox}
           onNavigate={(tab: string) => setCurrentTab(tab as Tab)}
           onNavigateToSubscription={() => setCurrentTab('subscription')}
+          onOpenProgression={() => setForceShowProgression(true)}
+          hasPendingProgression={!!progressionRound}
         />
       )}
       {/* A real page, not an overlay: the profile unmounts behind it and the nav

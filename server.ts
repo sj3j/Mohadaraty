@@ -9,7 +9,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { startNewSeason } from "./shared/seasonReset.js";
 import { runSeasonRollover, resolveCurrentPhase, syncPhaseMirror, loadCalendar } from "./shared/seasonRollover.js";
-import { submitProgression, ProgressionError } from "./shared/progressionSubmit.js";
+import { submitProgression, resetProgression, setPendingProgression, ProgressionError } from "./shared/progressionSubmit.js";
 import { verifyGoogleIdentity, resolveGoogleLogin, GoogleLoginError,
   claimAccountWithGoogle, asGoogleLoginError, discardPopupIdentity } from "./shared/googleLogin.js";
 import {
@@ -1453,6 +1453,49 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       }
       console.error("Progression submit error:", error);
       return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/progression/set-pending", verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const db = admin.firestore();
+      const calendar = await loadCalendar(db);
+
+      const result = await setPendingProgression(db, admin.firestore.FieldValue as any, calendar, {
+        uid: user.uid,
+      });
+
+      return res.json(result);
+    } catch (error: any) {
+      if (error instanceof ProgressionError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error("Progression set-pending error:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/admin/reset-progression", verifyAuth, verifyAdmin, async (req, res) => {
+    try {
+      const { uid, email, stageId, resetGroup } = req.body || {};
+      if (!uid && !email) {
+        return res.status(400).json({ error: "uid or email required" });
+      }
+      const db = admin.firestore();
+      const result = await resetProgression(db, admin.firestore.FieldValue as any, {
+        uid,
+        email,
+        stageId,
+        resetGroup: resetGroup === true,
+      });
+      return res.json(result);
+    } catch (error: any) {
+      if (error instanceof ProgressionError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error("Progression reset error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
     }
   });
 

@@ -292,6 +292,7 @@ export interface UserProfile {
   
   // Multi-Stage & Progression fields
   stageId?: string;
+  pendingStageId?: string | null;
   tahmeelSubjects?: string[];
   managedStageId?: string;
   hasCompletedProgression?: boolean;

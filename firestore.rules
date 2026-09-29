@@ -352,7 +352,8 @@ service cloud.firestore {
              (!('permissions' in data) || data.permissions is map) &&
              (!('isSubscribed' in data) || data.isSubscribed is bool) &&
              (!('subscriptionEnd' in data) || data.subscriptionEnd == null || data.subscriptionEnd is timestamp) &&
-             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']);
+             (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']) &&
+             (!('pendingStageId' in data) || data.pendingStageId == null || data.pendingStageId is string);
     }
 
     function isWhitelisted() {
@@ -377,10 +378,17 @@ service cloud.firestore {
       return (isAdmin() && myManagedStage() == stageId) || supportCan('manageGroups');
     }
 
+    function isPendingProgression() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      let user = userDoc != null ? userDoc.data : {};
+      return user.get('pendingStageId', '') != '';
+    }
+
     function hasStageAccess(stageId, subjectId) {
       let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
       let user = userDoc != null ? userDoc.data : {};
       return user.get('stageId', '') == stageId ||
+             user.get('pendingStageId', '') == stageId ||
              (subjectId != '' && subjectId in user.get('tahmeelSubjects', []));
     }
 
@@ -426,7 +434,7 @@ service cloud.firestore {
     // ANY matching rule allows it, so this cannot be a narrower rule added
     // alongside a permissive wildcard - the condition has to live here.
     match /app_settings/{docId} {
-      allow read: if isAuthenticated();
+      allow read: if docId == 'academicCalendar' || isAuthenticated();
       allow write: if docId == 'academicCalendar' ? isMasterAdmin() : isAdmin();
     }
 
@@ -700,6 +708,7 @@ service cloud.firestore {
         : canManageGradesOn(gradeStageOf(resource.data));
     }
 
+
     match /stages/{stageId} {
       allow read: if isAuthenticated();
       allow create, delete: if isMasterAdmin();
@@ -857,7 +866,7 @@ service cloud.firestore {
 
     match /userMCQAnswers/{userId}/lectures/{document=**} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
-      allow write: if (isAuthenticated() && request.auth.uid == userId) || isAdmin();
+      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == userId && !isPendingProgression());
     }
 
     match /userMCQStats/{userId} {
@@ -873,7 +882,7 @@ service cloud.firestore {
       // would mean reimplementing that arithmetic in rules. Forging your own
       // score remains possible; forging your stage no longer is.
       allow write: if isAdmin() || (
-        isAuthenticated() && request.auth.uid == userId &&
+        isAuthenticated() && request.auth.uid == userId && !isPendingProgression() &&
         request.resource.data.get('stageId', userStage()) == userStage()
       );
     }
@@ -956,7 +965,7 @@ service cloud.firestore {
 
     match /userBankAnswers/{userId}/questions/{questionId} {
       allow read: if isAdmin() || isOwner(userId);
-      allow write: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin() || (isOwner(userId) && !isPendingProgression());
     }
     
     // What a duplicate-account merge moved, written before it starts and closed

@@ -16,7 +16,7 @@
 import { AcademicCalendar, baghdadToday, progressionGate } from './academicCalendar.js';
 import {
   ProgressionRound, ProgressionAnswer, StageLike,
-  nextProgressionStep, progressionOutcome, isAnswerValid,
+  nextProgressionStep, progressionOutcome, isAnswerValid, nextStageOf,
 } from './progression.js';
 
 export interface SubmitResult {
@@ -76,6 +76,9 @@ export async function submitProgression(
   // Carried subjects must be real subjects of the stage being left, by slug.
   let tahmeel: string[] = [];
   if (round === 'resit' && answer === 'tahmeel') {
+    if (!nextStageOf(stages, user.stageId)) {
+      throw new ProgressionError('لا يمكن التحميل في المرحلة المنتهية. اختر "مكمل" أو "رسبت".', 400);
+    }
     const requested = Array.from(new Set(opts.tahmeelSubjects || []));
     if (requested.length === 0) throw new ProgressionError('Choose at least one carried subject');
 
@@ -98,8 +101,12 @@ export async function submitProgression(
 
   const batch = db.batch();
 
+  const nextStage = nextStageOf(stages, user.stageId);
   const userPatch: Record<string, any> = {
     stageId: outcome.stageId,
+    pendingStageId: outcome.progressionState === 'awaiting_resit'
+      ? (nextStage?.id || FieldValue.delete())
+      : FieldValue.delete(),
     tahmeelSubjects: outcome.tahmeelSubjects,
     progressionYear: calendar.yearLabel,
     progressionState: outcome.progressionState,
@@ -188,3 +195,140 @@ export async function submitProgression(
     tahmeelSubjects: outcome.tahmeelSubjects,
   };
 }
+
+export interface ResetProgressionOptions {
+  uid?: string;
+  email?: string;
+  stageId?: string;
+  resetGroup?: boolean;
+}
+
+export interface ResetProgressionResult {
+  success: boolean;
+  uid: string;
+  email: string;
+  stageId?: string;
+}
+
+/**
+ * Resets a student's progression state so they can answer again, or corrects their
+ * stage assignment after an accidental answer.
+ */
+export async function resetProgression(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { serverTimestamp(): any; delete(): any },
+  opts: ResetProgressionOptions,
+): Promise<ResetProgressionResult> {
+  let uid = opts.uid;
+  let email = opts.email ? opts.email.toLowerCase().trim() : '';
+
+  let userSnap: FirebaseFirestore.DocumentSnapshot | null = null;
+  if (uid) {
+    userSnap = await db.collection('users').doc(uid).get();
+  } else if (email) {
+    const q = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (!q.empty) {
+      userSnap = q.docs[0];
+      uid = userSnap.id;
+    }
+  }
+
+  if (!userSnap || !userSnap.exists) {
+    if (!email && uid && uid.includes('@')) email = uid.toLowerCase().trim();
+    if (!email) throw new ProgressionError('User not found', 404);
+  } else {
+    const userData = userSnap.data() as any;
+    if (!email && userData?.email) email = userData.email.toLowerCase().trim();
+  }
+
+  const batch = db.batch();
+
+  if (uid && userSnap && userSnap.exists) {
+    const userRef = db.collection('users').doc(uid);
+    const userPatch: Record<string, any> = {
+      pendingStageId: FieldValue.delete(),
+      progressionYear: FieldValue.delete(),
+      progressionState: FieldValue.delete(),
+      hasCompletedProgression: FieldValue.delete(),
+      lastProgressionYear: FieldValue.delete(),
+      progressionAnsweredAt: FieldValue.delete(),
+      graduated: false,
+      tahmeelSubjects: [],
+    };
+    if (opts.stageId) {
+      userPatch.stageId = opts.stageId;
+    }
+    if (opts.resetGroup) {
+      userPatch.group = FieldValue.delete();
+    }
+    batch.set(userRef, userPatch, { merge: true });
+
+    if (opts.stageId) {
+      const statsRef = db.collection('userMCQStats').doc(uid);
+      if ((await statsRef.get()).exists) {
+        batch.set(statsRef, {
+          stageId: opts.stageId,
+          lastUpdated: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+    }
+  }
+
+  if (email) {
+    const studentRef = db.collection('students').doc(email);
+    const studentSnap = await studentRef.get();
+    if (studentSnap.exists) {
+      const studentPatch: Record<string, any> = {
+        progressionYear: FieldValue.delete(),
+        progressionState: FieldValue.delete(),
+        hasCompletedProgression: FieldValue.delete(),
+        lastProgressionYear: FieldValue.delete(),
+      };
+      if (opts.stageId) {
+        studentPatch.stageId = opts.stageId;
+      }
+      if (opts.resetGroup) {
+        studentPatch.subgroup = FieldValue.delete();
+      }
+      batch.set(studentRef, studentPatch, { merge: true });
+    }
+  }
+
+  await batch.commit();
+
+  return {
+    success: true,
+    uid: uid || '',
+    email,
+    stageId: opts.stageId,
+  };
+}
+
+export async function setPendingProgression(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { serverTimestamp(): any; delete(): any },
+  calendar: AcademicCalendar,
+  opts: { uid: string },
+): Promise<{ success: boolean; pendingStageId: string }> {
+  const { uid } = opts;
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) throw new ProgressionError('User not found', 404);
+  const user = userSnap.data() as any;
+
+  const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
+  const stages: StageLike[] = stagesSnap.docs.map(d => d.data() as StageLike);
+
+  const nextStage = nextStageOf(stages, user.stageId);
+  if (!nextStage) {
+    throw new ProgressionError('المرحلة الحالية هي المرحلة المنتهية، لا توجد مرحلة تالية.', 400);
+  }
+
+  await userRef.set({
+    pendingStageId: nextStage.id,
+  }, { merge: true });
+
+  return { success: true, pendingStageId: nextStage.id };
+}
+
+

@@ -160,7 +160,18 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
 
   await setDoc(doc(db, 'stages/stage_3'), { id: 'stage_3', nameEn: 'Third Stage', order: 3 });
   await setDoc(doc(db, 'stages/stage_4'), { id: 'stage_4', nameEn: 'Fourth Stage', order: 4 });
+  await setDoc(doc(db, 'stages/stage_5'), { id: 'stage_5', nameEn: 'Fifth Stage', order: 5 });
   await setDoc(doc(db, 'lectures/lec1'), { title: 'L1', stageId: 'stage_3', category: 'biochemistry' });
+  await setDoc(doc(db, 'lectures/lec_s4'), { title: 'Lec 4', stageId: 'stage_4' });
+  await setDoc(doc(db, 'lectures/lec_s5'), { title: 'Lec 5', stageId: 'stage_5' });
+
+  // Student in provisional access mode (awaiting confirmation)
+  await setDoc(doc(db, 'users/stu_pending_uid'), {
+    role: 'student', email: 'stupending@x.com', stageId: 'stage_3', pendingStageId: 'stage_4',
+  });
+  await setDoc(doc(db, 'students/stupending@x.com'), {
+    email: 'stupending@x.com', name: 'Student Pending', isActive: true, stageId: 'stage_3', password: 'HASH',
+  });
   await setDoc(doc(db, 'degreeBatches/b1'), { examName: 'Mid', stageId: 'stage_3' });
   await setDoc(doc(db, 'degreeBatches/b4'), { examName: 'Mid4', stageId: 'stage_4' });
   await setDoc(doc(db, 'degrees/stu_uid/exams/exam_b1'), {
@@ -1138,6 +1149,29 @@ await check('a student CANNOT modify role in their users doc',
   assertFails(updateDoc(doc(student, 'users/stu_uid'), { role: 'master_admin' })));
 await check('a student CAN update allowed profile fields (e.g. name)',
   assertSucceeds(updateDoc(doc(student, 'users/stu_uid'), { name: 'Updated Student' })));
+
+console.log('\nProvisional dual-stage access and quiz lockdown');
+const stuPending = testEnv.authenticatedContext('stu_pending_uid', { email: 'stupending@x.com' }).firestore();
+await check('pending student CAN read lectures of current stage',
+  assertSucceeds(getDoc(doc(stuPending, 'lectures/lec1'))));
+await check('pending student CAN read lectures of pending next stage',
+  assertSucceeds(getDoc(doc(stuPending, 'lectures/lec_s4'))));
+await check('pending student CANNOT read lectures of unassigned stage',
+  assertFails(getDoc(doc(stuPending, 'lectures/lec_s5'))));
+
+await check('pending student CANNOT write to userMCQAnswers during pending phase',
+  assertFails(setDoc(doc(stuPending, 'userMCQAnswers/stu_pending_uid/lectures/lec1'), { answers: {} })));
+await check('pending student CANNOT write to userMCQStats during pending phase',
+  assertFails(setDoc(doc(stuPending, 'userMCQStats/stu_pending_uid'), { score: 100, stageId: 'stage_3' })));
+await check('pending student CANNOT write to userBankAnswers during pending phase',
+  assertFails(setDoc(doc(stuPending, 'userBankAnswers/stu_pending_uid/questions/q1'), { selected: 'A' })));
+
+await check('ordinary student CAN write to userMCQAnswers',
+  assertSucceeds(setDoc(doc(student, 'userMCQAnswers/stu_uid/lectures/lec1'), { answers: {} })));
+await check('ordinary student CAN write to userMCQStats with matching stage',
+  assertSucceeds(setDoc(doc(student, 'userMCQStats/stu_uid'), { score: 100, stageId: 'stage_3' })));
+await check('ordinary student CAN write to userBankAnswers',
+  assertSucceeds(setDoc(doc(student, 'userBankAnswers/stu_uid/questions/q1'), { selected: 'A' })));
 
 await testEnv.cleanup();
 

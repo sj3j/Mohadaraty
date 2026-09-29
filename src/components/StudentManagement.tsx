@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy } from 'lucide-react';
+import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
 import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { Language, TRANSLATIONS, Student, UserProfile } from '../types';
@@ -258,6 +258,45 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       setError('Error fetching profile');
     } finally {
       setIsFetchingProfile(false);
+    }
+  };
+
+  const [isResettingProgression, setIsResettingProgression] = useState(false);
+  const [progressionResetMessage, setProgressionResetMessage] = useState<string | null>(null);
+
+  const handleResetProgression = async (uid: string, email: string) => {
+    if (!window.confirm(isRtl ? 'هل أنت متأكد من إعادة تعيين الترفيع الأكاديمي لهذا الطالب؟ سيتم مسح حالة الإجابة السابقة وإلغاء التخرج، وسيتمكن الطالب من الإجابة مجدداً.' : 'Are you sure you want to reset this student\'s academic progression status?')) {
+      return;
+    }
+    setIsResettingProgression(true);
+    setProgressionResetMessage(null);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('No auth token');
+      const res = await fetch(apiUrl('/api/admin/reset-progression'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ uid, email }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to reset progression');
+      setProgressionResetMessage(isRtl ? 'تمت إعادة تعيين الترفيع بنجاح' : 'Progression reset successfully');
+      if (viewingProfile) {
+        setViewingProfile({
+          ...viewingProfile,
+          progressionYear: undefined,
+          progressionState: undefined,
+          hasCompletedProgression: false,
+          graduated: false,
+          tahmeelSubjects: [],
+        });
+      }
+      await logAdminAction('RESET_STUDENT_PROGRESSION', `Reset progression for student ${email || uid}`);
+    } catch (err: any) {
+      console.error('Reset progression failed:', err);
+      setProgressionResetMessage(err.message || 'Error');
+    } finally {
+      setIsResettingProgression(false);
     }
   };
 
@@ -2013,6 +2052,45 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                         {(viewingProfile as any).createdAt?.toDate ? new Date((viewingProfile as any).createdAt.toDate()).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US') : '-'}
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 dark:bg-zinc-800/50 p-4 rounded-2xl border border-slate-100 dark:border-zinc-800 col-span-2">
+                  <div className="flex flex-col gap-3">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">{isRtl ? 'الترفيع الأكاديمي' : 'Progression'}</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {viewingProfile.graduated
+                          ? (isRtl ? 'متخرج 🎓' : 'Graduated 🎓')
+                          : viewingProfile.progressionState === 'completed'
+                            ? (isRtl ? `مكتمل (${viewingProfile.progressionYear || ''})` : `Completed (${viewingProfile.progressionYear || ''})`)
+                            : viewingProfile.progressionState === 'awaiting_resit'
+                              ? (isRtl ? 'ينتظر نتائج الدور الثاني' : 'Awaiting resit results')
+                              : (isRtl ? 'لم يحدد بعد' : 'Not answered')}
+                      </span>
+                    </div>
+                    {viewingProfile.tahmeelSubjects && viewingProfile.tahmeelSubjects.length > 0 && (
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500 dark:text-slate-400">{isRtl ? 'المواد المحمّلة' : 'Carried Subjects'}</span>
+                        <span className="font-mono text-xs font-bold text-sky-600 dark:text-sky-400">
+                          {viewingProfile.tahmeelSubjects.join(', ')}
+                        </span>
+                      </div>
+                    )}
+                    {progressionResetMessage && (
+                      <div className="text-xs font-bold text-center text-emerald-600 dark:text-emerald-400 p-1">
+                        {progressionResetMessage}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={isResettingProgression}
+                      onClick={() => handleResetProgression(viewingProfile.uid, viewingProfile.email)}
+                      className="mt-1 w-full py-2.5 px-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-xl font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      {isResettingProgression ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                      {isRtl ? 'إعادة تعيين الترفيع السنوي (Reset Progression)' : 'Reset Academic Progression'}
+                    </button>
                   </div>
                 </div>
               </div>

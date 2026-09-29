@@ -65,6 +65,11 @@ interface StageContextType {
   /** Why `stages` is a local fallback rather than the server's list, or null
    *  when it is the real thing. See StagesError. */
   stagesError: StagesError;
+  /** Provisional dual-stage access for students awaiting results */
+  isPendingProgression: boolean;
+  selectedStudentStage: string | null;
+  setSelectedStudentStage: (stageId: string | null) => void;
+  provisionalStages: { current: Stage | null; next: Stage | null } | null;
 }
 
 const StageContext = createContext<StageContextType | undefined>(undefined);
@@ -75,6 +80,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
   const [currentAppStage, setCurrentAppStage] = useState<string | null>(() => {
     return localStorage.getItem('selectedAdminStage') || null;
   });
+  const [selectedStudentStage, setSelectedStudentStage] = useState<string | null>(null);
   const [isLoadingStages, setIsLoadingStages] = useState(true);
   const [stagesError, setStagesError] = useState<StagesError>(null);
   /** True only once a real SERVER read has produced the list. A fallback never
@@ -243,9 +249,26 @@ export function StageProvider({ children }: { children: ReactNode }) {
     if (activeUser.role === 'admin' || activeUser.role === 'moderator') {
       return activeUser.managedStageId || null;
     }
+    // Students with pending progression default to next stage (pendingStageId),
+    // but can toggle back to their current stage via selectedStudentStage.
+    if (activeUser.role === 'student' && activeUser.pendingStageId) {
+      if (selectedStudentStage && (selectedStudentStage === activeUser.stageId || selectedStudentStage === activeUser.pendingStageId)) {
+        return selectedStudentStage;
+      }
+      return activeUser.pendingStageId;
+    }
     // Students only ever see their own stage.
     return activeUser.stageId || null;
-  }, [activeUser, currentAppStage]);
+  }, [activeUser, currentAppStage, selectedStudentStage]);
+
+  const isPendingProgression = Boolean(activeUser?.role === 'student' && activeUser?.pendingStageId);
+
+  const provisionalStages = useMemo(() => {
+    if (!isPendingProgression || !activeUser) return null;
+    const current = stages.find(s => s.id === activeUser.stageId) || null;
+    const next = stages.find(s => s.id === activeUser.pendingStageId) || null;
+    return { current, next };
+  }, [isPendingProgression, activeUser, stages]);
 
   const groupConfig = useMemo<StageGroupConfig>(() => {
     const stage = stages.find(s => s.id === effectiveStageId);
@@ -292,6 +315,10 @@ export function StageProvider({ children }: { children: ReactNode }) {
       setActiveCourseId,
       isLoadingStages,
       stagesError,
+      isPendingProgression,
+      selectedStudentStage,
+      setSelectedStudentStage,
+      provisionalStages,
     }}>
       {children}
     </StageContext.Provider>

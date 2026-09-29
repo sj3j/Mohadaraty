@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { db, auth } from '../lib/firebase';
 import {
   AcademicCalendar,
   DEFAULT_CALENDAR,
@@ -28,36 +29,50 @@ export function useAcademicPhase() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onSnapshot(
-      doc(db, 'app_settings', 'academicCalendar'),
-      snap => {
-        const data = snap.exists() ? (snap.data() as Partial<AcademicCalendar>) : null;
-        setCalendar(
-          data && Array.isArray(data.terms) && data.terms.length > 0
-            ? {
-                yearLabel: data.yearLabel || DEFAULT_CALENDAR.yearLabel,
-                timezone: data.timezone || DEFAULT_CALENDAR.timezone,
-                terms: data.terms,
-                resultsDate: data.resultsDate ?? null,
-                resitResultsDate: data.resitResultsDate ?? null,
-                progressionStages: data.progressionStages ?? null,
-              }
-            : DEFAULT_CALENDAR,
-        );
-        setIsLoading(false);
-      },
-      err => {
-        // Signed-out visitors cannot read app_settings, and do not need to:
-        // the built-in calendar is the right answer for them. Only surface
-        // errors that are actually unexpected.
-        if (err?.code !== 'permission-denied') {
-          console.error('Error loading academic calendar:', err);
-        }
-        setCalendar(DEFAULT_CALENDAR);
-        setIsLoading(false);
-      },
-    );
-    return unsub;
+    let unsubSnapshot: (() => void) | null = null;
+
+    const subscribe = () => {
+      if (unsubSnapshot) {
+        unsubSnapshot();
+        unsubSnapshot = null;
+      }
+      unsubSnapshot = onSnapshot(
+        doc(db, 'app_settings', 'academicCalendar'),
+        snap => {
+          const data = snap.exists() ? (snap.data() as Partial<AcademicCalendar>) : null;
+          setCalendar(
+            data && Array.isArray(data.terms) && data.terms.length > 0
+              ? {
+                  yearLabel: data.yearLabel || DEFAULT_CALENDAR.yearLabel,
+                  timezone: data.timezone || DEFAULT_CALENDAR.timezone,
+                  terms: data.terms,
+                  resultsDate: data.resultsDate ?? null,
+                  resitResultsDate: data.resitResultsDate ?? null,
+                  progressionStages: data.progressionStages ?? null,
+                }
+              : DEFAULT_CALENDAR,
+          );
+          setIsLoading(false);
+        },
+        err => {
+          if (err?.code !== 'permission-denied') {
+            console.error('Error loading academic calendar:', err);
+          }
+          setCalendar(DEFAULT_CALENDAR);
+          setIsLoading(false);
+        },
+      );
+    };
+
+    subscribe();
+    const unsubAuth = onAuthStateChanged(auth, () => {
+      subscribe();
+    });
+
+    return () => {
+      if (unsubSnapshot) unsubSnapshot();
+      unsubAuth();
+    };
   }, []);
 
   // Keep `today` honest for a long-lived tab.

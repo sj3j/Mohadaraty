@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { UserProfile, Language, TRANSLATIONS, Lecture } from '../types';
-import { Flame, BookOpen, Search, Upload, X } from 'lucide-react';
+import { Flame, BookOpen, Search, Upload, X, Clock, Sparkles } from 'lucide-react';
 import { canManage } from '../lib/permissions';
+import { useStageContext } from '../contexts/StageContext';
 import SubjectBrowser from './SubjectBrowser';
 import WeeklyListScreen from './WeeklyListScreen';
 import RecordsScreen from './RecordsScreen';
@@ -95,6 +96,7 @@ interface HomeScreenProps {
   setShowStreakManage: (val: boolean) => void;
   setShowAdminManage: (val: boolean) => void;
   initialTab?: InnerTab;
+  onOpenProgression?: () => void;
 }
 
 export default function HomeScreen({
@@ -111,10 +113,12 @@ export default function HomeScreen({
   setShowStudentManage,
   setShowStreakManage,
   setShowAdminManage,
-  initialTab = 'lectures'
+  initialTab = 'lectures',
+  onOpenProgression
 }: HomeScreenProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
+  const { isPendingProgression, provisionalStages, selectedStudentStage, setSelectedStudentStage, effectiveStageId } = useStageContext();
   
   const [activeTab, setActiveTab] = useState<InnerTab>(initialTab);
   const [pendingDaysLeft, setPendingDaysLeft] = useState<number | null>(null);
@@ -166,6 +170,70 @@ export default function HomeScreen({
 
   return (
     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+      {/* Provisional Mode Banner & Stage Switcher */}
+      {isPendingProgression && provisionalStages && (
+        <div className="mb-6 space-y-3">
+          <div className="bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/15 border-2 border-amber-300 dark:border-amber-700/60 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="font-bold text-base text-amber-950 dark:text-amber-100 flex items-center gap-2">
+                  <span>{isRtl ? 'أنت في مرحلة الاطلاع المؤقت' : 'You are in provisional access mode'}</span>
+                  <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-amber-200/80 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200">
+                    {isRtl ? 'الاختبارات معلقة' : 'Quizzes locked'}
+                  </span>
+                </p>
+                <p className="text-xs sm:text-sm text-amber-800 dark:text-amber-300/90 mt-0.5">
+                  {isRtl
+                    ? 'يمكنك تصفح مواد ومحاضرات المرحلتين بحرية. هل صدرت نتيجتك النهائية؟ اضغط هنا للتأكيد.'
+                    : 'Browse lectures from both stages freely. Did your official results come out? Tap to confirm.'}
+                </p>
+              </div>
+            </div>
+            {onOpenProgression && (
+              <button
+                type="button"
+                onClick={onOpenProgression}
+                className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-black rounded-2xl shadow-sm transition-all flex items-center justify-center gap-1.5 shrink-0"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>{isRtl ? 'تأكيد النتيجة النهائية' : 'Confirm Final Result'}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Dual-Stage Toggle Pill Bar */}
+          <div className="flex items-center justify-center p-1.5 bg-slate-100 dark:bg-zinc-800/80 rounded-2xl border border-slate-200/80 dark:border-zinc-700 max-w-md mx-auto">
+            <button
+              type="button"
+              onClick={() => setSelectedStudentStage(provisionalStages.current?.id || null)}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all text-center ${
+                effectiveStageId === provisionalStages.current?.id
+                  ? 'bg-white dark:bg-zinc-700 text-sky-600 dark:text-sky-300 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {isRtl ? provisionalStages.current?.nameAr : provisionalStages.current?.nameEn}
+              <span className="text-[10px] opacity-70 block font-normal">{isRtl ? '(مرحلتك الحالية)' : '(Current)'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedStudentStage(provisionalStages.next?.id || null)}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all text-center ${
+                effectiveStageId === provisionalStages.next?.id
+                  ? 'bg-white dark:bg-zinc-700 text-sky-600 dark:text-sky-300 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {isRtl ? provisionalStages.next?.nameAr : provisionalStages.next?.nameEn} ✨
+              <span className="text-[10px] opacity-70 block font-normal">{isRtl ? '(المرحلة القادمة)' : '(Next Stage)'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Personalized Greeting Header */}
       <div className={`mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isRtl ? 'sm:text-right' : 'sm:text-left'}`}>
         <div>

@@ -24,8 +24,8 @@ export type ProgressionStep = 'none' | ProgressionRound;
 
 /** Round one: نجحت / دور ثاني. */
 export type FirstAnswer = 'passed' | 'resit';
-/** Round two, after the resit results: نجحت / تحميل / رسبت. */
-export type ResitAnswer = 'passed' | 'tahmeel' | 'failed';
+/** Round two, after the resit results: نجحت / تحميل / رسبت / مكمل. */
+export type ResitAnswer = 'passed' | 'tahmeel' | 'failed' | 'mokamel';
 export type ProgressionAnswer = FirstAnswer | ResitAnswer;
 
 export type ProgressionState = 'awaiting_resit' | 'completed';
@@ -111,7 +111,10 @@ export interface ProgressionOutcome {
 export function nextStageOf(stages: StageLike[], stageId?: string): StageLike | null {
   const current = stages.find(s => s.id === stageId);
   if (!current) return null;
-  return stages.find(s => s.order === current.order + 1) || null;
+  const higherStages = stages
+    .filter(s => s.order > current.order)
+    .sort((a, b) => a.order - b.order);
+  return higherStages[0] || null;
 }
 
 /**
@@ -172,7 +175,15 @@ export function progressionOutcome(opts: {
   }
 
   if (answer === 'passed') return moveUp();
-  if (answer === 'tahmeel') return moveUp(opts.tahmeelSubjects || []);
+  if (answer === 'tahmeel') {
+    // In the final stage, carrying subjects into graduation is invalid:
+    // the student remains in the final stage without graduating.
+    if (!next) {
+      return stay('completed', opts.tahmeelSubjects || []);
+    }
+    return moveUp(opts.tahmeelSubjects || []);
+  }
+  if (answer === 'mokamel') return stay('completed'); // مكمل / مؤجل - stays in the final stage
   return stay('completed'); // رسبت - repeats the year
 }
 
@@ -180,7 +191,7 @@ export function progressionOutcome(opts: {
 export function isAnswerValid(round: ProgressionRound, answer: string): boolean {
   return round === 'first'
     ? answer === 'passed' || answer === 'resit'
-    : answer === 'passed' || answer === 'tahmeel' || answer === 'failed';
+    : answer === 'passed' || answer === 'tahmeel' || answer === 'failed' || answer === 'mokamel';
 }
 
 /**

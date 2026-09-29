@@ -7,9 +7,10 @@ interface Props {
   bankQuestions: BankQuestion[];
   onStartQuiz: (filtered: BankQuestion[]) => void;
   onBack: () => void;
+  isQuizLocked?: boolean;
 }
 
-export default function BankQuizSetupScreen({ bankQuestions, onStartQuiz, onBack }: Props) {
+export default function BankQuizSetupScreen({ bankQuestions, onStartQuiz, onBack, isQuizLocked }: Props) {
   const [selectedTags, setSelectedTags] = useState<Set<QuestionTag>>(new Set());
   const [order, setOrder] = useState<'random' | 'hardest'>('random');
 
@@ -23,6 +24,7 @@ export default function BankQuizSetupScreen({ bankQuestions, onStartQuiz, onBack
   };
 
   const handleStart = () => {
+    if (isQuizLocked) return;
     // Apply filters
     let pool = bankQuestions;
     if (selectedTags.size > 0) {
@@ -108,13 +110,20 @@ export default function BankQuizSetupScreen({ bankQuestions, onStartQuiz, onBack
       </div>
 
       <div className="p-6 bg-white dark:bg-zinc-800 border-t border-slate-100 dark:border-zinc-700">
-        <button 
-          onClick={handleStart}
-          className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg rounded-2xl flex items-center justify-center gap-2 transition-colors shadow-lg shadow-emerald-500/20"
-        >
-          ابدأ الاختبار
-          <Play className="w-5 h-5 fill-current" />
-        </button>
+        {isQuizLocked ? (
+          <div className="w-full p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl text-center space-y-1">
+            <p className="text-sm font-bold text-amber-900 dark:text-amber-200">الاختبارات معطلة مؤقتاً</p>
+            <p className="text-xs text-amber-700 dark:text-amber-300">لا يمكن خوض اختبارات بنك الأسئلة أثناء فترة انتظار تأكيد النتيجة.</p>
+          </div>
+        ) : (
+          <button 
+            onClick={handleStart}
+            className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg rounded-2xl flex items-center justify-center gap-2 transition-colors shadow-lg shadow-emerald-500/20"
+          >
+            ابدأ الاختبار
+            <Play className="w-5 h-5 fill-current" />
+          </button>
+        )}
       </div>
     </motion.div>
   );
