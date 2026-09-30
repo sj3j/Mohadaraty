@@ -613,7 +613,8 @@ service cloud.firestore {
                           'name', 'group', 'photoUrl',
                           'hideNameOnLeaderboard', 'hidePhotoOnLeaderboard', 
                           'blockedUsers', 'notificationPreferences', 
-                          'examCodePromptSnoozedUntil', 'lastActiveAt', 'pushToken'
+                          'examCodePromptSnoozedUntil', 'lastActiveAt', 'pushToken',
+                          'studied', 'completedWeeklyTasks'
                         ])
                       ));
                       // Progression is recorded by /api/progression/submit with the

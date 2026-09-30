@@ -321,6 +321,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       }
     } catch (error) {
       console.error('Error toggling complete:', error);
+      alert(isRtl ? 'تعذّر حفظ حالة الإنجاز' : 'Failed to save completion status');
     }
   };
 
@@ -336,6 +337,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       }
     } catch (error) {
       console.error('Error toggling studied:', error);
+      alert(isRtl ? 'تعذّر حفظ حالة الدراسة' : 'Failed to save studied state');
     }
   };
 

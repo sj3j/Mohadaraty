@@ -290,16 +290,21 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     // Ordered by mcqRankScore: accuracy first, volume as tie-break.
     // Active stage filter ensures only students currently studying in this stage
     // compete in the live race, while promoted students' scores remain archived in that stage.
-    let snap = await getDocs(query(
-      collection(db, 'userStageMCQStats'),
-      where('stageId', '==', effectiveStageId),
-      where('isActiveInStage', '==', true),
-      orderBy('mcqRankScore', 'desc'),
-      limit(MCQ_LIMIT),
-    ));
+    let snap: any = null;
+    try {
+      snap = await getDocs(query(
+        collection(db, 'userStageMCQStats'),
+        where('stageId', '==', effectiveStageId),
+        where('isActiveInStage', '==', true),
+        orderBy('mcqRankScore', 'desc'),
+        limit(MCQ_LIMIT),
+      ));
+    } catch (err) {
+      console.warn('userStageMCQStats query failed, falling back to legacy userMCQStats:', err);
+    }
 
-    // Fallback to legacy userMCQStats if userStageMCQStats is not yet populated
-    if (snap.empty) {
+    // Fallback to legacy userMCQStats if userStageMCQStats failed or returned no docs
+    if (!snap || snap.empty) {
       snap = await getDocs(query(
         collection(db, 'userMCQStats'),
         where('stageId', '==', effectiveStageId),
@@ -308,7 +313,7 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       ));
     }
 
-    const leaders: any[] = snap.docs.map((d, i) => ({ id: d.id, ...d.data(), _rank: i + 1 }));
+    const leaders: any[] = (snap?.docs || []).map((d: any, i: number) => ({ id: d.id, ...d.data(), _rank: i + 1 }));
 
     setMcqUnranked(false);
 

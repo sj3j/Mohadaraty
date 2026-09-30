@@ -550,6 +550,12 @@ await check('student CANNOT fake having completed progression',
   assertFails(updateDoc(doc(student, 'users/stu_uid'), { progressionState: 'completed' })));
 await check('student CAN still edit their own harmless fields',
   assertSucceeds(updateDoc(doc(student, 'users/stu_uid'), { hideNameOnLeaderboard: true })));
+await check('student CAN update their own studied lectures list',
+  assertSucceeds(setDoc(doc(student, 'users/stu_uid'), { studied: ['lecture_test_1'] }, { merge: true })));
+await check('student CAN update their own completed weekly tasks',
+  assertSucceeds(updateDoc(doc(student, 'users/stu_uid'), { completedWeeklyTasks: ['homework_test_1'] })));
+await check('another student CANNOT update student studied list',
+  assertFails(updateDoc(doc(student2, 'users/stu_uid'), { studied: ['lecture_hacked'] })));
 
 console.log('\nSubscription state is server-owned');
 // The paywall in App.tsx gates every paid course on these three fields, and

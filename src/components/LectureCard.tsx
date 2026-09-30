@@ -111,6 +111,7 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
       }
     } catch (error) {
       console.error('Error toggling studied:', error);
+      setShareToast(isRtl ? 'تعذّر حفظ حالة الدراسة' : 'Failed to save studied state');
     }
   };
 
