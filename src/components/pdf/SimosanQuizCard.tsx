@@ -142,13 +142,13 @@ export default function SimosanQuizCard({ quizzes, isRtl, messageId }: Props) {
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
                     className="mt-3 pt-2.5 border-t border-slate-100 dark:border-zinc-700/60"
-                    dir="ltr"
+                    dir="rtl"
                   >
                     <div className="flex items-start gap-1.5 text-xs text-slate-600 dark:text-slate-300 bg-slate-100/80 dark:bg-zinc-900/60 p-2.5 rounded-xl">
                       <HelpCircle className="w-3.5 h-3.5 text-violet-500 shrink-0 mt-0.5" />
-                      <div className="text-[11px] leading-relaxed">
-                        <span className="font-bold text-violet-600 dark:text-violet-400 mr-1">
-                          Clinical Key:
+                      <div className="text-[11px] leading-relaxed text-start">
+                        <span className="font-bold text-violet-600 dark:text-violet-400 ms-1">
+                          المفتاح السريري:
                         </span>
                         <span>{q.explanation}</span>
                       </div>

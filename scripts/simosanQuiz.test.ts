@@ -56,6 +56,38 @@ function runTests() {
     console.log('  PASS  Completed simosan-quiz block parsed with 3 English questions');
   }
 
+  // Test 2b: Text with English MCQs and Arabic Clinical Key explanations
+  {
+    const raw = `شرح أدوية الجهاز الهضمي.
+    
+\`\`\`simosan-quiz
+[
+  {
+    "id": 1,
+    "question": "Which of the following is a key adverse effect of Cimetidine?",
+    "options": ["Gynecomastia", "Hypertension", "Hyperglycemia", "Bronchospasm"],
+    "correctIndex": 0,
+    "explanation": "يمتلك دواء Cimetidine تأثيرات مضادة للأندروجين (antiandrogenic) تؤدي إلى التثدي (gynecomastia)."
+  },
+  {
+    "id": 2,
+    "question": "What is the primary target of Omeprazole?",
+    "options": ["H+/K+ ATPase", "H2 receptor", "Muscarinic M1 receptor", "Prostaglandin EP3"],
+    "correctIndex": 0,
+    "explanation": "يثبط Omeprazole مضخة البروتون H+/K+ ATPase في الخلايا الجدارية بشكل غير عكسي."
+  }
+]
+\`\`\``;
+
+    const res = parseSimosanQuiz(raw);
+    assert.equal(res.quizzes.length, 2);
+    assert.equal(res.quizzes[0].question, 'Which of the following is a key adverse effect of Cimetidine?');
+    assert.equal(res.quizzes[0].explanation, 'يمتلك دواء Cimetidine تأثيرات مضادة للأندروجين (antiandrogenic) تؤدي إلى التثدي (gynecomastia).');
+    assert.equal(res.quizzes[1].explanation, 'يثبط Omeprazole مضخة البروتون H+/K+ ATPase في الخلايا الجدارية بشكل غير عكسي.');
+    assert.equal(res.isQuizStreaming, false);
+    console.log('  PASS  English MCQs with Arabic Clinical Key explanations parsed cleanly');
+  }
+
   // Test 3: Partial streaming JSON block
   {
     const raw = `شرح مستمر...

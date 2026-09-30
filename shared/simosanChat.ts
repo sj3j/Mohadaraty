@@ -342,12 +342,13 @@ At the very end of your response, append an interactive practice MCQ quiz block 
     "question": "Question text in English",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "correctIndex": 0,
-    "explanation": "Brief explanation in English of why this option is correct."
+    "explanation": "شرح سريري موجز ودقيق باللغة العربية يوضح سبب صحة هذا الخيار مع إبقاء المصطلحات الدوائية بالإنجليزية."
   }
 ]
 \`\`\`
 Rules for the quiz:
-- All questions, options, and explanations must be strictly in professional academic English (matching authentic university pharmacy exams).
+- Questions and options must be strictly in professional academic English (matching authentic university pharmacy exams).
+- The explanation (المفتاح السريري) must ALWAYS be in Arabic regardless of the language mode or question language, explaining why the correct option is right with English pharmacology/medical terms (drugs, receptors, mechanisms) kept intact within the Arabic explanation.
 - Minimum 3 questions (or more if the topic is lengthy and covers multiple key drugs/mechanisms).
 - Exactly 4 options per question, with exactly one correct option (0-indexed correctIndex).
 - Ensure valid JSON inside the simosan-quiz fence.]`
