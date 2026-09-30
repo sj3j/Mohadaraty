@@ -191,7 +191,14 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
     try {
       let result;
       if (!firstAttemptStatus.hasCompleted) {
-         result = await finalizeFirstAttempt(user.uid, lecture.id, lecture.category, answersState, questions.length);
+         result = await finalizeFirstAttempt(
+           user.uid, 
+           lecture.id, 
+           lecture.category || (lecture as any).subjectId || 'general', 
+           answersState, 
+           questions.length,
+           lecture.stageId
+         );
       } else {
          result = await submitRetakeAttempt(user.uid, lecture.id, answersState, questions.length);
       }

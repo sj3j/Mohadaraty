@@ -12,7 +12,9 @@ import { IS_STORE_BUILD } from './platform';
  * So native builds get an absolute base. Override with VITE_API_BASE_URL to
  * point a test build at a LAN dev server instead of production.
  */
-const CONFIGURED = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+const CONFIGURED = ((typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || '')
+  .trim()
+  .replace(/\/+$/, '');
 
 export const API_BASE: string = CONFIGURED || (IS_STORE_BUILD ? 'https://mohadaraty.vercel.app' : '');
 

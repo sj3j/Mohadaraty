@@ -23,6 +23,7 @@ import {
   type McqFailureReason,
 } from './mcqGeneration.js';
 import { subjectSlugOf, denormalizedSubjectName } from './subjectSlug.js';
+import { MAX_PDF_BYTES } from './simosan.js';
 
 export interface McqDeps {
   admin: any;
@@ -151,30 +152,60 @@ export function createMcqHandlers(deps: McqDeps) {
       );
 
       // Downloaded here, not uploaded by the client. Inline rather than the
-      // Files API because generation is one call per lecture, ever - a cache
-      // that is never read twice is an extra round trip, and Simosan's files
-      // live in a different project (paid key) so they are unreachable anyway.
+      // Files API when <= MAX_INLINE_PDF_BYTES because generation is one call per
+      // lecture, ever - a cache that is never read twice is an extra round trip.
+      // Files between 20MB and 50MB use the Files API to avoid Gemini inline body limits.
       const pdfRes = await fetch(lecture.pdfUrl);
       if (!pdfRes.ok) throw new Error(`pdf_unreachable:${pdfRes.status}`);
       const buf = Buffer.from(await pdfRes.arrayBuffer());
-      if (buf.length > MAX_INLINE_PDF_BYTES) throw new Error('pdf_too_large');
+      if (buf.length > MAX_PDF_BYTES) throw new Error('pdf_too_large');
 
-      const response = await ai.models.generateContent({
-        model: MCQ_MODEL,
-        contents: [{
-          role: 'user',
-          parts: [
-            // application/pdf, not extracted text: scanned and image-only
-            // slides have no text layer, and Gemini reads the pages visually.
-            { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } },
-            { text: MCQ_SYSTEM_PROMPT },
-          ],
-        }],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: MCQ_RESPONSE_SCHEMA as any,
-        },
-      });
+      let uploadedFile: any = null;
+      let pdfPart: any;
+
+      if (buf.length <= MAX_INLINE_PDF_BYTES) {
+        pdfPart = { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } };
+      } else {
+        const uploaded = await ai.files.upload({
+          file: new Blob([buf], { type: 'application/pdf' }),
+          config: { mimeType: 'application/pdf', displayName: `lecture-${lectureId}` },
+        });
+        uploadedFile = uploaded;
+
+        let file = uploaded;
+        const deadline = Date.now() + 30_000;
+        while (file.state === 'PROCESSING' && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 700));
+          file = await ai.files.get({ name: file.name as string });
+        }
+        if (file.state !== 'ACTIVE' || !file.uri) {
+          throw new Error('pdf_too_large');
+        }
+        uploadedFile = file;
+        pdfPart = { fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } };
+      }
+
+      let response: any;
+      try {
+        response = await ai.models.generateContent({
+          model: MCQ_MODEL,
+          contents: [{
+            role: 'user',
+            parts: [
+              pdfPart,
+              { text: MCQ_SYSTEM_PROMPT },
+            ],
+          }],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: MCQ_RESPONSE_SCHEMA as any,
+          },
+        });
+      } finally {
+        if (uploadedFile?.name) {
+          ai.files.delete({ name: uploadedFile.name }).catch(() => {});
+        }
+      }
 
       // `text` is a getter on GenerateContentResponse, not a method.
       const parsed = JSON.parse(response.text || '{}');

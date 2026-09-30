@@ -1038,6 +1038,10 @@ export default function App() {
             pdfUrl={readerLecture.pdfUrl}
             lang={lang}
             onClose={() => setReaderLecture(null)}
+            onOpenSubscription={() => {
+              setReaderLecture(null);
+              setShowPaywall(true);
+            }}
           />
         </Suspense>
       )}

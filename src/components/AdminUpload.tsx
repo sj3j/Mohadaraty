@@ -3,7 +3,7 @@ import { X, Upload, AlertCircle, Loader2, FileUp, CheckCircle2 } from 'lucide-re
 import { db, auth, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { CATEGORIES, Category, LectureType, Language, TRANSLATIONS, Lecture, UserProfile } from '../types';
+import { CATEGORIES, Category, LectureType, Language, TRANSLATIONS, Lecture, UserProfile, MAX_LECTURE_FILE_BYTES } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { logAdminAction } from '../services/adminLogService';
 import { generateMCQsForLecture } from '../services/mcqGenerationService';
@@ -191,7 +191,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
         hasError = true;
         break;
       }
-      if (selectedFile.size > 10 * 1024 * 1024) { // 10MB limit
+      if (selectedFile.size > MAX_LECTURE_FILE_BYTES) {
         setError(t.maxSize);
         hasError = true;
         break;

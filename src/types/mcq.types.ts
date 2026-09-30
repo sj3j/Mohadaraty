@@ -85,6 +85,26 @@ export interface UserMCQStats {
   subjectStats: Record<string, UserSubjectStats>;
 }
 
+export interface UserStageMCQStats {
+  id?: string; // `${userId}_${stageId}`
+  userId: string;
+  stageId: string;
+  /**
+   * True when the student is currently enrolled and actively competing in this stage.
+   * When promoted or graduated, becomes false so their historical record remains in
+   * this stage without blocking new incoming cohorts.
+   */
+  isActiveInStage: boolean;
+  totalFirstAttemptCorrect: number;
+  totalFirstAttemptAnswered: number;
+  lecturesAttempted: number;
+  mcqLeaderboardScore: number;
+  accuracy: number;
+  mcqRankScore?: number;
+  lastUpdated: any; // Firestore Timestamp
+  subjectStats: Record<string, UserSubjectStats>;
+}
+
 /**
  * Leaderboard ordering key: effort scaled by precision.
  *

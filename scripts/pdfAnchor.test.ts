@@ -147,10 +147,10 @@ check('different page size does not', !geometryMatches(anchor, 612, 792));
 
 console.log('\nQuad round-trip (scale independence):');
 {
-  // Stand-in for pdf.js's viewport at scale s: y flips, origin top-left.
+  // Stand-in for pdf.js's real PageViewport at scale s: y flips, origin top-left.
   const vp = (s: number, h = 800) => ({
     convertToPdfPoint: (x: number, y: number) => [x / s, (h * s - y) / s],
-    convertToViewportRectangle: (r: any[]) => [r[0] * s, h * s - r[1] * s, r[2] * s, h * s - r[3] * s],
+    convertToViewportPoint: (x: number, y: number) => [x * s, h * s - y * s],
   });
 
   const rect = { left: 100, top: 200, width: 50, height: 10 } as DOMRect;
@@ -167,11 +167,20 @@ console.log('\nQuad round-trip (scale independence):');
     Math.abs(at2x.left - 200) < 0.01 && Math.abs(at2x.width - 100) < 0.01
     && Math.abs(at2x.height - 20) < 0.01,
     JSON.stringify(at2x));
+
+  // Legacy mock fallback with convertToViewportRectangle
+  const vpLegacy = (s: number, h = 800) => ({
+    convertToPdfPoint: (x: number, y: number) => [x / s, (h * s - y) / s],
+    convertToViewportRectangle: (r: any[]) => [r[0] * s, h * s - r[1] * s, r[2] * s, h * s - r[3] * s],
+  });
+  const at1xLegacy = quadsToRects(captured, vpLegacy(1))[0];
+  check('fallback to convertToViewportRectangle works',
+    Math.abs(at1xLegacy.left - 100) < 0.01 && Math.abs(at1xLegacy.width - 50) < 0.01);
 }
 {
   const vp1 = {
     convertToPdfPoint: (x: number, y: number) => [x, 800 - y],
-    convertToViewportRectangle: (r: any[]) => r,
+    convertToViewportPoint: (x: number, y: number) => [x, 800 - y],
   };
   const zero = rectsToQuads([{ left: 0, top: 0, width: 0, height: 0 } as DOMRect], { left: 0, top: 0 }, vp1);
   check('drops collapsed rects', zero.length === 0, String(zero.length));

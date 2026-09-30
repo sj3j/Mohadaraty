@@ -255,12 +255,18 @@ ${sel.slice(0, 4000)}
  * question cost a fraction of the first one. Anything that changes per turn
  * (history, the new question) goes strictly after.
  */
+export type SimosanLanguageMode = 'ar' | 'en' | 'bilingual';
+
 export interface TurnContext {
   /** First name only. See the note below on why it is not in the prefix. */
   studentName?: string;
   subjectName?: string;
   /** True when the student pressed the walkthrough button. */
   walkthrough?: boolean;
+  /** Preferred explanation language mode. */
+  languageMode?: SimosanLanguageMode;
+  /** Whether to append an interactive checkpoint quiz. Defaults to true. */
+  autoQuiz?: boolean;
 }
 
 export function buildContents(
@@ -288,14 +294,55 @@ export function buildContents(
   /*
    * Per-student context rides on the FINAL turn, never the prefix.
    *
-   * The student's name and the subject would otherwise sit inside the cached
-   * span, giving every student a different prefix for the same lecture and
-   * throwing away the cross-student sharing on a ~20,000-token PDF. Down here
-   * they cost a handful of tokens and change nothing that is cached.
+   * The student's name, subject, language preference, and quiz instructions
+   * would otherwise sit inside the cached span, giving every student a different
+   * prefix for the same lecture and throwing away the cross-student sharing on
+   * a ~20,000-token PDF. Down here they cost a handful of tokens and change
+   * nothing that is cached.
    */
   const header: string[] = [];
   if (ctx.subjectName) header.push(`المادة: ${ctx.subjectName}`);
   if (ctx.studentName) header.push(`اسم الطالب: ${ctx.studentName}`);
+
+  const directives: string[] = [];
+  if (ctx.languageMode === 'en') {
+    directives.push(
+      '[Language directive: Provide the full explanation strictly in clear, professional academic English suitable for university pharmacy students.]'
+    );
+  } else if (ctx.languageMode === 'bilingual') {
+    directives.push(
+      '[Bilingual directive: First quote the relevant English text from the lecture/slide inside a blockquote with page citation [[p:X]], then provide a concise, high-yield Arabic clinical explanation and summary of key exam points.]'
+    );
+  } else {
+    // Default 'ar'
+    directives.push(
+      '[Language directive: Explain in simplified Arabic with English medical terms intact within sentences.]'
+    );
+  }
+
+  if (ctx.autoQuiz !== false) {
+    directives.push(
+      `[Checkpoint Quiz directive:
+If and only if your answer provides a substantive academic explanation or lecture walkthrough section (do NOT apply to simple greetings, page number queries, or brief meta questions):
+At the very end of your response, append an interactive practice MCQ quiz block strictly formatted as:
+\`\`\`simosan-quiz
+[
+  {
+    "id": 1,
+    "question": "Question text in English",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctIndex": 0,
+    "explanation": "Brief explanation in English of why this option is correct."
+  }
+]
+\`\`\`
+Rules for the quiz:
+- All questions, options, and explanations must be strictly in professional academic English (matching authentic university pharmacy exams).
+- Minimum 3 questions (or more if the topic is lengthy and covers multiple key drugs/mechanisms).
+- Exactly 4 options per question, with exactly one correct option (0-indexed correctIndex).
+- Ensure valid JSON inside the simosan-quiz fence.]`
+    );
+  }
 
   const trimmed = selection?.trim();
   const body = trimmed ? SELECTION_TEMPLATE(trimmed, question) : question;
@@ -303,6 +350,7 @@ export function buildContents(
   const questionBlock = [
     ctx.walkthrough ? WALKTHROUGH_MARKER : '',
     header.length ? `(${header.join(' — ')})` : '',
+    ...directives,
     body,
   ].filter(Boolean).join('\n');
 

@@ -28,8 +28,8 @@ let modulePromise: Promise<PdfjsModule> | null = null;
  */
 export const PDFJS_DOC_OPTIONS = {
   standardFontDataUrl: './pdfjs/standard_fonts/',
-  // Arabic lecture PDFs are frequently CID-encoded; if glyphs come out blank,
-  // ship pdfjs-dist/cmaps to public/pdfjs/cmaps/ and set cMapUrl + cMapPacked.
+  cMapUrl: './pdfjs/cmaps/',
+  cMapPacked: true,
   isEvalSupported: false,
 } as const;
 

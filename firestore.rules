@@ -887,6 +887,17 @@ service cloud.firestore {
       );
     }
 
+    // Stage-partitioned MCQ stats: one doc per (user, stage), keyed `${userId}_${stageId}`.
+    // Preserves completed stage scores permanently and enables stage-isolated leaderboards.
+    match /userStageMCQStats/{statId} {
+      allow read: if hasAccess();
+      allow write: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        !isPendingProgression()
+      );
+    }
+
     // --- Simosan (AI lecture tutor) ------------------------------------
     //
     // Every one of these is server-written. The daily energy allowance and the

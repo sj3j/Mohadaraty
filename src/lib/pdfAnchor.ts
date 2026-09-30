@@ -19,7 +19,8 @@ export interface TextItemLike {
 /** The parts of pdf.js's PageViewport we rely on. */
 export interface ViewportLike {
   convertToPdfPoint(x: number, y: number): any[];
-  convertToViewportRectangle(rect: any[]): any[];
+  convertToViewportPoint?(x: number, y: number): any[];
+  convertToViewportRectangle?(rect: any[]): any[];
 }
 
 export interface ItemRange {
@@ -132,15 +133,32 @@ export function quadsToRects(
   viewport: ViewportLike,
 ): { left: number; top: number; width: number; height: number }[] {
   return quads.map((q) => {
-    const r = viewport.convertToViewportRectangle(q);
-    const left = Math.min(r[0], r[2]);
-    const top = Math.min(r[1], r[3]);
-    return {
-      left,
-      top,
-      width: Math.abs(r[2] - r[0]),
-      height: Math.abs(r[3] - r[1]),
-    };
+    let left: number;
+    let top: number;
+    let width: number;
+    let height: number;
+
+    if (typeof viewport.convertToViewportPoint === 'function') {
+      const [x0, y0] = viewport.convertToViewportPoint(q[0], q[1]);
+      const [x1, y1] = viewport.convertToViewportPoint(q[2], q[3]);
+      left = Math.min(x0, x1);
+      top = Math.min(y0, y1);
+      width = Math.abs(x1 - x0);
+      height = Math.abs(y1 - y0);
+    } else if (typeof viewport.convertToViewportRectangle === 'function') {
+      const r = viewport.convertToViewportRectangle(q);
+      left = Math.min(r[0], r[2]);
+      top = Math.min(r[1], r[3]);
+      width = Math.abs(r[2] - r[0]);
+      height = Math.abs(r[3] - r[1]);
+    } else {
+      left = Math.min(q[0], q[2]);
+      top = Math.min(q[1], q[3]);
+      width = Math.abs(q[2] - q[0]);
+      height = Math.abs(q[3] - q[1]);
+    }
+
+    return { left, top, width, height };
   });
 }
 

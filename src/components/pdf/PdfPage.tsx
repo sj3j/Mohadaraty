@@ -400,8 +400,8 @@ export default React.memo(function PdfPage({
       ref={wrapRef}
       dir="ltr"
       data-page={pageNumber}
-      onDoubleClick={handlePointerDown}
-      className="relative mx-auto my-3 bg-white shadow-lg shadow-black/20"
+      onClick={handlePointerDown}
+      className="relative mx-auto my-3 bg-white shadow-lg shadow-black/20 shrink-0"
       style={{
         width: boxW || undefined,
         height: boxH || undefined,

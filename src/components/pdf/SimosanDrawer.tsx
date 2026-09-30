@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useMotionValue } from 'motion/react';
-import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag } from 'lucide-react';
+import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag, Settings } from 'lucide-react';
 import { db, auth } from '../../lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import {
   AskError, askSimosan, fetchSimosanState, formatReset, parseCitations,
-  watchLecture, watchMessages,
-  type SimosanMessage, type SimosanState,
+  parseSimosanQuiz, watchLecture, watchMessages,
+  type SimosanMessage, type SimosanState, type SimosanLanguageMode, type SimosanQuizQuestion,
 } from '../../services/simosanService';
 import SimosanMarkdown from './SimosanMarkdown';
+import SimosanQuizCard from './SimosanQuizCard';
+import SimosanSettingsModal from './SimosanSettingsModal';
 
 interface Props {
   isRtl: boolean;
@@ -17,6 +19,7 @@ interface Props {
   seedSelection?: string | null;
   onJumpToPage: (page: number) => void;
   onClose: () => void;
+  onOpenSubscription?: () => void;
 }
 
 /**
@@ -30,7 +33,7 @@ interface Props {
  * The bot is never called Gemini anywhere a student can see.
  */
 export default function SimosanDrawer({
-  isRtl, lectureId, seedSelection, onJumpToPage, onClose,
+  isRtl, lectureId, seedSelection, onJumpToPage, onClose, onOpenSubscription,
 }: Props) {
   const [state, setState] = useState<SimosanState | null>(null);
   const [threadId, setThreadId] = useState('');
@@ -41,6 +44,34 @@ export default function SimosanDrawer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AskError | null>(null);
   const [readOnly, setReadOnly] = useState(false);
+
+  const [languageMode, setLanguageMode] = useState<SimosanLanguageMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('simosan_lang_mode');
+      if (saved === 'en' || saved === 'bilingual' || saved === 'ar') return saved;
+    }
+    return 'ar';
+  });
+
+  const [autoQuiz, setAutoQuiz] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('simosan_auto_quiz');
+      if (saved !== null) return saved !== 'false';
+    }
+    return true;
+  });
+
+  const [showSettings, setShowSettings] = useState(false);
+
+  const handleLanguageModeChange = (mode: SimosanLanguageMode) => {
+    setLanguageMode(mode);
+    if (typeof window !== 'undefined') localStorage.setItem('simosan_lang_mode', mode);
+  };
+
+  const handleAutoQuizChange = (enabled: boolean) => {
+    setAutoQuiz(enabled);
+    if (typeof window !== 'undefined') localStorage.setItem('simosan_auto_quiz', String(enabled));
+  };
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -140,6 +171,8 @@ export default function SimosanDrawer({
           selection: usedSelection || undefined,
           newThread: opts.newThread,
           walkthrough: opts.walkthrough,
+          languageMode,
+          autoQuiz,
         },
         {
           onMeta: (meta) => {
@@ -174,7 +207,7 @@ export default function SimosanDrawer({
       abortRef.current = null;
       fetchSimosanState().then((s) => s && setState(s));
     }
-  }, [draft, busy, lectureId, selection]);
+  }, [draft, busy, lectureId, selection, languageMode, autoQuiz]);
 
   const startNewChat = useCallback(() => {
     setReadOnly(false);
@@ -245,6 +278,15 @@ export default function SimosanDrawer({
           {renderBody()}
         </motion.aside>
       )}
+      <SimosanSettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        isRtl={isRtl}
+        languageMode={languageMode}
+        onLanguageModeChange={handleLanguageModeChange}
+        autoQuiz={autoQuiz}
+        onAutoQuizChange={handleAutoQuizChange}
+      />
     </>
   );
 
@@ -275,6 +317,14 @@ export default function SimosanDrawer({
               </p>
             </div>
             <button
+              onClick={() => setShowSettings(true)}
+              aria-label={isRtl ? 'إعدادات الشرح' : 'Tutor settings'}
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition"
+              title={isRtl ? 'إعدادات شرح سيموسان والامتحان' : 'Simosan Settings'}
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+            <button
               onClick={onClose}
               aria-label={isRtl ? 'إغلاق' : 'Close'}
               className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition"
@@ -283,25 +333,40 @@ export default function SimosanDrawer({
             </button>
           </div>
 
-          {/* Energy. Shown as a proportion, never as raw tokens - and never as
-              something that can be topped up, which would read as an in-app
-              purchase in the store build. */}
-          <div className="mt-3">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                {isRtl ? 'طاقة اليوم' : "Today's energy"}
+          {/* Energy or Free Weekly allowance */}
+          {state?.isFreeTier ? (
+            <div className="mt-3 flex items-center justify-between px-3 py-1.5 rounded-2xl bg-gradient-to-r from-violet-500/10 via-sky-500/10 to-emerald-500/10 border border-violet-500/20">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${state.freeWeeklyRemaining ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                <span className="text-[11px] font-black text-violet-700 dark:text-violet-300">
+                  {isRtl ? 'سؤال مجاني أسبوعي:' : 'Weekly free question:'}
+                </span>
+                <span className="text-[11px] font-black text-slate-800 dark:text-stone-100">
+                  {state.freeWeeklyRemaining ?? 1}/1
+                </span>
+              </div>
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                {isRtl ? 'يتجدد كل سبت' : 'Refills Saturday'}
               </span>
-              <span className="text-[11px] font-black text-slate-600 dark:text-slate-300">{energyPct}%</span>
             </div>
-            <div className="h-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-[width] duration-500 ${
-                  energyPct > 25 ? 'bg-gradient-to-r from-violet-500 to-sky-500' : 'bg-amber-500'
-                }`}
-                style={{ width: `${energyPct}%` }}
-              />
+          ) : (
+            <div className="mt-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                  {isRtl ? 'طاقة اليوم' : "Today's energy"}
+                </span>
+                <span className="text-[11px] font-black text-slate-600 dark:text-slate-300">{energyPct}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-500 ${
+                    energyPct > 25 ? 'bg-gradient-to-r from-violet-500 to-sky-500' : 'bg-amber-500'
+                  }`}
+                  style={{ width: `${energyPct}%` }}
+                />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* messages */}
@@ -336,6 +401,30 @@ export default function SimosanDrawer({
           )}
 
           {error && <ErrorNote error={error} isRtl={isRtl} state={state} />}
+
+          {/* Upgrade CTA card for free tier users who have used their weekly allowance */}
+          {state?.isFreeTier && (state.freeWeeklyRemaining === 0 || error?.code === 'free_weekly_limit_reached') && !busy && (
+            <div className="mt-3 p-3.5 rounded-2xl bg-gradient-to-br from-violet-600 via-indigo-600 to-purple-700 text-white shadow-lg space-y-2 border border-violet-400/30">
+              <div className="flex items-center gap-2 font-black text-xs">
+                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
+                <span>{isRtl ? 'افتح سيموسان بلا حدود مع باقة بلس' : 'Unlock Unlimited Simosan with Plus'}</span>
+              </div>
+              <p className="text-[11px] font-medium text-violet-100 leading-relaxed" dir="auto">
+                {isRtl
+                  ? 'استمتع بشرح غير محدود لجميع المحاضرات، كويزات تدريبية بعد كل جزء، وبنك الأسئلة الكامل.'
+                  : 'Get unlimited tutoring for all lectures, instant checkpoint quizzes, and complete question bank access.'}
+              </p>
+              {onOpenSubscription && (
+                <button
+                  onClick={onOpenSubscription}
+                  className="w-full py-2 px-3 rounded-xl bg-white text-violet-900 font-black text-xs hover:bg-violet-50 active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-violet-600" />
+                  <span>{isRtl ? 'ترقية الحساب الآن' : 'Upgrade Account Now'}</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* composer */}
@@ -344,7 +433,7 @@ export default function SimosanDrawer({
               explicitly rather than inferred - and only at the start of a
               thread, where it makes sense. The marker it sends is what makes
               chunking deterministic instead of a guess about wording. */}
-          {!atCap && messages.length === 0 && !busy && (
+          {!atCap && messages.length === 0 && !busy && !state?.isFreeTier && (
             <button
               onClick={() => send({ walkthrough: true, overrideText: 'اشرح لي هذه المحاضرة بالكامل، جزءاً جزءاً.' })}
               className="w-full mb-2 h-10 rounded-2xl border-2 border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-300 text-xs font-black flex items-center justify-center gap-2 active:scale-[0.98] transition"
@@ -389,11 +478,21 @@ export default function SimosanDrawer({
                 rows={1}
                 dir="auto"
                 maxLength={2000}
-                placeholder={isRtl ? 'اسأل عن المحاضرة…' : 'Ask about the lecture…'}
+                placeholder={
+                  state?.isFreeTier && state.freeWeeklyRemaining === 0
+                    ? (isRtl ? 'استنفدت سؤالك المجاني لهذا الأسبوع…' : 'Free weekly question used…')
+                    : (isRtl ? 'اسأل عن المحاضرة…' : 'Ask about the lecture…')
+                }
                 className="flex-1 max-h-28 resize-none rounded-2xl bg-slate-100 dark:bg-zinc-800 px-4 py-2.5 text-sm font-bold text-slate-800 dark:text-stone-100 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-violet-400"
               />
               <button
-                onClick={() => send()}
+                onClick={() => {
+                  if (state?.isFreeTier && state.freeWeeklyRemaining === 0 && onOpenSubscription) {
+                    onOpenSubscription();
+                    return;
+                  }
+                  send();
+                }}
                 disabled={!draft.trim() || busy}
                 aria-label={isRtl ? 'إرسال' : 'Send'}
                 className="w-10 h-10 shrink-0 rounded-full bg-gradient-to-br from-violet-500 to-sky-500 text-white flex items-center justify-center disabled:opacity-40 active:scale-90 transition"
@@ -430,6 +529,15 @@ interface BubbleProps {
 
 function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
   const mine = m.role === 'user';
+
+  const parsed = useMemo(() => {
+    if (mine || m.pending) {
+      return { markdownText: m.text, quizzes: [] as SimosanQuizQuestion[], isQuizStreaming: false };
+    }
+    return parseSimosanQuiz(m.text);
+  }, [mine, m.pending, m.text]);
+
+  const hasQuizzes = parsed.quizzes.length > 0;
   
   const handleReport = async () => {
     if (mine) return;
@@ -454,7 +562,9 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
   return (
     <div className={`flex flex-col ${mine ? 'items-end' : 'items-start'} mb-4`}>
       <div
-        className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm font-bold leading-relaxed ${
+        className={`${
+          hasQuizzes ? 'w-full max-w-[96%]' : 'max-w-[85%]'
+        } rounded-2xl px-3.5 py-2.5 text-sm font-bold leading-relaxed ${
           mine
             ? 'bg-slate-900 dark:bg-stone-100 text-white dark:text-zinc-900'
             : 'bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-stone-100'
@@ -478,7 +588,18 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
             'page' in part ? null : <span key={i} className="whitespace-pre-wrap">{part.text}</span>,
           )
         ) : (
-          <SimosanMarkdown text={m.text} isRtl={isRtl} onJumpToPage={onJumpToPage} />
+          <>
+            <SimosanMarkdown text={parsed.markdownText} isRtl={isRtl} onJumpToPage={onJumpToPage} />
+            {parsed.isQuizStreaming && (
+              <div className="mt-3 flex items-center gap-1.5 text-[11px] font-black text-violet-500 animate-pulse" dir="auto">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                <span>{isRtl ? 'سيموسان يُحضّر أسئلة تدريبية...' : 'Simosan is preparing practice MCQs...'}</span>
+              </div>
+            )}
+            {hasQuizzes && (
+              <SimosanQuizCard quizzes={parsed.quizzes} isRtl={isRtl} messageId={m.id} />
+            )}
+          </>
         )}
       </div>
       
@@ -509,6 +630,13 @@ function ErrorNote({
           text: isRtl
             ? `انتهت طاقتك لهذا اليوم. تتجدد بعد ${formatReset(reset, true)}.`
             : `You're out of energy for today. It refills in ${formatReset(reset, false)}.`,
+        };
+      case 'free_weekly_limit_reached':
+        return {
+          Icon: BatteryLow,
+          text: isRtl
+            ? `استنفدت سؤالك المجاني لهذا الأسبوع. سيتجدد السبت القادم (بعد ${formatReset(reset, true)})، أو اشترك للوصول غير المحدود.`
+            : `You've used your free question for this week. It resets next Saturday (in ${formatReset(reset, false)}), or subscribe for unlimited access.`,
         };
       case 'offline':
         return {

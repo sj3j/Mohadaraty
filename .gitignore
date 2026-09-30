@@ -110,3 +110,10 @@ firebase-adminsdk*.json
 # JDK
 jdk21/
 jdk21.zip
+
+# Temporary scratch & debug artifacts
+scratch/
+ios assest/
+store-assets/
+
+

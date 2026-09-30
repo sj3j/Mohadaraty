@@ -409,6 +409,10 @@ await db.doc('userMCQStats/u_mcq').set({
   userId: 'u_mcq', stageId: 'stage_3', mcqRankScore: 400,
   totalFirstAttemptCorrect: 20, totalFirstAttemptAnswered: 25,
 });
+await db.doc('userStageMCQStats/u_mcq_stage_3').set({
+  userId: 'u_mcq', stageId: 'stage_3', isActiveInStage: true, mcqRankScore: 400,
+  totalFirstAttemptCorrect: 20, totalFirstAttemptAnswered: 25,
+});
 
 const mcqRes = await submitProgression(db, FieldValue as any, firstOpen, {
   uid: 'u_mcq', round: 'first', answer: 'passed',
@@ -420,6 +424,12 @@ check('their MCQ stats row is re-filed under the new stage',
   movedStats.stageId === 'stage_4', String(movedStats.stageId));
 check('and the score they earned is untouched by the re-filing',
   movedStats.mcqRankScore === 400 && movedStats.totalFirstAttemptCorrect === 20);
+
+const s3StageStats = (await db.doc('userStageMCQStats/u_mcq_stage_3').get()).data() || {};
+check('stage 3 stats remain preserved with their full score',
+  s3StageStats.mcqRankScore === 400 && s3StageStats.totalFirstAttemptCorrect === 20);
+check('and stage 3 stats marked inactive so they leave the active stage race',
+  s3StageStats.isActiveInStage === false);
 
 // A student who has never answered an MCQ has no stats document at all, and
 // update() on a missing document fails the WHOLE batch - which would take the

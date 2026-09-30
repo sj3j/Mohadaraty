@@ -73,6 +73,7 @@ export const PAYMENT_STRINGS = {
     payAutoRenewNote: 'يتجدد الاشتراك تلقائياً ما لم يتم إيقافه قبل انتهاء المدة.',
     payTerms: 'شروط الاستخدام',
     payPrivacy: 'سياسة الخصوصية',
+    payBestValue: 'الأكثر توفيراً',
   },
   en: {
     subscription: 'Subscription',
@@ -103,5 +104,59 @@ export const PAYMENT_STRINGS = {
     payAutoRenewNote: 'Subscriptions renew automatically unless turned off before the period ends.',
     payTerms: 'Terms of Use',
     payPrivacy: 'Privacy Policy',
+    payBestValue: 'Best Value',
   },
 };
+
+/**
+ * Returns explicit plan titles for App Store Connect compliance.
+ * Specifically updates "فصلي" to "فصلي (3 أشهر)" per Guideline 3.1.2.
+ */
+export function getIosPlanLabel(plan: string | null, fallbackTitle: string, isRtl: boolean): string {
+  switch (plan) {
+    case 'annual':
+      return isRtl ? 'سنوي' : 'Annual';
+    case 'semi_annual':
+      return isRtl ? 'نصف سنوي (6 أشهر)' : 'Semi-Annual (6 Months)';
+    case 'seasonal':
+      return isRtl ? 'فصلي (3 أشهر)' : 'Quarterly (3 Months)';
+    case 'monthly':
+      return isRtl ? 'شهري' : 'Monthly';
+    default:
+      return fallbackTitle;
+  }
+}
+
+/**
+ * Explicit billing frequency text required by Apple Guideline 3.1.2.
+ * Interpolates Apple's dynamic priceString to avoid hardcoded prices or currencies.
+ */
+export function getIosBillingDescription(plan: string | null, price: string, isRtl: boolean): string {
+  if (isRtl) {
+    switch (plan) {
+      case 'annual':
+        return `يُدفع سنوياً (${price} / سنة)`;
+      case 'semi_annual':
+        return `يُدفع كل 6 أشهر (${price} / 6 أشهر)`;
+      case 'seasonal':
+        return `يُدفع كل 3 أشهر (${price} / 3 أشهر)`;
+      case 'monthly':
+        return `يُدفع شهرياً (${price} / شهر)`;
+      default:
+        return price ? `يُدفع (${price})` : '';
+    }
+  } else {
+    switch (plan) {
+      case 'annual':
+        return `Billed annually (${price} / year)`;
+      case 'semi_annual':
+        return `Billed every 6 months (${price} / 6 months)`;
+      case 'seasonal':
+        return `Billed every 3 months (${price} / 3 months)`;
+      case 'monthly':
+        return `Billed monthly (${price} / month)`;
+      default:
+        return price ? `Billed (${price})` : '';
+    }
+  }
+}

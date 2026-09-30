@@ -287,38 +287,68 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
       return;
     }
 
-    // Ordered by mcqRankScore: accuracy first, volume as tie-break. Documents
-    // without the field (under the qualifying threshold) are skipped by orderBy.
-    const snap = await getDocs(query(
-      collection(db, 'userMCQStats'),
+    // Ordered by mcqRankScore: accuracy first, volume as tie-break.
+    // Active stage filter ensures only students currently studying in this stage
+    // compete in the live race, while promoted students' scores remain archived in that stage.
+    let snap = await getDocs(query(
+      collection(db, 'userStageMCQStats'),
       where('stageId', '==', effectiveStageId),
+      where('isActiveInStage', '==', true),
       orderBy('mcqRankScore', 'desc'),
       limit(MCQ_LIMIT),
     ));
+
+    // Fallback to legacy userMCQStats if userStageMCQStats is not yet populated
+    if (snap.empty) {
+      snap = await getDocs(query(
+        collection(db, 'userMCQStats'),
+        where('stageId', '==', effectiveStageId),
+        orderBy('mcqRankScore', 'desc'),
+        limit(MCQ_LIMIT),
+      ));
+    }
+
     const leaders: any[] = snap.docs.map((d, i) => ({ id: d.id, ...d.data(), _rank: i + 1 }));
 
     setMcqUnranked(false);
 
     if (user && !leaders.some(l => l.userId === user.uid)) {
-      const mine = await getDoc(doc(db, 'userMCQStats', user.uid));
-      const data = mine.exists() ? mine.data() : null;
+      // Check stage-scoped document first
+      let mine = await getDoc(doc(db, 'userStageMCQStats', `${user.uid}_${effectiveStageId}`));
+      let data = mine.exists() ? mine.data() : null;
+
+      // Fallback to legacy userMCQStats if stage-specific doc is absent
+      if (!data) {
+        mine = await getDoc(doc(db, 'userMCQStats', user.uid));
+        data = mine.exists() && mine.data().stageId === effectiveStageId ? mine.data() : null;
+      }
 
       if (data?.mcqRankScore != null) {
-        // Same guard as the streak board above, and the same missing index.
         let myRank: number | undefined;
         try {
           const countSnap = await getCountFromServer(query(
-            collection(db, 'userMCQStats'),
+            collection(db, 'userStageMCQStats'),
             where('stageId', '==', effectiveStageId),
+            where('isActiveInStage', '==', true),
             where('mcqRankScore', '>', data.mcqRankScore),
           ));
           myRank = countSnap.data().count + 1;
         } catch (err) {
-          console.warn('Could not read MCQ rank:', err);
+          // Fallback rank count on legacy if userStageMCQStats count fails
+          try {
+            const countSnap = await getCountFromServer(query(
+              collection(db, 'userMCQStats'),
+              where('stageId', '==', effectiveStageId),
+              where('mcqRankScore', '>', data.mcqRankScore),
+            ));
+            myRank = countSnap.data().count + 1;
+          } catch {
+            console.warn('Could not read MCQ rank:', err);
+          }
         }
         leaders.push({ id: mine.id, ...data, _rank: myRank, _detached: true });
       } else {
-        // No answers yet - nothing to rank.
+        // No answers yet in this stage - nothing to rank.
         setMcqUnranked(true);
       }
     }
@@ -408,7 +438,13 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     detached: (l as any)._detached,
     // Headline is the ranking score itself, so the list visibly descends by the
     // number shown. Effort and precision are both spelled out underneath.
-    primary: <>{Math.round(((l as any).mcqRankScore || 0) / 100)}<span className="text-sm font-medium pe-1">{isRtl ? 'نقطة' : 'pts'}</span></>,
+    primary: (() => {
+      const rawScore = (l as any).mcqRankScore || 0;
+      const cleanScore = rawScore > 100000 && (l.totalFirstAttemptAnswered || 0) > 0
+        ? Math.round(((l.totalFirstAttemptCorrect || 0) * (l.totalFirstAttemptCorrect || 0)) / l.totalFirstAttemptAnswered)
+        : Math.round(rawScore / 100);
+      return <>{cleanScore}<span className="text-sm font-medium pe-1">{isRtl ? 'نقطة' : 'pts'}</span></>;
+    })(),
     secondary: `${l.totalFirstAttemptCorrect}/${l.totalFirstAttemptAnswered} ${isRtl ? 'صحيحة' : 'correct'} • ${Math.round(l.accuracy)}% ${isRtl ? 'دقة' : 'accuracy'}`,
   }));
 

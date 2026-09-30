@@ -175,8 +175,42 @@ export function msUntilBaghdadReset(now: Date = new Date()): number {
   return nextMidnight - shifted.getTime();
 }
 
+/**
+ * The academic week in Iraq starts on Saturday.
+ * Returns the YYYY-MM-DD date of the Saturday beginning the current week in Baghdad time.
+ */
+export function baghdadWeekKey(now: Date = new Date()): string {
+  const shifted = new Date(now.getTime() + BAGHDAD_OFFSET_MS);
+  const dayOfWeek = shifted.getUTCDay(); // 0: Sunday, 6: Saturday
+  const daysSinceSat = (dayOfWeek + 1) % 7;
+  const satDate = new Date(Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate() - daysSinceSat,
+  ));
+  return satDate.toISOString().slice(0, 10);
+}
+
+/** Milliseconds until the next Saturday midnight in Baghdad, for weekly quota resets. */
+export function msUntilBaghdadWeeklyReset(now: Date = new Date()): number {
+  const shifted = new Date(now.getTime() + BAGHDAD_OFFSET_MS);
+  const dayOfWeek = shifted.getUTCDay();
+  const daysSinceSat = (dayOfWeek + 1) % 7;
+  const daysUntilNextSat = 7 - daysSinceSat;
+  const nextSatMidnight = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate() + daysUntilNextSat,
+  );
+  return nextSatMidnight - shifted.getTime();
+}
+
 export function usageDocId(uid: string, day: string): string {
   return `${uid}_${day}`;
+}
+
+export function freeUsageDocId(uid: string, week: string): string {
+  return `${uid}_free_${week}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -603,3 +637,152 @@ async function maybeAlert(
     { merge: true },
   );
 }
+
+/* ------------------------------------------------------------------ *
+ * Free Tier Weekly Allowance
+ * ------------------------------------------------------------------ */
+
+export interface ReserveFreeResult {
+  ok: boolean;
+  reason?: 'disabled' | 'free_weekly_limit_reached' | 'ceiling_reached';
+  resetsInMs: number;
+}
+
+/**
+ * Reserve 1 free weekly turn for non-subscribed students.
+ * Atomically checks `aiUsage/{uid}_free_{week}` to ensure strictly 1 question per week.
+ */
+export async function reserveFreeQuestion(
+  ctx: SimosanCtx,
+  input: { uid: string; stageId: string },
+  now: Date = new Date(),
+): Promise<ReserveFreeResult> {
+  const { db, FieldValue } = ctx;
+  const week = baghdadWeekKey(now);
+  const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
+  const settingsRef = db.collection('app_settings').doc('simosan');
+
+  return db.runTransaction(async (t) => {
+    const [settingsSnap, usageSnap] = await Promise.all([
+      t.get(settingsRef),
+      t.get(usageRef),
+    ]);
+    const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
+    const resetsInMs = msUntilBaghdadWeeklyReset(now);
+
+    if (!settings.enabled) return { ok: false, reason: 'disabled', resetsInMs };
+    if (settings.monthUsd >= settings.monthlyCeilingUsd) return { ok: false, reason: 'ceiling_reached', resetsInMs };
+
+    const data = usageSnap.exists ? usageSnap.data() : null;
+    const used = Number(data?.usedCount) || 0;
+    const held = Number(data?.reservedCount) || 0;
+
+    if (used + held >= 1) {
+      return { ok: false, reason: 'free_weekly_limit_reached', resetsInMs };
+    }
+
+    t.set(
+      usageRef,
+      {
+        uid: input.uid,
+        stageId: input.stageId,
+        week,
+        usedCount: used,
+        reservedCount: held + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return { ok: true, resetsInMs };
+  });
+}
+
+/**
+ * Commit the completed free turn and record real Gemini spend against the monthly ceiling.
+ */
+export async function reconcileFreeQuestion(
+  ctx: SimosanCtx,
+  input: { uid: string; actualUnits: number },
+  now: Date = new Date(),
+): Promise<void> {
+  const { db, FieldValue } = ctx;
+  const week = baghdadWeekKey(now);
+  const month = baghdadMonthKey(now);
+  const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
+  const settingsRef = db.collection('app_settings').doc('simosan');
+  const spendUsd = unitsToUsd(input.actualUnits);
+
+  const result = await db.runTransaction(async (t) => {
+    const [settingsSnap, usageSnap] = await Promise.all([
+      t.get(settingsRef),
+      t.get(usageRef),
+    ]);
+    const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
+    const data = usageSnap.exists ? usageSnap.data() : null;
+    const used = Number(data?.usedCount) || 0;
+    const held = Number(data?.reservedCount) || 0;
+
+    t.set(
+      usageRef,
+      {
+        uid: input.uid,
+        week,
+        usedCount: used + 1,
+        reservedCount: Math.max(0, held - 1),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    const nextMonthUsd = settings.monthUsd + spendUsd;
+    t.set(
+      settingsRef,
+      {
+        month,
+        monthUsd: nextMonthUsd,
+        enabled: nextMonthUsd >= settings.monthlyCeilingUsd ? false : settings.enabled,
+        alertsSent: settings.alertsSent,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return {
+      monthUsd: nextMonthUsd,
+      ceilingUsd: settings.monthlyCeilingUsd,
+      alertsSent: settings.alertsSent,
+      month,
+    };
+  });
+
+  await maybeAlert(ctx, result);
+}
+
+/**
+ * Release the free reservation on abort or stream failure so the student doesn't lose their weekly quota.
+ */
+export async function releaseFreeQuestion(
+  ctx: SimosanCtx,
+  input: { uid: string },
+  now: Date = new Date(),
+): Promise<void> {
+  const { db, FieldValue } = ctx;
+  const week = baghdadWeekKey(now);
+  const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
+
+  await db.runTransaction(async (t) => {
+    const snap = await t.get(usageRef);
+    if (!snap.exists) return;
+    const held = Number(snap.data()?.reservedCount) || 0;
+    t.set(
+      usageRef,
+      {
+        reservedCount: Math.max(0, held - 1),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+  });
+}
+

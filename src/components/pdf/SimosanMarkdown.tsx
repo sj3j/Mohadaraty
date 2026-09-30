@@ -119,8 +119,11 @@ export default function SimosanMarkdown({ text, isRtl, onJumpToPage }: Props) {
         </td>
       ),
 
-      code: ({ inline, children }: any) =>
-        inline ? (
+      code: ({ inline, className, children }: any) => {
+        if (!inline && (className?.includes('simosan-quiz') || className?.includes('quiz'))) {
+          return null;
+        }
+        return inline ? (
           <code className="rounded bg-slate-200/70 dark:bg-zinc-700 px-1 py-0.5 text-[11px] font-mono">
             {children}
           </code>
@@ -128,7 +131,8 @@ export default function SimosanMarkdown({ text, isRtl, onJumpToPage }: Props) {
           <code className="block overflow-x-auto rounded-lg bg-slate-100 dark:bg-zinc-800 p-2 text-[11px] font-mono my-2">
             {children}
           </code>
-        ),
+        );
+      },
       pre: ({ children }: any) => <>{children}</>,
 
       blockquote: ({ children }: any) => (

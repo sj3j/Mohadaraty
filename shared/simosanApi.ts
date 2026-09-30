@@ -11,13 +11,19 @@ import {
   MAX_QUESTIONS_PER_CHAT,
   baghdadDayKey,
   baghdadMonthKey,
+  baghdadWeekKey,
   estimateUnits,
+  freeUsageDocId,
   hasAiAccess,
   msUntilBaghdadReset,
+  msUntilBaghdadWeeklyReset,
   readSettings,
   reconcileEnergy,
+  reconcileFreeQuestion,
   releaseEnergy,
+  releaseFreeQuestion,
   reserveEnergy,
+  reserveFreeQuestion,
   settleOffTopic,
   unitsFromUsage,
   unitsToUsd,
@@ -107,19 +113,44 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       if (!caller) return res.status(404).json({ error: 'User not found' });
 
       const settings = await readSettings(ctx());
-      const day = baghdadDayKey();
-      const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, day)).get();
-      const u = usageSnap.exists ? usageSnap.data() : null;
-      const spent = (Number(u?.unitsUsed) || 0) + (Number(u?.unitsReserved) || 0);
+      const hasAccess = hasAiAccess(caller.data);
+      const isFreeTier = !hasAccess;
+
+      let remaining = 0;
+      let dailyBudget = settings.dailyUnitBudget;
+      let resetsInMs = msUntilBaghdadReset();
+      let freeWeeklyRemaining = 0;
+      const freeWeeklyResetsInMs = msUntilBaghdadWeeklyReset();
+
+      if (hasAccess) {
+        const day = baghdadDayKey();
+        const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, day)).get();
+        const u = usageSnap.exists ? usageSnap.data() : null;
+        const spent = (Number(u?.unitsUsed) || 0) + (Number(u?.unitsReserved) || 0);
+        remaining = Math.max(0, settings.dailyUnitBudget - spent);
+      } else {
+        const week = baghdadWeekKey();
+        const freeSnap = await db.collection('aiUsage').doc(freeUsageDocId(uid, week)).get();
+        const fu = freeSnap.exists ? freeSnap.data() : null;
+        const freeSpent = (Number(fu?.usedCount) || 0) + (Number(fu?.reservedCount) || 0);
+        freeWeeklyRemaining = Math.max(0, 1 - freeSpent);
+        remaining = freeWeeklyRemaining;
+        dailyBudget = 1;
+        resetsInMs = freeWeeklyResetsInMs;
+      }
 
       res.json({
-        available: hasAiAccess(caller.data) && settings.enabled,
-        hasAccess: hasAiAccess(caller.data),
+        available: settings.enabled,
+        hasAccess,
         enabled: settings.enabled,
-        remaining: Math.max(0, settings.dailyUnitBudget - spent),
-        dailyBudget: settings.dailyUnitBudget,
-        resetsInMs: msUntilBaghdadReset(),
-        maxQuestionsPerChat: MAX_QUESTIONS_PER_CHAT,
+        isFreeTier,
+        freeWeeklyAllowance: 1,
+        freeWeeklyRemaining,
+        freeWeeklyResetsInMs,
+        remaining,
+        dailyBudget,
+        resetsInMs,
+        maxQuestionsPerChat: hasAccess ? MAX_QUESTIONS_PER_CHAT : 1,
       });
     } catch (e: any) {
       console.error('[simosan] state failed', e);
@@ -133,7 +164,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   async function ask(req: any, res: any) {
     const db = admin.firestore();
     const uid = req.user.uid;
-    const { lectureId, question, selection, newThread, walkthrough } = req.body || {};
+    const { lectureId, question, selection, newThread, walkthrough, languageMode, autoQuiz } = req.body || {};
 
     if (!ai) return res.status(503).json({ error: 'not_configured' });
     if (!lectureId || typeof question !== 'string' || !question.trim()) {
@@ -144,6 +175,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     }
 
     let reserved = 0;
+    let isFreeReserved = false;
     let streaming = false;
 
     const fail = (status: number, code: string, extra: any = {}) => {
@@ -157,9 +189,8 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     try {
       const caller = await loadCaller(db, uid);
       if (!caller) return fail(404, 'user_not_found');
-      // Access is decided here, from the user document, and never from anything
-      // the client sent. The client's own gate only decides what to render.
-      if (!hasAiAccess(caller.data)) return fail(403, 'not_subscribed');
+      const hasAccess = hasAiAccess(caller.data);
+      const isFreeTier = !hasAccess;
 
       const lectureSnap = await db.collection('lectures').doc(lectureId).get();
       if (!lectureSnap.exists) return fail(404, 'lecture_not_found');
@@ -179,12 +210,13 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       let threadId: string = lectureDoc.exists ? lectureDoc.data()?.activeThreadId : '';
       let threadSnap = threadId ? await threadsRef.doc(threadId).get() : null;
       let questionCount = threadSnap?.exists ? Number(threadSnap.data()?.questionCount) || 0 : 0;
+      const maxChatQuestions = isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT;
 
       const needsNew =
         newThread === true ||
         !threadSnap?.exists ||
         threadSnap.data()?.isReadOnly === true ||
-        questionCount >= MAX_QUESTIONS_PER_CHAT;
+        questionCount >= maxChatQuestions;
 
       if (needsNew) {
         const fresh = threadsRef.doc();
@@ -223,18 +255,38 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         questionChars: question.length + (selection?.length || 0),
       });
 
-      const hold = await reserveEnergy(
-        ctx(),
-        { uid, stageId: caller.stageId, estimatedUnits: estimated },
-      );
-      if (!hold.ok) {
-        return fail(429, hold.reason as string, {
-          remaining: hold.remaining,
-          dailyBudget: hold.dailyBudget,
-          resetsInMs: hold.resetsInMs,
-        });
+      isFreeReserved = false;
+      let holdRemaining = 0;
+      let holdBudget = settings.dailyUnitBudget;
+
+      if (isFreeTier) {
+        const freeHold = await reserveFreeQuestion(ctx(), { uid, stageId: caller.stageId });
+        if (!freeHold.ok) {
+          return fail(403, freeHold.reason === 'free_weekly_limit_reached' ? 'free_weekly_limit_reached' : (freeHold.reason || 'disabled'), {
+            isFreeTier: true,
+            remaining: 0,
+            resetsInMs: freeHold.resetsInMs,
+          });
+        }
+        isFreeReserved = true;
+        holdRemaining = 0;
+        holdBudget = 1;
+      } else {
+        const hold = await reserveEnergy(
+          ctx(),
+          { uid, stageId: caller.stageId, estimatedUnits: estimated },
+        );
+        if (!hold.ok) {
+          return fail(429, hold.reason as string, {
+            remaining: hold.remaining,
+            dailyBudget: hold.dailyBudget,
+            resetsInMs: hold.resetsInMs,
+          });
+        }
+        reserved = hold.reserved;
+        holdRemaining = hold.remaining;
+        holdBudget = hold.dailyBudget;
       }
-      reserved = hold.reserved;
 
       // --- stream ------------------------------------------------------------
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -251,9 +303,10 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           type: 'meta',
           threadId,
           questionNumber: questionCount + 1,
-          maxQuestions: MAX_QUESTIONS_PER_CHAT,
-          remaining: hold.remaining,
-          dailyBudget: hold.dailyBudget,
+          maxQuestions: maxChatQuestions,
+          remaining: holdRemaining,
+          dailyBudget: holdBudget,
+          isFreeTier,
         })}\n\n`,
       );
 
@@ -274,7 +327,13 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         } catch { subjectName = subjectId; }
       }
 
-      const turnCtx = { studentName: firstName, subjectName, walkthrough: walkthrough === true };
+      const turnCtx = {
+        studentName: firstName,
+        subjectName,
+        walkthrough: walkthrough === true,
+        languageMode: (languageMode === 'en' || languageMode === 'bilingual') ? languageMode : 'ar',
+        autoQuiz: autoQuiz !== false,
+      };
       let answer = '';
       const onDelta = (delta: string) => {
         answer += delta;
@@ -323,26 +382,39 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       let remaining: number;
       let refunded = false;
 
-      if (offTopic) {
-        const settled = await settleOffTopic(ctx(), {
-          uid,
-          reservedUnits: reserved,
-          actualUnits: actual,
-        });
-        remaining = settled.remaining;
-        refunded = settled.refunded;
+      if (isFreeTier) {
+        if (offTopic) {
+          await releaseFreeQuestion(ctx(), { uid });
+          remaining = 1;
+          refunded = true;
+        } else {
+          await reconcileFreeQuestion(ctx(), { uid, actualUnits: actual });
+          remaining = 0;
+          refunded = false;
+        }
+        isFreeReserved = false;
       } else {
-        const settled = await reconcileEnergy(ctx(), {
-          uid,
-          reservedUnits: reserved,
-          actualUnits: actual,
-        });
-        remaining = settled.remaining;
+        if (offTopic) {
+          const settled = await settleOffTopic(ctx(), {
+            uid,
+            reservedUnits: reserved,
+            actualUnits: actual,
+          });
+          remaining = settled.remaining;
+          refunded = settled.refunded;
+        } else {
+          const settled = await reconcileEnergy(ctx(), {
+            uid,
+            reservedUnits: reserved,
+            actualUnits: actual,
+          });
+          remaining = settled.remaining;
+        }
+        reserved = 0;
       }
-      reserved = 0;
 
       // An off-topic refusal is not part of the student's study thread, so it
-      // is neither stored nor counted against the 25.
+      // is neither stored nor counted against the chat cap.
       const citedPages = extractCitedPages(answer);
       if (!offTopic) {
         const now = admin.firestore.FieldValue.serverTimestamp();
@@ -361,11 +433,12 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           createdAt: now,
         });
         const nextCount = questionCount + 1;
+        const chatLimit = isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT;
         batch.set(
           threadsRef.doc(threadId),
           {
             questionCount: nextCount,
-            isReadOnly: nextCount >= MAX_QUESTIONS_PER_CHAT,
+            isReadOnly: nextCount >= chatLimit,
             stageId: caller.stageId,
             updatedAt: now,
           },
@@ -388,19 +461,27 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           citedPages,
           remaining,
           questionNumber: offTopic ? questionCount : questionCount + 1,
-          isReadOnly: !offTopic && questionCount + 1 >= MAX_QUESTIONS_PER_CHAT,
+          isReadOnly: !offTopic && questionCount + 1 >= (isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT),
+          isFreeTier,
         })}\n\n`,
       );
       res.end();
     } catch (e: any) {
       console.error('[simosan] ask failed', e);
-      // Any path that did not produce an answer hands the energy back. A
-      // student must never lose budget to an outage on our side.
+      // Any path that did not produce an answer hands the energy or free question back.
+      // A student must never lose budget to an outage on our side.
       if (reserved > 0) {
         try {
           await releaseEnergy(ctx(), { uid, reservedUnits: reserved });
         } catch (releaseErr) {
           console.error('[simosan] release failed', releaseErr);
+        }
+      }
+      if (isFreeReserved) {
+        try {
+          await releaseFreeQuestion(ctx(), { uid });
+        } catch (releaseErr) {
+          console.error('[simosan] release free question failed', releaseErr);
         }
       }
       // A quota/auth failure at the provider is an outage, not a bad request:

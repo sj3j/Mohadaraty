@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Crown, KeyRound, Loader2, RotateCcw, ExternalLink, AlertCircle } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
 import type { PurchasesPackage } from '@revenuecat/purchases-capacitor';
-import { Language, PLAN_CONFIG, SubscriptionPlan, TRANSLATIONS, UserProfile } from '../types';
+import { Language, SubscriptionPlan, TRANSLATIONS, UserProfile } from '../types';
 import { planForProduct } from '../../shared/iap';
 import { hasSubscriptionAccess, hasLiveSubscription } from '../../shared/subscriptionAccess';
+import { getIosPlanLabel, getIosBillingDescription } from '../i18n/paymentsIos';
 import {
   MANAGE_SUBSCRIPTION_URL, getPlans, purchase, restore, syncEntitlement,
 } from '../lib/iap';
@@ -17,50 +19,44 @@ import {
  * through APPLE, which is the only thing Apple permits and also something it
  * requires the app to actually offer.
  *
- * Three rules this screen exists to keep:
- *
- *   - **Prices come from the store, never from us.** Every figure rendered is
- *     RevenueCat's `product.priceString`, which is Apple's own price in the
- *     viewer's own storefront currency. PLAN_CONFIG's IQD figures are the web
- *     rail's and are deliberately not read here.
- *   - **Entitlement comes from our server, never from CustomerInfo.** purchase()
- *     and restore() in src/lib/iap.ts round-trip through /api/iap/sync, which
- *     verifies against RevenueCat with the secret key before writing
- *     users/{uid}. What this component does with the result is stop spinning.
- *   - **Restore is not optional.** Apple rejects an app that sells an
- *     auto-renewable subscription without a visible, working restore control,
- *     and it is the only way back for a student who reinstalled.
- *
- * It must never import src/services/subscriptionService or src/lib/paymentContact:
- * either one drags ZainCash, the receipt upload and the seller's WhatsApp and
- * Telegram numbers into the .ipa. scripts/assert-no-payment-surface.mjs is the
- * backstop for that, not the first line of defence.
+ * Compliant with Apple App Store Review Guideline 3.1.2 for Auto-Renewable
+ * Subscriptions:
+ *   - Clear plan durations and billing frequencies.
+ *   - Auto-renew terms and centered cancellation disclaimer.
+ *   - Functional Restore Purchases trigger.
+ *   - Direct clickable links to Terms of Use (EULA) and Privacy Policy.
  */
+
+export const TERMS_OF_USE_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+export const PRIVACY_POLICY_URL = 'https://mohadaraty.vercel.app/privacy';
 
 type Busy = null | { kind: 'loading' } | { kind: 'buying'; id: string } | { kind: 'restoring' };
 
 /**
+ * Open external legal URLs safely in in-app browser or default browser.
+ */
+async function openExternalUrl(url: string): Promise<void> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const { Browser } = await import('@capacitor/browser');
+      await Browser.open({ url });
+      return;
+    }
+  } catch (err) {
+    console.warn('[legal] Browser.open failed, falling back to window.open', err);
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+/**
  * What to call a plan.
  *
- * NOT `pkg.product.title`. That is the display name typed into App Store
- * Connect, it is a single string with no localisation, and ours are currently
- * mixed - "1 Year", "6 Months", "3 Months" and then "شهري". An Arabic student
- * would read three English rows and one Arabic one.
- *
- * The product id already tells us which plan this is, and PLAN_CONFIG already
- * carries both languages for the web paywall, so the label follows the app's
- * language like every other string. The PRICE still comes from the store and
- * always will - that is the number Apple requires be accurate, and the one we
- * are not entitled to invent.
- *
- * Falls back to the store's own title for a product PLAN_CONFIG has not been
- * taught about, which is the same fail-open rule shared/iap.ts applies to the
- * entitlement itself.
+ * Uses explicit localized names (e.g. "فصلي (3 أشهر)" per Guideline 3.1.2)
+ * rather than raw StoreKit titles which may lack duration clarification or Arabic localization.
  */
-function planLabel(productId: string, title: string, isRtl: boolean): string {
-  const plan = planForProduct(productId) as SubscriptionPlan | null;
-  if (!plan || !PLAN_CONFIG[plan]) return title;
-  return isRtl ? PLAN_CONFIG[plan].labelAr : PLAN_CONFIG[plan].labelEn;
+function planLabel(productId: string, fallbackTitle: string, isRtl: boolean): string {
+  const plan = planForProduct(productId);
+  return getIosPlanLabel(plan, fallbackTitle, isRtl);
 }
 
 export default function SubscriptionScreen({ user, lang }: { user: UserProfile | null; lang: Language }) {
@@ -160,10 +156,6 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
         <p className={`text-base font-black mb-1 ${
           active ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
         }`}>
-          {/* "Expired" only if there WAS one. A student who has never
-              subscribed has not had anything expire, and telling them
-              otherwise on the screen that sells the first subscription reads
-              as an error in the app. */}
           {active
             ? t.subscriptionActive
             : (user?.subscriptionEnd ? t.subscriptionExpired : t.payNoSubscription)}
@@ -192,9 +184,7 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
           <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
         </div>
       ) : packages.length === 0 ? (
-        // StoreKit unreachable, or no offering configured yet. A plain
-        // statement beats a blank screen - and beats a retry loop, because the
-        // usual cause is a sandbox account that is not signed in.
+        // StoreKit unreachable, or no offering configured yet.
         <div className="bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 rounded-3xl p-6 text-center">
           <p className="text-sm font-bold text-slate-500 dark:text-slate-400">{t.payUnavailable}</p>
         </div>
@@ -205,6 +195,11 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
           </h3>
           {packages.map(pkg => {
             const buying = busy?.kind === 'buying' && busy.id === pkg.identifier;
+            const plan = planForProduct(pkg.product.identifier) as SubscriptionPlan | null;
+            const title = planLabel(pkg.product.identifier, pkg.product.title, isRtl);
+            const billingDesc = getIosBillingDescription(plan, pkg.product.priceString, isRtl);
+            const isBestValue = plan === 'annual';
+
             return (
               <button
                 key={pkg.identifier}
@@ -212,13 +207,20 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
                 disabled={Boolean(busy)}
                 className="w-full flex items-center justify-between gap-3 bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 hover:border-sky-300 dark:hover:border-sky-700 disabled:opacity-60 rounded-2xl px-5 py-4 transition-colors text-start"
               >
-                <span className="min-w-0">
-                  <span className="block text-sm font-black text-slate-900 dark:text-stone-100 truncate">
-                    {planLabel(pkg.product.identifier, pkg.product.title, isRtl)}
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="block text-sm font-black text-slate-900 dark:text-stone-100 truncate">
+                      {title}
+                    </span>
+                    {isBestValue && (
+                      <span className="inline-flex items-center text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                        {t.payBestValue || (isRtl ? 'الأكثر توفيراً' : 'Best Value')}
+                      </span>
+                    )}
                   </span>
-                  {pkg.product.description && (
-                    <span className="block text-xs font-bold text-slate-400 truncate">
-                      {pkg.product.description}
+                  {billingDesc && (
+                    <span className="block text-xs font-bold text-slate-500 dark:text-zinc-400 truncate mt-0.5">
+                      {billingDesc}
                     </span>
                   )}
                 </span>
@@ -232,18 +234,21 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
               </button>
             );
           })}
-          <p className="text-[11px] font-bold text-slate-400 leading-relaxed px-1 pt-1">
-            {t.payAutoRenewNote}
-          </p>
         </div>
       )}
 
-      {/* ---- restore + manage --------------------------------------------- */}
+      {/* Auto-renew disclaimer - centered and contrasted directly above action/legal buttons */}
+      <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 text-center leading-relaxed px-2 pt-1">
+        {t.payAutoRenewNote}
+      </p>
+
+      {/* ---- restore + manage + legal ------------------------------------- */}
       <div className="flex flex-col gap-2 pt-1">
         <button
+          type="button"
           onClick={onRestore}
           disabled={Boolean(busy)}
-          className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3 border-2 border-slate-100 dark:border-zinc-800 text-sm font-black text-slate-600 dark:text-slate-300 disabled:opacity-60"
+          className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3 border-2 border-slate-100 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:border-slate-300 dark:hover:border-zinc-700 text-sm font-black text-slate-600 dark:text-slate-300 disabled:opacity-60 transition-colors"
         >
           {busy?.kind === 'restoring'
             ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -254,12 +259,31 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
         {subscriber && (
           <a
             href={MANAGE_SUBSCRIPTION_URL}
-            className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-black text-slate-500 dark:text-slate-400"
+            className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-black text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
           >
             <ExternalLink className="w-4 h-4" />
             {t.payManage}
           </a>
         )}
+
+        {/* Mandatory Legal Links (App Store Guideline 3.1.2) */}
+        <div className="flex items-center justify-center gap-2 pt-2 pb-1 text-xs font-bold text-slate-500 dark:text-zinc-400">
+          <button
+            type="button"
+            onClick={() => openExternalUrl(TERMS_OF_USE_URL)}
+            className="hover:text-slate-800 dark:hover:text-zinc-200 hover:underline transition-colors focus:outline-none"
+          >
+            {t.payTerms}
+          </button>
+          <span className="select-none text-slate-300 dark:text-zinc-600">•</span>
+          <button
+            type="button"
+            onClick={() => openExternalUrl(PRIVACY_POLICY_URL)}
+            className="hover:text-slate-800 dark:hover:text-zinc-200 hover:underline transition-colors focus:outline-none"
+          >
+            {t.payPrivacy}
+          </button>
+        </div>
       </div>
     </div>
   );

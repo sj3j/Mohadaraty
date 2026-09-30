@@ -205,6 +205,42 @@
       ]
     },
     {
+      "collectionGroup": "userStageMCQStats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isActiveInStage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "mcqRankScore",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "userStageMCQStats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isActiveInStage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "mcqRankScore",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "subscriptions",
       "queryScope": "COLLECTION",
       "fields": [

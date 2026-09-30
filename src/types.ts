@@ -1,6 +1,9 @@
 export type Category = 'pharmacology' | 'pharmacognosy' | 'organic_chemistry' | 'biochemistry' | 'cosmetics';
 export type LectureType = 'theoretical' | 'practical';
 
+/** Maximum file size permitted for lecture PDF uploads (50MB). */
+export const MAX_LECTURE_FILE_BYTES = 50 * 1024 * 1024;
+
 // New Multi-Stage Types
 
 /** Hard bounds on class structure. Groups run A..D, each with 1..4 subgroups (A1..D4). */
@@ -436,7 +439,7 @@ export const TRANSLATIONS = {
     category: 'المادة',
     type: 'النوع',
     clickToUpload: 'اضغط لرفع ملف PDF',
-    maxSize: 'الحد الأقصى 10 ميجابايت',
+    maxSize: 'الحد الأقصى 50 ميجابايت',
     dragDrop: 'أو اسحب وأفلت الملف هنا',
     success: 'تم الرفع بنجاح!',
     uploadAnother: 'رفع محاضرة أخرى',
@@ -592,7 +595,7 @@ export const TRANSLATIONS = {
     category: 'Category',
     type: 'Type',
     clickToUpload: 'Click to upload PDF file',
-    maxSize: 'Max 10MB',
+    maxSize: 'Max 50MB',
     dragDrop: 'or drag and drop file here',
     success: 'Upload Successful!',
     uploadAnother: 'Upload another lecture',

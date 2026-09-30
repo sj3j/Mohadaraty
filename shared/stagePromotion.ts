@@ -280,6 +280,20 @@ export async function applyPromotion(
       await flush();
     }
 
+    // Stage-isolated MCQ stats:
+    // Mark previous stage as inactive so student's past stage score is permanently
+    // preserved in that stage, while leaving the active race for the new cohort.
+    if (plan.from) {
+      for (const uid of m.userIds) {
+        batch.set(db.collection('userStageMCQStats').doc(`${uid}_${plan.from}`), {
+          isActiveInStage: false,
+          lastUpdated: FieldValue.serverTimestamp(),
+        }, { merge: true });
+        ops++;
+        await flush();
+      }
+    }
+
     // Only docs that already exist. Zeroed by the season archive, so this just
     // re-files them under the new stage; they would self-heal on the next
     // answer anyway, but leaving them stale hides the student from both boards.

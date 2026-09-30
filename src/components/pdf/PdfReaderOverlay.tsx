@@ -34,6 +34,7 @@ interface Props {
   pdfUrl: string;
   lang: Language;
   onClose: () => void;
+  onOpenSubscription?: () => void;
 }
 
 interface SelectionFragment {
@@ -112,7 +113,7 @@ function band(v: number, lo: number, hi: number, span: number): number {
   return v;
 }
 
-export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose }: Props) {
+export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription }: Props) {
   const isRtl = lang === 'ar';
 
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -150,6 +151,17 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   /** Null until the access probe returns. The entry points stay hidden rather
    *  than rendering an action that would only be refused. */
   const [simosanReady, setSimosanReady] = useState(false);
+
+  /** Tracks the calculated fit-width scale of the current document */
+  const fitScaleRef = useRef(1);
+  /** Floating page indicator badge state */
+  const [showPagePill, setShowPagePill] = useState(false);
+  const pillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Single-touch pan tracking when zoomed past fit scale */
+  const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; active: boolean } | null>(null);
+  /** Double-tap detection tracking */
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const doubleTapAnimRef = useRef<number | null>(null);
 
   /**
    * The active pinch, or null.
@@ -327,6 +339,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         const widest = Math.max(...sizes.map(z => z.w));
         if (widest > 0) {
           const fit = +Math.max(MIN_SCALE, Math.min(MAX_SCALE, avail / widest)).toFixed(2);
+          fitScaleRef.current = fit;
           setScale(fit);
           // Prime the raster with it as well. Left to the debounce, opening a
           // lecture would rasterise three canvases at scale 1 and throw them
@@ -407,6 +420,11 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
       if (layout[i].top <= mid) n = i + 1; else break;
     }
     setCurrent(n);
+
+    // Show floating page badge while scrolling
+    setShowPagePill(true);
+    if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
+    pillTimerRef.current = setTimeout(() => setShowPagePill(false), 1200);
   }, [layout]);
 
   /**
@@ -602,12 +620,10 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     const layer = zoomLayerRef.current;
     if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
     if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
-    const g = gesture.current;
-    if (g && el) {
-      try { el.releasePointerCapture(g.idA); el.releasePointerCapture(g.idB); } catch { /* already gone */ }
-    }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
     gesture.current = null;
     pointers.current.clear();
+    panRef.current = null;
     if (el) el.style.touchAction = '';
     if (layer) { layer.style.transform = ''; layer.style.willChange = ''; }
     live.current = { s: scaleRef.current, tx: 0, ty: 0 };
@@ -626,20 +642,111 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     };
   }, [abortGesture]);
 
+  /**
+   * Smoothly animates zoom level on double-tap between fit-to-width and 2.2x zoom,
+   * centered on the tapped coordinates.
+   */
+  const handleDoubleTapZoom = useCallback((clientX: number, clientY: number) => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
+
+    const curScale = scaleRef.current;
+    const fitScale = fitScaleRef.current;
+    const targetScale = curScale > fitScale + 0.1
+      ? fitScale
+      : +Math.min(MAX_SCALE, Math.max(2.0, fitScale * 1.8)).toFixed(2);
+
+    const lr = layer.getBoundingClientRect();
+    const F0 = { x: clientX, y: clientY };
+    const O = { x: lr.left, y: lr.top };
+    const p0 = { x: F0.x - O.x, y: F0.y - O.y };
+
+    const startScale = curScale;
+    const startTime = performance.now();
+    const duration = 220;
+
+    layer.style.willChange = 'transform';
+
+    const step = (now: number) => {
+      const elapsed = Math.min(duration, now - startTime);
+      const progress = elapsed / duration;
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const s = startScale + (targetScale - startScale) * ease;
+      const k = s / curScale;
+
+      const tx = (1 - k) * p0.x;
+      const ty = (1 - k) * p0.y;
+
+      live.current = { s, tx, ty };
+      layer.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${k.toFixed(4)})`;
+
+      const label = zoomLabelRef.current;
+      if (label) label.textContent = `${Math.round(s * 100)}%`;
+
+      if (progress < 1) {
+        doubleTapAnimRef.current = requestAnimationFrame(step);
+      } else {
+        doubleTapAnimRef.current = null;
+        layer.style.transform = '';
+        layer.style.willChange = '';
+        live.current = { s: targetScale, tx: 0, ty: 0 };
+        zoomAnchor.current = anchorAt(clientX, clientY);
+        flushSync(() => setScale(targetScale));
+        setShowPagePill(true);
+        if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
+        pillTimerRef.current = setTimeout(() => setShowPagePill(false), 1200);
+      }
+    };
+
+    doubleTapAnimRef.current = requestAnimationFrame(step);
+  }, [anchorAt]);
+
   const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    // A third finger is tracked but never joins the gesture. The old code took
-    // the first two in map order, so lifting a middle finger silently swapped
-    // which pair was measured against the same startDist and the scale jumped.
+
+    // Single-pointer double-tap detection and pan preparation
+    if (pointers.current.size === 1) {
+      const now = performance.now();
+      const last = lastTapRef.current;
+      if (last && now - last.time < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 32) {
+        lastTapRef.current = null;
+        panRef.current = null;
+        handleDoubleTapZoom(e.clientX, e.clientY);
+        return;
+      }
+      lastTapRef.current = { time: now, x: e.clientX, y: e.clientY };
+
+      const el = scrollRef.current;
+      if (el && scaleRef.current > fitScaleRef.current + 0.05) {
+        panRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          scrollLeft: el.scrollLeft,
+          scrollTop: el.scrollTop,
+          active: false,
+        };
+      } else {
+        panRef.current = null;
+      }
+    } else {
+      lastTapRef.current = null;
+      panRef.current = null;
+    }
+
     if (pointers.current.size !== 2 || gesture.current) return;
 
     const el = scrollRef.current;
     const layer = zoomLayerRef.current;
     if (!el || !layer) return;
 
-    // Stop any spring first, so O and p0 below are measured against a transform
-    // that is not still moving under them.
     if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
 
     const [idA, idB] = [...pointers.current.keys()];
     const a = pointers.current.get(idA)!;
@@ -649,9 +756,6 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     const { tx, ty, s } = live.current;
     const kPrev = s / scale;
     const lr = layer.getBoundingClientRect();
-    // With transform-origin at 0 0 the rect's top-left is the untransformed
-    // top-left plus the translate, so the origin comes back exactly - which is
-    // what lets a pinch start from a transform that is already applied.
     const O = { x: lr.left - tx, y: lr.top - ty };
     const R = el.getBoundingClientRect();
 
@@ -668,15 +772,8 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
       rectLeft: R.left, rectTop: R.top,
     };
 
-    // Set on the node rather than through a render: touch-action is read when
-    // the gesture starts, so flipping it via state on the NEXT frame is already
-    // too late and the WebView keeps panning underneath the pinch.
     el.style.touchAction = 'none';
     layer.style.willChange = 'transform';
-    // Capture both, so a release that lands outside the element still reaches
-    // us. Capturing the FIRST pointer instead would swallow long-press text
-    // selection and the highlight taps, so it deliberately waits for the second.
-    try { el.setPointerCapture(idA); el.setPointerCapture(idB); } catch { /* not captureable */ }
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -684,50 +781,103 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     const g = gesture.current;
-    if (!g || (e.pointerId !== g.idA && e.pointerId !== g.idB)) return;
+    if (g) {
+      if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
 
-    const F = focal();
-    g.F = F;
-    live.current.s = elasticScale(g.sBase * (dist() / g.startDist));
+      const F = focal();
+      g.F = F;
+      live.current.s = elasticScale(g.sBase * (dist() / g.startDist));
 
-    const k = live.current.s / scaleRef.current;
-    const b = bounds(g, k);
-    // The ideal translate keeps p0 exactly under the focal point; the band then
-    // pulls it back toward the legal range, which is what gives at the edges.
-    live.current.tx = band(F.x - g.O.x - k * g.p0.x, b.txMin, b.txMax, g.w);
-    live.current.ty = band(F.y - g.O.y - k * g.p0.y, b.tyMin, b.tyMax, g.h);
+      const k = live.current.s / scaleRef.current;
+      const b = bounds(g, k);
+      live.current.tx = band(F.x - g.O.x - k * g.p0.x, b.txMin, b.txMax, g.w);
+      live.current.ty = band(F.y - g.O.y - k * g.p0.y, b.tyMin, b.tyMax, g.h);
 
-    // A live transform changes the scrollable overflow region, and shrinking it
-    // makes the browser clamp scroll - which would slide the content out from
-    // under the fingers even though touch scrolling is off. Pin it instead.
-    const el = scrollRef.current;
-    if (el) {
-      if (el.scrollLeft !== g.S0x) el.scrollLeft = g.S0x;
-      if (el.scrollTop !== g.S0y) el.scrollTop = g.S0y;
+      const el = scrollRef.current;
+      if (el) {
+        if (el.scrollLeft !== g.S0x) el.scrollLeft = g.S0x;
+        if (el.scrollTop !== g.S0y) el.scrollTop = g.S0y;
+      }
+
+      scheduleZoomPaint();
+      return;
     }
 
-    scheduleZoomPaint();
+    const pan = panRef.current;
+    if (pan && e.buttons === 1) {
+      const dx = e.clientX - pan.startX;
+      const dy = e.clientY - pan.startY;
+      if (Math.hypot(dx, dy) > 6) {
+        pan.active = true;
+        const el = scrollRef.current;
+        if (el) {
+          el.scrollLeft = clamp(pan.scrollLeft - dx, 0, el.scrollWidth - el.clientWidth);
+          el.scrollTop = clamp(pan.scrollTop - dy, 0, el.scrollHeight - el.clientHeight);
+        }
+      }
+    }
   };
 
   const endPointer = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
+    if (panRef.current) panRef.current = null;
     const g = gesture.current;
     if (!g) return;
-    // End on either PINNED id. Waiting for the map to fall below two kept the
-    // gesture alive when a third finger lifted, measuring a different pair.
     if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
 
-    // Cleared before the release, because releasePointerCapture fires
-    // lostpointercapture - which is wired to this same handler - and a
-    // re-entrant call would start a second spring for the same gesture.
     gesture.current = null;
     const el = scrollRef.current;
     if (el) {
-      try { el.releasePointerCapture(g.idA); el.releasePointerCapture(g.idB); } catch { /* already gone */ }
       el.style.touchAction = '';
     }
     startSpring(g);
   };
+
+  // Global listeners for pointer release outside container and native multi-touch suppression
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+      }
+    };
+
+    const handleGlobalUp = (e: PointerEvent) => {
+      if (pointers.current.has(e.pointerId)) {
+        pointers.current.delete(e.pointerId);
+        if (panRef.current) panRef.current = null;
+        const g = gesture.current;
+        if (g && (e.pointerId === g.idA || e.pointerId === g.idB)) {
+          gesture.current = null;
+          el.style.touchAction = '';
+          startSpring(g);
+        }
+      }
+    };
+
+    // Suppress WebKit/iOS Safari proprietary gesture events (pinch-to-zoom at viewport level)
+    const preventNativeGesture = (e: Event) => {
+      e.preventDefault();
+    };
+
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('gesturestart', preventNativeGesture);
+    el.addEventListener('gesturechange', preventNativeGesture);
+    window.addEventListener('pointerup', handleGlobalUp);
+    window.addEventListener('pointercancel', handleGlobalUp);
+
+    return () => {
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('gesturestart', preventNativeGesture);
+      el.removeEventListener('gesturechange', preventNativeGesture);
+      window.removeEventListener('pointerup', handleGlobalUp);
+      window.removeEventListener('pointercancel', handleGlobalUp);
+      if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
+      if (doubleTapAnimRef.current != null) cancelAnimationFrame(doubleTapAnimRef.current);
+    };
+  }, [startSpring]);
 
   const scrollToPage = useCallback((n: number) => {
     const el = scrollRef.current;
@@ -1202,6 +1352,23 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         </div>
       )}
 
+      {/* Floating glassmorphic page badge */}
+      <AnimatePresence>
+        {showPagePill && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.95 }}
+            transition={{ duration: 0.18 }}
+            className="absolute top-16 left-1/2 -translate-x-1/2 z-30 pointer-events-none"
+          >
+            <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-slate-900/80 dark:bg-zinc-900/85 backdrop-blur-md text-white text-xs font-semibold shadow-lg shadow-black/20 border border-white/10 tracking-wide select-none">
+              <span>{isRtl ? `صفحة ${current} من ${pageCount || '-'}` : `Page ${current} of ${pageCount || '-'}`}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -1209,16 +1376,8 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
-        onLostPointerCapture={endPointer}
         dir="ltr"
-        // touch-action is switched to 'none' imperatively on the second
-        // pointerdown and cleared on release - see onPointerDown. It cannot be
-        // driven from state: the browser latches touch-action when the gesture
-        // begins, so a value arriving on the next render is already too late.
-        // overscroll-behavior stops the Android overscroll glow and stops a
-        // pinch at the top of the document chaining a scroll to the fixed
-        // surface behind this one.
-        style={{ touchAction: 'auto', overscrollBehavior: 'contain' }}
+        style={{ touchAction: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch' }}
         className="flex-1 overflow-y-auto overflow-x-auto bg-slate-200 dark:bg-zinc-950 px-2"
       >
         {error && (
@@ -1237,15 +1396,8 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         {pdfDoc && (
         <div
           ref={zoomLayerRef}
-          // transform and willChange are written directly to this node during a
-          // pinch; only the origin is declarative. Once the gesture commits, the
-          // pages re-render at the real scale so text stays crisp.
-          //
-          // The origin MUST stay at 0 0. The focal maths solves O + t + k*p0 for
-          // the translate, which only holds when scaling happens about the
-          // layer's own top-left; at 50% 0 the content slid out from under the
-          // fingers as it grew.
           style={{ transformOrigin: '0 0' }}
+          className="min-w-fit flex flex-col items-center"
         >
         {layout.map((box, i) => {
           const n = i + 1;
@@ -1443,6 +1595,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
             seedSelection={simosanSeed}
             onJumpToPage={scrollToPage}
             onClose={() => setSimosanOpen(false)}
+            onOpenSubscription={onOpenSubscription}
           />
         )}
       </AnimatePresence>

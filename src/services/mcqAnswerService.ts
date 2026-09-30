@@ -9,7 +9,7 @@ import {
   deleteField
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { MCQAttempt, UserMCQStats, computeMcqRankScore } from '../types/mcq.types';
+import { MCQAttempt, UserMCQStats, UserStageMCQStats, computeMcqRankScore } from '../types/mcq.types';
 import { trackEvent } from '../lib/analytics';
 
 const PENDING_QUEUE_KEY = 'mcq_pending_submissions';
@@ -144,7 +144,8 @@ export async function finalizeFirstAttempt(
   lectureId: string, 
   subjectId: string,
   answers: Record<string, { selected: string; isCorrect: boolean }>,
-  totalQuestions: number = 20
+  totalQuestions: number = 20,
+  lectureStageId?: string
 ) {
   const userId = auth.currentUser?.uid || userIdParam;
   const answersDocRef = doc(db, `userMCQAnswers/${userId}/lectures/${lectureId}`);
@@ -188,8 +189,10 @@ export async function finalizeFirstAttempt(
         return;
       }
 
-      const statsRef = doc(db, `userMCQStats/${userId}`);
-      const statsDoc = await transaction.get(statsRef);
+      const userRef = doc(db, `users/${userId}`);
+      const userDoc = await transaction.get(userRef);
+      const userStageId = userDoc.exists() ? userDoc.data().stageId : undefined;
+      const targetStageId = lectureStageId || userStageId;
 
       const answerDocData = {
         lectureId,
@@ -205,6 +208,68 @@ export async function finalizeFirstAttempt(
       };
 
       transaction.set(answersDocRef, answerDocData);
+
+      // --- 1. Stage-scoped stats (userStageMCQStats) -----------------------
+      if (targetStageId) {
+        const stageStatsRef = doc(db, `userStageMCQStats/${userId}_${targetStageId}`);
+        const stageStatsDoc = await transaction.get(stageStatsRef);
+
+        let stageTotalCorrect = correctCount;
+        let stageTotalAnswered = totalQuestions;
+        let stageLecturesAttempted = 1;
+        let stageSubjectStats: Record<string, any> = {
+          [subjectId]: {
+            correct: correctCount,
+            total: totalQuestions,
+            lecturesAttempted: 1
+          }
+        };
+
+        if (stageStatsDoc.exists()) {
+          const existing = stageStatsDoc.data() as UserStageMCQStats;
+          stageTotalCorrect = (existing.totalFirstAttemptCorrect || 0) + correctCount;
+          stageTotalAnswered = (existing.totalFirstAttemptAnswered || 0) + totalQuestions;
+          stageLecturesAttempted = (existing.lecturesAttempted || 0) + 1;
+
+          const existingSubjects = existing.subjectStats || {};
+          stageSubjectStats = { ...existingSubjects };
+          if (stageSubjectStats[subjectId]) {
+            stageSubjectStats[subjectId] = { ...stageSubjectStats[subjectId] };
+            stageSubjectStats[subjectId].correct = (stageSubjectStats[subjectId].correct || 0) + correctCount;
+            stageSubjectStats[subjectId].total = (stageSubjectStats[subjectId].total || 0) + totalQuestions;
+            stageSubjectStats[subjectId].lecturesAttempted = (stageSubjectStats[subjectId].lecturesAttempted || 0) + 1;
+          } else {
+            stageSubjectStats[subjectId] = {
+              correct: correctCount,
+              total: totalQuestions,
+              lecturesAttempted: 1
+            };
+          }
+        }
+
+        const stageRankScore = computeMcqRankScore(stageTotalCorrect, stageTotalAnswered);
+        const isActiveInStage = userStageId ? (userStageId === targetStageId && userDoc.data()?.graduated !== true) : true;
+
+        const stageStatsData: any = {
+          userId,
+          stageId: targetStageId,
+          isActiveInStage,
+          totalFirstAttemptCorrect: stageTotalCorrect,
+          totalFirstAttemptAnswered: stageTotalAnswered,
+          lecturesAttempted: stageLecturesAttempted,
+          mcqLeaderboardScore: stageTotalCorrect * 10,
+          accuracy: (stageTotalCorrect / Math.max(1, stageTotalAnswered)) * 100,
+          mcqRankScore: stageRankScore === null ? deleteField() : stageRankScore,
+          subjectStats: stageSubjectStats,
+          lastUpdated: serverTimestamp()
+        };
+
+        transaction.set(stageStatsRef, stageStatsData, { merge: true });
+      }
+
+      // --- 2. Legacy userMCQStats (kept for backward compatibility) ----------
+      const statsRef = doc(db, `userMCQStats/${userId}`);
+      const statsDoc = await transaction.get(statsRef);
 
       let newTotalCorrect = correctCount;
       let newTotalAnswered = totalQuestions;
@@ -239,13 +304,6 @@ export async function finalizeFirstAttempt(
          }
       }
 
-      const userRef = doc(db, `users/${userId}`);
-      const userDoc = await transaction.get(userRef);
-      const userStageId = userDoc.exists() ? userDoc.data().stageId : undefined;
-
-      // Ordering key for the leaderboard. When the user has not answered enough
-      // questions to qualify we REMOVE the field rather than storing 0, so the
-      // ordered query skips them instead of listing them at the bottom.
       const rankScore = computeMcqRankScore(newTotalCorrect, newTotalAnswered);
 
       const statsData: any = {

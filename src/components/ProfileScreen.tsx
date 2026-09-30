@@ -132,15 +132,33 @@ export default function ProfileScreen({
     let alive = true;
     (async () => {
       try {
-        const mine = await getDoc(doc(db, 'userMCQStats', uid));
-        const score = mine.exists() ? (mine.data() as any).mcqRankScore : null;
+        let mine = await getDoc(doc(db, 'userStageMCQStats', `${uid}_${effectiveStageId}`));
+        let data = mine.exists() ? (mine.data() as any) : null;
+        if (!data) {
+          mine = await getDoc(doc(db, 'userMCQStats', uid));
+          data = mine.exists() && (mine.data() as any).stageId === effectiveStageId ? (mine.data() as any) : null;
+        }
+        const score = data ? data.mcqRankScore : null;
         if (score == null) { if (alive) setMcqRank(null); return; }
-        const counted = await getCountFromServer(query(
-          collection(db, 'userMCQStats'),
-          where('stageId', '==', effectiveStageId),
-          where('mcqRankScore', '>', score),
-        ));
-        if (alive) setMcqRank(counted.data().count + 1);
+
+        let count = 0;
+        try {
+          const counted = await getCountFromServer(query(
+            collection(db, 'userStageMCQStats'),
+            where('stageId', '==', effectiveStageId),
+            where('isActiveInStage', '==', true),
+            where('mcqRankScore', '>', score),
+          ));
+          count = counted.data().count;
+        } catch {
+          const counted = await getCountFromServer(query(
+            collection(db, 'userMCQStats'),
+            where('stageId', '==', effectiveStageId),
+            where('mcqRankScore', '>', score),
+          ));
+          count = counted.data().count;
+        }
+        if (alive) setMcqRank(count + 1);
       } catch (err) {
         console.warn('Could not read MCQ rank:', err);
         if (alive) setMcqRank(null);

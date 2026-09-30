@@ -164,17 +164,32 @@ export async function submitProgression(
     }
   }
 
-  // The MCQ leaderboard's stage filter reads a DENORMALISED copy of the stage on
-  // userMCQStats, not users.stageId - so a promotion that updates only users/
-  // and students/ leaves the student filed under the stage they just left. They
-  // then vanish from their new stage's MCQ board while still appearing on the
-  // streak board (which reads users/ directly), which reads as "the MCQ
-  // leaderboard is broken for stage N" rather than as a stale field.
-  //
-  // stagePromotion.ts already re-files it for the bulk path; this is the same
-  // write for the self-service one. update() on a missing document fails the
-  // whole batch, so the existence check is not optional - a student who has
-  // never answered an MCQ has no stats document.
+  // Stage-isolated MCQ stats:
+  // When promoted or graduated, mark their previous stage stats as isActiveInStage: false.
+  // Their score earned in the previous stage remains permanently preserved in userStageMCQStats,
+  // but they leave the active race so new incoming cohorts start on a fair, clean slate.
+  if (user.stageId && (outcome.promoted || outcome.graduated)) {
+    const prevStageStatRef = db.collection('userStageMCQStats').doc(`${uid}_${user.stageId}`);
+    if ((await prevStageStatRef.get()).exists) {
+      batch.set(prevStageStatRef, {
+        isActiveInStage: false,
+        lastUpdated: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  }
+
+  // If a stat doc already exists for their new destination stage, activate it
+  if (outcome.stageId && outcome.promoted && !outcome.graduated) {
+    const newStageStatRef = db.collection('userStageMCQStats').doc(`${uid}_${outcome.stageId}`);
+    if ((await newStageStatRef.get()).exists) {
+      batch.set(newStageStatRef, {
+        isActiveInStage: true,
+        lastUpdated: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  }
+
+  // The legacy MCQ leaderboard copy on userMCQStats (kept for backward compatibility).
   const statsRef = db.collection('userMCQStats').doc(uid);
   if ((await statsRef.get()).exists) {
     batch.set(statsRef, {
@@ -264,6 +279,14 @@ export async function resetProgression(
     batch.set(userRef, userPatch, { merge: true });
 
     if (opts.stageId) {
+      const stageStatRef = db.collection('userStageMCQStats').doc(`${uid}_${opts.stageId}`);
+      if ((await stageStatRef.get()).exists) {
+        batch.set(stageStatRef, {
+          isActiveInStage: true,
+          lastUpdated: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+
       const statsRef = db.collection('userMCQStats').doc(uid);
       if ((await statsRef.get()).exists) {
         batch.set(statsRef, {

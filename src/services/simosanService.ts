@@ -31,6 +31,10 @@ export interface SimosanState {
   available: boolean;
   hasAccess: boolean;
   enabled: boolean;
+  isFreeTier?: boolean;
+  freeWeeklyAllowance?: number;
+  freeWeeklyRemaining?: number;
+  freeWeeklyResetsInMs?: number;
   remaining: number;
   dailyBudget: number;
   resetsInMs: number;
@@ -47,6 +51,7 @@ export interface SimosanThread {
 /** Terminal outcomes the drawer needs to distinguish for the student. */
 export type AskErrorCode =
   | 'insufficient_energy'
+  | 'free_weekly_limit_reached'
   | 'not_subscribed'
   | 'disabled'
   | 'ceiling_reached'
@@ -158,6 +163,22 @@ export interface AskCallbacks {
   }) => void;
 }
 
+export type SimosanLanguageMode = 'ar' | 'en' | 'bilingual';
+
+export interface SimosanQuizQuestion {
+  id: number | string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+}
+
+export interface ParsedSimosanMessage {
+  markdownText: string;
+  quizzes: SimosanQuizQuestion[];
+  isQuizStreaming?: boolean;
+}
+
 /**
  * Ask Simosan a question, streaming the answer.
  *
@@ -165,7 +186,15 @@ export interface AskCallbacks {
  * EventSource cannot send an Authorization header or a POST body.
  */
 export async function askSimosan(
-  input: { lectureId: string; question: string; selection?: string; newThread?: boolean; walkthrough?: boolean },
+  input: {
+    lectureId: string;
+    question: string;
+    selection?: string;
+    newThread?: boolean;
+    walkthrough?: boolean;
+    languageMode?: SimosanLanguageMode;
+    autoQuiz?: boolean;
+  },
   cbs: AskCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -250,3 +279,61 @@ export function formatReset(ms: number, isRtl: boolean): string {
   if (isRtl) return h > 0 ? `${h} ساعة و ${m} دقيقة` : `${m} دقيقة`;
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
+
+/**
+ * Extracts and parses embedded ```simosan-quiz JSON blocks from a message.
+ * Strips the quiz block from markdownText so raw JSON never flashes on screen.
+ */
+export function parseSimosanQuiz(rawText: string): ParsedSimosanMessage {
+  if (!rawText) return { markdownText: '', quizzes: [] };
+
+  const fenceRegex = /```(?:simosan-quiz|quiz)\s*([\s\S]*?)(?:```|$)/i;
+  const match = fenceRegex.exec(rawText);
+
+  if (!match) {
+    return { markdownText: rawText, quizzes: [] };
+  }
+
+  const textBefore = rawText.slice(0, match.index).trimEnd();
+  const textAfter = rawText.slice(match.index + match[0].length).trimStart();
+  const markdownText = [textBefore, textAfter].filter(Boolean).join('\n\n');
+
+  const rawJson = match[1].trim();
+  const isClosingPresent = match[0].endsWith('```') && match[0].length > 3;
+
+  if (!isClosingPresent) {
+    // Block is currently streaming in: hide raw unclosed JSON
+    return {
+      markdownText,
+      quizzes: [],
+      isQuizStreaming: true,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (Array.isArray(parsed)) {
+      const validQuestions: SimosanQuizQuestion[] = parsed
+        .filter((q: any) => q && typeof q.question === 'string' && Array.isArray(q.options) && q.options.length >= 2)
+        .map((q: any, idx: number) => ({
+          id: q.id ?? idx + 1,
+          question: String(q.question).trim(),
+          options: q.options.map((opt: any) => String(opt).trim()),
+          correctIndex:
+            typeof q.correctIndex === 'number' && q.correctIndex >= 0 && q.correctIndex < q.options.length
+              ? q.correctIndex
+              : 0,
+          explanation: typeof q.explanation === 'string' ? q.explanation.trim() : '',
+        }));
+
+      if (validQuestions.length > 0) {
+        return { markdownText, quizzes: validQuestions, isQuizStreaming: false };
+      }
+    }
+  } catch {
+    // Malformed JSON: fail cleanly without crashing
+  }
+
+  return { markdownText, quizzes: [], isQuizStreaming: false };
+}
+

@@ -103,6 +103,8 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   churn. Rule out a missing rule before blaming the SDK.
 
 ## Data model & consistency
+- Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.
+- Free AI tutor allowance must not be checked via daily energy units or blocked by subscription gates → partition weekly free turns in `aiUsage/{uid}_free_{week}` by Baghdad academic week (starts Saturday) with atomic reservation and immediate upgrade CTA upon exhaustion.
 - A DENORMALISED field (e.g. `userMCQStats.stageId`, a copy of `users.stageId`
   so a board can be filtered without reading every user) must be rewritten by
   EVERY path that changes the source. `stagePromotion` re-filed it, the
@@ -405,6 +407,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - The privacy policy's processor list is per-platform once the platforms
   differ; a policy still saying "the app contains no payment flow" after one
   of them gained one is both false and an App Store rejection.
+- Apple Guideline 3.1.2 requires auto-renewable paywalls to state explicit plan duration (e.g. 'فصلي (3 أشهر)'), dynamic billing frequency subtitle, centered auto-renew terms, and direct clickable links to Terms of Use (EULA) and Privacy Policy directly below restore purchases → bind durations and EULA/privacy links into `SubscriptionScreen.ios.tsx` and pin with `test:ios-paywall`.
 
 ## Tooling & test coverage
 - `tsc --noEmit` on a large codebase can hit the default V8 heap and exit
