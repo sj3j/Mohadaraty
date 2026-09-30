@@ -139,6 +139,9 @@ export const dbDelete = (store: string, key: IDBValidKey) =>
 export const dbGetAllByIndex = <T>(store: string, index: string, query: IDBValidKey | IDBKeyRange) =>
   run<T[]>(store, 'readonly', s => s.index(index).getAll(query));
 
+export const dbCountByIndex = (store: string, index: string, query: IDBValidKey | IDBKeyRange) =>
+  run<number>(store, 'readonly', s => s.index(index).count(query));
+
 /**
  * Every record in a store.
  *
@@ -379,4 +382,17 @@ export async function searchUserFiles(userId: string, query: string): Promise<Us
   const all = (await dbGetAll<UserFile>(STORE_USER_FILES)).filter(f => f.userId === userId);
   return all.filter(f => f.name.toLowerCase().includes(q));
 }
+
+export const FREE_PERSONAL_SPACE_FILE_LIMIT = 6;
+
+export async function countAllUserFiles(userId: string): Promise<number> {
+  try {
+    const count = await dbCountByIndex(STORE_USER_FILES, 'by_user', IDBKeyRange.only(userId));
+    return typeof count === 'number' ? count : 0;
+  } catch {
+    const all = await dbGetAll<UserFile>(STORE_USER_FILES);
+    return all.filter(f => f.userId === userId).length;
+  }
+}
+
 

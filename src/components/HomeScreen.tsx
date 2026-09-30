@@ -34,6 +34,8 @@ interface HomeScreenProps {
   initialTab?: InnerTab;
   onOpenProgression?: () => void;
   onOpenLocalPdf?: (file: UserFile) => void;
+  onNavigateToSubscription?: () => void;
+  onShowPaywall?: () => void;
 }
 
 export default function HomeScreen({
@@ -52,7 +54,9 @@ export default function HomeScreen({
   setShowAdminManage,
   initialTab = 'lectures',
   onOpenProgression,
-  onOpenLocalPdf
+  onOpenLocalPdf,
+  onNavigateToSubscription,
+  onShowPaywall
 }: HomeScreenProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
@@ -331,6 +335,8 @@ export default function HomeScreen({
             onOpenLocalPdf={(file) => {
               if (onOpenLocalPdf) onOpenLocalPdf(file);
             }}
+            onNavigateToSubscription={onNavigateToSubscription}
+            onShowPaywall={onShowPaywall}
           />
         )}
         {activeTab === 'weekly' && (

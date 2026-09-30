@@ -946,6 +946,8 @@ export default function App() {
           setShowAdminManage={setShowAdminManage} 
           initialTab={currentTab === 'home' ? 'lectures' : currentTab as any} 
           onOpenProgression={() => setForceShowProgression(true)}
+          onNavigateToSubscription={() => setCurrentTab('subscription')}
+          onShowPaywall={() => setShowPaywall(true)}
         />
       )}
       {currentTab === 'announcements' && (

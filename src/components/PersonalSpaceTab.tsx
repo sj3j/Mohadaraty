@@ -3,19 +3,24 @@ import { UserProfile, Language } from '../types';
 import {
   Folder, FolderPlus, FileText, Upload, ChevronRight, ChevronLeft,
   MoreVertical, Plus, Trash2, Edit3, FolderInput, Search,
-  LayoutGrid, List, AlertTriangle, X, Check, Loader2, Sparkles, Eye
+  LayoutGrid, List, AlertTriangle, X, Check, Loader2, Sparkles, Eye, Crown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   UserFolder, UserFile,
   getUserFolders, getAllUserFolders, createUserFolder, renameUserFolder, deleteUserFolderCascade,
-  getUserFiles, saveUserFile, renameUserFile, moveUserFile, deleteUserFile
+  getUserFiles, saveUserFile, renameUserFile, moveUserFile, deleteUserFile,
+  countAllUserFiles, FREE_PERSONAL_SPACE_FILE_LIMIT
 } from '../lib/localDb';
+import { hasSubscriptionAccess } from '../../shared/subscriptionAccess';
+import SubscriptionPaywall from './SubscriptionPaywall';
 
 interface PersonalSpaceTabProps {
   user: UserProfile | null;
   lang: Language;
   onOpenLocalPdf: (file: UserFile) => void;
+  onNavigateToSubscription?: () => void;
+  onShowPaywall?: () => void;
 }
 
 const FOLDER_COLORS = [
@@ -35,9 +40,28 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: PersonalSpaceTabProps) {
+export default function PersonalSpaceTab({
+  user,
+  lang,
+  onOpenLocalPdf,
+  onNavigateToSubscription,
+  onShowPaywall,
+}: PersonalSpaceTabProps) {
   const isRtl = lang === 'ar';
   const userId = user?.uid || 'guest';
+  const isSubscribed = hasSubscriptionAccess(user);
+
+  // Quota and paywall state
+  const [totalUserFiles, setTotalUserFiles] = useState<number>(0);
+  const [showInternalPaywall, setShowInternalPaywall] = useState<boolean>(false);
+
+  const handleOpenPaywall = () => {
+    if (onShowPaywall) {
+      onShowPaywall();
+    } else {
+      setShowInternalPaywall(true);
+    }
+  };
 
   // Navigation state
   const [currentFolderId, setCurrentFolderId] = useState<string>(''); // '' represents root
@@ -101,12 +125,14 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
       getUserFolders(userId, currentFolderId),
       getUserFiles(userId, currentFolderId),
       getAllUserFolders(userId),
+      countAllUserFiles(userId),
     ])
-      .then(([currentFolders, currentFiles, allFolders]) => {
+      .then(([currentFolders, currentFiles, allFolders, totalFiles]) => {
         if (!cancelled) {
           setFolders(currentFolders);
           setFiles(currentFiles);
           setAllUserFoldersList(allFolders);
+          setTotalUserFiles(totalFiles);
           setIsLoading(false);
         }
       })
@@ -176,6 +202,10 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
   // Import PDF files
   const handleTriggerFileInput = () => {
     setShowAddMenu(false);
+    if (!isSubscribed && totalUserFiles >= FREE_PERSONAL_SPACE_FILE_LIMIT) {
+      handleOpenPaywall();
+      return;
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
       fileInputRef.current.click();
@@ -186,17 +216,43 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
     const selectedFiles = e.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
+    if (!isSubscribed && totalUserFiles >= FREE_PERSONAL_SPACE_FILE_LIMIT) {
+      handleOpenPaywall();
+      return;
+    }
+
+    const availableSlots = isSubscribed
+      ? Infinity
+      : Math.max(0, FREE_PERSONAL_SPACE_FILE_LIMIT - totalUserFiles);
+
+    const pdfFiles: File[] = [];
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        pdfFiles.push(file);
+      }
+    }
+
+    if (pdfFiles.length === 0) return;
+
+    const filesToImport = pdfFiles.slice(0, availableSlots);
+    const hasExceededLimit = !isSubscribed && pdfFiles.length > availableSlots;
+
+    if (filesToImport.length === 0) {
+      handleOpenPaywall();
+      return;
+    }
+
     setIsImporting(true);
-    setImportStatus(isRtl ? `جاري استيراد ${selectedFiles.length} ملف...` : `Importing ${selectedFiles.length} files...`);
+    setImportStatus(
+      isRtl
+        ? `جاري استيراد ${filesToImport.length} ملف...`
+        : `Importing ${filesToImport.length} files...`
+    );
 
     let importedCount = 0;
     try {
-      for (let i = 0; i < selectedFiles.length; i++) {
-        const file = selectedFiles[i];
-        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-          continue;
-        }
-
+      for (const file of filesToImport) {
         // Clean file name
         const cleanName = file.name.replace(/\.[^/.]+$/, '');
 
@@ -213,11 +269,29 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
       }
 
       setRefreshTrigger((t) => t + 1);
-      setImportStatus(isRtl ? `تم استيراد ${importedCount} ملف بنجاح!` : `Imported ${importedCount} files successfully!`);
-      setTimeout(() => {
-        setImportStatus(null);
-        setIsImporting(false);
-      }, 2000);
+
+      if (hasExceededLimit) {
+        setImportStatus(
+          isRtl
+            ? `تم استيراد ${importedCount} ملف. وصلت للحد الأقصى للباقة المجانية (6 ملفات)!`
+            : `Imported ${importedCount} files. Reached the free limit (6 files)!`
+        );
+        setTimeout(() => {
+          setImportStatus(null);
+          setIsImporting(false);
+          handleOpenPaywall();
+        }, 1200);
+      } else {
+        setImportStatus(
+          isRtl
+            ? `تم استيراد ${importedCount} ملف بنجاح!`
+            : `Imported ${importedCount} files successfully!`
+        );
+        setTimeout(() => {
+          setImportStatus(null);
+          setIsImporting(false);
+        }, 2000);
+      }
     } catch (err) {
       console.error('Failed to import files:', err);
       alert(isRtl ? 'حدث خطأ أثناء حفظ الملف محلياً.' : 'Failed to save file locally.');
@@ -370,6 +444,40 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2 relative self-end sm:self-auto" ref={addMenuRef}>
+            {/* Quota Badge */}
+            {isSubscribed ? (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/60 text-xs font-black shadow-xs">
+                <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                <span className="hidden sm:inline">{isRtl ? 'مساحة غير محدودة' : 'Unlimited Space'}</span>
+                <span className="sm:hidden">{isRtl ? 'غير محدود' : 'Unlimited'}</span>
+              </div>
+            ) : (
+              <div
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-2xl text-xs font-bold border transition-all ${
+                  totalUserFiles >= FREE_PERSONAL_SPACE_FILE_LIMIT
+                    ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                    : 'bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200/80 dark:border-zinc-700'
+                }`}
+              >
+                <span className="font-mono font-black">
+                  {totalUserFiles}/{FREE_PERSONAL_SPACE_FILE_LIMIT}
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:inline">
+                  {isRtl ? 'ملفات' : 'files'}
+                </span>
+                {totalUserFiles >= FREE_PERSONAL_SPACE_FILE_LIMIT && (
+                  <button
+                    type="button"
+                    onClick={handleOpenPaywall}
+                    className="flex items-center gap-1 text-[11px] font-black text-amber-600 dark:text-amber-400 hover:text-amber-700 underline underline-offset-2 ml-1 rtl:ml-0 rtl:mr-1 transition"
+                  >
+                    <Crown className="w-3 h-3 text-amber-500 fill-amber-500" />
+                    <span>{isRtl ? 'ترقية' : 'Upgrade'}</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* View Mode Toggle */}
             <div className="flex items-center bg-slate-100 dark:bg-zinc-900 rounded-2xl p-1 border border-slate-200/60 dark:border-zinc-800">
               <button
@@ -1130,6 +1238,22 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
           </div>
         )}
       </AnimatePresence>
+
+      {/* ========================================================================= */}
+      {/* MODAL: Subscription Paywall                                               */}
+      {/* ========================================================================= */}
+      {showInternalPaywall && (
+        <SubscriptionPaywall
+          lang={lang}
+          onClose={() => setShowInternalPaywall(false)}
+          onSubscribe={() => {
+            setShowInternalPaywall(false);
+            if (onNavigateToSubscription) {
+              onNavigateToSubscription();
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
