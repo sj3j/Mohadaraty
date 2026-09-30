@@ -21,7 +21,7 @@
  */
 
 const DB_NAME = 'mylecture-local';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export const STORE_ANNOTATIONS = 'pdfAnnotations';
 export const STORE_BLOBS = 'pdfBlobs';
@@ -36,6 +36,11 @@ export const STORE_META = 'meta';
  * bytes were on the device with no title or id to reach them by.
  */
 export const STORE_OFFLINE_LECTURES = 'offlineLectures';
+
+/** Stores for "مساحتك" (Personal Space) local folder & file organization */
+export const STORE_USER_FOLDERS = 'userFolders';
+export const STORE_USER_FILES = 'userFiles';
+export const STORE_USER_BLOBS = 'userFileBlobs';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -80,6 +85,20 @@ export function openDb(): Promise<IDBDatabase> {
       // pdfUrl, and anything keyed on the URL silently stops matching.
       if (!db.objectStoreNames.contains(STORE_OFFLINE_LECTURES)) {
         db.createObjectStore(STORE_OFFLINE_LECTURES, { keyPath: 'id' });
+      }
+      // v3. Personal Space ("مساحتك") stores for local student files and folders.
+      if (!db.objectStoreNames.contains(STORE_USER_FOLDERS)) {
+        const sf = db.createObjectStore(STORE_USER_FOLDERS, { keyPath: 'id' });
+        sf.createIndex('by_user', 'userId', { unique: false });
+        sf.createIndex('by_user_parent', ['userId', 'parentId'], { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_USER_FILES)) {
+        const sfi = db.createObjectStore(STORE_USER_FILES, { keyPath: 'id' });
+        sfi.createIndex('by_user', 'userId', { unique: false });
+        sfi.createIndex('by_user_folder', ['userId', 'folderId'], { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_USER_BLOBS)) {
+        db.createObjectStore(STORE_USER_BLOBS, { keyPath: 'id' });
       }
     };
 
@@ -171,3 +190,193 @@ export function dbDeleteByIndex(store: string, index: string, query: IDBValidKey
     tx.onabort = () => reject(tx.error);
   }));
 }
+
+// ============================================================================
+// Personal Space ("مساحتك") Types & Local Operations
+// ============================================================================
+
+export interface UserFolder {
+  id: string;
+  userId: string;
+  name: string;
+  parentId: string; // '' for root folder
+  color?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UserFile {
+  id: string;
+  userId: string;
+  folderId: string; // '' for root folder
+  name: string;
+  size: number;
+  pageCount?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UserFileBlob {
+  id: string;
+  blob: Blob;
+}
+
+function generateLocalId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+}
+
+export async function createUserFolder(
+  data: Omit<UserFolder, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<UserFolder> {
+  const now = Date.now();
+  const folder: UserFolder = {
+    ...data,
+    id: generateLocalId(),
+    parentId: data.parentId || '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await dbPut<UserFolder>(STORE_USER_FOLDERS, folder);
+  return folder;
+}
+
+export async function getUserFolders(userId: string, parentId: string = ''): Promise<UserFolder[]> {
+  try {
+    const range = IDBKeyRange.only([userId, parentId]);
+    const items = await dbGetAllByIndex<UserFolder>(STORE_USER_FOLDERS, 'by_user_parent', range);
+    return items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  } catch {
+    const all = await dbGetAllByIndex<UserFolder>(STORE_USER_FOLDERS, 'by_user', IDBKeyRange.only(userId));
+    return all.filter(f => (f.parentId || '') === parentId).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  }
+}
+
+export async function getAllUserFolders(userId: string): Promise<UserFolder[]> {
+  try {
+    const items = await dbGetAllByIndex<UserFolder>(STORE_USER_FOLDERS, 'by_user', IDBKeyRange.only(userId));
+    return items;
+  } catch {
+    const all = await dbGetAll<UserFolder>(STORE_USER_FOLDERS);
+    return all.filter(f => f.userId === userId);
+  }
+}
+
+export async function renameUserFolder(folderId: string, newName: string): Promise<void> {
+  const folder = await dbGet<UserFolder>(STORE_USER_FOLDERS, folderId);
+  if (!folder) return;
+  folder.name = newName.trim();
+  folder.updatedAt = Date.now();
+  await dbPut<UserFolder>(STORE_USER_FOLDERS, folder);
+}
+
+export async function deleteUserFolderCascade(
+  userId: string,
+  folderId: string
+): Promise<{ deletedFolders: number; deletedFiles: number }> {
+  const allFolders = await getAllUserFolders(userId);
+  const allFiles = (await dbGetAll<UserFile>(STORE_USER_FILES)).filter(f => f.userId === userId);
+
+  // Collect all descendant folder IDs recursively
+  const folderIdsToDelete = new Set<string>([folderId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const f of allFolders) {
+      if (!folderIdsToDelete.has(f.id) && f.parentId && folderIdsToDelete.has(f.parentId)) {
+        folderIdsToDelete.add(f.id);
+        added = true;
+      }
+    }
+  }
+
+  // Find all files belonging to these folders
+  const filesToDelete = allFiles.filter(f => folderIdsToDelete.has(f.folderId));
+
+  // 1. Delete file blobs and records
+  for (const file of filesToDelete) {
+    await dbDelete(STORE_USER_BLOBS, file.id);
+    await dbDelete(STORE_USER_FILES, file.id);
+    // Also remove any annotations saved for this local file
+    try {
+      await dbDeleteByIndex(STORE_ANNOTATIONS, 'by_lecture', file.id);
+    } catch { /* best effort */ }
+  }
+
+  // 2. Delete folders
+  for (const fId of folderIdsToDelete) {
+    await dbDelete(STORE_USER_FOLDERS, fId);
+  }
+
+  return {
+    deletedFolders: folderIdsToDelete.size,
+    deletedFiles: filesToDelete.length,
+  };
+}
+
+export async function saveUserFile(
+  data: Omit<UserFile, 'id' | 'createdAt' | 'updatedAt'>,
+  blob: Blob
+): Promise<UserFile> {
+  const now = Date.now();
+  const file: UserFile = {
+    ...data,
+    id: generateLocalId(),
+    folderId: data.folderId || '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await dbPut<UserFileBlob>(STORE_USER_BLOBS, { id: file.id, blob });
+  await dbPut<UserFile>(STORE_USER_FILES, file);
+  return file;
+}
+
+export async function getUserFiles(userId: string, folderId: string = ''): Promise<UserFile[]> {
+  try {
+    const range = IDBKeyRange.only([userId, folderId]);
+    const items = await dbGetAllByIndex<UserFile>(STORE_USER_FILES, 'by_user_folder', range);
+    return items.sort((a, b) => b.createdAt - a.createdAt);
+  } catch {
+    const all = await dbGetAllByIndex<UserFile>(STORE_USER_FILES, 'by_user', IDBKeyRange.only(userId));
+    return all.filter(f => (f.folderId || '') === folderId).sort((a, b) => b.createdAt - a.createdAt);
+  }
+}
+
+export async function renameUserFile(fileId: string, newName: string): Promise<void> {
+  const file = await dbGet<UserFile>(STORE_USER_FILES, fileId);
+  if (!file) return;
+  file.name = newName.trim();
+  file.updatedAt = Date.now();
+  await dbPut<UserFile>(STORE_USER_FILES, file);
+}
+
+export async function moveUserFile(fileId: string, targetFolderId: string = ''): Promise<void> {
+  const file = await dbGet<UserFile>(STORE_USER_FILES, fileId);
+  if (!file) return;
+  file.folderId = targetFolderId || '';
+  file.updatedAt = Date.now();
+  await dbPut<UserFile>(STORE_USER_FILES, file);
+}
+
+export async function deleteUserFile(fileId: string): Promise<void> {
+  await dbDelete(STORE_USER_BLOBS, fileId);
+  await dbDelete(STORE_USER_FILES, fileId);
+  try {
+    await dbDeleteByIndex(STORE_ANNOTATIONS, 'by_lecture', fileId);
+  } catch { /* best effort */ }
+}
+
+export async function getUserFileBlob(fileId: string): Promise<Blob | null> {
+  const rec = await dbGet<UserFileBlob>(STORE_USER_BLOBS, fileId);
+  return rec?.blob ?? null;
+}
+
+export async function searchUserFiles(userId: string, query: string): Promise<UserFile[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const all = (await dbGetAll<UserFile>(STORE_USER_FILES)).filter(f => f.userId === userId);
+  return all.filter(f => f.name.toLowerCase().includes(q));
+}
+

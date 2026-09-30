@@ -11,72 +11,8 @@ import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
 import { db } from '../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { listOfflineLectures, type OfflineLecture } from '../lib/localDb';
-
-function DownloadsTab({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader }: any) {
-  const [trigger, setTrigger] = useState(0);
-  const [storedLectures, setStoredLectures] = useState<OfflineLecture[]>([]);
-  const isRtl = lang === 'ar';
-
-  // The Firestore-backed `lectures` array is empty on an offline cold start, and
-  // this tab used to filter only that - so a student with saved PDFs was told
-  // they had no downloads. IndexedDB holds a snapshot of each downloaded
-  // lecture, which is the copy that survives having no network.
-  useEffect(() => {
-    let cancelled = false;
-    listOfflineLectures()
-      .then(rows => { if (!cancelled) setStoredLectures(rows); })
-      .catch(() => { if (!cancelled) setStoredLectures([]); });
-    return () => { cancelled = true; };
-  }, [trigger]);
-
-  // Live documents win where both exist - a title edited since the download
-  // should show its current text - with the stored snapshot filling the rest.
-  const liveById = new Map<string, Lecture>(lectures.map((l: Lecture) => [l.id, l]));
-  const merged = new Map<string, Lecture>();
-  for (const stored of storedLectures) {
-    merged.set(stored.id, (liveById.get(stored.id) ?? stored) as Lecture);
-  }
-  for (const l of lectures as Lecture[]) {
-    if (localStorage.getItem(`pdf_${l.id}`)) merged.set(l.id, l);
-  }
-
-  const downloadedLectures = Array.from(merged.values())
-    .map((l: Lecture) => ({
-      lecture: l,
-      downloadedAt:
-        parseInt(localStorage.getItem(`pdf_${l.id}`) || '0', 10)
-        || storedLectures.find(s => s.id === l.id)?.savedAt
-        || 0,
-    }))
-    .sort((a: any, b: any) => b.downloadedAt - a.downloadedAt);
-
-  if (downloadedLectures.length === 0) {
-    return (
-      <div className="text-center py-12 bg-white dark:bg-zinc-800 rounded-3xl border border-slate-200 dark:border-zinc-700 border-dashed">
-        <h3 className="text-slate-500 dark:text-slate-400 font-medium">
-          {isRtl ? 'لا توجد تنزيلات محفوظة' : 'No saved downloads'}
-        </h3>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-      {downloadedLectures.map(({ lecture }: any) => (
-        <LectureCard
-          key={lecture.id}
-          lecture={lecture}
-          lang={lang}
-          user={user}
-          onEdit={onEdit}
-          onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
-          onRemoveDownload={() => setTrigger(t => t + 1)}
-        />
-      ))}
-    </div>
-  );
-}
+import PersonalSpaceTab from './PersonalSpaceTab';
+import { type UserFile } from '../lib/localDb';
 
 type InnerTab = 'lectures' | 'weekly' | 'records' | 'leaderboard' | 'downloads';
 
@@ -97,6 +33,7 @@ interface HomeScreenProps {
   setShowAdminManage: (val: boolean) => void;
   initialTab?: InnerTab;
   onOpenProgression?: () => void;
+  onOpenLocalPdf?: (file: UserFile) => void;
 }
 
 export default function HomeScreen({
@@ -114,7 +51,8 @@ export default function HomeScreen({
   setShowStreakManage,
   setShowAdminManage,
   initialTab = 'lectures',
-  onOpenProgression
+  onOpenProgression,
+  onOpenLocalPdf
 }: HomeScreenProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
@@ -164,7 +102,7 @@ export default function HomeScreen({
     { id: 'weekly', label: isRtl ? 'واجبات الأسبوع' : 'Weekly Tasks' },
     { id: 'records', label: isRtl ? 'التسجيلات' : 'Records' },
     { id: 'lectures', label: isRtl ? 'المحاضرات' : 'Lectures' },
-    { id: 'downloads', label: isRtl ? 'التنزيلات المحفوظة' : 'Saved Downloads' },
+    { id: 'downloads', label: isRtl ? 'مساحتك' : 'Your Space' },
     { id: 'leaderboard', label: isRtl ? '🏆 لوحة الصدارة' : '🏆 Leaderboard' }
   ];
 
@@ -387,12 +325,12 @@ export default function HomeScreen({
           );
         })()}
         {activeTab === 'downloads' && (
-          <DownloadsTab
-             lectures={lectures}
-             lang={lang}
-             user={user}
-                onEdit={onEdit}
-             onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
+          <PersonalSpaceTab
+            user={user}
+            lang={lang}
+            onOpenLocalPdf={(file) => {
+              if (onOpenLocalPdf) onOpenLocalPdf(file);
+            }}
           />
         )}
         {activeTab === 'weekly' && (

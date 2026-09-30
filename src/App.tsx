@@ -58,6 +58,7 @@ import { Loader2, BookOpen, SearchX, Lock, Shield, Users, UserCircle, AlertCircl
 import { motion, AnimatePresence } from 'motion/react';
 import Fuse from 'fuse.js';
 import { usePushNotifications } from './hooks/usePushNotifications';
+import { type UserFile, getUserFileBlob } from './lib/localDb';
 import { syncPendingSubmissions } from './services/mcqAnswerService';
 import { apiUrl } from './lib/apiBase';
 
@@ -185,6 +186,8 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [mcqLecture, setMcqLecture] = useState<Lecture | null>(null);
   const [readerLecture, setReaderLecture] = useState<Lecture | null>(null);
+  const [localReaderFile, setLocalReaderFile] = useState<UserFile | null>(null);
+  const [localBlobUrl, setLocalBlobUrl] = useState<string | null>(null);
   const { theme, setTheme } = useTheme();
 
   const { permission, requestPermission, isRequesting } = usePushNotifications(user);
@@ -767,6 +770,27 @@ export default function App() {
 
   const handleOpenReader = useCallback((l: Lecture) => setReaderLecture(l), []);
 
+  const handleOpenLocalPdf = useCallback(async (file: UserFile) => {
+    try {
+      const blob = await getUserFileBlob(file.id);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        setLocalBlobUrl(url);
+        setLocalReaderFile(file);
+      }
+    } catch (e) {
+      console.error('Failed to open local PDF', e);
+    }
+  }, []);
+
+  const handleCloseLocalReader = useCallback(() => {
+    if (localBlobUrl) {
+      URL.revokeObjectURL(localBlobUrl);
+      setLocalBlobUrl(null);
+    }
+    setLocalReaderFile(null);
+  }, [localBlobUrl]);
+
   const handleOpenMCQ = useCallback((l: Lecture) => {
     if (hasMCQAccess(user)) {
       setMcqLecture(l);
@@ -846,7 +870,7 @@ export default function App() {
   // Students are unaffected: they never mount the composer, and keep the nav.
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
-  const isAnyOverlayOpen = showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null);
+  const isAnyOverlayOpen = showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the
@@ -916,6 +940,7 @@ export default function App() {
           onEdit={handleEditLecture} 
           onOpenMCQ={handleOpenMCQ}
           onOpenReader={handleOpenReader}
+          onOpenLocalPdf={handleOpenLocalPdf}
           setShowStudentManage={setShowStudentManage}
           setShowStreakManage={setShowStreakManage} 
           setShowAdminManage={setShowAdminManage} 
@@ -1042,6 +1067,19 @@ export default function App() {
               setReaderLecture(null);
               setShowPaywall(true);
             }}
+          />
+        </Suspense>
+      )}
+
+      {localReaderFile && localBlobUrl && (
+        <Suspense fallback={null}>
+          <PdfReaderOverlay
+            lectureId={localReaderFile.id}
+            lectureTitle={localReaderFile.name}
+            pdfUrl={localBlobUrl}
+            isLocalFile={true}
+            lang={lang}
+            onClose={handleCloseLocalReader}
           />
         </Suspense>
       )}

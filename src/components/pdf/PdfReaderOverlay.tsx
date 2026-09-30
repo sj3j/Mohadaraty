@@ -24,6 +24,7 @@ import { useBackDismiss } from '../../hooks/useBackDismiss';
 import SimosanDrawer from './SimosanDrawer';
 import { exportLecture, getDocMeta, setDocMeta } from '../../services/pdfAnnotationService';
 import { fetchSimosanState } from '../../services/simosanService';
+import { getUserFileBlob } from '../../lib/localDb';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language } from '../../types';
 import '../../styles/pdf-text-layer.css';
@@ -35,6 +36,7 @@ interface Props {
   lang: Language;
   onClose: () => void;
   onOpenSubscription?: () => void;
+  isLocalFile?: boolean;
 }
 
 interface SelectionFragment {
@@ -113,7 +115,7 @@ function band(v: number, lo: number, hi: number, span: number): number {
   return v;
 }
 
-export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription }: Props) {
+export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription, isLocalFile }: Props) {
   const isRtl = lang === 'ar';
 
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -259,10 +261,14 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   // One probe per open. The server is the authority on both subscription and
   // the global kill switch, so this only decides whether to draw the button.
   useEffect(() => {
+    if (isLocalFile) {
+      setSimosanReady(false);
+      return;
+    }
     let alive = true;
     fetchSimosanState().then((s) => { if (alive) setSimosanReady(!!s?.available); });
     return () => { alive = false; };
-  }, []);
+  }, [isLocalFile]);
 
   const openSimosan = useCallback((seed?: string) => {
     setSimosanSeed(seed ?? null);
@@ -290,15 +296,21 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
 
     (async () => {
       try {
-        // Prefer the downloaded copy: it works offline and skips the network
-        // entirely for a lecture the student already saved.
-        const [pdfjs, local] = await Promise.all([
+        const [pdfjs, localBlob] = await Promise.all([
           loadPdfjs(),
-          readStoredPdf(pdfUrl),
+          isLocalFile ? getUserFileBlob(lectureId) : Promise.resolve(null),
         ]);
         if (cancelled) return;
-        const buf = local ?? await fetchPdfBytes(pdfUrl, ac.signal);
-        if (cancelled) return;
+
+        let buf: ArrayBuffer | null = localBlob ? await localBlob.arrayBuffer() : null;
+        if (!buf) {
+          // Prefer the downloaded copy: it works offline and skips the network
+          // entirely for a lecture the student already saved.
+          const local = await readStoredPdf(pdfUrl);
+          if (cancelled) return;
+          buf = local ?? await fetchPdfBytes(pdfUrl, ac.signal);
+        }
+        if (cancelled || !buf) return;
 
         const doc = await pdfjs.getDocument({
           ...PDFJS_DOC_OPTIONS,
