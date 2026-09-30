@@ -306,7 +306,7 @@ export default function PersonalSpaceTab({ user, lang, onOpenLocalPdf }: Persona
   const currentFolderName = folderHistory.length > 0 ? folderHistory[folderHistory.length - 1].name : (isRtl ? 'مساحتك الرئيسية' : 'Main Space');
 
   return (
-    <div className="space-y-5 pb-8" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="space-y-5 pb-28 sm:pb-32" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* Hidden File Input */}
       <input
         type="file"
