@@ -4,8 +4,8 @@ import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOf
 import { db, auth } from '../../lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import {
-  AskError, askSimosan, fetchSimosanState, formatReset, parseCitations,
-  parseSimosanQuiz, watchLecture, watchMessages,
+  AskError, askSimosan, fetchSimosanHistory, fetchSimosanState, formatReset, parseCitations,
+  parseSimosanQuiz,
   type SimosanMessage, type SimosanState, type SimosanLanguageMode, type SimosanQuizQuestion,
 } from '../../services/simosanService';
 import SimosanMarkdown from './SimosanMarkdown';
@@ -100,28 +100,22 @@ export default function SimosanDrawer({
   const [snap, setSnap] = useState<'half' | 'full'>('half');
   const sheetHeight = snap === 'full' ? '92vh' : '55vh';
 
-  useEffect(() => { fetchSimosanState().then(setState); }, []);
-  useEffect(() => watchLecture(lectureId, setThreadId), [lectureId]);
-  useEffect(() => {
-    if (!threadId) { setMessages([]); return; }
-    return watchMessages(lectureId, threadId, (snapshotMsgs) => {
-      setMessages((prev) => {
-        if (snapshotMsgs.length === 0 && prev.length > 0 && prev[prev.length - 1].id === '_p') {
-          return prev;
-        }
-        
-        // Fix Firestore batch sorting inversion for the first turn
-        if (snapshotMsgs.length >= 2 && snapshotMsgs[0].role === 'model' && snapshotMsgs[1].role === 'user') {
-          const corrected = [...snapshotMsgs];
-          corrected[0] = snapshotMsgs[1];
-          corrected[1] = snapshotMsgs[0];
-          return corrected;
-        }
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await fetchSimosanHistory(lectureId);
+      if (res) {
+        if (res.threadId) setThreadId(res.threadId);
+        setMessages(res.messages || []);
+      }
+    } catch (err) {
+      console.warn('[SimosanDrawer] loadHistory failed', err);
+    }
+  }, [lectureId]);
 
-        return snapshotMsgs;
-      });
-    });
-  }, [lectureId, threadId]);
+  useEffect(() => {
+    fetchSimosanState().then(setState);
+    loadHistory();
+  }, [lectureId, loadHistory]);
 
   // Keep the newest turn in view as it streams in.
   useEffect(() => {
@@ -183,13 +177,11 @@ export default function SimosanDrawer({
           onDone: (done) => {
             setState((s) => (s ? { ...s, remaining: done.remaining } : s));
             setReadOnly(done.isReadOnly);
-            // The server commits both messages before emitting `done`, so the
-            // Firestore listener already holds them - dropping the optimistic
-            // copies here avoids rendering each turn twice.
             setStreaming('');
             if (done.offTopic) {
               setError(new AskError('internal'));
-              setStreaming('');
+            } else {
+              loadHistory();
             }
           },
         },

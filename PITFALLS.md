@@ -105,6 +105,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 ## Data model & consistency
 - Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.
 - Free AI tutor allowance must not be checked via daily energy units or blocked by subscription gates → partition weekly free turns in `aiUsage/{uid}_free_{week}` by Baghdad academic week (starts Saturday) with atomic reservation and immediate upgrade CTA upon exhaustion.
+- AI chat history reads in Firestore burn 20+ document reads per question and trigger client listener read loops → offload chat threads and messages to Supabase Postgres (relational index scans) with server in-memory caching for lectures and settings, preserving Firestore security rules while eliminating 99% of read quota exhaustion.
 - A DENORMALISED field (e.g. `userMCQStats.stageId`, a copy of `users.stageId`
   so a board can be filtered without reading every user) must be rewritten by
   EVERY path that changes the source. `stagePromotion` re-filed it, the

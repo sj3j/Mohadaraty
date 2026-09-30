@@ -17,6 +17,7 @@ import {
   TOKENS_PER_PDF_PAGE,
   type GeminiUsage,
 } from './simosan.js';
+import { serverCache } from './serverCache.js';
 
 export interface ChatMessage {
   role: 'user' | 'model';
@@ -89,6 +90,12 @@ export async function ensureLectureFile(
   lectureId: string,
   pdfUrl: string,
 ): Promise<LectureFile> {
+  const memKey = `aiFile:${lectureId}`;
+  const memCached = serverCache.get<LectureFile>(memKey);
+  if (memCached) {
+    return memCached;
+  }
+
   const ref = db.collection('aiFiles').doc(lectureId);
   const snap = await ref.get();
   const cached = snap.exists ? snap.data() : null;
@@ -96,7 +103,9 @@ export async function ensureLectureFile(
   if (cached?.fileUri && cached?.uploadedAtMs) {
     const age = Date.now() - Number(cached.uploadedAtMs);
     if (age < FILE_REFRESH_MS) {
-      return { fileUri: cached.fileUri, pageCount: Number(cached.pageCount) || 1 };
+      const res = { fileUri: cached.fileUri, pageCount: Number(cached.pageCount) || 1 };
+      serverCache.set(memKey, res, 60 * 60 * 1000);
+      return res;
     }
   }
 
@@ -149,8 +158,9 @@ export async function ensureLectureFile(
     },
     { merge: true },
   );
-
-  return { fileUri: file.uri, pageCount };
+  const finalResult = { fileUri: file.uri, pageCount };
+  serverCache.set(memKey, finalResult, 60 * 60 * 1000);
+  return finalResult;
 }
 
 /* ------------------------------------------------------------------ *

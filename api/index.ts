@@ -2035,6 +2035,7 @@ app.post('/api/subscriptions/:id/cancel', verifyAuth, verifyAdmin, requireSubscr
 const simosan = createSimosanHandlers({ admin });
 app.post("/api/ai/ask", verifyAuth, simosan.ask);
 app.get("/api/ai/state", verifyAuth, simosan.state);
+app.get("/api/ai/history", verifyAuth, simosan.history);
 app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
 app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
 

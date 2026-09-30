@@ -117,3 +117,7 @@ ios assest/
 store-assets/
 
 
+
+# IDE & Agent tooling
+.aider-desk/
+.gemini/

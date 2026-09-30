@@ -100,6 +100,21 @@ const threadsRef = (uid: string, lectureId: string) =>
 const messagesRef = (uid: string, lectureId: string, threadId: string) =>
   collection(db, 'aiChats', uid, 'lectures', lectureId, 'threads', threadId, 'messages');
 
+export async function fetchSimosanHistory(
+  lectureId: string,
+): Promise<{ threadId: string; messages: SimosanMessage[] } | null> {
+  try {
+    const res = await fetch(apiUrl(`/api/ai/history?lectureId=${encodeURIComponent(lectureId)}`), {
+      headers: await authHeader(),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn('[simosan] fetchSimosanHistory failed', err);
+    return null;
+  }
+}
+
 /** Live view of one thread's messages. Chats are read straight from Firestore
  *  rather than replayed through the API — the API is only for spending. */
 export function watchMessages(

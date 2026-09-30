@@ -19,6 +19,7 @@
  */
 
 import { hasSubscriptionAccess } from './subscriptionAccess.js';
+import { serverCache } from './serverCache.js';
 
 /* ------------------------------------------------------------------ *
  * Pricing and the energy unit
@@ -323,9 +324,16 @@ export function normaliseSettings(raw: any, now: Date = new Date()): SimosanSett
 export async function readSettings(
   ctx: SimosanCtx,
   now: Date = new Date(),
+  skipCache = false,
 ): Promise<SimosanSettings> {
+  if (!skipCache) {
+    const cached = serverCache.get<SimosanSettings>('simosan:settings');
+    if (cached) return cached;
+  }
   const snap = await ctx.db.collection('app_settings').doc('simosan').get();
-  return normaliseSettings(snap.exists ? snap.data() : null, now);
+  const settings = normaliseSettings(snap.exists ? snap.data() : null, now);
+  serverCache.set('simosan:settings', settings, 3 * 60 * 1000);
+  return settings;
 }
 
 /* ------------------------------------------------------------------ *

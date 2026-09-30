@@ -39,6 +39,14 @@ import {
   streamAnswer,
   type ChatMessage,
 } from './simosanChat.js';
+import { serverCache } from './serverCache.js';
+import { getSupabaseAdmin } from './supabaseClient.js';
+import {
+  resolveSupaThread,
+  loadSupaHistory,
+  recordSupaTurn,
+  getClientMessagesFromSupabase,
+} from './simosanSupabase.js';
 
 export interface SimosanDeps {
   admin: any;
@@ -100,6 +108,17 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       stageId: data?.stageId || '',
       isAdmin: data?.role === 'admin' || !!data?.isMasterAdmin,
     };
+  }
+
+  async function getCachedLecture(db: any, lectureId: string) {
+    const cacheKey = `lecture:${lectureId}`;
+    const cached = serverCache.get<any>(cacheKey);
+    if (cached) return cached;
+    const snap = await db.collection('lectures').doc(lectureId).get();
+    if (!snap.exists) return null;
+    const data = snap.data();
+    serverCache.set(cacheKey, data, 5 * 60 * 1000);
+    return data;
   }
 
   /* ---------------------------------------------------------------- *
@@ -192,52 +211,78 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       const hasAccess = hasAiAccess(caller.data);
       const isFreeTier = !hasAccess;
 
-      const lectureSnap = await db.collection('lectures').doc(lectureId).get();
-      if (!lectureSnap.exists) return fail(404, 'lecture_not_found');
-      const lecture = lectureSnap.data();
+      const lecture = await getCachedLecture(db, lectureId);
+      if (!lecture) return fail(404, 'lecture_not_found');
       if (!lecture?.pdfUrl) return fail(400, 'lecture_has_no_pdf');
 
       const settings = await readSettings(ctx());
       if (!settings.enabled) return fail(503, 'disabled');
 
-      // --- thread resolution -------------------------------------------------
+      // --- thread & history resolution (Supabase with Firestore fallback) -----
+      let threadId = '';
+      let questionCount = 0;
+      let history: ChatMessage[] = [];
+      let isSupabaseActive = false;
+
+      const supabase = getSupabaseAdmin();
+      if (supabase) {
+        const supaThread = await resolveSupaThread(supabase, {
+          userId: uid,
+          lectureId,
+          stageId: caller.stageId,
+          isFreeTier,
+          forceNew: newThread === true,
+        });
+        if (supaThread) {
+          threadId = supaThread.threadId;
+          questionCount = supaThread.questionCount;
+          const supaHist = await loadSupaHistory(supabase, threadId, HISTORY_WINDOW);
+          if (supaHist !== null) {
+            history = supaHist;
+            isSupabaseActive = true;
+          }
+        }
+      }
+
       const lectureRef = db
         .collection('aiChats').doc(uid)
         .collection('lectures').doc(lectureId);
       const threadsRef = lectureRef.collection('threads');
-
-      const lectureDoc = await lectureRef.get();
-      let threadId: string = lectureDoc.exists ? lectureDoc.data()?.activeThreadId : '';
-      let threadSnap = threadId ? await threadsRef.doc(threadId).get() : null;
-      let questionCount = threadSnap?.exists ? Number(threadSnap.data()?.questionCount) || 0 : 0;
+      let msgsRef: any = null;
       const maxChatQuestions = isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT;
 
-      const needsNew =
-        newThread === true ||
-        !threadSnap?.exists ||
-        threadSnap.data()?.isReadOnly === true ||
-        questionCount >= maxChatQuestions;
+      if (!isSupabaseActive) {
+        const lectureDoc = await lectureRef.get();
+        threadId = lectureDoc.exists ? lectureDoc.data()?.activeThreadId : '';
+        let threadSnap = threadId ? await threadsRef.doc(threadId).get() : null;
+        questionCount = threadSnap?.exists ? Number(threadSnap.data()?.questionCount) || 0 : 0;
 
-      if (needsNew) {
-        const fresh = threadsRef.doc();
-        await fresh.set({
-          stageId: caller.stageId,
-          questionCount: 0,
-          isReadOnly: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        threadId = fresh.id;
-        questionCount = 0;
-        threadSnap = await fresh.get();
+        const needsNew =
+          newThread === true ||
+          !threadSnap?.exists ||
+          threadSnap.data()?.isReadOnly === true ||
+          questionCount >= maxChatQuestions;
+
+        if (needsNew) {
+          const fresh = threadsRef.doc();
+          await fresh.set({
+            stageId: caller.stageId,
+            questionCount: 0,
+            isReadOnly: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          threadId = fresh.id;
+          questionCount = 0;
+          threadSnap = await fresh.get();
+        }
+
+        msgsRef = threadsRef.doc(threadId).collection('messages');
+        const histSnap = await msgsRef.orderBy('createdAt', 'desc').limit(HISTORY_WINDOW).get();
+        history = histSnap.docs
+          .reverse()
+          .map((d: any) => ({ role: d.data().role, text: d.data().text }));
       }
-
-      // --- history -----------------------------------------------------------
-      const msgsRef = threadsRef.doc(threadId).collection('messages');
-      const histSnap = await msgsRef.orderBy('createdAt', 'desc').limit(HISTORY_WINDOW).get();
-      const history: ChatMessage[] = histSnap.docs
-        .reverse()
-        .map((d: any) => ({ role: d.data().role, text: d.data().text }));
 
       // --- file + reservation ------------------------------------------------
       const file = await ensureLectureFile(
@@ -417,39 +462,55 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       // is neither stored nor counted against the chat cap.
       const citedPages = extractCitedPages(answer);
       if (!offTopic) {
-        const now = admin.firestore.FieldValue.serverTimestamp();
-        const batch = db.batch();
-        batch.set(msgsRef.doc(), {
-          role: 'user',
-          text: question.trim(),
-          selection: selection?.slice(0, 4000) || null,
-          createdAt: now,
-        });
-        batch.set(msgsRef.doc(), {
-          role: 'model',
-          text: answer,
-          citedPages,
-          units: actual,
-          createdAt: now,
-        });
-        const nextCount = questionCount + 1;
-        const chatLimit = isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT;
-        batch.set(
-          threadsRef.doc(threadId),
-          {
-            questionCount: nextCount,
-            isReadOnly: nextCount >= chatLimit,
+        if (isSupabaseActive && supabase) {
+          await recordSupaTurn(supabase, {
+            threadId,
+            userId: uid,
+            lectureId,
             stageId: caller.stageId,
-            updatedAt: now,
-          },
-          { merge: true },
-        );
-        batch.set(
-          lectureRef,
-          { activeThreadId: threadId, stageId: caller.stageId, updatedAt: now },
-          { merge: true },
-        );
-        await batch.commit();
+            question: question.trim(),
+            selection,
+            answer,
+            citedPages,
+            isFreeTier,
+            currentQuestionCount: questionCount,
+          });
+        } else {
+          const now = admin.firestore.FieldValue.serverTimestamp();
+          const batch = db.batch();
+          const targetMsgsRef = msgsRef || threadsRef.doc(threadId).collection('messages');
+          batch.set(targetMsgsRef.doc(), {
+            role: 'user',
+            text: question.trim(),
+            selection: selection?.slice(0, 4000) || null,
+            createdAt: now,
+          });
+          batch.set(targetMsgsRef.doc(), {
+            role: 'model',
+            text: answer,
+            citedPages,
+            units: actual,
+            createdAt: now,
+          });
+          const nextCount = questionCount + 1;
+          const chatLimit = isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT;
+          batch.set(
+            threadsRef.doc(threadId),
+            {
+              questionCount: nextCount,
+              isReadOnly: nextCount >= chatLimit,
+              stageId: caller.stageId,
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+          batch.set(
+            lectureRef,
+            { activeThreadId: threadId, stageId: caller.stageId, updatedAt: now },
+            { merge: true },
+          );
+          await batch.commit();
+        }
       }
 
       res.write(
@@ -585,12 +646,65 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       if (typeof model === 'string' && model.trim()) patch.model = model.trim();
 
       await db.collection('app_settings').doc('simosan').set(patch, { merge: true });
-      res.json({ ok: true, settings: await readSettings(ctx()) });
+      serverCache.delete('simosan:settings');
+      res.json({ ok: true, settings: await readSettings(ctx(), new Date(), true) });
     } catch (e: any) {
       console.error('[simosan] adminSettings failed', e);
       res.status(500).json({ error: 'Failed to update settings' });
     }
   }
 
-  return { ask, state, adminStats, adminSettings };
+  /* ---------------------------------------------------------------- *
+   * GET /api/ai/history
+   * ---------------------------------------------------------------- */
+  async function history(req: any, res: any) {
+    try {
+      const uid = req.user.uid;
+      const lectureId = String(req.query.lectureId || '');
+      if (!lectureId) return res.status(400).json({ error: 'lectureId is required' });
+
+      const supabase = getSupabaseAdmin();
+      if (supabase) {
+        const supaResult = await getClientMessagesFromSupabase(supabase, { userId: uid, lectureId });
+        if (supaResult && supaResult.threadId) {
+          return res.json({
+            threadId: supaResult.threadId,
+            messages: supaResult.messages,
+          });
+        }
+      }
+
+      // Fallback to Firestore
+      const db = admin.firestore();
+      const lectureRef = db.collection('aiChats').doc(uid).collection('lectures').doc(lectureId);
+      const lectureDoc = await lectureRef.get();
+      const activeThreadId = lectureDoc.exists ? lectureDoc.data()?.activeThreadId : '';
+      if (!activeThreadId) {
+        return res.json({ threadId: '', messages: [] });
+      }
+
+      const msgsSnap = await lectureRef
+        .collection('threads')
+        .doc(activeThreadId)
+        .collection('messages')
+        .orderBy('createdAt', 'asc')
+        .limit(60)
+        .get();
+
+      const messages = msgsSnap.docs.map((d: any) => ({
+        id: d.id,
+        role: d.data().role,
+        text: d.data().text || '',
+        citedPages: d.data().citedPages || [],
+        selection: d.data().selection ?? null,
+      }));
+
+      res.json({ threadId: activeThreadId, messages });
+    } catch (err: any) {
+      console.error('[simosan] history failed', err);
+      res.status(500).json({ error: 'Failed to load history' });
+    }
+  }
+
+  return { ask, state, adminStats, adminSettings, history };
 }
