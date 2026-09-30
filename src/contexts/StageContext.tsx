@@ -249,9 +249,13 @@ export function StageProvider({ children }: { children: ReactNode }) {
     if (activeUser.role === 'admin' || activeUser.role === 'moderator') {
       return activeUser.managedStageId || null;
     }
+    const isCompletedProgression = Boolean(
+      activeUser.hasCompletedProgression || activeUser.progressionState === 'completed'
+    );
     // Students with pending progression default to next stage (pendingStageId),
     // but can toggle back to their current stage via selectedStudentStage.
-    if (activeUser.role === 'student' && activeUser.pendingStageId) {
+    // Completed students never receive provisional access.
+    if (activeUser.role === 'student' && activeUser.pendingStageId && !isCompletedProgression) {
       if (selectedStudentStage && (selectedStudentStage === activeUser.stageId || selectedStudentStage === activeUser.pendingStageId)) {
         return selectedStudentStage;
       }
@@ -261,7 +265,12 @@ export function StageProvider({ children }: { children: ReactNode }) {
     return activeUser.stageId || null;
   }, [activeUser, currentAppStage, selectedStudentStage]);
 
-  const isPendingProgression = Boolean(activeUser?.role === 'student' && activeUser?.pendingStageId);
+  const isPendingProgression = Boolean(
+    activeUser?.role === 'student' &&
+    activeUser?.pendingStageId &&
+    !activeUser?.hasCompletedProgression &&
+    activeUser?.progressionState !== 'completed'
+  );
 
   const provisionalStages = useMemo(() => {
     if (!isPendingProgression || !activeUser) return null;

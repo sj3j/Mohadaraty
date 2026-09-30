@@ -518,6 +518,34 @@ await resetProgression(db, FieldValue as any, { uid: 'u_pending' });
 const userResetData = (await db.doc('users/u_pending').get()).data();
 check('resetProgression cleared pendingStageId', userResetData?.pendingStageId === undefined);
 
+// Completed student cannot set pending stage
+await seedStudent('u_completed', 'completed@x.com', 'stage_4');
+await db.doc('users/u_completed').set({
+  hasCompletedProgression: true,
+  progressionState: 'completed',
+  progressionYear: base.yearLabel,
+}, { merge: true });
+let completedPendingFailed = false;
+try {
+  await setPendingProgression(db, FieldValue as any, base, { uid: 'u_completed' });
+} catch (e) {
+  completedPendingFailed = e instanceof ProgressionError;
+}
+check('completed student cannot set pendingStageId', completedPendingFailed);
+
+// Student whose stage is not in calendar progressionStages cannot set pending stage
+const restrictedCal: any = { ...base, progressionStages: ['stage_3'] };
+let ineligibleStagePendingFailed = false;
+try {
+  // u_pending was reset to stage_3 or let's test stage_4 student
+  await seedStudent('u_stage4_student', 's4@x.com', 'stage_4');
+  await setPendingProgression(db, FieldValue as any, restrictedCal, { uid: 'u_stage4_student' });
+} catch (e) {
+  ineligibleStagePendingFailed = e instanceof ProgressionError;
+}
+check('ineligible stage student cannot set pendingStageId', ineligibleStagePendingFailed);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
+
 

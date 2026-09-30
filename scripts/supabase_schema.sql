@@ -53,5 +53,47 @@ ALTER TABLE public.ai_threads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_usage ENABLE ROW LEVEL SECURITY;
 
+-- Ensure off_topic_count column exists if created previously
+ALTER TABLE public.ai_usage ADD COLUMN IF NOT EXISTS off_topic_count INTEGER DEFAULT 0;
+
+-- 5. MCQs Table (Stores AI-generated and admin-curated questions)
+CREATE TABLE IF NOT EXISTS public.mcqs (
+    lecture_id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    stage_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('generating', 'ready', 'failed')),
+    questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    total_questions INTEGER DEFAULT 0,
+    generated_by TEXT DEFAULT 'gemini-ai',
+    started_at TIMESTAMPTZ,
+    generated_at TIMESTAMPTZ,
+    failure_reason TEXT,
+    failure_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcqs_stage_subject ON public.mcqs (stage_id, subject_id);
+
+-- 6. User MCQ Answers Table (First attempt locks & records)
+CREATE TABLE IF NOT EXISTS public.user_mcq_answers (
+    id TEXT PRIMARY KEY, -- "{userId}_{lectureId}"
+    user_id TEXT NOT NULL,
+    lecture_id TEXT NOT NULL,
+    has_completed_first_attempt BOOLEAN DEFAULT FALSE,
+    first_attempt_score NUMERIC DEFAULT 0,
+    first_attempt_correct INTEGER DEFAULT 0,
+    first_attempt_total INTEGER DEFAULT 0,
+    locked_answers JSONB DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_mcq_answers_user ON public.user_mcq_answers (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_mcq_answers_lecture ON public.user_mcq_answers (lecture_id);
+
+ALTER TABLE public.mcqs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_mcq_answers ENABLE ROW LEVEL SECURITY;
+
 -- Service role bypasses RLS by default. Since all backend queries go through
 -- the server using the service_role key, server operations are fully authorized.
+

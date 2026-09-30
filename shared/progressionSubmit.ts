@@ -339,6 +339,13 @@ export async function setPendingProgression(
   if (!userSnap.exists) throw new ProgressionError('User not found', 404);
   const user = userSnap.data() as any;
 
+  if (user.hasCompletedProgression || (user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel)) {
+    throw new ProgressionError('لقد تم تأكيد نتيجتك بالفعل لهذه السنة الأكاديمية.', 400);
+  }
+  if (calendar.progressionStages && calendar.progressionStages.length > 0 && !calendar.progressionStages.includes(user.stageId)) {
+    throw new ProgressionError('مرحلتك الحالية غير مشمولة بالانتقال.', 400);
+  }
+
   const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
   const stages: StageLike[] = stagesSnap.docs.map(d => d.data() as StageLike);
 

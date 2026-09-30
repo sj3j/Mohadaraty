@@ -169,7 +169,8 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
 
   // ---- the question --------------------------------------------------------
   const handlePendingResults = async () => {
-    if (!isFinalStage && nextStage && !user.pendingStageId) {
+    const isCompletedProgression = user.hasCompletedProgression || user.progressionState === 'completed';
+    if (!isFinalStage && nextStage && !user.pendingStageId && !isCompletedProgression) {
       setIsSettingPending(true);
       try {
         const token = await auth.currentUser?.getIdToken();

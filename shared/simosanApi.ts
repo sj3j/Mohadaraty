@@ -8,6 +8,7 @@
  */
 import { GoogleGenAI } from '@google/genai';
 import {
+  MAX_FREE_OFF_TOPIC_PER_DAY,
   MAX_QUESTIONS_PER_CHAT,
   baghdadDayKey,
   baghdadMonthKey,
@@ -46,6 +47,14 @@ import {
   loadSupaHistory,
   recordSupaTurn,
   getClientMessagesFromSupabase,
+  getSupaUsage,
+  reserveSupaEnergy,
+  reconcileSupaEnergy,
+  releaseSupaEnergy,
+  reserveSupaFreeQuestion,
+  reconcileSupaFreeQuestion,
+  releaseSupaFreeQuestion,
+  settleSupaOffTopic,
 } from './simosanSupabase.js';
 
 export interface SimosanDeps {
@@ -141,17 +150,31 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       let freeWeeklyRemaining = 0;
       const freeWeeklyResetsInMs = msUntilBaghdadWeeklyReset();
 
+      const supabase = getSupabaseAdmin();
+
       if (hasAccess) {
         const day = baghdadDayKey();
-        const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, day)).get();
-        const u = usageSnap.exists ? usageSnap.data() : null;
-        const spent = (Number(u?.unitsUsed) || 0) + (Number(u?.unitsReserved) || 0);
+        let spent = 0;
+        if (supabase) {
+          const supaUsage = await getSupaUsage(supabase, `${uid}_${day}`);
+          spent = (Number(supaUsage?.units_used) || 0) + (Number(supaUsage?.units_reserved) || 0);
+        } else {
+          const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, day)).get();
+          const u = usageSnap.exists ? usageSnap.data() : null;
+          spent = (Number(u?.unitsUsed) || 0) + (Number(u?.unitsReserved) || 0);
+        }
         remaining = Math.max(0, settings.dailyUnitBudget - spent);
       } else {
         const week = baghdadWeekKey();
-        const freeSnap = await db.collection('aiUsage').doc(freeUsageDocId(uid, week)).get();
-        const fu = freeSnap.exists ? freeSnap.data() : null;
-        const freeSpent = (Number(fu?.usedCount) || 0) + (Number(fu?.reservedCount) || 0);
+        let freeSpent = 0;
+        if (supabase) {
+          const supaUsage = await getSupaUsage(supabase, `${uid}_free_${week}`);
+          freeSpent = (Number(supaUsage?.used_count) || 0) + (Number(supaUsage?.reserved_count) || 0);
+        } else {
+          const freeSnap = await db.collection('aiUsage').doc(freeUsageDocId(uid, week)).get();
+          const fu = freeSnap.exists ? freeSnap.data() : null;
+          freeSpent = (Number(fu?.usedCount) || 0) + (Number(fu?.reservedCount) || 0);
+        }
         freeWeeklyRemaining = Math.max(0, 1 - freeSpent);
         remaining = freeWeeklyRemaining;
         dailyBudget = 1;
@@ -196,6 +219,8 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     let reserved = 0;
     let isFreeReserved = false;
     let streaming = false;
+    let isSupabaseActive = false;
+    const supabase = getSupabaseAdmin();
 
     const fail = (status: number, code: string, extra: any = {}) => {
       if (streaming) {
@@ -222,9 +247,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       let threadId = '';
       let questionCount = 0;
       let history: ChatMessage[] = [];
-      let isSupabaseActive = false;
 
-      const supabase = getSupabaseAdmin();
       if (supabase) {
         const supaThread = await resolveSupaThread(supabase, {
           userId: uid,
@@ -305,7 +328,18 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       let holdBudget = settings.dailyUnitBudget;
 
       if (isFreeTier) {
-        const freeHold = await reserveFreeQuestion(ctx(), { uid, stageId: caller.stageId });
+        let freeHold: any;
+        if (isSupabaseActive && supabase) {
+          const res = await reserveSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+          freeHold = {
+            ok: res.ok,
+            reason: res.reason,
+            resetsInMs: msUntilBaghdadWeeklyReset(),
+          };
+        } else {
+          freeHold = await reserveFreeQuestion(ctx(), { uid, stageId: caller.stageId });
+        }
+
         if (!freeHold.ok) {
           return fail(403, freeHold.reason === 'free_weekly_limit_reached' ? 'free_weekly_limit_reached' : (freeHold.reason || 'disabled'), {
             isFreeTier: true,
@@ -317,10 +351,29 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         holdRemaining = 0;
         holdBudget = 1;
       } else {
-        const hold = await reserveEnergy(
-          ctx(),
-          { uid, stageId: caller.stageId, estimatedUnits: estimated },
-        );
+        let hold: any;
+        if (isSupabaseActive && supabase) {
+          const res = await reserveSupaEnergy(supabase, {
+            uid,
+            dayKey: baghdadDayKey(),
+            estimatedUnits: estimated,
+            dailyBudget: settings.dailyUnitBudget,
+          });
+          hold = {
+            ok: res.ok,
+            reason: res.reason,
+            reserved: res.reserved,
+            remaining: res.remaining,
+            dailyBudget: settings.dailyUnitBudget,
+            resetsInMs: msUntilBaghdadReset(),
+          };
+        } else {
+          hold = await reserveEnergy(
+            ctx(),
+            { uid, stageId: caller.stageId, estimatedUnits: estimated },
+          );
+        }
+
         if (!hold.ok) {
           return fail(429, hold.reason as string, {
             remaining: hold.remaining,
@@ -429,31 +482,69 @@ export function createSimosanHandlers(deps: SimosanDeps) {
 
       if (isFreeTier) {
         if (offTopic) {
-          await releaseFreeQuestion(ctx(), { uid });
+          if (isSupabaseActive && supabase) {
+            await releaseSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+          } else {
+            await releaseFreeQuestion(ctx(), { uid });
+          }
           remaining = 1;
           refunded = true;
         } else {
-          await reconcileFreeQuestion(ctx(), { uid, actualUnits: actual });
+          if (isSupabaseActive && supabase) {
+            await reconcileSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey(), actualUnits: actual });
+            const spendUsd = unitsToUsd(actual);
+            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+          } else {
+            await reconcileFreeQuestion(ctx(), { uid, actualUnits: actual });
+          }
           remaining = 0;
           refunded = false;
         }
         isFreeReserved = false;
       } else {
         if (offTopic) {
-          const settled = await settleOffTopic(ctx(), {
-            uid,
-            reservedUnits: reserved,
-            actualUnits: actual,
-          });
-          remaining = settled.remaining;
-          refunded = settled.refunded;
+          if (isSupabaseActive && supabase) {
+            const settled = await settleSupaOffTopic(supabase, {
+              uid,
+              dayKey: baghdadDayKey(),
+              reservedUnits: reserved,
+              actualUnits: actual,
+              maxFreeOffTopic: MAX_FREE_OFF_TOPIC_PER_DAY,
+              dailyBudget: settings.dailyUnitBudget,
+            });
+            remaining = settled.remaining;
+            refunded = settled.refunded;
+            const spendUsd = unitsToUsd(actual);
+            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+          } else {
+            const settled = await settleOffTopic(ctx(), {
+              uid,
+              reservedUnits: reserved,
+              actualUnits: actual,
+            });
+            remaining = settled.remaining;
+            refunded = settled.refunded;
+          }
         } else {
-          const settled = await reconcileEnergy(ctx(), {
-            uid,
-            reservedUnits: reserved,
-            actualUnits: actual,
-          });
-          remaining = settled.remaining;
+          if (isSupabaseActive && supabase) {
+            const settled = await reconcileSupaEnergy(supabase, {
+              uid,
+              dayKey: baghdadDayKey(),
+              reservedUnits: reserved,
+              actualUnits: actual,
+              dailyBudget: settings.dailyUnitBudget,
+            });
+            remaining = settled.remaining;
+            const spendUsd = unitsToUsd(actual);
+            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+          } else {
+            const settled = await reconcileEnergy(ctx(), {
+              uid,
+              reservedUnits: reserved,
+              actualUnits: actual,
+            });
+            remaining = settled.remaining;
+          }
         }
         reserved = 0;
       }
@@ -533,14 +624,22 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       // A student must never lose budget to an outage on our side.
       if (reserved > 0) {
         try {
-          await releaseEnergy(ctx(), { uid, reservedUnits: reserved });
+          if (isSupabaseActive && supabase) {
+            await releaseSupaEnergy(supabase, { uid, dayKey: baghdadDayKey(), reservedUnits: reserved });
+          } else {
+            await releaseEnergy(ctx(), { uid, reservedUnits: reserved });
+          }
         } catch (releaseErr) {
           console.error('[simosan] release failed', releaseErr);
         }
       }
       if (isFreeReserved) {
         try {
-          await releaseFreeQuestion(ctx(), { uid });
+          if (isSupabaseActive && supabase) {
+            await releaseSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+          } else {
+            await releaseFreeQuestion(ctx(), { uid });
+          }
         } catch (releaseErr) {
           console.error('[simosan] release free question failed', releaseErr);
         }

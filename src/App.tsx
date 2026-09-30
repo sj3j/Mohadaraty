@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc, deleteField } from 'firebase/firestore';
 import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType } from './types';
 import { useStageContext } from './contexts/StageContext';
 import LectureCard from './components/LectureCard';
@@ -120,6 +120,12 @@ export default function App() {
 
   useEffect(() => {
     if (!user) { setProgressionRound(null); return; }
+    // Completed students must never have a progression modal latched
+    const isCompleted = user.hasCompletedProgression === true || (user.progressionState === 'completed' && user.progressionYear === academicYearLabel);
+    if (isCompleted) {
+      if (progressionRound !== null) setProgressionRound(null);
+      return;
+    }
     const step = nextProgressionStep({
       gate: progressionGateNow,
       yearLabel: academicYearLabel,
@@ -433,7 +439,20 @@ export default function App() {
               memberSince: studentData?.createdAt || userDoc.data().createdAt,
               permissions: masterAdminPermissions || userDoc.data().permissions || studentData?.permissions,
               stageId: userDoc.data().stageId || studentData?.stageId || undefined,
-              pendingStageId: userDoc.data().pendingStageId || undefined,
+              pendingStageId: (() => {
+                const docData = userDoc.data();
+                const hasCompleted = docData.hasCompletedProgression === true || docData.progressionState === 'completed';
+                if (hasCompleted) {
+                  // Asynchronously self-heal stale pendingStageId in Firestore
+                  if (docData.pendingStageId) {
+                    updateDoc(doc(db, 'users', firebaseUser.uid), { pendingStageId: deleteField() }).catch(err => {
+                      console.error('Failed to self-heal stale pendingStageId:', err);
+                    });
+                  }
+                  return undefined;
+                }
+                return docData.pendingStageId || undefined;
+              })(),
               managedStageId: userDoc.data().managedStageId || studentData?.managedStageId || undefined,
               tahmeelSubjects: userDoc.data().tahmeelSubjects || undefined,
               hasCompletedProgression: userDoc.data().hasCompletedProgression === true,
@@ -822,7 +841,8 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
-  const effectiveProgressionRound = progressionRound || (user?.pendingStageId ? (progressionGateNow === 'resit_round' ? 'resit' : 'first') : null);
+  const isCompletedStudent = Boolean(user?.hasCompletedProgression || (user?.progressionState === 'completed' && user?.progressionYear === academicYearLabel));
+  const effectiveProgressionRound = progressionRound || (!isCompletedStudent && user?.pendingStageId ? (progressionGateNow === 'resit_round' ? 'resit' : 'first') : null);
 
   if (effectiveProgressionRound && (!isProgressionSnoozed || forceShowProgression)) {
     return (
@@ -969,7 +989,7 @@ export default function App() {
           onNavigate={(tab: string) => setCurrentTab(tab as Tab)}
           onNavigateToSubscription={() => setCurrentTab('subscription')}
           onOpenProgression={() => setForceShowProgression(true)}
-          hasPendingProgression={!!progressionRound}
+          hasPendingProgression={!isCompletedStudent && !!progressionRound}
         />
       )}
       {/* A real page, not an overlay: the profile unmounts behind it and the nav
