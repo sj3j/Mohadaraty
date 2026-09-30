@@ -56,5 +56,11 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>يحتاج التطبيق للوصول إلى الكاميرا لالتقاط صورة الملف الشخصي أو تصوير المستندات الدراسية.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>يحتاج التطبيق للوصول إلى مكتبة الصور لاختيار صورة الملف الشخصي أو إرفاق المستندات الدراسية.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>يحتاج التطبيق للوصول إلى مكتبة الصور لحفظ الصور والمستندات الدراسية.</string>
 </dict>
 </plist>
