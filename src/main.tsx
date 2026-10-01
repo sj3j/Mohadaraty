@@ -1,3 +1,4 @@
+import './lib/pdfPolyfills';
 import { logPerfMark } from './lib/perf';
 
 logPerfMark('main-started');

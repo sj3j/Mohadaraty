@@ -13,7 +13,8 @@
  *      on-device and no network guarantee, so every byte has to ship in the APK.
  */
 
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
+import './pdfPolyfills';
+import PdfWorker from './pdfWorkerEntry?worker';
 
 type PdfjsModule = typeof import('pdfjs-dist');
 

@@ -37,6 +37,7 @@
     "test:richtext": "npx tsx scripts/richText.test.ts",
     "test:anchor": "npx tsx scripts/pdfAnchor.test.ts",
     "test:search": "npx tsx scripts/pdfSearch.test.ts",
+    "test:pdf-compat": "npx tsx scripts/pdfCompat.test.ts",
     "test:share": "npx tsx scripts/shareFile.test.ts",
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
     "test:timetable": "npx tsx scripts/timetable.test.ts",

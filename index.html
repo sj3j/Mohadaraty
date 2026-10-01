@@ -11,6 +11,32 @@
     <!-- No manifest link here: vite-plugin-pwa injects one and a browser honours
          the first it finds. See "Branding and app icons" in CLAUDE.md. -->
     <title>محاضراتي</title>
+    <script>
+      if (typeof Map.prototype.getOrInsertComputed !== 'function') {
+        Object.defineProperty(Map.prototype, 'getOrInsertComputed', {
+          value: function (k, fn) {
+            if (this.has(k)) return this.get(k);
+            var v = fn(k);
+            this.set(k, v);
+            return v;
+          },
+          writable: true,
+          configurable: true,
+          enumerable: false
+        });
+      }
+      if (typeof Promise.withResolvers !== 'function') {
+        Object.defineProperty(Promise, 'withResolvers', {
+          value: function () {
+            var a, b, p = new Promise(function (res, rej) { a = res; b = rej; });
+            return { promise: p, resolve: a, reject: b };
+          },
+          writable: true,
+          configurable: true,
+          enumerable: false
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
