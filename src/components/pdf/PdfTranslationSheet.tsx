@@ -17,8 +17,8 @@ import {
   isArabicText,
   openExternalTranslate,
   speakText,
-  translatePassage,
-} from '../../services/translationService';
+  translateText,
+} from '../../services/translateService';
 import { copyText } from '../../lib/textActions';
 
 export interface PdfTranslationSheetProps {
@@ -67,18 +67,14 @@ export default function PdfTranslationSheet({
       setError(null);
 
       try {
-        const res = await translatePassage({
-          text: sourceText,
-          targetLang: target,
-          signal: ac.signal,
-        });
-        setTranslatedText(res.translatedText);
+        const result = await translateText(sourceText, target, ac.signal);
+        setTranslatedText(result);
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
         setError(
-          isRtl
-            ? 'تعذّر إكمال الترجمة. يرجى المحاولة مرة أخرى.'
-            : 'Could not complete translation. Please try again.',
+          err?.message && /[\u0600-\u06FF]/.test(err.message)
+            ? err.message
+            : (isRtl ? 'تعذّر إكمال الترجمة. يرجى المحاولة مرة أخرى.' : 'Could not complete translation. Please try again.'),
         );
       } finally {
         setIsLoading(false);

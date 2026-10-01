@@ -40,9 +40,18 @@ const fakeRes: any = {
   },
 };
 
-void handlers.translate(fakeReqEmpty, fakeRes).then(() => {
+void handlers.translate(fakeReqEmpty, fakeRes).then(async () => {
   assert.equal(statusSent, 400);
   assert.equal(jsonSent?.error, 'empty_text');
   console.log('  PASS  Translate API rejects empty input with 400');
+
+  // 4. translateService validation
+  const { translateText } = await import('../src/services/translateService');
+  await assert.rejects(
+    () => translateText('   '),
+    /النص المحدّد فارغ/,
+  );
+  console.log('  PASS  translateService rejects whitespace input with Arabic error');
+
   console.log('\nAll translation tests passed successfully.');
 });
