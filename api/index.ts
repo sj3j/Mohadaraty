@@ -62,6 +62,7 @@ import { createMcqHandlers } from "../shared/mcqApi.js";
 import { createTimetableHandlers } from "../shared/timetableApi.js";
 import { createIapHandlers } from "../shared/iapApi.js";
 import { createSupportHandlers } from "../shared/supportApi.js";
+import { createTranslateHandlers } from "../shared/translateApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "../shared/masterAdmins.js";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -2069,5 +2070,9 @@ app.post("/api/iap/webhook", iap.webhook);
 /* Public Support Tickets. Persists inquiries to support_tickets and alerts staff. */
 const support = createSupportHandlers({ admin });
 app.post("/api/support/ticket", support.submitTicket);
+
+/* In-app PDF text translation. Mirrored in server.ts. */
+const translator = createTranslateHandlers();
+app.post("/api/translate", translator.translate);
 
 export default app;

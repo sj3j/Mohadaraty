@@ -10,6 +10,7 @@ import SelectionToolbar from './SelectionToolbar';
 import PdfSearchPanel from './PdfSearchPanel';
 import NoteEditorSheet from './NoteEditorSheet';
 import NotesDrawer from './NotesDrawer';
+import PdfTranslationSheet from './PdfTranslationSheet';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { loadPdfjs, fetchPdfBytes, freshBytes, PDFJS_DOC_OPTIONS } from '../../lib/pdfjs';
 import { readStoredPdf } from '../../hooks/useOfflinePDF';
@@ -148,6 +149,9 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
    *  selection, which unmounts the toolbar before it could show anything. */
   const [toast, setToast] = useState<string | null>(null);
 
+  const [translationTarget, setTranslationTarget] = useState<string | null>(null);
+  const closeTranslation = useCallback(() => setTranslationTarget(null), []);
+
   const [simosanOpen, setSimosanOpen] = useState(false);
   const [simosanSeed, setSimosanSeed] = useState<string | null>(null);
   /** Null until the access probe returns. The entry points stay hidden rather
@@ -257,6 +261,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   // Registered last so it sits on top of the shared layer stack - a back press
   // while Simosan is open must close Simosan, not the notes drawer beneath it.
   useBackDismiss(simosanOpen, () => setSimosanOpen(false), 'pdfSimosan');
+  useBackDismiss(!!translationTarget, closeTranslation, 'pdfTranslation');
 
   // One probe per open. The server is the authority on both subscription and
   // the global kill switch, so this only decides whether to draw the button.
@@ -1511,10 +1516,11 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               ok: isRtl ? 'تم النسخ' : 'Copied',
               failed: isRtl ? 'تعذّر النسخ' : 'Could not copy',
             })}
-            onTranslate={() => runSelectionAction((t) => translateText(t, lang), {
-              ok: isRtl ? 'جارٍ فتح الترجمة' : 'Opening Translate',
-              failed: isRtl ? 'تعذّر فتح الترجمة' : 'Could not open Translate',
-            })}
+            onTranslate={() => {
+              const text = selection.text;
+              clearSelection();
+              setTranslationTarget(text);
+            }}
             onSearchWeb={() => runSelectionAction(webSearchText, {
               ok: isRtl ? 'جارٍ فتح البحث' : 'Opening search',
               failed: isRtl ? 'تعذّر فتح البحث' : 'Could not open search',
@@ -1608,6 +1614,16 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
             onJumpToPage={scrollToPage}
             onClose={() => setSimosanOpen(false)}
             onOpenSubscription={onOpenSubscription}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {translationTarget && (
+          <PdfTranslationSheet
+            sourceText={translationTarget}
+            isRtl={isRtl}
+            onClose={closeTranslation}
           />
         )}
       </AnimatePresence>

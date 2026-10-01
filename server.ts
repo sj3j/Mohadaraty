@@ -44,6 +44,7 @@ import { createMcqHandlers } from "./shared/mcqApi.js";
 import { createTimetableHandlers } from "./shared/timetableApi.js";
 import { createIapHandlers } from "./shared/iapApi.js";
 import { createSupportHandlers } from "./shared/supportApi.js";
+import { createTranslateHandlers } from "./shared/translateApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
@@ -2141,6 +2142,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   /* Public Support Tickets. Persists inquiries to support_tickets and alerts staff. */
   const support = createSupportHandlers({ admin });
   app.post("/api/support/ticket", support.submitTicket);
+
+  /* In-app PDF text translation. Mirrored in api/index.ts. */
+  const translator = createTranslateHandlers();
+  app.post("/api/translate", translator.translate);
 
   // --- Vite Middleware for Development / Static Serving for Production ---
   if (process.env.NODE_ENV !== "production") {
