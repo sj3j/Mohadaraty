@@ -1083,6 +1083,7 @@ export default function App() {
             lectureId={readerLecture.id}
             lectureTitle={readerLecture.title}
             pdfUrl={readerLecture.pdfUrl}
+            user={user}
             lang={lang}
             onClose={() => setReaderLecture(null)}
             onOpenSubscription={() => {
@@ -1100,8 +1101,13 @@ export default function App() {
             lectureTitle={localReaderFile.name}
             pdfUrl={localBlobUrl}
             isLocalFile={true}
+            user={user}
             lang={lang}
             onClose={handleCloseLocalReader}
+            onOpenSubscription={() => {
+              handleCloseLocalReader();
+              setShowPaywall(true);
+            }}
           />
         </Suspense>
       )}

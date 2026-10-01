@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Languages,
   RotateCw,
+  Sparkles,
   Volume2,
   VolumeX,
   X,
@@ -24,6 +25,8 @@ import { copyText } from '../../lib/textActions';
 export interface PdfTranslationSheetProps {
   sourceText: string;
   isRtl: boolean;
+  hasAccess?: boolean;
+  onOpenSubscription?: () => void;
   onClose: () => void;
 }
 
@@ -36,6 +39,8 @@ export interface PdfTranslationSheetProps {
 export default function PdfTranslationSheet({
   sourceText,
   isRtl,
+  hasAccess = true,
+  onOpenSubscription,
   onClose,
 }: PdfTranslationSheetProps) {
   const initialSourceIsArabic = isArabicText(sourceText);
@@ -43,7 +48,7 @@ export default function PdfTranslationSheet({
     initialSourceIsArabic ? 'en' : 'ar',
   );
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(hasAccess);
   const [error, setError] = useState<string | null>(null);
   const [translatedText, setTranslatedText] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -84,15 +89,19 @@ export default function PdfTranslationSheet({
     [sourceText, isRtl],
   );
 
-  // Trigger translation on mount or targetLang change
+  // Trigger translation on mount or targetLang change (if user has access)
   useEffect(() => {
+    if (!hasAccess) {
+      setIsLoading(false);
+      return;
+    }
     fetchTranslation(targetLang);
 
     return () => {
       if (abortRef.current) abortRef.current.abort();
       if (cancelSpeechRef.current) cancelSpeechRef.current();
     };
-  }, [fetchTranslation, targetLang]);
+  }, [fetchTranslation, targetLang, hasAccess]);
 
   // Clean speech synthesis on unmount
   useEffect(() => {
@@ -196,12 +205,23 @@ export default function PdfTranslationSheet({
         {/* Header */}
         <div className="shrink-0 px-4 pb-3 pt-1 border-b border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-sky-50 dark:bg-sky-950/40 text-sky-500 flex items-center justify-center shrink-0">
-              <Languages className="w-4.5 h-4.5" />
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+              hasAccess
+                ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-500'
+                : 'bg-violet-50 dark:bg-violet-950/40 text-violet-500'
+            }`}>
+              {hasAccess ? <Languages className="w-4.5 h-4.5" /> : <Sparkles className="w-4.5 h-4.5 text-amber-500" />}
             </div>
-            <h3 className="font-black text-slate-900 dark:text-stone-100 text-sm truncate">
-              {isRtl ? 'الترجمة المباشرة' : 'Translation'}
-            </h3>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <h3 className="font-black text-slate-900 dark:text-stone-100 text-sm truncate">
+                {isRtl ? 'الترجمة المباشرة' : 'Translation'}
+              </h3>
+              {!hasAccess && (
+                <span className="px-1.5 py-0.5 rounded-md bg-gradient-to-r from-violet-500 to-indigo-500 text-white text-[10px] font-black shrink-0">
+                  {isRtl ? 'بلس' : 'Plus'}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -215,29 +235,33 @@ export default function PdfTranslationSheet({
               <ArrowLeftRight className="w-3.5 h-3.5 text-slate-400" />
             </button>
 
-            {/* TTS Action */}
-            <button
-              onClick={handleSpeakTranslation}
-              disabled={!translatedText || isLoading}
-              title={speaking ? (isRtl ? 'إيقاف الصوت' : 'Stop speaking') : (isRtl ? 'نطق الترجمة' : 'Speak')}
-              className={`w-8 h-8 rounded-full flex items-center justify-center transition active:scale-90 ${
-                speaking
-                  ? 'bg-sky-500 text-white animate-pulse'
-                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30'
-              }`}
-            >
-              {speaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
+            {hasAccess && (
+              <>
+                {/* TTS Action */}
+                <button
+                  onClick={handleSpeakTranslation}
+                  disabled={!translatedText || isLoading}
+                  title={speaking ? (isRtl ? 'إيقاف الصوت' : 'Stop speaking') : (isRtl ? 'نطق الترجمة' : 'Speak')}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center transition active:scale-90 ${
+                    speaking
+                      ? 'bg-sky-500 text-white animate-pulse'
+                      : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30'
+                  }`}
+                >
+                  {speaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                </button>
 
-            {/* Copy Action */}
-            <button
-              onClick={handleCopy}
-              disabled={!translatedText || isLoading}
-              title={isRtl ? 'نسخ الترجمة' : 'Copy'}
-              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition disabled:opacity-30"
-            >
-              {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-            </button>
+                {/* Copy Action */}
+                <button
+                  onClick={handleCopy}
+                  disabled={!translatedText || isLoading}
+                  title={isRtl ? 'نسخ الترجمة' : 'Copy'}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition disabled:opacity-30"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </>
+            )}
 
             {/* Dismiss */}
             <button
@@ -289,55 +313,87 @@ export default function PdfTranslationSheet({
             )}
           </div>
 
-          {/* Translated Result Output */}
+          {/* Translated Result Output / Subscription Paywall Gate */}
           <div className="px-1">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-black text-slate-400 dark:text-slate-500">
-                {targetLang === 'ar' ? (isRtl ? 'الترجمة إلى العربية' : 'Arabic Translation') : (isRtl ? 'الترجمة إلى الإنجليزية' : 'English Translation')}
-              </span>
-              {copied && (
-                <span className="text-[11px] font-bold text-emerald-500 animate-fade-in">
-                  {isRtl ? 'تم النسخ!' : 'Copied!'}
-                </span>
-              )}
-            </div>
-
-            {isLoading ? (
-              <div className="space-y-2.5 py-3 animate-pulse">
-                <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-full" />
-                <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-11/12" />
-                <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-3/4" />
-              </div>
-            ) : error ? (
-              <div className="rounded-2xl bg-amber-50/80 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 p-3.5 space-y-2.5">
-                <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-xs font-bold">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{error}</span>
+            {!hasAccess ? (
+              <div className="rounded-2xl bg-gradient-to-br from-violet-600 via-indigo-600 to-purple-700 text-white p-4 shadow-lg space-y-3 border border-violet-400/30">
+                <div className="flex items-center gap-2 font-black text-sm">
+                  <Sparkles className="w-4.5 h-4.5 text-amber-300 shrink-0" />
+                  <span>
+                    {isRtl
+                      ? 'الترجمة الفورية — ميزة باقة بلس'
+                      : 'Instant Translation — Plus Feature'}
+                  </span>
                 </div>
-                <div className="flex items-center gap-2 pt-1">
+                <p className="text-xs font-medium text-violet-100 leading-relaxed" dir="auto">
+                  {isRtl
+                    ? 'استمتع بترجمة فورية غير محدودة للمصطلحات والفقرات داخل قارئ المحاضرات مع النطق الصوتي والمزيد.'
+                    : 'Enjoy unlimited in-reader translation for medical terms and lecture passages with voice pronunciation and more.'}
+                </p>
+                {onOpenSubscription && (
                   <button
-                    onClick={() => fetchTranslation(targetLang)}
-                    className="h-8 px-3 rounded-xl bg-amber-600 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition"
+                    onClick={() => {
+                      onClose();
+                      onOpenSubscription();
+                    }}
+                    className="w-full py-2.5 px-3 rounded-xl bg-white text-violet-900 font-black text-xs hover:bg-violet-50 active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"
                   >
-                    <RotateCw className="w-3.5 h-3.5" />
-                    <span>{isRtl ? 'إعادة المحاولة' : 'Retry'}</span>
+                    <Sparkles className="w-3.5 h-3.5 text-violet-600" />
+                    <span>{isRtl ? 'ترقية الحساب الآن' : 'Upgrade Account Now'}</span>
                   </button>
-                  <button
-                    onClick={() => openExternalTranslate(sourceText, targetLang)}
-                    className="h-8 px-3 rounded-xl border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-bold flex items-center gap-1.5 hover:bg-amber-100/50 dark:hover:bg-amber-900/30 active:scale-95 transition"
-                  >
-                    <span>{isRtl ? 'فتح في ترجمة Google' : 'Google Translate'}</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                )}
               </div>
             ) : (
-              <div
-                dir={targetLang === 'ar' ? 'rtl' : 'ltr'}
-                className="select-text text-base font-bold text-slate-900 dark:text-stone-100 leading-relaxed break-words"
-              >
-                {translatedText}
-              </div>
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-black text-slate-400 dark:text-slate-500">
+                    {targetLang === 'ar' ? (isRtl ? 'الترجمة إلى العربية' : 'Arabic Translation') : (isRtl ? 'الترجمة إلى الإنجليزية' : 'English Translation')}
+                  </span>
+                  {copied && (
+                    <span className="text-[11px] font-bold text-emerald-500 animate-fade-in">
+                      {isRtl ? 'تم النسخ!' : 'Copied!'}
+                    </span>
+                  )}
+                </div>
+
+                {isLoading ? (
+                  <div className="space-y-2.5 py-3 animate-pulse">
+                    <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-full" />
+                    <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-11/12" />
+                    <div className="h-4.5 bg-slate-200 dark:bg-zinc-800 rounded-full w-3/4" />
+                  </div>
+                ) : error ? (
+                  <div className="rounded-2xl bg-amber-50/80 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 p-3.5 space-y-2.5">
+                    <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-xs font-bold">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{error}</span>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => fetchTranslation(targetLang)}
+                        className="h-8 px-3 rounded-xl bg-amber-600 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                        <span>{isRtl ? 'إعادة المحاولة' : 'Retry'}</span>
+                      </button>
+                      <button
+                        onClick={() => openExternalTranslate(sourceText, targetLang)}
+                        className="h-8 px-3 rounded-xl border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-bold flex items-center gap-1.5 hover:bg-amber-100/50 dark:hover:bg-amber-900/30 active:scale-95 transition"
+                      >
+                        <span>{isRtl ? 'فتح في ترجمة Google' : 'Google Translate'}</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    dir={targetLang === 'ar' ? 'rtl' : 'ltr'}
+                    className="select-text text-base font-bold text-slate-900 dark:text-stone-100 leading-relaxed break-words"
+                  >
+                    {translatedText}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

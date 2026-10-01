@@ -26,8 +26,9 @@ import SimosanDrawer from './SimosanDrawer';
 import { exportLecture, getDocMeta, setDocMeta } from '../../services/pdfAnnotationService';
 import { fetchSimosanState } from '../../services/simosanService';
 import { getUserFileBlob } from '../../lib/localDb';
+import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
-import type { Language } from '../../types';
+import type { Language, UserProfile } from '../../types';
 import '../../styles/pdf-text-layer.css';
 
 interface Props {
@@ -38,6 +39,7 @@ interface Props {
   onClose: () => void;
   onOpenSubscription?: () => void;
   isLocalFile?: boolean;
+  user?: UserProfile | null;
 }
 
 interface SelectionFragment {
@@ -116,8 +118,9 @@ function band(v: number, lo: number, hi: number, span: number): number {
   return v;
 }
 
-export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription, isLocalFile }: Props) {
+export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription, isLocalFile, user }: Props) {
   const isRtl = lang === 'ar';
+  const hasTranslationAccess = hasSubscriptionAccess(user);
 
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [pageCount, setPageCount] = useState(0);
@@ -1623,6 +1626,8 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
           <PdfTranslationSheet
             sourceText={translationTarget}
             isRtl={isRtl}
+            hasAccess={hasTranslationAccess}
+            onOpenSubscription={onOpenSubscription}
             onClose={closeTranslation}
           />
         )}

@@ -85,6 +85,13 @@ check(
   loginSrc.includes('!IS_IOS_BUILD &&'),
 );
 
+// 5. AccountSecuritySettings.tsx Guideline 4.8 compliance
+const accountSecSrc = fs.readFileSync('src/components/settings/AccountSecuritySettings.tsx', 'utf8');
+check(
+  'AccountSecuritySettings.tsx conditionally hides Google linking with !IS_IOS_BUILD',
+  accountSecSrc.includes('!IS_IOS_BUILD &&'),
+);
+
 console.log(`\nAudit Results: ${passed} passed, ${failed} failed.\n`);
 if (failed > 0) {
   process.exit(1);

@@ -5,6 +5,7 @@ import {
   AccountSummary, AccountError, DeletionStatus, fetchAccount, changePassword,
   linkGoogle, unlinkGoogle, fetchDeletionStatus, requestDeletion, cancelDeletion,
 } from '../../services/accountService';
+import { IS_IOS_BUILD } from '../../lib/platform';
 
 /**
  * Password and Google linking for the signed-in student.
@@ -193,50 +194,52 @@ export default function AccountSecuritySettings({ lang }: { lang: Language }) {
         </dl>
       </section>
 
-      {/* Google */}
-      <section className="bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 rounded-2xl p-4">
-        <h2 className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
-          {isRtl ? 'حساب Google' : 'Google account'}
-        </h2>
-        <p className="text-xs font-bold text-slate-400 dark:text-slate-500 mb-3 leading-relaxed">
-          {isRtl
-            ? 'اربط بريدك لتتمكن من الدخول بضغطة واحدة، ولاستعادة حسابك إذا نسيت كلمة المرور.'
-            : 'Link your address to sign in with one tap, and to get back in if you forget your password.'}
-        </p>
-
-        {account?.googleEmail ? (
-          <div className="flex items-center gap-2">
-            <span className="flex-1 min-w-0 text-sm font-bold text-emerald-600 dark:text-emerald-400 truncate flex items-center gap-1.5" dir="ltr">
-              <Check className="w-4 h-4 shrink-0" strokeWidth={3} />
-              {account.googleEmail}
-            </span>
-            <button
-              onClick={handleUnlink}
-              disabled={googleBusy}
-              className="shrink-0 px-3 py-2 rounded-xl text-xs font-black text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 disabled:opacity-50 flex items-center gap-1.5"
-            >
-              {googleBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
-              {isRtl ? 'فصل' : 'Unlink'}
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={handleLink}
-            disabled={googleBusy}
-            className="w-full py-3 rounded-xl font-black text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {googleBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
-            {isRtl ? 'ربط حساب Google' : 'Link a Google account'}
-          </button>
-        )}
-
-        {googleError && (
-          <p className="mt-2.5 text-xs font-bold text-rose-600 dark:text-rose-400 flex items-start gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-            <span>{googleError}</span>
+      {/* Google - Hidden on iOS to comply with Apple Guideline 4.8 (no social login without Sign in with Apple) */}
+      {!IS_IOS_BUILD && (
+        <section className="bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 rounded-2xl p-4">
+          <h2 className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
+            {isRtl ? 'حساب Google' : 'Google account'}
+          </h2>
+          <p className="text-xs font-bold text-slate-400 dark:text-slate-500 mb-3 leading-relaxed">
+            {isRtl
+              ? 'اربط بريدك لتتمكن من الدخول بضغطة واحدة، ولاستعادة حسابك إذا نسيت كلمة المرور.'
+              : 'Link your address to sign in with one tap, and to get back in if you forget your password.'}
           </p>
-        )}
-      </section>
+
+          {account?.googleEmail ? (
+            <div className="flex items-center gap-2">
+              <span className="flex-1 min-w-0 text-sm font-bold text-emerald-600 dark:text-emerald-400 truncate flex items-center gap-1.5" dir="ltr">
+                <Check className="w-4 h-4 shrink-0" strokeWidth={3} />
+                {account.googleEmail}
+              </span>
+              <button
+                onClick={handleUnlink}
+                disabled={googleBusy}
+                className="shrink-0 px-3 py-2 rounded-xl text-xs font-black text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {googleBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
+                {isRtl ? 'فصل' : 'Unlink'}
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleLink}
+              disabled={googleBusy}
+              className="w-full py-3 rounded-xl font-black text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {googleBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+              {isRtl ? 'ربط حساب Google' : 'Link a Google account'}
+            </button>
+          )}
+
+          {googleError && (
+            <p className="mt-2.5 text-xs font-bold text-rose-600 dark:text-rose-400 flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>{googleError}</span>
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Account deletion.
           Play requires an in-app path to deletion for any app with accounts.
