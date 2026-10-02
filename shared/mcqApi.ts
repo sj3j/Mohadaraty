@@ -8,8 +8,8 @@
 import { GoogleGenAI } from '@google/genai';
 import {
   GENERATION_LOCK_MS,
-  MAX_GENERATION_FAILURES,
   MAX_INLINE_PDF_BYTES,
+  FUNCTION_BUDGET_MS,
   MCQ_MODEL,
   MCQ_RESPONSE_SCHEMA,
   MCQ_SYSTEM_PROMPT,
@@ -18,6 +18,7 @@ import {
   QUESTION_EDIT_SCHEMA,
   buildQuestionEditPrompt,
   classifyFailure,
+  generateWithRetry,
   smartShuffleChoices,
   validateQuestions,
   type McqFailureReason,
@@ -185,22 +186,25 @@ export function createMcqHandlers(deps: McqDeps) {
         pdfPart = { fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } };
       }
 
+      const startTime = Date.now();
       let response: any;
       try {
-        response = await ai.models.generateContent({
-          model: MCQ_MODEL,
-          contents: [{
-            role: 'user',
-            parts: [
-              pdfPart,
-              { text: MCQ_SYSTEM_PROMPT },
-            ],
-          }],
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: MCQ_RESPONSE_SCHEMA as any,
-          },
-        });
+        response = await generateWithRetry(async () => {
+          return await ai.models.generateContent({
+            model: MCQ_MODEL,
+            contents: [{
+              role: 'user',
+              parts: [
+                pdfPart,
+                { text: MCQ_SYSTEM_PROMPT },
+              ],
+            }],
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: MCQ_RESPONSE_SCHEMA as any,
+            },
+          });
+        }, startTime);
       } finally {
         if (uploadedFile?.name) {
           ai.files.delete({ name: uploadedFile.name }).catch(() => {});
@@ -230,7 +234,6 @@ export function createMcqHandlers(deps: McqDeps) {
         generatedBy: 'gemini-ai',
         status: 'ready',
         totalQuestions: questions.length,
-        failureCount: 0,
         failureReason: admin.firestore.FieldValue.delete(),
       }, { merge: true });
 
@@ -249,7 +252,6 @@ export function createMcqHandlers(deps: McqDeps) {
         await mcqRef.set({
           status: 'failed',
           failureReason: specific,
-          failureCount: admin.firestore.FieldValue.increment(1),
         }, { merge: true });
       } catch (writeErr) {
         console.warn('[mcq] could not record failure', writeErr);
@@ -259,6 +261,11 @@ export function createMcqHandlers(deps: McqDeps) {
       // is one lecture's problem and would just be noise at scale.
       if (specific === 'free_tier_limit' || specific === 'not_configured' || specific === 'bad_request') {
         await raiseAlert(specific, { lectureId, note: msg.slice(0, 200) });
+      }
+
+      if (specific === 'unavailable') {
+        res.set('Retry-After', '5');
+        return res.status(503).json({ error: 'unavailable' });
       }
       res.status(500).json({ error: specific });
     }
@@ -413,6 +420,10 @@ export function createMcqHandlers(deps: McqDeps) {
       if (reason === 'free_tier_limit' || reason === 'not_configured' || reason === 'bad_request') {
         await raiseAlert(reason, { lectureId: '(bank import)' });
       }
+      if (reason === 'unavailable') {
+        res.set('Retry-After', '5');
+        return res.status(503).json({ error: 'unavailable' });
+      }
       res.status(500).json({ error: reason });
     }
   }
@@ -469,6 +480,10 @@ export function createMcqHandlers(deps: McqDeps) {
     } catch (e: any) {
       const reason = classifyFailure(e);
       console.error('[mcq] modify failed', String(e?.message || e).slice(0, 200));
+      if (reason === 'unavailable') {
+        res.set('Retry-After', '5');
+        return res.status(503).json({ error: 'unavailable' });
+      }
       res.status(500).json({ error: reason });
     }
   }

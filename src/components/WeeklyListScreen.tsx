@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDocs, getDoc, doc, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, where } from 'firebase/firestore';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDocs, getDoc, doc, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, where, deleteField } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework } from '../types';
-import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays } from 'lucide-react';
+import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
 import { useStageContext } from '../contexts/StageContext';
@@ -17,6 +17,16 @@ import StudentAgenda from './timetable/StudentAgenda';
 import TimetableEditorModal from './timetable/TimetableEditorModal';
 import { watchPublishedTimetable } from '../services/timetableService';
 import type { StageTimetableDoc } from '../../shared/timetable';
+import {
+  getUpcomingWeeks,
+  matchTimetableSessions,
+  computeGroupDeadlines,
+  resolveStudentDeadline,
+  formatDateIso,
+  getSaturdayOfWeek,
+  formatFriendlyDate,
+  sanitizeForFirestore,
+} from '../lib/homeworkSchedule';
 
 interface WeeklyListScreenProps {
   lang: Language;
@@ -54,6 +64,15 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const [note, setNote] = useState('');
   const [dueDate, setDueDate] = useState<string>('');
   const [selectedLectures, setSelectedLectures] = useState<{ label: string; lectureId: string }[]>([]);
+
+  // Group-based scheduling state (Saturday-anchored)
+  const upcomingWeeks = useMemo(() => getUpcomingWeeks(4), []);
+  const [deadlineMode, setDeadlineMode] = useState<'fixed' | 'timetable'>('fixed');
+  const [selectedWeekSaturday, setSelectedWeekSaturday] = useState<string>(() => upcomingWeeks[0]?.saturdayDate || formatDateIso(getSaturdayOfWeek(new Date())));
+  const [isCustomWeek, setIsCustomWeek] = useState(false);
+  const [customWeekDate, setCustomWeekDate] = useState<string>('');
+  const [matchedSessionTitle, setMatchedSessionTitle] = useState<string>('');
+  const [expandedGroupSchedules, setExpandedGroupSchedules] = useState<Record<string, boolean>>({});
   
   // Lecture search state
   const [allLectures, setAllLectures] = useState<Lecture[]>([]);
@@ -79,6 +98,54 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const [showTimetableEditor, setShowTimetableEditor] = useState(false);
 
   const { effectiveStageId } = useStageContext();
+
+  // Matched sessions from published timetable for the chosen subject & type
+  const currentSubjectMeta = useMemo(() => subjectMetaFrom(subjects, subject), [subjects, subject]);
+  const availableTimetableSessions = useMemo(() => {
+    if (!timetable?.sessions?.length || !subject) return [];
+    return matchTimetableSessions(
+      timetable.sessions,
+      subject,
+      currentSubjectMeta?.subjectNameAr,
+      currentSubjectMeta?.subjectName,
+      type
+    );
+  }, [timetable?.sessions, subject, currentSubjectMeta, type]);
+
+  // Unique session titles from matched sessions for the dropdown switcher
+  const matchedTitles = useMemo(() => {
+    const titles = new Set<string>();
+    for (const s of availableTimetableSessions) {
+      if (s.title) titles.add(s.title);
+    }
+    return Array.from(titles);
+  }, [availableTimetableSessions]);
+
+  // Auto-select matchedSessionTitle
+  useEffect(() => {
+    if (matchedTitles.length > 0) {
+      if (!matchedSessionTitle || !matchedTitles.includes(matchedSessionTitle)) {
+        setMatchedSessionTitle(matchedTitles[0]);
+      }
+    } else {
+      setMatchedSessionTitle('');
+    }
+  }, [matchedTitles, matchedSessionTitle]);
+
+  // Filter sessions that match the selected title (or all if title not specified)
+  const activeSessionsForSchedule = useMemo(() => {
+    if (!availableTimetableSessions.length) return [];
+    if (!matchedSessionTitle) return availableTimetableSessions;
+    return availableTimetableSessions.filter(s => s.title === matchedSessionTitle);
+  }, [availableTimetableSessions, matchedSessionTitle]);
+
+  // Compute preview group deadlines
+  const computedSchedule = useMemo(() => {
+    if (deadlineMode !== 'timetable' || !activeSessionsForSchedule.length || !selectedWeekSaturday) {
+      return null;
+    }
+    return computeGroupDeadlines(activeSessionsForSchedule, selectedWeekSaturday);
+  }, [deadlineMode, activeSessionsForSchedule, selectedWeekSaturday]);
 
   useEffect(() => {
     // Load homeworks. With no resolved stage there is no safe query to run -
@@ -222,11 +289,27 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setType(hw.type as 'theoretical' | 'practical' | 'both');
     setNote(hw.note || '');
     setSelectedLectures(hw.lectures);
-    if (hw.dueDate) {
-       const dateObj = hw.dueDate?.toDate ? hw.dueDate.toDate() : new Date(hw.dueDate);
-       setDueDate(dateObj.toISOString().split('T')[0]);
+    if (hw.deadlineMode === 'timetable') {
+      setDeadlineMode('timetable');
+      if (hw.targetWeekStart) {
+        setSelectedWeekSaturday(hw.targetWeekStart);
+        const isStandardWeek = upcomingWeeks.some(w => w.saturdayDate === hw.targetWeekStart);
+        setIsCustomWeek(!isStandardWeek);
+        if (!isStandardWeek) setCustomWeekDate(hw.targetWeekStart);
+      }
+      if (hw.timetableSessionTitle) {
+        setMatchedSessionTitle(hw.timetableSessionTitle);
+      }
+      setDueDate('');
     } else {
-       setDueDate('');
+      setDeadlineMode('fixed');
+      setIsCustomWeek(false);
+      if (hw.dueDate) {
+         const dateObj = hw.dueDate?.toDate ? hw.dueDate.toDate() : new Date(hw.dueDate);
+         setDueDate(dateObj.toISOString().split('T')[0]);
+      } else {
+         setDueDate('');
+      }
     }
     setShowAdminForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -239,6 +322,9 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setNote('');
     setDueDate('');
     setSelectedLectures([]);
+    setDeadlineMode('fixed');
+    setIsCustomWeek(false);
+    setMatchedSessionTitle('');
     setShowAdminForm(false);
   };
 
@@ -260,18 +346,12 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
 
     setIsSubmitting(true);
     try {
-      let finalDueDate = null;
-      if (dueDate) {
-         finalDueDate = new Date(dueDate);
-         finalDueDate.setHours(23, 59, 59, 999);
-      }
-
       // The subject NAME rides along, so functions/index.js can title the push
       // notification without a second hardcoded copy of the subject list, and so
       // a hidden or renamed subject still names its homework.
       const meta = subjectMetaFrom(subjects, subject);
 
-      const homeworkData: Partial<Homework> = {
+      const homeworkData: Record<string, any> = {
         subject,
         type,
         note,
@@ -285,16 +365,49 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         } : {}),
       };
 
-      if (finalDueDate) {
-         homeworkData.dueDate = finalDueDate;
+      if (deadlineMode === 'fixed') {
+        if (!dueDate) {
+          alert(isRtl ? 'يرجى تحديد موعد التسليم' : 'Please choose a due date');
+          setIsSubmitting(false);
+          return;
+        }
+        const finalDueDate = new Date(dueDate);
+        finalDueDate.setHours(23, 59, 59, 999);
+        homeworkData.deadlineMode = 'fixed';
+        homeworkData.dueDate = finalDueDate;
+        if (editingId) {
+          homeworkData.targetWeekStart = deleteField();
+          homeworkData.timetableSessionTitle = deleteField();
+          homeworkData.groupDeadlines = deleteField();
+          homeworkData.earliestDeadline = deleteField();
+          homeworkData.latestDeadline = deleteField();
+        }
+      } else {
+        // Timetable per-group mode
+        if (!computedSchedule || !computedSchedule.earliestDate || Object.keys(computedSchedule.groupDeadlines).length === 0) {
+          alert(isRtl ? 'تعذّر احتساب مواعيد المجموعات من جدول المحاضرات. يرجى التأكد من تطابق المادة في الجدول المنشور.' : 'Failed to calculate group deadlines from timetable. Verify matching sessions.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        homeworkData.deadlineMode = 'timetable';
+        homeworkData.targetWeekStart = selectedWeekSaturday;
+        homeworkData.timetableSessionTitle = matchedSessionTitle || activeSessionsForSchedule[0]?.title || '';
+        homeworkData.groupDeadlines = computedSchedule.groupDeadlines;
+        homeworkData.earliestDeadline = computedSchedule.earliestDate;
+        homeworkData.latestDeadline = computedSchedule.latestDate;
+        // Base dueDate is set to earliest deadline for sorted query compatibility!
+        homeworkData.dueDate = computedSchedule.earliestDate;
       }
 
+      const payload = sanitizeForFirestore(homeworkData);
+
       if (editingId) {
-        await setDoc(doc(db, 'homeworks', editingId), homeworkData, { merge: true });
+        await setDoc(doc(db, 'homeworks', editingId), payload, { merge: true });
         alert(isRtl ? 'تم التعديل بنجاح!' : 'Edited successfully!');
       } else {
-        homeworkData.createdAt = serverTimestamp();
-        await addDoc(collection(db, 'homeworks'), homeworkData);
+        payload.createdAt = serverTimestamp();
+        await addDoc(collection(db, 'homeworks'), payload);
       }
 
       // Reset form
@@ -569,7 +682,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
             <form onSubmit={handleSubmit} className="bg-white dark:bg-zinc-800 p-6 rounded-3xl border border-slate-200 dark:border-zinc-700 shadow-sm space-y-6">
               <h2 className="text-lg font-bold text-slate-900 dark:text-stone-100">{t.postHomework}</h2>
               
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{t.category}</label>
                   <select
@@ -595,18 +708,8 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                         ))}
                   </select>
                 </div>
-                
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{t.dueDate || 'تاريخ التسليم'}</label>
-                  <input
-                    type="date"
-                    value={dueDate}
-                    onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 outline-none focus:border-sky-500 dark:text-stone-100"
-                  />
-                </div>
 
-                <div className="sm:col-span-2 lg:col-span-1">
+                <div>
                   <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{t.type}</label>
                   <div className="flex gap-2 bg-slate-50 dark:bg-zinc-900 p-1 rounded-xl border border-slate-200 dark:border-zinc-700">
                     <button
@@ -644,6 +747,198 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Deadline Scheduling Mode */}
+              <div className="space-y-4 p-4 rounded-2xl bg-slate-50/80 dark:bg-zinc-900/40 border border-slate-200/80 dark:border-zinc-700/80">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
+                    {t.dueDate || (isRtl ? 'تحديد موعد التسليم / الامتحان' : 'Deadline Scheduling')}
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-100 dark:bg-zinc-900 p-1.5 rounded-xl border border-slate-200 dark:border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setDeadlineMode('fixed')}
+                      className={`py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                        deadlineMode === 'fixed'
+                          ? 'bg-white dark:bg-zinc-700 text-sky-600 dark:text-sky-400 shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+                      }`}
+                    >
+                      <Clock className="w-4 h-4" />
+                      <span>{t.deadlineModeFixed || (isRtl ? 'موعد موحد (للدفعة كاملة)' : 'General Fixed Deadline')}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDeadlineMode('timetable')}
+                      className={`py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                        deadlineMode === 'timetable'
+                          ? 'bg-white dark:bg-zinc-700 text-sky-600 dark:text-sky-400 shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+                      }`}
+                    >
+                      <CalendarDays className="w-4 h-4" />
+                      <span>{t.deadlineModeTimetable || (isRtl ? 'بحسب موعد المحاضرة لكل كروب' : 'By Group Lecture Time')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {deadlineMode === 'fixed' ? (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">
+                      {isRtl ? 'تاريخ التسليم الموحد' : 'Due Date'}
+                    </label>
+                    <input
+                      type="date"
+                      value={dueDate}
+                      onChange={(e) => setDueDate(e.target.value)}
+                      className="w-full sm:w-1/2 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 outline-none focus:border-sky-500 dark:text-stone-100"
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {!timetable?.sessions?.length ? (
+                      <div className="p-3.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-800/50 rounded-xl flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-200">
+                        <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-bold">
+                            {isRtl ? 'لا يوجد جدول محاضرات منشور لهذه المرحلة حالياً.' : 'No published timetable for this stage.'}
+                          </span>{' '}
+                          {isRtl
+                            ? 'يرجى تحرير ونشر الجدول من زر "تحرير الجدول" أولاً، أو استخدم "موعد موحد".'
+                            : 'Please publish the timetable first or switch to General Fixed Deadline.'}
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Week Selector Pills (Saturday-anchored) */}
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2">
+                            {t.selectWeek || (isRtl ? 'اختر الأسبوع الدراسي (يبدأ السبت)' : 'Select Academic Week')}
+                          </label>
+                          <div className="flex flex-wrap gap-2">
+                            {upcomingWeeks.map((week) => {
+                              const isSelected = !isCustomWeek && selectedWeekSaturday === week.saturdayDate;
+                              return (
+                                <button
+                                  key={week.saturdayDate}
+                                  type="button"
+                                  onClick={() => {
+                                    setIsCustomWeek(false);
+                                    setSelectedWeekSaturday(week.saturdayDate);
+                                  }}
+                                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
+                                    isSelected
+                                      ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                                      : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-zinc-700 hover:border-sky-300'
+                                  }`}
+                                >
+                                  <span>{isRtl ? week.labelAr : week.labelEn}</span>
+                                  <span className="block text-[10px] opacity-80 font-normal">
+                                    {isRtl ? week.dateRangeAr : week.dateRangeEn}
+                                  </span>
+                                </button>
+                              );
+                            })}
+
+                            <button
+                              type="button"
+                              onClick={() => setIsCustomWeek(true)}
+                              className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
+                                isCustomWeek
+                                  ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                                  : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-zinc-700 hover:border-sky-300'
+                              }`}
+                            >
+                              <span>{t.customWeek || (isRtl ? 'أسبوع مخصص' : 'Custom Week')}</span>
+                              <span className="block text-[10px] opacity-80 font-normal">
+                                {isRtl ? 'تحديد تاريخ' : 'Pick Date'}
+                              </span>
+                            </button>
+                          </div>
+
+                          {isCustomWeek && (
+                            <div className="mt-2.5 flex items-center gap-2">
+                              <input
+                                type="date"
+                                value={customWeekDate}
+                                onChange={(e) => {
+                                  const picked = e.target.value;
+                                  setCustomWeekDate(picked);
+                                  if (picked) {
+                                    const sat = getSaturdayOfWeek(new Date(picked));
+                                    setSelectedWeekSaturday(formatDateIso(sat));
+                                  }
+                                }}
+                                className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs outline-none focus:border-sky-500 dark:text-stone-100"
+                              />
+                              <span className="text-xs text-slate-500">
+                                {isRtl ? `يبدأ السبت: ${selectedWeekSaturday}` : `Starts Saturday: ${selectedWeekSaturday}`}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Timetable Session Match & Selection */}
+                        <div>
+                          {availableTimetableSessions.length === 0 ? (
+                            <div className="p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl text-xs text-red-700 dark:text-red-300 flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>
+                                {t.noTimetableSessionsFound || (isRtl
+                                  ? 'لم يتم العثور على جلسات لهذه المادة في جدول المحاضرات.'
+                                  : 'No matching sessions found in the published timetable.')}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {matchedTitles.length > 1 && (
+                                <div>
+                                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                                    {t.matchedSession || (isRtl ? 'جلسة الجدول المطابقة' : 'Matched Timetable Session')}
+                                  </label>
+                                  <select
+                                    value={matchedSessionTitle}
+                                    onChange={(e) => setMatchedSessionTitle(e.target.value)}
+                                    className="w-full bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs outline-none focus:border-sky-500 dark:text-stone-100"
+                                  >
+                                    {matchedTitles.map(title => (
+                                      <option key={title} value={title}>{title}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {/* Computation Summary Preview */}
+                              {computedSchedule && computedSchedule.totalGroups > 0 && (
+                                <div className="p-3 bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-xl">
+                                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                                    <span>
+                                      {isRtl
+                                        ? `تمت جدولة ${computedSchedule.totalGroups} مجموعة تلقائياً (${computedSchedule.dateRangeStrAr})`
+                                        : `Scheduled ${computedSchedule.totalGroups} groups (${computedSchedule.dateRangeStrEn})`}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {Object.values(computedSchedule.groupDeadlines).map(gd => (
+                                      <span key={gd.group} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 text-[11px] font-medium border border-emerald-200/80 dark:border-emerald-800/50 text-slate-700 dark:text-slate-300">
+                                        <span className="font-bold text-emerald-600 dark:text-emerald-400">{gd.group}</span>
+                                        <span className="text-slate-400">·</span>
+                                        <span>{isRtl ? gd.dayNameAr : gd.dayNameEn} {gd.time}</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -738,8 +1033,13 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         <div className="space-y-6">
           <div className="space-y-4">
             {incompleteHomeworks.map((hw, index) => {
+              const isTimetableMode = hw.deadlineMode === 'timetable' && !!hw.groupDeadlines;
+              const studentResolution = resolveStudentDeadline(hw, user?.group);
+
               const createdAt = hw.createdAt?.toMillis ? hw.createdAt.toMillis() : Date.now();
-              const deadlineObj = hw.dueDate?.toMillis ? hw.dueDate.toMillis() : (hw.dueDate ? new Date(hw.dueDate).getTime() : createdAt + 7 * 24 * 60 * 60 * 1000);
+              const deadlineObj = studentResolution.effectiveDate
+                ? studentResolution.effectiveDate.getTime()
+                : (hw.dueDate?.toMillis ? hw.dueDate.toMillis() : (hw.dueDate ? new Date(hw.dueDate).getTime() : createdAt + 7 * 24 * 60 * 60 * 1000));
               const deadline = deadlineObj;
               
               // Calculate calendar days left ignoring specific times (e.g. today to tomorrow is exactly 1 day)
@@ -778,14 +1078,96 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                          {hw.type === 'theoretical' ? t.theoretical : hw.type === 'practical' ? t.practical : (t.both || (isRtl ? 'عملي ونظري' : 'Both'))}
                        </span>
                     </div>
-                    {/* Deadline Chip */}
-                    <div id={index === 0 ? "homework-deadline-chip-0" : undefined} className={`inline-flex items-center w-fit gap-1 px-3 py-1 rounded-full text-xs font-bold ${chipColor}`}>
-                      <Calendar className="w-3.5 h-3.5" />
-                      {daysLeft < 0 ? (isRtl ? `متأخر ${Math.abs(daysLeft)} أيام` : `Overdue by ${Math.abs(daysLeft)} days`) : 
-                       daysLeft === 0 ? (isRtl ? 'اليوم' : 'Today') : 
-                       daysLeft === 1 ? (isRtl ? 'غداً' : 'Tomorrow') :
-                       (isRtl ? `يتبقى ${daysLeft} أيام` : `${daysLeft} days left`)}
+
+                    {/* Deadline and Group Schedule Info */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Deadline Countdown Chip */}
+                      <div id={index === 0 ? "homework-deadline-chip-0" : undefined} className={`inline-flex items-center w-fit gap-1 px-3 py-1 rounded-full text-xs font-bold ${chipColor}`}>
+                        <Calendar className="w-3.5 h-3.5" />
+                        {daysLeft < 0 ? (isRtl ? `متأخر ${Math.abs(daysLeft)} أيام` : `Overdue by ${Math.abs(daysLeft)} days`) : 
+                         daysLeft === 0 ? (isRtl ? 'اليوم' : 'Today') : 
+                         daysLeft === 1 ? (isRtl ? 'غداً' : 'Tomorrow') :
+                         (isRtl ? `يتبقى ${daysLeft} أيام` : `${daysLeft} days left`)}
+                      </div>
+
+                      {/* Timetable-specific or Fixed Date detail */}
+                      {isTimetableMode ? (
+                        studentResolution.isGroupSpecific ? (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 text-xs font-bold border border-sky-200/80 dark:border-sky-800/60">
+                            <Clock className="w-3.5 h-3.5 text-sky-500" />
+                            <span>{isRtl ? studentResolution.dayNameAr : studentResolution.dayNameEn}</span>
+                            <span>{formatFriendlyDate(deadlineDate, isRtl ? 'ar' : 'en')}</span>
+                            <span>· {studentResolution.time}</span>
+                            <span className="bg-sky-200 dark:bg-sky-800 text-sky-900 dark:text-sky-100 px-1.5 py-0.2 rounded text-[11px]">
+                              {studentResolution.groupLabel}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-200/80 dark:border-amber-800/60" title={t.noGroupWarning}>
+                            <Clock className="w-3.5 h-3.5 text-amber-500" />
+                            <span>{formatFriendlyDate(deadlineDate, isRtl ? 'ar' : 'en')}</span>
+                            <span>· {studentResolution.time || ''}</span>
+                            <span className="text-[11px] opacity-80">
+                              ({isRtl ? 'موعد مبدئي - حدد مجموعتك' : 'Early fallback'})
+                            </span>
+                          </span>
+                        )
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 font-semibold px-2 py-1">
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>{deadlineDate.toLocaleDateString(isRtl ? 'ar-EG' : 'en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                        </span>
+                      )}
                     </div>
+
+                    {/* Admin Expandable Group Deadlines */}
+                    {canManage(user, 'manageHomeworks') && isTimetableMode && hw.groupDeadlines && (
+                      <div className="mt-1">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedGroupSchedules(prev => ({ ...prev, [hw.id]: !prev[hw.id] }))}
+                          className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-600 dark:text-sky-400 hover:text-sky-700 dark:hover:text-sky-300 transition-colors py-1"
+                        >
+                          <Users className="w-3.5 h-3.5" />
+                          <span>
+                            {expandedGroupSchedules[hw.id]
+                              ? (t.hideGroupDeadlines || (isRtl ? 'إخفاء مواعيد المجموعات' : 'Hide Group Deadlines'))
+                              : (t.viewGroupDeadlines || (isRtl ? 'عرض مواعيد المجموعات' : 'View Group Deadlines'))}
+                          </span>
+                          <span className="text-[10px] bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 px-1.5 py-0.5 rounded-full font-bold">
+                            {Object.keys(hw.groupDeadlines).filter(k => k !== '*').length} {isRtl ? 'مجموعات' : 'groups'}
+                          </span>
+                          {expandedGroupSchedules[hw.id] ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+
+                        <AnimatePresence>
+                          {expandedGroupSchedules[hw.id] && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="overflow-hidden mt-2"
+                            >
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 bg-slate-50 dark:bg-zinc-900/60 rounded-2xl border border-slate-100 dark:border-zinc-800">
+                                {Object.values(hw.groupDeadlines).map(gd => (
+                                  <div key={gd.group} className="bg-white dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200/60 dark:border-zinc-700/60 flex flex-col gap-1 shadow-xs">
+                                    <div className="flex items-center justify-between font-bold">
+                                      <span className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-[11px]">
+                                        {gd.group === '*' ? (isRtl ? 'الكل' : 'All') : gd.group}
+                                      </span>
+                                      <span className="text-slate-700 dark:text-slate-300 text-xs">{gd.time}</span>
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                      {isRtl ? gd.dayNameAr : gd.dayNameEn} {formatFriendlyDate(new Date(gd.dueDate?.toDate ? gd.dueDate.toDate() : gd.dueDate), isRtl ? 'ar' : 'en')}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    )}
                   </div>
                   
                   <div className="flex items-center gap-2">

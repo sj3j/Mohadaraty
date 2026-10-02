@@ -339,6 +339,58 @@ export function classifyFailure(err: any): McqFailureReason {
   return 'error';
 }
 
+/** Target 59s execution budget ceiling (just under Vercel's 60s hard timeout). */
+export const FUNCTION_BUDGET_MS = 59_000;
+export const GENERATE_ATTEMPTS = 2;
+export const RETRY_BACKOFF_MS = 2_000;
+export const MIN_REMAINING_BUDGET_FOR_RETRY_MS = 12_000;
+
+/**
+ * Run the model call, retrying transient provider unavailability within the 59s function budget.
+ */
+export async function generateWithRetry<T>(
+  call: () => Promise<T>,
+  startTime: number,
+  options?: {
+    attempts?: number;
+    backoffMs?: number;
+    functionBudgetMs?: number;
+    minRemainingBudgetMs?: number;
+    onRetry?: (wait: number, attempt: number, err: any) => void;
+  },
+): Promise<T> {
+  const attempts = options?.attempts ?? GENERATE_ATTEMPTS;
+  const backoffMs = options?.backoffMs ?? RETRY_BACKOFF_MS;
+  const budgetMs = options?.functionBudgetMs ?? FUNCTION_BUDGET_MS;
+  const minRemaining = options?.minRemainingBudgetMs ?? MIN_REMAINING_BUDGET_FOR_RETRY_MS;
+  let last: any;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await call();
+    } catch (e: any) {
+      last = e;
+      if (classifyFailure(e) !== 'unavailable') throw e;
+
+      const isLastAttempt = attempt >= attempts - 1;
+      if (isLastAttempt) throw e;
+
+      const elapsed = Date.now() - startTime;
+      const canRetry = (elapsed + backoffMs) < (budgetMs - minRemaining);
+      if (!canRetry) throw e;
+
+      if (options?.onRetry) {
+        options.onRetry(backoffMs, attempt, e);
+      } else {
+        console.warn(`[mcq] provider unavailable, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${attempts})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  throw last;
+}
+
+
 /* ------------------------------------------------------------------ *
  * Question-bank extraction (admin uploads an arbitrary exam PDF)
  * ------------------------------------------------------------------ */

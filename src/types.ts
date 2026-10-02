@@ -370,6 +370,16 @@ export interface Student {
   freezeTokens?: number;
 }
 
+export interface HomeworkGroupDeadline {
+  group: string;
+  dueDate: any;
+  dayNameAr: string;
+  dayNameEn: string;
+  time: string;
+  sessionTitle?: string;
+  location?: string;
+}
+
 export interface Homework {
   id: string;
   /**
@@ -394,6 +404,17 @@ export interface Homework {
   /** Owning stage. Every write path sets it; a homework without one is
    *  invisible to the stage-filtered query in WeeklyListScreen. */
   stageId?: string;
+
+  /** Deadline mode: 'fixed' (general single date) or 'timetable' (per-group lecture time). */
+  deadlineMode?: 'fixed' | 'timetable';
+  /** The Saturday date string (YYYY-MM-DD) starting the academic week for timetable mode. */
+  targetWeekStart?: string;
+  /** The title of the session in timetable.sessions that this homework was linked to. */
+  timetableSessionTitle?: string;
+  /** Map of subgroup -> exact deadline details calculated from the timetable. */
+  groupDeadlines?: Record<string, HomeworkGroupDeadline>;
+  earliestDeadline?: any;
+  latestDeadline?: any;
 }
 
 export type Language = 'ar' | 'en';
@@ -521,6 +542,20 @@ export const TRANSLATIONS = {
     editHomework: 'تعديل واجب',
     both: 'عملي ونظري',
     dueDate: 'تاريخ التسليم / الامتحان',
+    deadlineModeFixed: 'موعد موحد (للدفعة كاملة)',
+    deadlineModeTimetable: 'بحسب موعد المحاضرة لكل كروب',
+    selectWeek: 'الأسبوع الدراسي (يبدأ السبت)',
+    thisWeek: 'الأسبوع الحالي',
+    nextWeek: 'الأسبوع القادم',
+    customWeek: 'أسبوع مخصص',
+    matchedSession: 'جلسة الجدول المطابقة',
+    viewGroupDeadlines: 'عرض مواعيد المجموعات',
+    hideGroupDeadlines: 'إخفاء مواعيد المجموعات',
+    yourGroupDeadline: 'موعد مجموعتك',
+    noGroupWarning: 'لم تحدد مجموعتك - تم عرض الموعد الأبكر للمجموعات',
+    setGroupInSettings: 'حدد مجموعتك في الإعدادات',
+    perGroupSchedule: 'مواعيد بحسب المجموعات',
+    noTimetableSessionsFound: 'لم يتم العثور على جلسات لهذه المادة في جدول المحاضرات المنشور',
     examLectures: 'محاضرات الامتحان',
     addLecture: 'إضافة محاضرة',
     additionalNote: 'ملاحظة إضافية (اختياري)',
@@ -685,6 +720,20 @@ export const TRANSLATIONS = {
     editHomework: 'Edit Homework',
     both: 'Theo & Prac',
     dueDate: 'Due / Exam Date',
+    deadlineModeFixed: 'General Deadline (All Groups)',
+    deadlineModeTimetable: 'By Group Lecture Time',
+    selectWeek: 'Academic Week (Starts Saturday)',
+    thisWeek: 'This Week',
+    nextWeek: 'Next Week',
+    customWeek: 'Custom Week',
+    matchedSession: 'Matched Timetable Session',
+    viewGroupDeadlines: 'View Group Deadlines',
+    hideGroupDeadlines: 'Hide Group Deadlines',
+    yourGroupDeadline: 'Your Group Deadline',
+    noGroupWarning: 'No group selected - showing earliest group deadline',
+    setGroupInSettings: 'Set your group in Settings',
+    perGroupSchedule: 'By Group Schedule',
+    noTimetableSessionsFound: 'No matching sessions found in the published timetable',
     examLectures: 'Exam Lectures',
     addLecture: 'Add Lecture',
     additionalNote: 'Additional Note (Optional)',

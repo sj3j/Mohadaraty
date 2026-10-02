@@ -403,12 +403,13 @@ exports.sendHomeworkNotificationV3 = onDocumentCreated({
     const type = homeworkData.type === 'theoretical' ? 'نظري' : 'عملي';
     
     // Extract lecture numbers
-    const lectureNumbers = homeworkData.lectures
+    const lectureNumbers = (homeworkData.lectures || [])
       .map(l => l.label)
       .join(', ');
 
     const title = '📚 واجب جديد!';
-    const body = `${subject} - ${type} | ${lectureNumbers}`;
+    const scheduleInfo = homeworkData.deadlineMode === 'timetable' ? ' | الموعد بحسب محاضرة كل كروب' : '';
+    const body = `${subject} - ${type}${lectureNumbers ? ` | ${lectureNumbers}` : ''}${scheduleInfo}`;
 
     console.log('New homework created:', body);
 

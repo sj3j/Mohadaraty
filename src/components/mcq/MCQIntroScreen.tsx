@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Lecture, UserProfile } from '../../types';
-import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock } from 'lucide-react';
+import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock, RotateCcw } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
 import { canManageMcqSystem, isMasterAdmin, isStaff } from '../../lib/permissions';
@@ -30,6 +30,25 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
   const isQuizLocked = propIsQuizLocked ?? Boolean(user?.pendingStageId);
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
+  const [retryCountdown, setRetryCountdown] = useState(0);
+
+  useEffect(() => {
+    if (generateError) {
+      setRetryCountdown(5);
+      const interval = setInterval(() => {
+        setRetryCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setRetryCountdown(0);
+    }
+  }, [generateError]);
 
   /*
    * Master admin, representative (role 'admin') and assistant (role
@@ -158,9 +177,20 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
                 أنشئ الأسئلة الآن
               </button>
               {generateError && (
-                <p className="text-xs font-bold text-amber-600 dark:text-amber-400 text-center mt-2">
-                  {generateError}
-                </p>
+                <div className="mt-3 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl space-y-2">
+                  <p className="text-xs font-bold text-amber-700 dark:text-amber-300 text-center">
+                    {generateError}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onGenerate}
+                    disabled={retryCountdown > 0}
+                    className="w-full py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    {retryCountdown > 0 ? `إعادة المحاولة (${retryCountdown}s)` : 'إعادة المحاولة الآن'}
+                  </button>
+                </div>
               )}
             </>
           ) : requestState === 'sent' || requestState === 'already' ? (

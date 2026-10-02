@@ -132,7 +132,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
       // than a single catch-all that hides what went wrong.
       let msg: string;
       if (err instanceof AIUnavailableError) {
-        msg = AI_UNAVAILABLE_MESSAGE;
+        msg = err.code === 'unavailable'
+          ? 'الخدمة مشغولة مؤقتاً بسبب ضغط الطلبات على مزود الذكاء الاصطناعي. يرجى الانتظار بضع ثوانٍ وإعادة المحاولة.'
+          : AI_UNAVAILABLE_MESSAGE;
       } else {
         const code = err?.message || '';
         switch (code) {
@@ -162,7 +164,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             break;
 
           case 'unavailable':
-            msg = 'الخدمة مزدحمة أو غير متاحة مؤقتاً. حاول بعد قليل.';
+            msg = 'الخدمة مشغولة مؤقتاً بسبب ضغط الطلبات على مزود الذكاء الاصطناعي. يرجى الانتظار بضع ثوانٍ وإعادة المحاولة.';
             break;
           case 'Internal server error':
             msg = 'حدث خطأ في الاتصال بالخادم. إذا استمرت المشكلة، يرجى إعادة تشغيل الخادم.';
