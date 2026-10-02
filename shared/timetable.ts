@@ -140,10 +140,9 @@ export const DAY_LABELS: { ar: string; en: string }[] = [
   { ar: 'السبت', en: 'Saturday' },
 ];
 
-/** The order days are shown in. Sunday..Thursday is the teaching week; Friday
- *  and Saturday trail it and are rendered only when something was parsed into
- *  them. Matching DayIndex means this is just 0..6. */
-export const TEACHING_DAYS: DayIndex[] = [0, 1, 2, 3, 4];
+/** The order days are shown in. Saturday..Thursday is the teaching week; Friday
+ *  trails it and is rendered only when something was parsed into it. */
+export const TEACHING_DAYS: DayIndex[] = [6, 0, 1, 2, 3, 4];
 
 /* ------------------------------------------------------------------ *
  * Digits, days and times
@@ -575,7 +574,7 @@ export function groupSessionsByDay(
     if (!buckets.has(s.day)) buckets.set(s.day, []);
     buckets.get(s.day)!.push(s);
   }
-  const order: DayIndex[] = [0, 1, 2, 3, 4, 5, 6];
+  const order: DayIndex[] = [6, 0, 1, 2, 3, 4, 5];
   return order
     .filter(d => buckets.has(d))
     .map(day => ({

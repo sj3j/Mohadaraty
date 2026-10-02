@@ -323,7 +323,10 @@ console.log('\ngroupSessionsByDay / overlaps');
   const b = session({ id: 'b', day: 1, start: '08:30', end: '10:30' });
   const c = session({ id: 'c', day: 0, start: '09:00', end: '10:00' });
   const grouped = groupSessionsByDay([a, b, c]);
-  check('days are ordered from Sunday', grouped[0].day === 0 && grouped[1].day === 1);
+  const sat = session({ id: 's', day: 6, start: '08:30', end: '10:30' });
+  const groupedWithSat = groupSessionsByDay([a, b, c, sat]);
+  check('days are ordered starting from Saturday',
+    groupedWithSat[0].day === 6 && groupedWithSat[1].day === 0 && groupedWithSat[2].day === 1);
   check('empty days are omitted', grouped.length === 2);
   check('sessions are ordered within a day',
     grouped[1].sessions.map(s => s.id).join() === 'b,a');

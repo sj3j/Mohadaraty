@@ -50,7 +50,7 @@ interface TimetableEditorModalProps {
   published: StageTimetableDoc | null | undefined;
 }
 
-const ALL_DAYS: DayIndex[] = [0, 1, 2, 3, 4, 5, 6];
+const ALL_DAYS: DayIndex[] = [6, 0, 1, 2, 3, 4, 5];
 
 export default function TimetableEditorModal({
   isOpen, onClose, user, isRtl, photoUrl, published,
@@ -144,7 +144,7 @@ export default function TimetableEditorModal({
   const unreviewed = sessions.filter(s => s.source === 'ai').length;
 
   const byDay = useMemo(() => groupSessionsByDay(sessions), [sessions]);
-  const daysToRender = ALL_DAYS.filter(d => d <= 4 || byDay.some(g => g.day === d));
+  const daysToRender = ALL_DAYS.filter(d => d !== 5 || byDay.some(g => g.day === d));
 
   const draftDiffers = useMemo(() => {
     if (!published) return false;
