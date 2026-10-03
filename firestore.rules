@@ -743,6 +743,35 @@ service cloud.firestore {
       allow update, delete: if canWriteStage(resource.data.get('stageId', '')) &&
         (request.resource == null || canWriteStage(request.resource.data.get('stageId', '')));
     }
+
+    match /lecture_attachments/{attachmentId} {
+      // Readers can view approved attachments.
+      // Uploader can view their own (even if pending).
+      // Staff/representative can view all attachments in their stage.
+      allow read: if isAuthenticated() && (
+        resource.data.get('status', 'approved') == 'approved' ||
+        resource.data.get('uploadedBy', '') == request.auth.uid ||
+        canWriteStage(resource.data.get('stageId', '')) ||
+        isMasterAdmin()
+      );
+
+      // Authenticated users can upload:
+      // Staff can create directly as 'approved' or 'pending'.
+      // Students must create with status == 'pending'.
+      allow create: if isAuthenticated() &&
+        request.resource.data.get('uploadedBy', '') == request.auth.uid &&
+        (canWriteStage(request.resource.data.get('stageId', '')) ||
+         isMasterAdmin() ||
+         request.resource.data.get('status', '') == 'pending');
+
+      // Only staff can update status (approve or update)
+      allow update: if canWriteStage(resource.data.get('stageId', '')) || isMasterAdmin();
+
+      // Deletion is allowed by staff or by the original uploader
+      allow delete: if canWriteStage(resource.data.get('stageId', '')) ||
+                       isMasterAdmin() ||
+                       (isAuthenticated() && resource.data.get('uploadedBy', '') == request.auth.uid);
+    }
     
     // records / announcements / homeworks all carry stageId and are filtered by
     // it in the client. Until now the rules did not check it, so the isolation

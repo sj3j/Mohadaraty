@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw } from 'lucide-react';
+import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
 import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { Language, TRANSLATIONS, Student, UserProfile } from '../types';
@@ -10,6 +10,7 @@ import { useStageContext } from '../contexts/StageContext';
 import StageSettingsModal from './StageSettingsModal';
 import SignupRequestsQueue from './SignupRequestsQueue';
 import DeletionRequestsQueue from './DeletionRequestsQueue';
+import PendingAttachmentsQueue from './admin/PendingAttachmentsQueue';
 import { canManageGroups } from '../lib/permissions';
 import { apiUrl } from '../lib/apiBase';
 import RosterImport from './RosterImport';
@@ -90,7 +91,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
    * student list meant scrolling past four tools, and the importer - the one
    * that needs room for a preview table - had the least of it.
    */
-  const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'codes'>('roster');
+  const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'attachments' | 'codes'>('roster');
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
   const [isFetchingProfile, setIsFetchingProfile] = useState(false);
   
@@ -1229,6 +1230,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     ['add',      UserPlus,  isRtl ? 'إضافة' : 'Add', null],
                     ['import',   Upload,    isRtl ? 'استيراد' : 'Import', null],
                     ['requests', Mail,      isRtl ? 'الطلبات' : 'Requests', null],
+                    ['attachments', ImageIcon, isRtl ? 'المرفقات' : 'Attachments', null],
                     ['codes',    BookOpen,  isRtl ? 'الأكواد' : 'Codes', null],
                   ] as const).map(([id, Icon, label, count]) => (
                     <button
@@ -1430,6 +1432,14 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     effectiveStageId={effectiveStageId}
                     groupConfig={groupConfig}
                     onImported={fetchStudents}
+                  />
+                )}
+
+                {panel === 'attachments' && user && (
+                  <PendingAttachmentsQueue
+                    user={user}
+                    stageId={effectiveStageId}
+                    lang={lang}
                   />
                 )}
 

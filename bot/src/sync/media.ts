@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { bucket } from '../firebase.ts';
@@ -7,6 +8,46 @@ import { log, errFields } from '../log.ts';
 import { telegram, TG_LIMITS } from '../telegram/api.ts';
 import type { TgFileLike, TgMessage, TgPhotoSize } from '../telegram/types.ts';
 import type { Attachment, AttachmentKind } from '../../../src/types/announcement.types.ts';
+
+/**
+ * Transcodes an OGG Opus audio buffer to MP3 using ffmpeg.
+ * Returns null if ffmpeg is not installed or transcoding fails,
+ * allowing graceful fallback to the original OGG file.
+ */
+async function transcodeOggToMp3(inputBuffer: Buffer): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn('ffmpeg', [
+        '-i', 'pipe:0',
+        '-f', 'mp3',
+        '-acodec', 'libmp3lame',
+        '-b:a', '64k',
+        'pipe:1',
+      ]);
+
+      const chunks: Buffer[] = [];
+      proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+      proc.on('error', (err) => {
+        log.warn('ffmpeg.spawn_failed', { ...errFields(err) });
+        resolve(null);
+      });
+      proc.on('close', (code) => {
+        if (code === 0 && chunks.length > 0) {
+          resolve(Buffer.concat(chunks));
+        } else {
+          log.warn('ffmpeg.exit_non_zero', { code });
+          resolve(null);
+        }
+      });
+
+      proc.stdin.on('error', () => resolve(null));
+      proc.stdin.end(inputBuffer);
+    } catch (err) {
+      log.warn('ffmpeg.catch_error', { ...errFields(err) });
+      resolve(null);
+    }
+  });
+}
 
 /**
  * Files, in both directions.
@@ -76,14 +117,15 @@ export function filesInMessage(message: TgMessage): TelegramFileRef[] {
   // An animation is an mp4, and AttachmentGrid gives videos a full-width row,
   // which is the right treatment for a GIF.
   if (message.animation) out.push(asFile(message.animation, 'video', 'mp4'));
-  if (message.audio) out.push(asFile(message.audio, 'file', 'mp3'));
-  if (message.voice) out.push(asFile(message.voice, 'file', 'ogg'));
+  if (message.audio) out.push(asFile(message.audio, 'audio', 'mp3'));
+  if (message.voice) out.push(asFile(message.voice, 'audio', 'ogg'));
   if (message.video_note) out.push(asFile(message.video_note, 'file', 'mp4'));
 
   if (message.document) {
     const mime = message.document.mime_type ?? '';
     const kind: AttachmentKind = mime.startsWith('image/') ? 'image'
       : mime.startsWith('video/') ? 'video'
+      : mime.startsWith('audio/') ? 'audio'
       : 'file';
     out.push(asFile(message.document, kind, 'bin'));
   }
@@ -121,6 +163,48 @@ export async function ingestTelegramFile(file: TelegramFileRef, stageId: string)
   const response = await fetch(telegram.fileUrl(meta.file_path));
   if (!response.ok || !response.body) {
     throw new Error(`file download failed: ${response.status} ${response.statusText}`);
+  }
+
+  // Voice notes from Telegram are OGG Opus. If ffmpeg is available in the container,
+  // transcode to MP3 for universal iOS/Android compatibility, with graceful fallback to OGG.
+  const isOggVoice = file.kind === 'audio' && (file.name.endsWith('.ogg') || file.mime.includes('ogg'));
+
+  if (isOggVoice) {
+    const arrayBuffer = await response.arrayBuffer();
+    const originalBuffer = Buffer.from(arrayBuffer);
+    const transcodedMp3 = await transcodeOggToMp3(originalBuffer);
+
+    const uploadBuffer = transcodedMp3 || originalBuffer;
+    const finalMime = transcodedMp3 ? 'audio/mpeg' : (file.mime || 'audio/ogg');
+    const finalName = transcodedMp3 ? file.name.replace(/\.ogg$/i, '.mp3') : file.name;
+    const finalSize = uploadBuffer.length;
+
+    const path = `announcements/${stageId}/${Date.now()}_${safeName(finalName)}`;
+    const token = randomUUID();
+    const target = bucket.file(path);
+
+    await target.save(uploadBuffer, {
+      resumable: false,
+      metadata: {
+        contentType: finalMime,
+        metadata: { firebaseStorageDownloadTokens: token },
+      },
+    });
+
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+    log.info('storage.uploaded', { path, bytes: finalSize, kind: file.kind, transcoded: !!transcodedMp3 });
+
+    return {
+      attachment: {
+        id: `tg_${file.fileUniqueId}`,
+        kind: 'audio',
+        url,
+        name: finalName,
+        size: finalSize,
+        mime: finalMime,
+        path,
+      },
+    };
   }
 
   // Stage-scoped, matching Composer exactly - storage.rules scopes writes to

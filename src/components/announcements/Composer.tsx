@@ -40,7 +40,10 @@ import PollBuilder, { emptyPoll } from './PollBuilder';
 const ComposerEditor = React.lazy(() => import('./ComposerEditor'));
 
 const kindOf = (file: File): AttachmentKind =>
-  file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file';
+  file.type.startsWith('image/') ? 'image'
+  : file.type.startsWith('video/') ? 'video'
+  : file.type.startsWith('audio/') || /\.(ogg|oga|opus|mp3|wav|m4a|aac)$/i.test(file.name) ? 'audio'
+  : 'file';
 
 /** Firebase Storage rejects most non-ASCII object names; the display name is
  *  preserved separately on the attachment record. */

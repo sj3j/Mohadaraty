@@ -3,13 +3,14 @@ import { flushSync } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw,
-  Search, Sparkles, X,
+  Search, Sparkles, X, Image as ImageIcon,
 } from 'lucide-react';
 import PdfPage, { type PageHandle } from './PdfPage';
 import SelectionToolbar from './SelectionToolbar';
 import PdfSearchPanel from './PdfSearchPanel';
 import NoteEditorSheet from './NoteEditorSheet';
 import NotesDrawer from './NotesDrawer';
+import PdfAttachmentsDrawer from './PdfAttachmentsDrawer';
 import PdfTranslationSheet from './PdfTranslationSheet';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { loadPdfjs, fetchPdfBytes, freshBytes, PDFJS_DOC_OPTIONS } from '../../lib/pdfjs';
@@ -160,6 +161,18 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
   /** Null until the access probe returns. The entry points stay hidden rather
    *  than rendering an action that would only be refused. */
   const [simosanReady, setSimosanReady] = useState(false);
+
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [attachmentsCount, setAttachmentsCount] = useState(0);
+
+  useEffect(() => {
+    if (!lectureId) return;
+    import('../../services/lectureAttachmentService').then(({ getLectureAttachments }) => {
+      getLectureAttachments(lectureId, user).then((items) => {
+        setAttachmentsCount(items.filter((a) => a.status === 'approved').length);
+      }).catch(() => {});
+    });
+  }, [lectureId, user]);
 
   /** Tracks the calculated fit-width scale of the current document */
   const fitScaleRef = useRef(1);
@@ -1348,6 +1361,20 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
         )}
 
         <button
+          onClick={() => setAttachmentsOpen(true)}
+          aria-label={isRtl ? 'مرفقات المحاضرة' : 'Lecture attachments'}
+          className="relative p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+          title={isRtl ? 'مرفقات وصور المحاضرة' : 'Lecture attachments'}
+        >
+          <ImageIcon className="w-6 h-6" />
+          {attachmentsCount > 0 && (
+            <span className="absolute -top-0.5 -end-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-indigo-500 text-white text-[10px] font-black flex items-center justify-center">
+              {attachmentsCount}
+            </span>
+          )}
+        </button>
+
+        <button
           onClick={() => setDrawerOpen(true)}
           aria-label={isRtl ? 'ملاحظاتي' : 'My notes'}
           className="relative p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
@@ -1604,6 +1631,26 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
             onExport={doExport}
             onDeleteAll={() => setConfirmWipe(true)}
             onClose={() => setDrawerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {attachmentsOpen && (
+          <PdfAttachmentsDrawer
+            lecture={{
+              id: lectureId,
+              title: lectureTitle,
+              pdfUrl: pdfUrl,
+              type: 'theoretical',
+              createdAt: null,
+              uploadedBy: '',
+            }}
+            user={user ?? null}
+            isRtl={isRtl}
+            isOpen={attachmentsOpen}
+            onClose={() => setAttachmentsOpen(false)}
+            onCountChange={setAttachmentsCount}
           />
         )}
       </AnimatePresence>

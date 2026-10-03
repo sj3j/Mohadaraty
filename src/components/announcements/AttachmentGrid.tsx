@@ -2,6 +2,13 @@ import React, { useState } from 'react';
 import { FileText, Download, X } from 'lucide-react';
 import { forceDownload } from '../../lib/utils';
 import type { Attachment } from '../../types/announcement.types';
+import VoiceMessagePlayer from './VoiceMessagePlayer';
+
+export const isAudioAttachment = (attachment: Attachment): boolean => {
+  if (attachment.kind === 'audio') return true;
+  if (attachment.mime?.startsWith('audio/')) return true;
+  return /\.(ogg|oga|opus|mp3|wav|m4a|aac)$/i.test(attachment.name || '');
+};
 
 /**
  * Attachments as the reader sees them.
@@ -31,7 +38,8 @@ export default function AttachmentGrid({ attachments, isRtl }: Props) {
 
   const images = attachments.filter(a => a.kind === 'image');
   const videos = attachments.filter(a => a.kind === 'video');
-  const files = attachments.filter(a => a.kind === 'file');
+  const audios = attachments.filter(isAudioAttachment);
+  const files = attachments.filter(a => a.kind === 'file' && !isAudioAttachment(a));
 
   const visible = images.slice(0, 4);
   const overflow = images.length - visible.length;
@@ -75,6 +83,10 @@ export default function AttachmentGrid({ attachments, isRtl }: Props) {
         <div key={video.id} className="rounded-xl overflow-hidden mb-2 bg-black">
           <video src={video.url} controls preload="metadata" className="w-full h-auto max-h-[280px] object-contain" />
         </div>
+      ))}
+
+      {audios.map(audio => (
+        <VoiceMessagePlayer key={audio.id} attachment={audio} isRtl={isRtl} />
       ))}
 
       {files.map(file => (

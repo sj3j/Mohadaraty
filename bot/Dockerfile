@@ -34,6 +34,7 @@ RUN npx esbuild src/index.ts \
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apk add --no-cache ffmpeg
 # Production deps only. Never `COPY . .` in this stage.
 COPY bot/package.json bot/package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force

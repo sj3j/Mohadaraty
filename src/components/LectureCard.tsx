@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileText, Download, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight } from 'lucide-react';
+import { FileText, Download, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
@@ -10,6 +10,7 @@ import { useOfflinePDF, readStoredPdf } from '../hooks/useOfflinePDF';
 import { forceDownload, getYoutubeEmbedUrl } from '../lib/utils';
 import { useMCQStatus } from '../hooks/useMCQStatus';
 import { shareFile } from '../lib/shareFile';
+import LectureAttachmentsSection from './lecture/LectureAttachmentsSection';
 
 interface LectureCardProps {
   lecture: Lecture;
@@ -716,6 +717,15 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
                     </button>
                   )}
 
+                </div>
+
+                {/* Lecture Attachments Section */}
+                <div className="pt-2 border-t border-slate-100 dark:border-zinc-800">
+                  <LectureAttachmentsSection
+                    lecture={lecture}
+                    user={user}
+                    lang={lang}
+                  />
                 </div>
 
               </div>

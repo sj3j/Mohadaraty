@@ -43,7 +43,7 @@ export interface RichBlock {
   entities?: RichEntity[];
 }
 
-export type AttachmentKind = 'image' | 'video' | 'file';
+export type AttachmentKind = 'image' | 'video' | 'file' | 'audio';
 
 export interface Attachment {
   id: string;
@@ -56,6 +56,8 @@ export interface Attachment {
   mime: string;
   /** Storage object path, kept so a deleted post can clean up after itself. */
   path?: string;
+  /** Optional audio/video duration in seconds. */
+  duration?: number;
 }
 
 export interface PollOption {

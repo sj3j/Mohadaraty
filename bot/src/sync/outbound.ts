@@ -75,7 +75,7 @@ function partition(attachments: Attachment[]): { visual: Attachment[][]; docs: A
   };
   return {
     visual: chunk(attachments.filter(a => a.kind === 'image' || a.kind === 'video').filter(isSendable)),
-    docs: chunk(attachments.filter(a => a.kind === 'file').filter(isSendable)),
+    docs: chunk(attachments.filter(a => a.kind === 'file' || a.kind === 'audio').filter(isSendable)),
   };
 }
 
@@ -90,8 +90,8 @@ async function sendGroup(chatId: number, group: Attachment[], caption?: TgText):
 
   if (group.length === 1) {
     const only = group[0];
-    const method = only.kind === 'image' ? 'sendPhoto' : only.kind === 'video' ? 'sendVideo' : 'sendDocument';
-    const field = only.kind === 'image' ? 'photo' : only.kind === 'video' ? 'video' : 'document';
+    const method = only.kind === 'image' ? 'sendPhoto' : only.kind === 'video' ? 'sendVideo' : only.kind === 'audio' ? 'sendAudio' : 'sendDocument';
+    const field = only.kind === 'image' ? 'photo' : only.kind === 'video' ? 'video' : only.kind === 'audio' ? 'audio' : 'document';
 
     if (byUrl) {
       try {

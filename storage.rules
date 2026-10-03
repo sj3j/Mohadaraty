@@ -144,6 +144,20 @@ service firebase.storage {
                        request.resource.contentType.matches('image/.*'));
     }
 
+    // Lecture attachments (images of whiteboards, notes, diagrams).
+    // Students can upload images capped at 10MB prefixed with their UID.
+    // Staff can upload or manage any attachment.
+    match /lecture_attachments/{stageId}/{lectureId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow delete: if isAuthenticated()
+                   && (isStaff() || fileName.matches(request.auth.uid + ".*"));
+      allow create, update: if isAuthenticated()
+                   && (isStaff() || fileName.matches(request.auth.uid + ".*"))
+                   && request.resource.size < 10 * 1024 * 1024
+                   && (request.resource.contentType == null ||
+                       request.resource.contentType.matches('image/.*'));
+    }
+
     // Default fallback
     match /{allPaths=**} {
       allow read: if isAuthenticated();
