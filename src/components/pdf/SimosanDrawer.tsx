@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useMotionValue } from 'motion/react';
-import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag, Settings } from 'lucide-react';
+import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag, Settings, Copy, Check } from 'lucide-react';
 import { db, auth } from '../../lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import {
@@ -117,10 +117,21 @@ export default function SimosanDrawer({
     loadHistory();
   }, [lectureId, loadHistory]);
 
-  // Keep the newest turn in view as it streams in.
+  const isNearBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceToBottom < 140;
+  }, []);
+
+  // Keep the newest turn in view as it streams in, unless student scrolled up to read.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && isNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages, streaming]);
 
   useEffect(() => {
@@ -146,16 +157,24 @@ export default function SimosanDrawer({
     const text = (opts.overrideText ?? draft).trim();
     if (!text || busy) return;
 
+    // Detect walkthrough phrasing from prompt text if not explicitly provided
+    const isWalkthrough = opts.walkthrough ?? /اشرح.*(?:محاضرة|أجزاء|جزء|بالكامل)/i.test(text);
+
     setBusy(true);
     setError(null);
-    setMessages(prev => [...prev, { id: '_p', role: 'user', text: text }]);
+    const tempUserId = `user_${Date.now()}`;
+    setMessages(prev => [...prev, { id: tempUserId, role: 'user', text: text }]);
     setStreaming('');
     setDraft('');
     const usedSelection = selection;
     setSelection(null);
 
+    // Snap to bottom for new request
+    isNearBottomRef.current = true;
+
     const ac = new AbortController();
     abortRef.current = ac;
+    let accumulatedText = '';
 
     try {
       await askSimosan(
@@ -164,7 +183,7 @@ export default function SimosanDrawer({
           question: text,
           selection: usedSelection || undefined,
           newThread: opts.newThread,
-          walkthrough: opts.walkthrough,
+          walkthrough: isWalkthrough,
           languageMode,
           autoQuiz,
         },
@@ -173,14 +192,27 @@ export default function SimosanDrawer({
             setThreadId(meta.threadId);
             setState((s) => (s ? { ...s, remaining: meta.remaining } : s));
           },
-          onDelta: (d) => setStreaming((prev) => prev + d),
+          onDelta: (d) => {
+            accumulatedText += d;
+            setStreaming((prev) => prev + d);
+          },
           onDone: (done) => {
             setState((s) => (s ? { ...s, remaining: done.remaining } : s));
             setReadOnly(done.isReadOnly);
-            setStreaming('');
             if (done.offTopic) {
+              setStreaming('');
               setError(new AskError('internal'));
             } else {
+              // Immediately commit model message to state so it NEVER flickers or disappears!
+              const finalAnswer = accumulatedText;
+              if (finalAnswer.trim()) {
+                const tempModelId = `model_${Date.now()}`;
+                setMessages((prev) => [
+                  ...prev,
+                  { id: tempModelId, role: 'model', text: finalAnswer },
+                ]);
+              }
+              setStreaming('');
               loadHistory();
             }
           },
@@ -199,7 +231,7 @@ export default function SimosanDrawer({
       abortRef.current = null;
       fetchSimosanState().then((s) => s && setState(s));
     }
-  }, [draft, busy, lectureId, selection, languageMode, autoQuiz]);
+  }, [draft, busy, lectureId, selection, languageMode, autoQuiz, loadHistory]);
 
   const startNewChat = useCallback(() => {
     setReadOnly(false);
@@ -309,17 +341,19 @@ export default function SimosanDrawer({
               </p>
             </div>
             <button
+              type="button"
               onClick={() => setShowSettings(true)}
               aria-label={isRtl ? 'إعدادات الشرح' : 'Tutor settings'}
-              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition cursor-pointer"
               title={isRtl ? 'إعدادات شرح سيموسان والامتحان' : 'Simosan Settings'}
             >
               <Settings className="w-5 h-5" />
             </button>
             <button
+              type="button"
               onClick={onClose}
               aria-label={isRtl ? 'إغلاق' : 'Close'}
-              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -362,7 +396,7 @@ export default function SimosanDrawer({
         </div>
 
         {/* messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           <div className="flex items-start gap-2 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 p-3">
             <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
             <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 leading-relaxed" dir="auto">
@@ -384,7 +418,7 @@ export default function SimosanDrawer({
 
           {messages.map((m) => <Bubble key={m.id} m={m} isRtl={isRtl} onJumpToPage={onJumpToPage} />)}
 
-          {(streaming || busy) && (
+          {(streaming || (busy && messages[messages.length - 1]?.role === 'user')) && (
             <Bubble
               m={{ id: '_s', role: 'model', text: streaming, pending: !streaming }}
               isRtl={isRtl}
@@ -408,8 +442,9 @@ export default function SimosanDrawer({
               </p>
               {onOpenSubscription && (
                 <button
+                  type="button"
                   onClick={onOpenSubscription}
-                  className="w-full py-2 px-3 rounded-xl bg-white text-violet-900 font-black text-xs hover:bg-violet-50 active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"
+                  className="w-full py-2 px-3 rounded-xl bg-white text-violet-900 font-black text-xs hover:bg-violet-50 active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-violet-600" />
                   <span>{isRtl ? 'ترقية الحساب الآن' : 'Upgrade Account Now'}</span>
@@ -421,14 +456,53 @@ export default function SimosanDrawer({
 
         {/* composer */}
         <div className="shrink-0 border-t border-slate-100 dark:border-zinc-800 px-3 pt-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+          {/* Walkthrough Continuation Chips */}
+          {messages.length > 0 && !busy && !atCap && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-1.5 scrollbar-none text-[11px] font-bold" dir={isRtl ? 'rtl' : 'ltr'}>
+              <button
+                type="button"
+                onClick={() => send({ walkthrough: true, overrideText: isRtl ? 'اشرح الجزء التالي من المحاضرة بالتفصيل.' : 'Explain the next part of the lecture in detail.' })}
+                className="shrink-0 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/40 hover:bg-violet-100 dark:hover:bg-violet-900/60 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-800 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+              >
+                <span>⏩</span>
+                <span>{isRtl ? 'اشرح الجزء التالي' : 'Next part'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => send({ overrideText: isRtl ? 'هل يمكنك توضيح هذا الجزء أكثر مع أمثلة سريرية إضافية؟' : 'Can you explain this part more with clinical examples?' })}
+                className="shrink-0 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+              >
+                <span>💡</span>
+                <span>{isRtl ? 'وضّح بأمثلة سريرية' : 'Clinical examples'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => send({ overrideText: isRtl ? 'اختبرني في هذا الجزء بأسئلة MCQ إضافية مع شرح الإجابة.' : 'Quiz me on this part with more MCQs.' })}
+                className="shrink-0 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+              >
+                <span>📝</span>
+                <span>{isRtl ? 'اختبرني في هذا الجزء' : 'Quiz me'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => send({ overrideText: isRtl ? 'لخّص لي أهم النقاط الامتحانية في هذا الجزء.' : 'Summarize high-yield exam points.' })}
+                className="shrink-0 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+              >
+                <span>🎯</span>
+                <span>{isRtl ? 'نقاط الامتحان' : 'Exam points'}</span>
+              </button>
+            </div>
+          )}
+
           {/* A guided walkthrough is several billed turns, so it is offered
               explicitly rather than inferred - and only at the start of a
               thread, where it makes sense. The marker it sends is what makes
               chunking deterministic instead of a guess about wording. */}
           {!atCap && messages.length === 0 && !busy && !state?.isFreeTier && (
             <button
+              type="button"
               onClick={() => send({ walkthrough: true, overrideText: 'اشرح لي هذه المحاضرة بالكامل، جزءاً جزءاً.' })}
-              className="w-full mb-2 h-10 rounded-2xl border-2 border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-300 text-xs font-black flex items-center justify-center gap-2 active:scale-[0.98] transition"
+              className="w-full mb-2 h-10 rounded-2xl border-2 border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-300 text-xs font-black flex items-center justify-center gap-2 active:scale-[0.98] transition cursor-pointer"
             >
               <ListOrdered className="w-4 h-4" />
               {isRtl ? 'اشرح المحاضرة بأجزاء' : 'Explain the lecture in parts'}
@@ -441,9 +515,10 @@ export default function SimosanDrawer({
                 {selection}
               </p>
               <button
+                type="button"
                 onClick={() => setSelection(null)}
                 aria-label={isRtl ? 'إزالة التحديد' : 'Remove selection'}
-                className="text-slate-400 shrink-0"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 shrink-0 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -452,8 +527,9 @@ export default function SimosanDrawer({
 
           {atCap ? (
             <button
+              type="button"
               onClick={startNewChat}
-              className="w-full h-11 rounded-2xl bg-slate-900 dark:bg-stone-100 text-white dark:text-zinc-900 text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition"
+              className="w-full h-11 rounded-2xl bg-slate-900 dark:bg-stone-100 text-white dark:text-zinc-900 text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               {isRtl ? 'محادثة جديدة' : 'New chat'}
@@ -478,6 +554,7 @@ export default function SimosanDrawer({
                 className="flex-1 max-h-28 resize-none rounded-2xl bg-slate-100 dark:bg-zinc-800 px-4 py-2.5 text-sm font-bold text-slate-800 dark:text-stone-100 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-violet-400"
               />
               <button
+                type="button"
                 onClick={() => {
                   if (state?.isFreeTier && state.freeWeeklyRemaining === 0 && onOpenSubscription) {
                     onOpenSubscription();
@@ -487,7 +564,7 @@ export default function SimosanDrawer({
                 }}
                 disabled={!draft.trim() || busy}
                 aria-label={isRtl ? 'إرسال' : 'Send'}
-                className="w-10 h-10 shrink-0 rounded-full bg-gradient-to-br from-violet-500 to-sky-500 text-white flex items-center justify-center disabled:opacity-40 active:scale-90 transition"
+                className="w-10 h-10 shrink-0 rounded-full bg-gradient-to-br from-violet-500 to-sky-500 text-white flex items-center justify-center disabled:opacity-40 active:scale-90 transition cursor-pointer"
               >
                 <ArrowUp className="w-5 h-5" strokeWidth={2.5} />
               </button>
@@ -520,6 +597,7 @@ interface BubbleProps {
 }
 
 function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
+  const [copied, setCopied] = useState(false);
   const mine = m.role === 'user';
 
   const parsed = useMemo(() => {
@@ -530,6 +608,14 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
   }, [mine, m.pending, m.text]);
 
   const hasQuizzes = parsed.quizzes.length > 0;
+
+  const handleCopy = () => {
+    const textToCopy = parsed.markdownText || m.text;
+    if (!textToCopy) return;
+    navigator.clipboard?.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
   
   const handleReport = async () => {
     if (mine) return;
@@ -596,14 +682,29 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
       </div>
       
       {!mine && !m.pending && (
-        <button 
-          onClick={handleReport}
-          aria-label={isRtl ? 'الإبلاغ عن المحتوى' : 'Report content'}
-          className="mt-1.5 text-xs text-slate-400 hover:text-rose-500 transition-colors flex items-center gap-1 opacity-60 hover:opacity-100 px-2"
-        >
-          <Flag className="w-3 h-3" />
-          <span>{isRtl ? 'إبلاغ' : 'Report'}</span>
-        </button>
+        <div className="mt-1.5 flex items-center gap-2 px-2 text-xs">
+          <button 
+            type="button"
+            onClick={handleCopy}
+            aria-label={isRtl ? 'نسخ الشرح' : 'Copy explanation'}
+            className="text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors flex items-center gap-1 opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+            <span className={copied ? 'text-emerald-600 dark:text-emerald-400 font-bold' : ''}>
+              {copied ? (isRtl ? 'تم النسخ' : 'Copied') : (isRtl ? 'نسخ الشرح' : 'Copy')}
+            </span>
+          </button>
+          <span className="text-slate-300 dark:text-zinc-700">•</span>
+          <button 
+            type="button"
+            onClick={handleReport}
+            aria-label={isRtl ? 'الإبلاغ عن المحتوى' : 'Report content'}
+            className="text-slate-400 hover:text-rose-500 transition-colors flex items-center gap-1 opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            <Flag className="w-3 h-3" />
+            <span>{isRtl ? 'إبلاغ' : 'Report'}</span>
+          </button>
+        </div>
       )}
     </div>
   );

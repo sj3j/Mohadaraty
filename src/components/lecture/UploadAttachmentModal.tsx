@@ -10,11 +10,13 @@ import {
   UserCheck,
   Sparkles,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, Language, Lecture } from '../../types';
 import { uploadAttachment } from '../../services/lectureAttachmentService';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
+import { legacyCategoryLabel } from '../../lib/subjectDisplay';
 
 interface UploadAttachmentModalProps {
   isOpen: boolean;
@@ -51,6 +53,7 @@ export default function UploadAttachmentModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   const isStaff =
     user.role === 'admin' ||
@@ -117,63 +120,125 @@ export default function UploadAttachmentModal({
     );
   };
 
+  const uploadSingleItem = async (item: StagedAttachment): Promise<boolean> => {
+    setStagedFiles((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, status: 'uploading', progress: 0, error: undefined } : it))
+    );
+
+    try {
+      const subjectNameArResolved =
+        lecture.subjectNameAr ||
+        legacyCategoryLabel(lecture.subjectId || lecture.category || '', 'ar') ||
+        lecture.subjectName ||
+        '';
+      const subjectNameEnResolved =
+        lecture.subjectName ||
+        legacyCategoryLabel(lecture.subjectId || lecture.category || '', 'en') ||
+        lecture.subjectNameAr ||
+        '';
+
+      const uploaded = await uploadAttachment({
+        lectureId: lecture.id,
+        lectureTitle: lecture.title,
+        lectureNumber: lecture.number,
+        stageId: lecture.stageId || user.stageId || '',
+        subjectId: lecture.subjectId,
+        subjectName: subjectNameEnResolved,
+        subjectNameAr: subjectNameArResolved,
+        file: item.file,
+        title: item.title,
+        isAnonymous,
+        user,
+        onProgress: (p) => {
+          setStagedFiles((prev) =>
+            prev.map((it) => (it.id === item.id ? { ...it, progress: p } : it))
+          );
+        },
+      });
+
+      setStagedFiles((prev) =>
+        prev.map((it) => (it.id === item.id ? { ...it, status: 'done', progress: 100 } : it))
+      );
+      onAttachmentUploaded?.(uploaded);
+      return true;
+    } catch (err: any) {
+      console.error('Failed to upload attachment:', err);
+      const errorMsg =
+        err?.code === 'storage/unauthorized' || err?.code === 'permission-denied'
+          ? (isRtl ? 'صلاحيات غير كافية أو تعذر الوصول' : 'Permission denied')
+          : err?.message || (isRtl ? 'فشل الرفع' : 'Upload failed');
+
+      setStagedFiles((prev) =>
+        prev.map((it) =>
+          it.id === item.id
+            ? { ...it, status: 'error', error: errorMsg }
+            : it
+        )
+      );
+      return false;
+    }
+  };
+
   const handleUploadAll = async () => {
     if (stagedFiles.length === 0 || isSubmitting) return;
     setIsSubmitting(true);
     setGeneralError(null);
+    setSuccessToast(null);
 
-    let hasSuccess = false;
+    let successCount = 0;
+    let failCount = 0;
 
     for (const item of stagedFiles) {
-      if (item.status === 'done') continue;
-
-      setStagedFiles((prev) =>
-        prev.map((it) => (it.id === item.id ? { ...it, status: 'uploading', progress: 0 } : it))
-      );
-
-      try {
-        const uploaded = await uploadAttachment({
-          lectureId: lecture.id,
-          lectureTitle: lecture.title,
-          stageId: lecture.stageId || user.stageId || '',
-          subjectId: lecture.subjectId,
-          file: item.file,
-          title: item.title,
-          isAnonymous,
-          user,
-          onProgress: (p) => {
-            setStagedFiles((prev) =>
-              prev.map((it) => (it.id === item.id ? { ...it, progress: p } : it))
-            );
-          },
-        });
-
-        hasSuccess = true;
-        setStagedFiles((prev) =>
-          prev.map((it) => (it.id === item.id ? { ...it, status: 'done', progress: 100 } : it))
-        );
-
-        onAttachmentUploaded?.(uploaded);
-      } catch (err: any) {
-        console.error('Failed to upload attachment:', err);
-        setStagedFiles((prev) =>
-          prev.map((it) =>
-            it.id === item.id
-              ? { ...it, status: 'error', error: err?.message || 'Upload failed' }
-              : it
-          )
-        );
+      if (item.status === 'done') {
+        successCount++;
+        continue;
       }
+      const ok = await uploadSingleItem(item);
+      if (ok) successCount++;
+      else failCount++;
     }
 
     setIsSubmitting(false);
 
-    // If all succeeded, close after a brief delay
-    const allDone = stagedFiles.every((s) => s.status === 'done');
-    if (allDone || hasSuccess) {
+    if (failCount > 0) {
+      setGeneralError(
+        isRtl
+          ? `تعذر رفع ${failCount} من المرفقات. انقر على زر إعادة المحاولة بجانب المرفق.`
+          : `Failed to upload ${failCount} attachment(s). Please retry the failed files.`
+      );
+    }
+
+    if (failCount === 0 && successCount > 0) {
+      setSuccessToast(
+        isRtl
+          ? isStaff
+            ? 'تم رفع واعتماد المرفقات بنجاح!'
+            : 'تم إرسال المرفقات للمراجعة بنجاح!'
+          : 'Attachments uploaded successfully!'
+      );
       setTimeout(() => {
         onClose();
-      }, 700);
+      }, 900);
+    }
+  };
+
+  const handleRetryItem = async (id: string) => {
+    const item = stagedFiles.find((it) => it.id === id);
+    if (!item || isSubmitting) return;
+    setIsSubmitting(true);
+    setGeneralError(null);
+    const ok = await uploadSingleItem(item);
+    setIsSubmitting(false);
+    if (ok) {
+      // Check remaining errors
+      setStagedFiles((current) => {
+        const remainingErrors = current.filter((it) => it.status === 'error');
+        if (remainingErrors.length === 0) {
+          setSuccessToast(isRtl ? 'تم الرفع بنجاح!' : 'Uploaded successfully!');
+          setTimeout(() => onClose(), 800);
+        }
+        return current;
+      });
     }
   };
 
@@ -276,6 +341,13 @@ export default function UploadAttachmentModal({
             </div>
           )}
 
+          {successToast && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-500" />
+              <span className="font-bold">{successToast}</span>
+            </div>
+          )}
+
           {generalError && (
             <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/40 rounded-xl text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -297,18 +369,28 @@ export default function UploadAttachmentModal({
                 {stagedFiles.map((item) => (
                   <div
                     key={item.id}
-                    className="p-2 sm:p-2.5 rounded-xl border border-slate-100 dark:border-zinc-800 bg-slate-50/50 dark:bg-zinc-800/40 flex items-center gap-3"
+                    className={`p-2 sm:p-2.5 rounded-xl border bg-slate-50/50 dark:bg-zinc-800/40 flex items-center gap-3 transition-colors ${
+                      item.status === 'error'
+                        ? 'border-rose-300 dark:border-rose-800/60 bg-rose-50/20'
+                        : 'border-slate-100 dark:border-zinc-800'
+                    }`}
                   >
                     <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-zinc-700 relative">
                       <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
                       {item.status === 'uploading' && (
-                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                          <Loader2 className="w-4 h-4 text-white animate-spin" />
+                        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white">
+                          <Loader2 className="w-4 h-4 text-white animate-spin mb-0.5" />
+                          <span className="text-[9px] font-bold">{item.progress ?? 0}%</span>
                         </div>
                       )}
                       {item.status === 'done' && (
                         <div className="absolute inset-0 bg-emerald-600/80 flex items-center justify-center">
                           <CheckCircle2 className="w-5 h-5 text-white" />
+                        </div>
+                      )}
+                      {item.status === 'error' && (
+                        <div className="absolute inset-0 bg-rose-600/80 flex items-center justify-center">
+                          <AlertCircle className="w-5 h-5 text-white" />
                         </div>
                       )}
                     </div>
@@ -319,24 +401,44 @@ export default function UploadAttachmentModal({
                         placeholder={isRtl ? 'وصف أو عنوان للصورة (اختياري)...' : 'Optional caption or title...'}
                         value={item.title}
                         onChange={(e) => handleTitleChange(item.id, e.target.value)}
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || item.status === 'done'}
                         className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-800 dark:text-stone-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
+                      {item.status === 'error' && (
+                        <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                          <span className="truncate">{item.error || (isRtl ? 'فشل الرفع' : 'Upload failed')}</span>
+                        </p>
+                      )}
                       <div className="flex items-center justify-between mt-1 text-[10px] text-slate-400">
                         <span className="truncate max-w-[150px]">{item.file.name}</span>
                         <span>{(item.file.size / 1024).toFixed(0)} KB</span>
                       </div>
                     </div>
 
-                    {!isSubmitting && item.status !== 'done' && (
-                      <button
-                        onClick={() => handleRemoveStaged(item.id)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
-                        title={isRtl ? 'حذف' : 'Remove'}
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {!isSubmitting && item.status === 'error' && (
+                        <button
+                          type="button"
+                          onClick={() => handleRetryItem(item.id)}
+                          className="p-1.5 rounded-lg text-sky-600 hover:text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40 transition-colors cursor-pointer"
+                          title={isRtl ? 'إعادة المحاولة' : 'Retry'}
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      )}
+
+                      {!isSubmitting && item.status !== 'done' && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStaged(item.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
+                          title={isRtl ? 'حذف' : 'Remove'}
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

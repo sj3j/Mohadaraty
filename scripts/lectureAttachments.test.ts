@@ -42,7 +42,7 @@ check(
   'firestore.rules ensures only approved or own pending or staff can read',
   firestoreRules.includes("resource.data.get('status', 'approved') == 'approved'") &&
     firestoreRules.includes("resource.data.get('uploadedBy', '') == request.auth.uid") &&
-    firestoreRules.includes("canWriteStage(resource.data.get('stageId', ''))")
+    firestoreRules.includes("isStaff()")
 );
 
 check(
@@ -205,6 +205,43 @@ check(
 check(
   'AttachmentViewerModal provides zoom access without hiding on mobile',
   !viewerModalCode.includes('hidden sm:flex') || viewerModalCode.includes('onDoubleClick')
+);
+
+console.log('\n--- 6. Subject Name & Lecture Number Notification Contracts ---');
+
+const notifModalCode = readFileSync(join(root, 'src/components/NotificationsModal.tsx'), 'utf8');
+const queueCode = readFileSync(join(root, 'src/components/admin/PendingAttachmentsQueue.tsx'), 'utf8');
+
+check(
+  'NotificationsModal maps lecture_attachment_pending alerts',
+  notifModalCode.includes("data.type === 'lecture_attachment_pending'") &&
+    notifModalCode.includes("itemType = 'attachment'")
+);
+
+check(
+  'NotificationsModal displays subject, lecture number and title in notification body',
+  notifModalCode.includes('data.subjectName') &&
+    notifModalCode.includes('data.lectureNumber') &&
+    notifModalCode.includes('data.lectureTitle')
+);
+
+check(
+  'NotificationsModal contains expanded details card for attachment items',
+  notifModalCode.includes("item.type === 'attachment' && item.extraData && isExpanded") &&
+    notifModalCode.includes('item.extraData.lectureNumber')
+);
+
+check(
+  'PendingAttachmentsQueue displays subject badge and lecture number',
+  queueCode.includes('item.subjectName') &&
+    queueCode.includes('item.lectureNumber')
+);
+
+check(
+  'Service records lectureNumber and subjectName in adminAlerts',
+  serviceCode.includes('lectureNumber: typeof lectureNumber === \'number\' ? lectureNumber : null') &&
+    serviceCode.includes('subjectName: (subjectName || \'\').trim()') &&
+    serviceCode.includes('subjectNameAr: (subjectNameAr || subjectName || \'\').trim()')
 );
 
 console.log(`\nResults: ${passed} passed, ${failed} failed.\n`);

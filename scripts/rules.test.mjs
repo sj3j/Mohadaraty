@@ -1222,6 +1222,64 @@ await check('student CANNOT write someone else userStageMCQStats',
     userId: 'other_uid', stageId: 'stage_3', mcqRankScore: 100,
   })));
 
+console.log('\nLecture Attachments & Moderation Permissions');
+// Seed attachments
+await testEnv.withSecurityRulesDisabled(async (ctx) => {
+  const d = ctx.firestore();
+  await setDoc(doc(d, 'lecture_attachments/att_approved'), {
+    lectureId: 'lec1', stageId: 'stage_3', status: 'approved',
+    uploadedBy: 'stu_uid', title: 'Board'
+  });
+  await setDoc(doc(d, 'lecture_attachments/att_pending_stu'), {
+    lectureId: 'lec1', stageId: 'stage_3', status: 'pending',
+    uploadedBy: 'stu_uid', title: 'My Pending'
+  });
+  await setDoc(doc(d, 'lecture_attachments/att_pending_other'), {
+    lectureId: 'lec1', stageId: 'stage_3', status: 'pending',
+    uploadedBy: 'stu2_uid', title: 'Other Pending'
+  });
+});
+
+await check('student CAN upload pending attachment',
+  assertSucceeds(setDoc(doc(student, 'lecture_attachments/att_new'), {
+    lectureId: 'lec1', stageId: 'stage_3', status: 'pending', uploadedBy: 'stu_uid'
+  })));
+
+await check('student CANNOT upload approved attachment directly',
+  assertFails(setDoc(doc(student, 'lecture_attachments/att_cheat'), {
+    lectureId: 'lec1', stageId: 'stage_3', status: 'approved', uploadedBy: 'stu_uid'
+  })));
+
+await check('student CAN read approved attachment',
+  assertSucceeds(getDoc(doc(student, 'lecture_attachments/att_approved'))));
+
+await check('student CAN read their own pending attachment',
+  assertSucceeds(getDoc(doc(student, 'lecture_attachments/att_pending_stu'))));
+
+await check('student CANNOT read someone else pending attachment',
+  assertFails(getDoc(doc(student, 'lecture_attachments/att_pending_other'))));
+
+await check('representative CAN read any attachment',
+  assertSucceeds(getDoc(doc(rep, 'lecture_attachments/att_pending_other'))));
+
+await check('representative CAN query attachments by lectureId directly',
+  assertSucceeds(getDocs(query(collection(rep, 'lecture_attachments'), where('lectureId', '==', 'lec1')))));
+
+await check('representative CAN approve an attachment',
+  assertSucceeds(updateDoc(doc(rep, 'lecture_attachments/att_pending_stu'), { status: 'approved' })));
+
+await check('student CANNOT approve an attachment',
+  assertFails(updateDoc(doc(student, 'lecture_attachments/att_pending_stu'), { status: 'approved' })));
+
+await check('student CAN delete their own attachment',
+  assertSucceeds(deleteDoc(doc(student, 'lecture_attachments/att_new'))));
+
+await check('student CANNOT delete someone else attachment',
+  assertFails(deleteDoc(doc(student, 'lecture_attachments/att_pending_other'))));
+
+await check('representative CAN delete any attachment',
+  assertSucceeds(deleteDoc(doc(rep, 'lecture_attachments/att_pending_other'))));
+
 await testEnv.cleanup();
 
 console.log(`\n${passed} passed, ${failed} failed`);

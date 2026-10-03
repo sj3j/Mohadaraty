@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy } from 'lucide-react';
+import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy, Image as ImageIcon } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
@@ -32,7 +32,7 @@ interface NotificationsModalProps {
 
 interface NotificationItem {
   id: string;
-  type: 'homework' | 'system' | 'report' | 'support_ticket';
+  type: 'homework' | 'system' | 'report' | 'support_ticket' | 'attachment';
   title: string;
   body: string;
   createdAt: any;
@@ -154,7 +154,7 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                const data = docSnap.data();
                let title = isRtl ? 'تنبيه نظام' : 'System Alert';
                let body = data.reason ? `السبب: ${data.reason}` : 'هناك تنبيه يتطلب المراجعة';
-               let itemType: 'system' | 'report' | 'support_ticket' = 'system';
+               let itemType: 'system' | 'report' | 'support_ticket' | 'attachment' = 'system';
                let itemIcon: any = ShieldAlert;
                
                if (data.type === 'question_report') {
@@ -168,6 +168,29 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                  body = `${sender}: ${preview}`;
                  itemType = 'support_ticket';
                  itemIcon = LifeBuoy;
+               } else if (data.type === 'lecture_attachment_pending') {
+                 title = isRtl ? 'مرفق جديد بانتظار المراجعة' : 'New Attachment Pending Review';
+                 itemType = 'attachment';
+                 itemIcon = ImageIcon;
+
+                 const subject = (isRtl ? (data.subjectNameAr || data.subjectName) : (data.subjectName || data.subjectNameAr)) || '';
+                 const lecNum = data.lectureNumber ? (isRtl ? `محاضرة ${data.lectureNumber}` : `Lec ${data.lectureNumber}`) : '';
+                 const lecTitle = data.lectureTitle || '';
+                 const student = data.studentName || (isRtl ? 'طالب' : 'Student');
+                 const caption = data.attachmentTitle || (data.reason && data.reason !== 'صورة مرفقة جديدة' ? data.reason : '') || '';
+
+                 const headerParts: string[] = [];
+                 if (subject) headerParts.push(isRtl ? `المادة: ${subject}` : `Subject: ${subject}`);
+                 if (lecNum && lecTitle) headerParts.push(`${lecNum}: ${lecTitle}`);
+                 else if (lecTitle) headerParts.push(isRtl ? `المحاضرة: ${lecTitle}` : `Lecture: ${lecTitle}`);
+                 else if (lecNum) headerParts.push(lecNum);
+
+                 const summary = headerParts.join(' • ');
+                 const detail = isRtl
+                   ? `بواسطة: ${student}${caption ? ` | "${caption}"` : ''}`
+                   : `By: ${student}${caption ? ` | "${caption}"` : ''}`;
+
+                 body = summary ? `${summary}\n${detail}` : (data.reason ? `السبب: ${data.reason}` : (isRtl ? 'مرفق جديد بانتظار الاعتماد' : 'New attachment pending review'));
                }
                
                items.push({
@@ -239,6 +262,8 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
                   item.type === 'support_ticket'
                     ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'
+                    : item.type === 'attachment'
+                    ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
                     : (item.type === 'system' || item.type === 'report')
                     ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
                     : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400'
@@ -258,6 +283,46 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                   <p className={`text-sm text-slate-600 dark:text-slate-400 leading-snug whitespace-pre-wrap ${!isExpanded ? 'line-clamp-2' : ''}`}>
                     {item.body}
                   </p>
+                  
+                  {item.type === 'attachment' && item.extraData && isExpanded && (
+                    <div 
+                      className="mt-3 opacity-100 transition-opacity"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="mt-2 p-3 bg-emerald-50/60 dark:bg-emerald-950/20 rounded-xl border border-emerald-100 dark:border-emerald-900/40 space-y-2 text-sm text-slate-700 dark:text-slate-300">
+                        {(item.extraData.subjectNameAr || item.extraData.subjectName) && (
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-500 text-xs">{isRtl ? 'المادة:' : 'Subject:'}</span>
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs font-bold">
+                              {isRtl ? (item.extraData.subjectNameAr || item.extraData.subjectName) : (item.extraData.subjectName || item.extraData.subjectNameAr)}
+                            </span>
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-slate-500 text-xs">{isRtl ? 'المحاضرة:' : 'Lecture:'} </span>
+                          <span className="font-bold text-slate-900 dark:text-slate-100">
+                            {item.extraData.lectureNumber ? `${isRtl ? 'محاضرة ' : 'Lec '}${item.extraData.lectureNumber}: ` : ''}
+                            {item.extraData.lectureTitle || item.extraData.lectureId || (isRtl ? 'غير محدد' : 'Unknown')}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="font-bold text-slate-500 text-xs">{isRtl ? 'الطالب:' : 'Student:'} </span>
+                          <span className="font-medium">{item.extraData.studentName || (isRtl ? 'طالب' : 'Student')}</span>
+                        </div>
+                        {item.extraData.attachmentTitle && (
+                          <div>
+                            <span className="font-bold text-slate-500 text-xs">{isRtl ? 'عنوان المرفق:' : 'Attachment Title:'} </span>
+                            <span className="font-semibold">{item.extraData.attachmentTitle}</span>
+                          </div>
+                        )}
+                        <div className="pt-2 text-xs text-slate-500 dark:text-slate-400 border-t border-emerald-100 dark:border-emerald-900/30">
+                          {isRtl
+                            ? 'يمكنك مراجعة واعتماد أو رفض هذا المرفق من لوحة تحكم الإدارة > إدارة المرفقات المعلقة.'
+                            : 'You can review, approve, or reject this attachment from Admin Dashboard > Pending Attachments.'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   
                   {(item.type === 'report' || item.type === 'support_ticket') && item.extraData && isExpanded && (
                     <div 

@@ -193,6 +193,17 @@ export default function AttachmentViewerModal({
                     {formattedDate}
                   </span>
                 )}
+                {(current.subjectNameAr || current.subjectName) && (
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-200 text-[10px] font-bold">
+                    {isRtl ? (current.subjectNameAr || current.subjectName) : (current.subjectName || current.subjectNameAr)}
+                  </span>
+                )}
+                {current.lectureTitle && (
+                  <span className="text-white/80 font-medium truncate max-w-[150px] sm:max-w-xs">
+                    {current.lectureNumber ? `${isRtl ? 'محاضرة ' : 'Lec '}${current.lectureNumber}: ` : ''}
+                    {current.lectureTitle}
+                  </span>
+                )}
                 {current.status === 'pending' && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                     {isRtl ? 'بانتظار الموافقة' : 'Pending'}

@@ -36,6 +36,8 @@ interface Props {
   lectureId: string;
   lectureTitle: string;
   pdfUrl: string;
+  stageId?: string;
+  subjectId?: string;
   lang: Language;
   onClose: () => void;
   onOpenSubscription?: () => void;
@@ -119,7 +121,7 @@ function band(v: number, lo: number, hi: number, span: number): number {
   return v;
 }
 
-export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang, onClose, onOpenSubscription, isLocalFile, user }: Props) {
+export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stageId, subjectId, lang, onClose, onOpenSubscription, isLocalFile, user }: Props) {
   const isRtl = lang === 'ar';
   const hasTranslationAccess = hasSubscriptionAccess(user);
 
@@ -1642,6 +1644,8 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, lang
               id: lectureId,
               title: lectureTitle,
               pdfUrl: pdfUrl,
+              stageId: stageId,
+              subjectId: subjectId,
               type: 'theoretical',
               createdAt: null,
               uploadedBy: '',

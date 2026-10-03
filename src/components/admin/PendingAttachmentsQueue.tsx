@@ -182,12 +182,18 @@ export default function PendingAttachmentsQueue({ user, stageId, lang }: Props) 
                       <span>{(item.size / 1024).toFixed(0)} KB</span>
                     </div>
 
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate flex items-center gap-1">
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      {(item.subjectNameAr || item.subjectName) && (
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-bold text-[10px]">
+                          {isRtl ? (item.subjectNameAr || item.subjectName) : (item.subjectName || item.subjectNameAr)}
+                        </span>
+                      )}
                       <span className="text-slate-400">{isRtl ? 'المحاضرة:' : 'Lecture:'}</span>
                       <span className="font-bold text-slate-700 dark:text-stone-300">
+                        {item.lectureNumber ? `${isRtl ? 'محاضرة ' : 'Lec '}${item.lectureNumber}: ` : ''}
                         {item.lectureTitle || item.lectureId}
                       </span>
-                    </p>
+                    </div>
                   </div>
                 </div>
 

@@ -11,7 +11,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
+import { auth, db, storage } from '../lib/firebase';
 import { LectureAttachment } from '../types/lectureAttachment.types';
 import { UserProfile } from '../types';
 import { compressImage } from '../lib/imageCompressor';
@@ -20,8 +20,11 @@ import { canManage } from '../lib/permissions';
 export interface UploadAttachmentOptions {
   lectureId: string;
   lectureTitle?: string;
+  lectureNumber?: number;
   stageId: string;
   subjectId?: string;
+  subjectName?: string;
+  subjectNameAr?: string;
   file: File;
   title?: string;
   isAnonymous: boolean;
@@ -85,12 +88,13 @@ export async function getLectureAttachments(
       });
 
       // 2. If student is authenticated, also query their own pending uploads
-      if (currentUser?.uid) {
+      const studentUid = auth.currentUser?.uid || currentUser?.uid;
+      if (studentUid) {
         try {
           const myPendingQuery = query(
             collection(db, 'lecture_attachments'),
             where('lectureId', '==', lectureId),
-            where('uploadedBy', '==', currentUser.uid),
+            where('uploadedBy', '==', studentUid),
             where('status', '==', 'pending')
           );
           const myPendingSnap = await getDocs(myPendingQuery);
@@ -154,21 +158,29 @@ export async function getPendingAttachmentsForStage(stageId: string): Promise<Le
 export async function uploadAttachment({
   lectureId,
   lectureTitle,
+  lectureNumber,
   stageId,
   subjectId,
+  subjectName,
+  subjectNameAr,
   file,
   title,
   isAnonymous,
   user,
   onProgress,
 }: UploadAttachmentOptions): Promise<LectureAttachment> {
+  const currentUid = auth.currentUser?.uid || user.uid;
+  if (!currentUid) {
+    throw new Error('User is not authenticated');
+  }
+
   // 1. Client-side image compression
   const { file: compressedFile, width, height } = await compressImage(file, 2048, 0.85);
 
   // 2. Determine upload destination in Storage
   const cleanStageId = (stageId || user.stageId || 'general').trim();
   const extension = compressedFile.name.split('.').pop() || 'jpg';
-  const fileName = `${user.uid}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
+  const fileName = `${currentUid}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
   const storagePath = `lecture_attachments/${cleanStageId}/${lectureId}/${fileName}`;
   const fileRef = ref(storage, storagePath);
 
@@ -177,7 +189,7 @@ export async function uploadAttachment({
     const uploadTask = uploadBytesResumable(fileRef, compressedFile, {
       contentType: compressedFile.type,
       customMetadata: {
-        uploaderUid: user.uid,
+        uploaderUid: currentUid,
         lectureId,
         stageId: cleanStageId,
       },
@@ -210,12 +222,15 @@ export async function uploadAttachment({
   const attachmentData: Omit<LectureAttachment, 'id'> = {
     lectureId,
     lectureTitle: (lectureTitle || '').trim(),
+    lectureNumber: typeof lectureNumber === 'number' ? lectureNumber : undefined,
     stageId: cleanStageId,
     subjectId: subjectId || '',
+    subjectName: (subjectName || '').trim() || undefined,
+    subjectNameAr: (subjectNameAr || subjectName || '').trim() || undefined,
     url,
     storagePath,
     title: (title || '').trim(),
-    uploadedBy: user.uid,
+    uploadedBy: currentUid,
     uploaderName: user.name || 'طالب',
     uploaderRole: user.role,
     isAnonymous: Boolean(isAnonymous),
@@ -236,7 +251,12 @@ export async function uploadAttachment({
         stageId: cleanStageId,
         lectureId,
         lectureTitle: (lectureTitle || '').trim(),
+        lectureNumber: typeof lectureNumber === 'number' ? lectureNumber : null,
+        subjectId: subjectId || '',
+        subjectName: (subjectName || '').trim(),
+        subjectNameAr: (subjectNameAr || subjectName || '').trim(),
         studentName: user.name || 'طالب',
+        attachmentTitle: (title || '').trim(),
         reason: (title || 'صورة مرفقة جديدة').trim(),
         createdAt: serverTimestamp(),
       });

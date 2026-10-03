@@ -1073,6 +1073,8 @@ export default function App() {
             lectureId={readerLecture.id}
             lectureTitle={readerLecture.title}
             pdfUrl={readerLecture.pdfUrl}
+            stageId={readerLecture.stageId}
+            subjectId={readerLecture.subjectId}
             user={user}
             lang={lang}
             onClose={() => setReaderLecture(null)}

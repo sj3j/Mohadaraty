@@ -4,8 +4,11 @@ export interface LectureAttachment {
   id: string;
   lectureId: string;
   lectureTitle?: string;
+  lectureNumber?: number;
   stageId: string;
   subjectId?: string;
+  subjectName?: string;
+  subjectNameAr?: string;
   url: string;
   storagePath: string;
   title?: string;
