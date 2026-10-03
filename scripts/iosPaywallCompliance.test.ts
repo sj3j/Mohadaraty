@@ -61,8 +61,8 @@ check('payBestValue exists in ar and en',
 
 console.log('\n--- 4. SubscriptionScreen.ios.tsx Implementation Checks ---');
 const screenSrc = read('src/ios/SubscriptionScreen.ios.tsx');
-check('defines Apple Standard EULA URL',
-  screenSrc.includes('TERMS_OF_USE_URL') && screenSrc.includes('stdeula'));
+check('defines Terms of Use URL pointing to app\'s own Terms page',
+  screenSrc.includes('TERMS_OF_USE_URL') && screenSrc.includes('mohadaraty.vercel.app/terms'));
 check('defines Privacy Policy URL',
   screenSrc.includes('PRIVACY_POLICY_URL') && screenSrc.includes('/privacy'));
 check('renders Terms of Use and Privacy Policy separated by bullet',

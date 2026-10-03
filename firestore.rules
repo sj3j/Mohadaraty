@@ -43,8 +43,8 @@ service cloud.firestore {
     // addresses are repeated here; `npm run test:masters` fails if they drift.
     function isMasterAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email != null &&
-          request.auth.token.email_verified == true &&
+        ('email' in request.auth.token && request.auth.token.email != null &&
+          request.auth.token.get('email_verified', false) == true &&
           request.auth.token.email.lower() in [
             'almdrydyl335@gmail.com',
             'dra016go@gmail.com',
@@ -52,21 +52,21 @@ service cloud.firestore {
           ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'master_admin') ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         request.auth.token.email != null && request.auth.token.email_verified == true &&
+         'email' in request.auth.token && request.auth.token.email != null && request.auth.token.get('email_verified', false) == true &&
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'master_admin')
       );
     }
 
     function isObserver() {
       return isAuthenticated() && (
-        (request.auth.token.email != null &&
-          request.auth.token.email_verified == true &&
+        ('email' in request.auth.token && request.auth.token.email != null &&
+          request.auth.token.get('email_verified', false) == true &&
           request.auth.token.email.lower() in [
             'info@alsafwa.edu.iq'
           ]) ||
         ('role' in request.auth.token && request.auth.token.role == 'observer') ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         request.auth.token.email != null && request.auth.token.email_verified == true &&
+         'email' in request.auth.token && request.auth.token.email != null && request.auth.token.get('email_verified', false) == true &&
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'observer')
       );
     }
@@ -74,7 +74,7 @@ service cloud.firestore {
     // Role recorded on the caller's allowed_admins entry, or '' when absent.
     // Docs created before assistants existed have no role field and default to 'admin'.
     function assistantRole() {
-      return (request.auth.token.email != null &&
+      return ('email' in request.auth.token && request.auth.token.email != null &&
               exists(/databases/$(database)/documents/allowed_admins/$(request.auth.token.email.lower())))
         ? get(/databases/$(database)/documents/allowed_admins/$(request.auth.token.email.lower())).data.get('role', 'admin')
         : '';
@@ -358,7 +358,7 @@ service cloud.firestore {
 
     function isWhitelisted() {
       return isAuthenticated() && (
-        (request.auth.token.email != null && exists(/databases/$(database)/documents/students/$(request.auth.token.email.lower()))) ||
+        ('email' in request.auth.token && request.auth.token.email != null && exists(/databases/$(database)/documents/students/$(request.auth.token.email.lower()))) ||
         exists(/databases/$(database)/documents/students/$(request.auth.uid))
       );
     }
@@ -368,7 +368,7 @@ service cloud.firestore {
     // without this canReadStage() would refuse them every stage including the
     // one they came from.
     function hasAccess() {
-      return isAdmin() || isWhitelisted() || isSupport() || isObserver();
+      return isAdmin() || isWhitelisted() || isSupport() || isObserver() || userRole() == 'student';
     }
 
     // Gates `subjects` and stages/{id}.groupConfig. Support is granted the same
@@ -568,7 +568,7 @@ service cloud.firestore {
     // missing a stage readable by every signed-in user.
     match /students/{email} {
       allow get, list: if (isAuthenticated() && (request.auth.uid == email
-            || (request.auth.token.email != null && request.auth.token.email.lower() == email)))
+            || ('email' in request.auth.token && request.auth.token.email != null && request.auth.token.email.lower() == email)))
         || canManageStudentsOn(resource.data.get('stageId', '')) || isObserver();
 
       allow create: if canManageStudentsOn(request.resource.data.get('stageId', ''));
@@ -871,7 +871,7 @@ service cloud.firestore {
     }
 
     match /userMCQStats/{userId} {
-      allow read: if hasAccess();
+      allow read: if isAuthenticated();
       // A user maintains their own stats doc - mcqAnswerService writes it on every
       // submission - but stageId is not theirs to choose. The rule previously
       // accepted any field, so a student could write {stageId: 'stage_5'} from the
@@ -891,7 +891,7 @@ service cloud.firestore {
     // Stage-partitioned MCQ stats: one doc per (user, stage), keyed `${userId}_${stageId}`.
     // Preserves completed stage scores permanently and enables stage-isolated leaderboards.
     match /userStageMCQStats/{statId} {
-      allow read: if hasAccess();
+      allow read: if isAuthenticated();
       allow write: if isAdmin() || (
         isAuthenticated() &&
         request.resource.data.userId == request.auth.uid &&

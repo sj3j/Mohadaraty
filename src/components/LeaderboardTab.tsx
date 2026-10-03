@@ -305,12 +305,16 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
 
     // Fallback to legacy userMCQStats if userStageMCQStats failed or returned no docs
     if (!snap || snap.empty) {
-      snap = await getDocs(query(
-        collection(db, 'userMCQStats'),
-        where('stageId', '==', effectiveStageId),
-        orderBy('mcqRankScore', 'desc'),
-        limit(MCQ_LIMIT),
-      ));
+      try {
+        snap = await getDocs(query(
+          collection(db, 'userMCQStats'),
+          where('stageId', '==', effectiveStageId),
+          orderBy('mcqRankScore', 'desc'),
+          limit(MCQ_LIMIT),
+        ));
+      } catch (legacyErr) {
+        console.warn('userMCQStats fallback query failed:', legacyErr);
+      }
     }
 
     const leaders: any[] = (snap?.docs || []).map((d: any, i: number) => ({ id: d.id, ...d.data(), _rank: i + 1 }));
@@ -318,48 +322,62 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     setMcqUnranked(false);
 
     if (user && !leaders.some(l => l.userId === user.uid)) {
-      // Check stage-scoped document first
-      let mine = await getDoc(doc(db, 'userStageMCQStats', `${user.uid}_${effectiveStageId}`));
-      let data = mine.exists() ? mine.data() : null;
+      try {
+        // Check stage-scoped document first
+        let mine = await getDoc(doc(db, 'userStageMCQStats', `${user.uid}_${effectiveStageId}`));
+        let data = mine.exists() ? mine.data() : null;
 
-      // Fallback to legacy userMCQStats if stage-specific doc is absent
-      if (!data) {
-        mine = await getDoc(doc(db, 'userMCQStats', user.uid));
-        data = mine.exists() && mine.data().stageId === effectiveStageId ? mine.data() : null;
-      }
+        // Fallback to legacy userMCQStats if stage-specific doc is absent
+        if (!data) {
+          try {
+            mine = await getDoc(doc(db, 'userMCQStats', user.uid));
+            data = mine.exists() && mine.data().stageId === effectiveStageId ? mine.data() : null;
+          } catch (e) {
+            console.warn('Could not read userMCQStats personal doc:', e);
+          }
+        }
 
-      if (data?.mcqRankScore != null) {
-        let myRank: number | undefined;
-        try {
-          const countSnap = await getCountFromServer(query(
-            collection(db, 'userStageMCQStats'),
-            where('stageId', '==', effectiveStageId),
-            where('isActiveInStage', '==', true),
-            where('mcqRankScore', '>', data.mcqRankScore),
-          ));
-          myRank = countSnap.data().count + 1;
-        } catch (err) {
-          // Fallback rank count on legacy if userStageMCQStats count fails
+        if (data?.mcqRankScore != null) {
+          let myRank: number | undefined;
           try {
             const countSnap = await getCountFromServer(query(
-              collection(db, 'userMCQStats'),
+              collection(db, 'userStageMCQStats'),
               where('stageId', '==', effectiveStageId),
+              where('isActiveInStage', '==', true),
               where('mcqRankScore', '>', data.mcqRankScore),
             ));
             myRank = countSnap.data().count + 1;
-          } catch {
-            console.warn('Could not read MCQ rank:', err);
+          } catch (err) {
+            // Fallback rank count on legacy if userStageMCQStats count fails
+            try {
+              const countSnap = await getCountFromServer(query(
+                collection(db, 'userMCQStats'),
+                where('stageId', '==', effectiveStageId),
+                where('mcqRankScore', '>', data.mcqRankScore),
+              ));
+              myRank = countSnap.data().count + 1;
+            } catch {
+              console.warn('Could not read MCQ rank:', err);
+            }
           }
+          leaders.push({ id: mine.id, ...data, _rank: myRank, _detached: true });
+        } else {
+          // No answers yet in this stage - nothing to rank.
+          setMcqUnranked(true);
         }
-        leaders.push({ id: mine.id, ...data, _rank: myRank, _detached: true });
-      } else {
-        // No answers yet in this stage - nothing to rank.
+      } catch (err) {
+        console.warn('Could not evaluate user detached MCQ rank:', err);
         setMcqUnranked(true);
       }
     }
 
-    const profiles = await fetchProfiles(leaders.map(l => l.userId).filter(Boolean));
-    setMcqLeaders(leaders.map(stat => ({ ...stat, profile: profiles.get(stat.userId) })));
+    try {
+      const profiles = await fetchProfiles(leaders.map(l => l.userId).filter(Boolean));
+      setMcqLeaders(leaders.map(stat => ({ ...stat, profile: profiles.get(stat.userId) })));
+    } catch (profErr) {
+      console.warn('Could not fetch profiles for MCQ leaderboard:', profErr);
+      setMcqLeaders(leaders.map(stat => ({ ...stat, profile: undefined })));
+    }
   };
 
   const fetchLeaderboard = async () => {

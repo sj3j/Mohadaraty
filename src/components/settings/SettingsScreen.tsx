@@ -42,6 +42,8 @@ export interface SettingsScreenProps {
     | 'adminManage' | 'studentManage' | 'streakManage' | 'adminGrades'
     | 'studentGrades' | 'adminLogs' | 'subManage' | 'calendar' | 'subscription'
     | 'simosanAdmin' | 'telegramMirror') => void;
+  /** Launch the app tour guide modal. */
+  onOpenTour?: () => void;
   onLogout: () => void;
 }
 
@@ -61,7 +63,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   const {
     onBack, user, lang, setLang, theme, setTheme,
     notificationPermission, onRequestNotifications, onOpen, onLogout,
-    onOpenInbox, hasUnreadInbox,
+    onOpenInbox, hasUnreadInbox, onOpenTour,
   } = props;
   const isRtl = lang === 'ar';
   const [page, setPage] = useState<Page>('root');
@@ -306,6 +308,14 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                 sublabel={isRtl ? 'الحساب وتسجيل الدخول والدعم' : 'Account, sign-in and support'}
                 onClick={() => setPage('faq')}
               />
+              {onOpenTour && (
+                <SettingsRow
+                  isRtl={isRtl} icon={SETTINGS_ICONS.tour}
+                  label={isRtl ? 'جولة في التطبيق' : 'App Tour Guide'}
+                  sublabel={isRtl ? 'اكتشف أقوى ميزات وخدمات محاضراتي' : 'Discover the most powerful features'}
+                  onClick={onOpenTour}
+                />
+              )}
             </SettingsGroup>
 
             {/* isCrossStage, not isMasterAdmin: a support account whose only

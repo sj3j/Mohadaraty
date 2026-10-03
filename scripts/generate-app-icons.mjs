@@ -226,6 +226,17 @@ async function main() {
   write('public/icons/logo-mark.png', await compose(mark, 256, 256, 256, null));
   log('logo-mark.png', '256x256 transparent, for in-app UI');
 
+  // iOS app icon. Xcode 14+ uses a single 1024×1024 universal icon, referenced
+  // in Contents.json as AppIcon-512@2x.png (the name is Capacitor's convention;
+  // the file is 1024px, i.e. @2x of the 512pt slot). Until this line existed
+  // the placeholder Capacitor "X" was what shipped.
+  console.log('\niOS app icon');
+  write(
+    'ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png',
+    await compose(mark, 1024, 1024, Math.round(1024 * LEGACY_LOGO), BG),
+  );
+  log('AppIcon-512@2x.png', '1024x1024 for iOS (single universal icon)');
+
   // Deliberately NO icon.svg / icon-maskable.svg.
   //
   // They used to be written here as an SVG wrapper around the mark base64-encoded

@@ -27,7 +27,7 @@ import {
  *   - Direct clickable links to Terms of Use (EULA) and Privacy Policy.
  */
 
-export const TERMS_OF_USE_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+export const TERMS_OF_USE_URL = 'https://mohadaraty.vercel.app/terms';
 export const PRIVACY_POLICY_URL = 'https://mohadaraty.vercel.app/privacy';
 
 type Busy = null | { kind: 'loading' } | { kind: 'buying'; id: string } | { kind: 'restoring' };
@@ -266,23 +266,30 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
           </a>
         )}
 
-        {/* Mandatory Legal Links (App Store Guideline 3.1.2) */}
+        {/* Mandatory Legal Links (App Store Guideline 3.1.2)
+         *
+         * These MUST be <a href> tags, not <button onClick>. Apple's review
+         * (automated and human) needs to recognise them as "functional links"
+         * — a JS-only button does not satisfy Guideline 3.1.2. The onClick
+         * handler still opens via Capacitor's in-app browser for the best UX;
+         * the href is the fallback Apple can crawl.
+         */}
         <div className="flex items-center justify-center gap-2 pt-2 pb-1 text-xs font-bold text-slate-500 dark:text-zinc-400">
-          <button
-            type="button"
-            onClick={() => openExternalUrl(TERMS_OF_USE_URL)}
-            className="hover:text-slate-800 dark:hover:text-zinc-200 hover:underline transition-colors focus:outline-none"
+          <a
+            href={TERMS_OF_USE_URL}
+            onClick={(e) => { e.preventDefault(); openExternalUrl(TERMS_OF_USE_URL); }}
+            className="underline hover:text-slate-800 dark:hover:text-zinc-200 transition-colors"
           >
             {t.payTerms}
-          </button>
+          </a>
           <span className="select-none text-slate-300 dark:text-zinc-600">•</span>
-          <button
-            type="button"
-            onClick={() => openExternalUrl(PRIVACY_POLICY_URL)}
-            className="hover:text-slate-800 dark:hover:text-zinc-200 hover:underline transition-colors focus:outline-none"
+          <a
+            href={PRIVACY_POLICY_URL}
+            onClick={(e) => { e.preventDefault(); openExternalUrl(PRIVACY_POLICY_URL); }}
+            className="underline hover:text-slate-800 dark:hover:text-zinc-200 transition-colors"
           >
             {t.payPrivacy}
-          </button>
+          </a>
         </div>
       </div>
     </div>

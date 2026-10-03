@@ -1179,6 +1179,49 @@ await check('ordinary student CAN write to userMCQStats with matching stage',
 await check('ordinary student CAN write to userBankAnswers',
   assertSucceeds(setDoc(doc(student, 'userBankAnswers/stu_uid/questions/q1'), { selected: 'A' })));
 
+console.log('\nMCQ Leaderboard permissions');
+await testEnv.withSecurityRulesDisabled(async (context) => {
+  const adminDb = context.firestore();
+  await setDoc(doc(adminDb, 'userStageMCQStats/stu_uid_stage_3'), {
+    userId: 'stu_uid', stageId: 'stage_3', isActiveInStage: true, mcqRankScore: 50,
+  });
+  await setDoc(doc(adminDb, 'userMCQStats/stu_uid'), {
+    userId: 'stu_uid', stageId: 'stage_3', mcqRankScore: 50,
+  });
+  await setDoc(doc(adminDb, 'users/unrostered_uid'), {
+    role: 'student', email: 'unrostered@x.com', stageId: 'stage_3',
+  });
+});
+
+const unrosteredStudent = testEnv.authenticatedContext('unrostered_uid', { email: 'unrostered@x.com' }).firestore();
+const tokenWithoutEmail = testEnv.authenticatedContext('no_email_uid', {}).firestore();
+const guest = testEnv.unauthenticatedContext().firestore();
+
+await check('whitelisted student CAN read userStageMCQStats',
+  assertSucceeds(getDoc(doc(student, 'userStageMCQStats/stu_uid_stage_3'))));
+await check('whitelisted student CAN read userMCQStats',
+  assertSucceeds(getDoc(doc(student, 'userMCQStats/stu_uid'))));
+
+await check('un-rostered student CAN read userStageMCQStats',
+  assertSucceeds(getDoc(doc(unrosteredStudent, 'userStageMCQStats/stu_uid_stage_3'))));
+await check('un-rostered student CAN read userMCQStats',
+  assertSucceeds(getDoc(doc(unrosteredStudent, 'userMCQStats/stu_uid'))));
+
+await check('user without email claim CAN read userStageMCQStats without token evaluation crash',
+  assertSucceeds(getDoc(doc(tokenWithoutEmail, 'userStageMCQStats/stu_uid_stage_3'))));
+await check('user without email claim CAN read userMCQStats without token evaluation crash',
+  assertSucceeds(getDoc(doc(tokenWithoutEmail, 'userMCQStats/stu_uid'))));
+
+await check('unauthenticated guest CANNOT read userStageMCQStats',
+  assertFails(getDoc(doc(guest, 'userStageMCQStats/stu_uid_stage_3'))));
+await check('unauthenticated guest CANNOT read userMCQStats',
+  assertFails(getDoc(doc(guest, 'userMCQStats/stu_uid'))));
+
+await check('student CANNOT write someone else userStageMCQStats',
+  assertFails(setDoc(doc(student, 'userStageMCQStats/other_uid_stage_3'), {
+    userId: 'other_uid', stageId: 'stage_3', mcqRankScore: 100,
+  })));
+
 await testEnv.cleanup();
 
 console.log(`\n${passed} passed, ${failed} failed`);

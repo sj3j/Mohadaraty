@@ -37,6 +37,7 @@ export const SETTINGS_ICONS: Record<string, SettingsIcon> = {
   // payment iconography on a screen that must not offer a payment.
   access:        { Icon: KeyRound,      className: 'text-fuchsia-500', tile: 'bg-fuchsia-100 dark:bg-fuchsia-900/30' },
   faq:           { Icon: HelpCircle,    className: 'text-teal-500',    tile: 'bg-teal-100 dark:bg-teal-900/30' },
+  tour:          { Icon: Sparkles,      className: 'text-amber-500',   tile: 'bg-amber-100 dark:bg-amber-900/30' },
   about:         { Icon: Info,          className: 'text-slate-500',   tile: 'bg-slate-100 dark:bg-zinc-800' },
   logout:        { Icon: LogOut,        className: 'text-rose-500',    tile: 'bg-rose-100 dark:bg-rose-900/30' },
 

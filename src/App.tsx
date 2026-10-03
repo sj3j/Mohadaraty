@@ -81,7 +81,7 @@ export default function App() {
   }, []);
 
   const [showOnboarding, setShowOnboarding] = useState(() => {
-    return !localStorage.getItem('hasSeenOnboarding');
+    return !localStorage.getItem('hasSeenTour_v3');
   });
 
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
@@ -866,17 +866,6 @@ export default function App() {
     return <OnboardingScreen user={user} lang={lang} />;
   }
 
-  if (showOnboarding) {
-    return (
-      <OnboardingSlides 
-        onComplete={() => {
-          localStorage.setItem('hasSeenOnboarding', 'true');
-          setShowOnboarding(false);
-        }} 
-      />
-    );
-  }
-
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return isRtl ? 'صباح الخير' : 'Good morning';
@@ -890,7 +879,7 @@ export default function App() {
   // Students are unaffected: they never mount the composer, and keep the nav.
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
-  const isAnyOverlayOpen = showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
+  const isAnyOverlayOpen = showOnboarding || showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the
@@ -1012,6 +1001,7 @@ export default function App() {
             setHasUnreadInbox(false);
             localStorage.setItem('lastReadInbox', Date.now().toString());
           }}
+          onOpenTour={() => setShowOnboarding(true)}
           onLogout={() => { setCurrentTab('profile'); signOut(auth); }}
           onOpen={(what) => {
             if (what === 'adminManage') setShowAdminManage(true);
@@ -1111,6 +1101,18 @@ export default function App() {
           />
         </Suspense>
       )}
+
+      <AnimatePresence>
+        {showOnboarding && (
+          <OnboardingSlides 
+            lang={lang}
+            onComplete={() => {
+              localStorage.setItem('hasSeenTour_v3', 'true');
+              setShowOnboarding(false);
+            }} 
+          />
+        )}
+      </AnimatePresence>
 
       <GlobalAudioPlayer isRtl={isRtl} />
       <AnimatePresence>

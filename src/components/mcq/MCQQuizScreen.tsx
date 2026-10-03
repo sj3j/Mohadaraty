@@ -80,6 +80,7 @@ export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, u
   const [isRetake, setIsRetake] = useState<boolean | null>(null);
   const [showAntiCheatAlert, setShowAntiCheatAlert] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const questionRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -381,13 +382,21 @@ ${questionText}`;
     questionRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
+  const handleRequestClose = () => {
+    if (!isRetake && state.answeredCount > 0 && !allAnswered) {
+      setShowExitConfirm(true);
+    } else {
+      onClose();
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-stone-50 dark:bg-zinc-900 overflow-hidden relative" dir="rtl">
       
       {/* Sticky Header */}
       <div className="bg-white dark:bg-zinc-800 border-b border-slate-100 dark:border-zinc-700 z-30 shrink-0 px-4 pt-[max(env(safe-area-inset-top),0.75rem)] pb-3 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <button onClick={onClose} className="p-2 -mr-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full transition-colors">
+          <button onClick={handleRequestClose} className="p-2 -mr-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full transition-colors">
             <X className="w-6 h-6" />
           </button>
           
@@ -414,7 +423,17 @@ ${questionText}`;
            ) : (
               <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center gap-1">🏆 أول محاولة</span>
            )}
-           <span className="text-slate-500 dark:text-slate-400">أجبت على {state.answeredCount} من {questions.length}</span>
+           <div className="flex items-center gap-2">
+             <span className="text-slate-500 dark:text-slate-400">أجبت على {state.answeredCount} من {questions.length}</span>
+             {!isRetake && state.answeredCount > 0 && !allAnswered && (
+               <button 
+                 onClick={() => setShowExitConfirm(true)}
+                 className="px-2 py-0.5 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 rounded hover:bg-sky-200 transition-colors"
+               >
+                 إنهاء واحتساب
+               </button>
+             )}
+           </div>
         </div>
       </div>
 
@@ -838,6 +857,49 @@ ${questionText}`;
         <div className="fixed bottom-[calc(2.5rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-[300] bg-sky-600 text-white px-6 py-3 rounded-full font-bold shadow-lg flex items-center gap-2">
           <CheckCircle className="w-5 h-5" />
           تم التعديل الذكي بنجاح
+        </div>
+      )}
+
+      {showExitConfirm && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" dir="rtl">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="bg-white dark:bg-zinc-900 rounded-3xl p-6 w-full max-w-sm shadow-2xl border border-slate-100 dark:border-zinc-800 space-y-4"
+          >
+            <h3 className="font-bold text-lg text-slate-900 dark:text-white">إنهاء الاختبار؟</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              لقد أجبت على <strong className="text-sky-600 dark:text-sky-400">{state.answeredCount}</strong> من أصل <strong>{questions.length}</strong> سؤالاً. هل تريد إنهاء المحاولة واحتساب نتيجتك في لوحة الصدارة؟
+            </p>
+            <div className="flex flex-col gap-2 pt-2">
+              <button 
+                onClick={() => {
+                  setShowExitConfirm(false);
+                  handleFinish();
+                }}
+                disabled={isFinishing}
+                className="w-full py-3 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+              >
+                {isFinishing ? <Loader2 className="w-5 h-5 animate-spin" /> : 'إنهاء واحتساب النتيجة'}
+              </button>
+              <button 
+                onClick={() => setShowExitConfirm(false)}
+                className="w-full py-2.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-slate-300 font-medium rounded-xl transition-colors"
+              >
+                متابعة الاختبار
+              </button>
+              <button 
+                onClick={() => {
+                  setShowExitConfirm(false);
+                  onClose();
+                }}
+                className="w-full py-2 text-xs text-rose-500 hover:text-rose-600 font-medium transition-colors"
+              >
+                خروج بدون إنهاء (دون احتساب)
+              </button>
+            </div>
+          </motion.div>
         </div>
       )}
     </div>
