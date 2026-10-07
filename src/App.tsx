@@ -15,7 +15,8 @@ import ProgressionScreen from './components/ProgressionScreen';
 import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
-import { useAuthWatchdog, safeSetStorageItem } from './hooks/useAuthWatchdog';
+import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks/useAuthWatchdog';
+import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile } from './lib/authPersistence';
 import { logPerfMark } from './lib/perf';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
@@ -23,6 +24,8 @@ import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
 import { IAP_ENABLED, identifyIap, signOutIap } from './lib/iap';
 import AdminGradesScreen from './components/grades/AdminGradesScreen';
 import AdminQuestionBankScreen from './components/questionBank/AdminQuestionBankScreen';
+import LectureMCQDirectEditModal from './components/mcq/LectureMCQDirectEditModal';
+import { MCQQuestion } from './types/mcq.types';
 import StudentGradesScreen from './components/grades/StudentGradesScreen';
 import AntiCheatDashboard from './components/AntiCheatDashboard';
 import AdminLogsScreen from './components/AdminLogsScreen';
@@ -108,7 +111,10 @@ export default function App() {
   const [progressionRound, setProgressionRound] = useState<ProgressionRound | null>(null);
   const [forceShowProgression, setForceShowProgression] = useState(false);
 
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const [user, setUser] = useState<UserProfile | null>(() => {
+    const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
+    return wasSignedIn ? getCachedUserProfile() : null;
+  });
 
   const isProgressionSnoozed = useMemo(() => {
     if (!user) return false;
@@ -161,6 +167,60 @@ export default function App() {
   const [showCalendarSettings, setShowCalendarSettings] = useState(false);
   const [showAdminGrades, setShowAdminGrades] = useState(false);
   const [showAdminBank, setShowAdminBank] = useState(false);
+  const [adminBankTargetQuestionId, setAdminBankTargetQuestionId] = useState<string | null>(null);
+  const [adminBankTargetAlert, setAdminBankTargetAlert] = useState<any | null>(null);
+  const [editingLectureMcq, setEditingLectureMcq] = useState<{
+    lectureId: string;
+    lectureTitle?: string;
+    question: MCQQuestion;
+    alert: any;
+  } | null>(null);
+
+  const handleNavigateToReportedQuestion = async (alertData: any) => {
+    if (!alertData) return;
+
+    // 1. If explicitly from a lecture or has a lectureId
+    if (alertData.source === 'lecture' && alertData.lectureId) {
+      try {
+        const { getExistingMCQsForLecture } = await import('./services/mcqGenerationService');
+        const questions = await getExistingMCQsForLecture(alertData.lectureId);
+        const target = questions.find(
+          q => q.id === alertData.questionId || (q.stem && alertData.questionStem && q.stem.includes(alertData.questionStem.substring(0, 25)))
+        );
+        if (target) {
+          setEditingLectureMcq({
+            lectureId: alertData.lectureId,
+            lectureTitle: alertData.lectureTitle,
+            question: target,
+            alert: alertData
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn('Failed to load lecture MCQ for report, falling back to bank:', e);
+      }
+    }
+
+    // 2. Check if question exists in questionBank
+    if (alertData.questionId) {
+      try {
+        const bankDoc = await getDoc(doc(db, 'questionBank', alertData.questionId));
+        if (bankDoc.exists()) {
+          setAdminBankTargetQuestionId(alertData.questionId);
+          setAdminBankTargetAlert(alertData);
+          setShowAdminBank(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Bank check failed:', e);
+      }
+    }
+
+    // 3. Fallback: Open AdminQuestionBankScreen with question stem search
+    setAdminBankTargetQuestionId(alertData.questionId || null);
+    setAdminBankTargetAlert(alertData);
+    setShowAdminBank(true);
+  };
   const [showAntiCheat, setShowAntiCheat] = useState(false);
   const [showAdminLogs, setShowAdminLogs] = useState(false);
   const [showSimosanAdmin, setShowSimosanAdmin] = useState(false);
@@ -315,17 +375,23 @@ export default function App() {
             }
 
             if (!studentData) {
-              await signOut(auth);
-              setLoginError(isRtl ? 'هذا الحساب غير مسجل في التطبيق. يرجى التواصل مع الإدارة.' : 'This account is not registered. Please contact administration.');
-              setUser(null);
-              setIsAuthReady(true);
-              return;
+              if (!navigator.onLine) {
+                console.warn('Whitelist data unavailable while offline; keeping session.');
+              } else {
+                await signOut(auth);
+                setLoginError(isRtl ? 'هذا الحساب غير مسجل في التطبيق. يرجى التواصل مع الإدارة.' : 'This account is not registered. Please contact administration.');
+                setUser(null);
+                clearCachedUserProfile();
+                setIsAuthReady(true);
+                return;
+              }
             }
             
-            if (!studentData.isActive) {
+            if (studentData && !studentData.isActive) {
               await signOut(auth);
               setLoginError(isRtl ? 'تم تعطيل حسابك. يرجى التواصل مع الإدارة.' : 'Your account has been deactivated. Please contact administration.');
               setUser(null);
+              clearCachedUserProfile();
               setIsAuthReady(true);
               return;
             }
@@ -342,12 +408,13 @@ export default function App() {
             // without a network. "Cannot reach the server" is not a verdict
             // about the account; leave the session alone and let the users/{uid}
             // listener below populate the profile from cache.
-            if (isTransientNetworkError(error)) {
+            if (isTransientNetworkError(error) || !navigator.onLine) {
               console.warn('Whitelist check unavailable (offline); keeping the session.');
             } else {
               await signOut(auth);
               setLoginError(isRtl ? 'حدث خطأ أثناء التحقق من الحساب.' : 'Error verifying account.');
               setUser(null);
+              clearCachedUserProfile();
               setIsAuthReady(true);
               return;
             }
@@ -367,16 +434,25 @@ export default function App() {
           // (roster students dodged it only because their uid contains an '@').
           // Absence is only meaningful when it comes from the server.
           if (!userDoc.exists() && !servedFromCache && !firebaseUser.uid.includes('@')) {
-            await signOut(auth);
-            setLoginError(isRtl ? 'يرجى إعادة تسجيل الدخول' : 'Please sign in again');
-            setUser(null);
-            setIsAuthReady(true);
-            return;
+            if (!navigator.onLine) {
+              console.warn('User doc missing while offline; preserving cached session.');
+            } else {
+              await signOut(auth);
+              setLoginError(isRtl ? 'يرجى إعادة تسجيل الدخول' : 'Please sign in again');
+              setUser(null);
+              clearCachedUserProfile();
+              setIsAuthReady(true);
+              return;
+            }
           }
 
           // Cached miss: nothing to render a profile from, but the session is
-          // fine. Release the gate so the app boots instead of spinning.
+          // fine. Fall back to local cached profile if available!
           if (!userDoc.exists() && servedFromCache) {
+            const cached = getCachedUserProfile();
+            if (cached) {
+              setUser(cached);
+            }
             setIsAuthReady(true);
             return;
           }
@@ -406,7 +482,7 @@ export default function App() {
               manageGrades: true
             } : undefined;
 
-            setUser({
+            const profile: UserProfile = {
               uid: firebaseUser.uid,
               name: resolvedName,
               email: firebaseUser.email || userDoc.data().email || firebaseUser.uid || '',
@@ -472,8 +548,11 @@ export default function App() {
               // while Simosan, gated server-side, worked fine.
               isSubscribed: userDoc.data().isSubscribed === true,
               subscriptionEnd: userDoc.data().subscriptionEnd ?? undefined,
-              subscriptionPlan: userDoc.data().subscriptionPlan ?? undefined
-            });
+              subscriptionPlan: userDoc.data().subscriptionPlan ?? undefined,
+              subscriptionBannerTheme: userDoc.data().subscriptionBannerTheme ?? undefined
+            };
+            setUser(profile);
+            saveCachedUserProfile(profile);
           } else {
             const masterAdminPermissions = isMasterAdmin ? {
               manageLectures: true,
@@ -484,7 +563,7 @@ export default function App() {
               manageGrades: true
             } : undefined;
 
-            setUser({
+            const profile: UserProfile = {
               uid: firebaseUser.uid,
               name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : isObserver ? 'Observer' : 'Student'),
               email: firebaseUser.email || firebaseUser.uid || '',
@@ -504,7 +583,9 @@ export default function App() {
               managedStageId: studentData?.managedStageId || undefined,
               hideNameOnLeaderboard: false,
               hidePhotoOnLeaderboard: false
-            });
+            };
+            setUser(profile);
+            saveCachedUserProfile(profile);
           }
           setIsAuthReady(true);
         }, (error) => {
@@ -519,7 +600,7 @@ export default function App() {
             manageGrades: true
           } : undefined;
 
-          setUser({
+          const profile: UserProfile = {
             uid: firebaseUser.uid,
             name: studentData?.name || firebaseUser.displayName || (isMasterAdmin ? 'Master Admin' : isObserver ? 'Observer' : 'Student'),
             email: firebaseUser.email || '',
@@ -539,11 +620,25 @@ export default function App() {
             managedStageId: studentData?.managedStageId || undefined,
             hideNameOnLeaderboard: false,
             hidePhotoOnLeaderboard: false
-          });
+          };
+          setUser(profile);
+          saveCachedUserProfile(profile);
           setIsAuthReady(true);
         });
       } else {
+        const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
+        if (!navigator.onLine && wasSignedIn) {
+          console.warn('Auth state reported null while offline for signed-in user; keeping cached session.');
+          const cached = getCachedUserProfile();
+          if (cached) {
+            setUser(cached);
+            setIsAuthReady(true);
+            return;
+          }
+        }
+
         safeSetStorageItem('wasSignedIn', 'false');
+        clearCachedUserProfile();
         if (userUnsubscribe) {
           userUnsubscribe();
         }
@@ -1002,7 +1097,7 @@ export default function App() {
             localStorage.setItem('lastReadInbox', Date.now().toString());
           }}
           onOpenTour={() => setShowOnboarding(true)}
-          onLogout={() => { setCurrentTab('profile'); signOut(auth); }}
+          onLogout={() => { setCurrentTab('profile'); clearCachedUserProfile(); signOut(auth); }}
           onOpen={(what) => {
             if (what === 'adminManage') setShowAdminManage(true);
             else if (what === 'studentManage') setShowStudentManage(true);
@@ -1031,7 +1126,17 @@ export default function App() {
       <AcademicCalendarModal isOpen={showCalendarSettings} onClose={() => setShowCalendarSettings(false)} lang={lang} user={user} />
       <StudentManagement isOpen={showStudentManage} onClose={() => setShowStudentManage(false)} lang={lang} user={user} />
       <AdminGradesScreen isOpen={showAdminGrades} onClose={() => setShowAdminGrades(false)} user={user} />
-      <AdminQuestionBankScreen isOpen={showAdminBank} onClose={() => setShowAdminBank(false)} lang={lang} />
+      <AdminQuestionBankScreen 
+        isOpen={showAdminBank} 
+        onClose={() => {
+          setShowAdminBank(false);
+          setAdminBankTargetQuestionId(null);
+          setAdminBankTargetAlert(null);
+        }} 
+        lang={lang} 
+        targetQuestionId={adminBankTargetQuestionId}
+        targetAlert={adminBankTargetAlert}
+      />
       <AntiCheatDashboard isOpen={showAntiCheat} onClose={() => setShowAntiCheat(false)} lang={lang} />
       <AdminLogsScreen isOpen={showAdminLogs} onClose={() => setShowAdminLogs(false)} lang={lang} />
       <SimosanAdminScreen isOpen={showSimosanAdmin} onClose={() => setShowSimosanAdmin(false)} lang={lang} />
@@ -1055,6 +1160,19 @@ export default function App() {
           user={user}
           lang={lang}
           onClose={() => setShowNotificationsModal(false)}
+          onNavigateToQuestion={handleNavigateToReportedQuestion}
+        />
+      )}
+
+      {editingLectureMcq && (
+        <LectureMCQDirectEditModal
+          isOpen={true}
+          lectureId={editingLectureMcq.lectureId}
+          lectureTitle={editingLectureMcq.lectureTitle}
+          question={editingLectureMcq.question}
+          alertData={editingLectureMcq.alert}
+          onClose={() => setEditingLectureMcq(null)}
+          onSaved={() => setEditingLectureMcq(null)}
         />
       )}
 

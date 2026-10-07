@@ -149,5 +149,28 @@
   .aesthetic-scrollbar {
     scrollbar-width: thin;
   }
+
+  @keyframes slowDiagonalHorizonShimmer {
+    0% {
+      transform: translateX(-150%) skewX(-20deg);
+      opacity: 0;
+    }
+    8% {
+      opacity: 1;
+    }
+    34% {
+      transform: translateX(250%) skewX(-20deg);
+      opacity: 0.95;
+    }
+    35%, 100% {
+      transform: translateX(250%) skewX(-20deg);
+      opacity: 0;
+    }
+  }
+
+  .animate-horizon-shimmer {
+    animation: slowDiagonalHorizonShimmer 6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    will-change: transform, opacity;
+  }
 }
 

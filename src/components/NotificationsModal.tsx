@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy, Image as ImageIcon } from 'lucide-react';
+import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy, Image as ImageIcon, ExternalLink } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
+import { replyToQuestionReport } from '../services/questionBankService';
 
 const formatTimeAgo = (timestamp: number, isRtl: boolean) => {
   const diffInSeconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -28,6 +29,7 @@ interface NotificationsModalProps {
   user: UserProfile;
   lang: Language;
   onClose: () => void;
+  onNavigateToQuestion?: (alertData: any) => void;
 }
 
 interface NotificationItem {
@@ -40,7 +42,7 @@ interface NotificationItem {
   extraData?: any;
 }
 
-export default function NotificationsModal({ user, lang, onClose }: NotificationsModalProps) {
+export default function NotificationsModal({ user, lang, onClose, onNavigateToQuestion }: NotificationsModalProps) {
   const isRtl = lang === 'ar';
   const t = TRANSLATIONS[lang];
   const { effectiveStageId } = useStageContext();
@@ -60,30 +62,13 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
 
     setIsReplying(prev => ({ ...prev, [notificationId]: true }));
     try {
-      await addDoc(collection(db, 'systemNotifications'), {
-        userId: reportedBy,
-        title: isRtl ? 'رد على التبليغ' : 'Report Reply',
-        body: text,
-        createdAt: serverTimestamp(),
-      });
+      await replyToQuestionReport(notificationId, reportedBy, text, isRtl);
       
-      // Instead of deleting, mark it as replied
-      try {
-        const { updateDoc } = await import('firebase/firestore');
-        await updateDoc(doc(db, 'adminAlerts', notificationId), {
-          replied: true,
-          replyText: text,
-          repliedAt: serverTimestamp()
-        });
-        
-        setNotifications(prev => prev.map(n => 
-          n.id === notificationId 
-            ? { ...n, extraData: { ...n.extraData, replied: true, replyText: text } }
-            : n
-        ));
-      } catch (e) {
-        console.error("Could not update report", e);
-      }
+      setNotifications(prev => prev.map(n => 
+        n.id === notificationId 
+          ? { ...n, extraData: { ...n.extraData, replied: true, replyText: text } }
+          : n
+      ));
 
       setReportReplies(prev => ({ ...prev, [notificationId]: '' }));
     } catch (e) {
@@ -347,10 +332,41 @@ export default function NotificationsModal({ user, lang, onClose }: Notification
                             </span>
                           </div>
                         )}
+                        {item.type === 'report' && (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'المصدر:' : 'Source:')} </span>
+                            <span className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 text-xs font-bold">
+                              {item.extraData.source === 'lecture'
+                                ? (isRtl ? 'اختبار محاضرة' : 'Lecture Quiz')
+                                : (isRtl ? 'بنك الأسئلة' : 'Question Bank')}
+                            </span>
+                            {item.extraData.lectureTitle && (
+                              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                                ({item.extraData.lectureTitle})
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div>
                           <span className="font-bold text-slate-500 text-xs">{(isRtl ? 'التفاصيل:' : 'Details:')} </span>
                           <span className="break-words">{item.extraData.fullMessage || item.extraData.message || item.extraData.reason}</span>
                         </div>
+                        
+                        {item.type === 'report' && (user.role === 'admin' || user.isMasterAdmin) && (
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onNavigateToQuestion?.(item.extraData);
+                                onClose();
+                              }}
+                              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 active:scale-[0.98] text-white font-bold text-xs shadow-md shadow-sky-500/20 transition-all cursor-pointer"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              <span>{isRtl ? 'الانتقال إلى السؤال والتعديل' : 'Go to Question & Edit'}</span>
+                            </button>
+                          </div>
+                        )}
                         
                         {item.type === 'support_ticket' && item.extraData.email && (
                           <div className="pt-2">

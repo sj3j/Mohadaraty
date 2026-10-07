@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDoc
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework } from '../types';
-import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
 import { useStageContext } from '../contexts/StageContext';
@@ -17,6 +17,17 @@ import StudentAgenda from './timetable/StudentAgenda';
 import TimetableEditorModal from './timetable/TimetableEditorModal';
 import { watchPublishedTimetable } from '../services/timetableService';
 import type { StageTimetableDoc } from '../../shared/timetable';
+import {
+  saveOfflineScheduleImage,
+  getOfflineScheduleImage,
+  saveOfflineHomeworks,
+  getOfflineHomeworks,
+  listOfflineLectures,
+} from '../lib/localDb';
+import {
+  updateCachedCompletedTasks,
+  updateCachedStudied,
+} from '../lib/authPersistence';
 import {
   getUpcomingWeeks,
   matchTimetableSessions,
@@ -49,8 +60,13 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const [homeworks, setHomeworks] = useState<Homework[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // Schedule photo state
+  // Schedule photo state & offline blob URL
   const [schedulePhotoUrl, setSchedulePhotoUrl] = useState<string | null>(null);
+  const [offlinePhotoBlobUrl, setOfflinePhotoBlobUrl] = useState<string | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const effectivePhotoUrl = offlinePhotoBlobUrl || schedulePhotoUrl;
+
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -147,7 +163,52 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     return computeGroupDeadlines(activeSessionsForSchedule, selectedWeekSaturday);
   }, [deadlineMode, activeSessionsForSchedule, selectedWeekSaturday]);
 
+  // Network listener to react dynamically to online/offline state
   useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Cleanup blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // 1. Immediately hydrate offline cached homeworks & schedule photo for effectiveStageId
+    if (effectiveStageId) {
+      getOfflineHomeworks<Homework>(effectiveStageId).then(cachedHws => {
+        if (cachedHws && cachedHws.length > 0) {
+          setHomeworks(cachedHws);
+          setIsLoading(false);
+        }
+      }).catch(err => {
+        console.warn('[WeeklyListScreen] Failed to read offline homeworks cache:', err);
+      });
+
+      getOfflineScheduleImage(effectiveStageId).then(cachedImg => {
+        if (cachedImg?.blob) {
+          if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+          const blobUrl = URL.createObjectURL(cachedImg.blob);
+          objectUrlRef.current = blobUrl;
+          setOfflinePhotoBlobUrl(blobUrl);
+        }
+      }).catch(err => {
+        console.warn('[WeeklyListScreen] Failed to read offline schedule image cache:', err);
+      });
+    }
+
     // Load homeworks. With no resolved stage there is no safe query to run -
     // the old unfiltered fallback listed every stage's homework.
     let unsubscribe = () => {};
@@ -160,10 +221,57 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data({ serverTimestamps: 'estimate' }) } as Homework));
         setHomeworks(docs);
         setIsLoading(false);
+        // Persist to offline storage for instantaneous offline hydration
+        if (docs.length > 0) {
+          saveOfflineHomeworks(effectiveStageId, docs).catch(err => {
+            console.warn('[WeeklyListScreen] Failed to save offline homeworks:', err);
+          });
+        }
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, 'homeworks');
       });
     }
+
+    // Cache schedule photo blob helper
+    const syncSchedulePhotoCache = async (url: string) => {
+      if (!url || !effectiveStageId) return;
+      try {
+        const cached = await getOfflineScheduleImage(effectiveStageId);
+        if (cached && cached.photoUrl === url && cached.blob) {
+          if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+          const blobUrl = URL.createObjectURL(cached.blob);
+          objectUrlRef.current = blobUrl;
+          setOfflinePhotoBlobUrl(blobUrl);
+          return;
+        }
+
+        // Fetch fresh image blob and save in IndexedDB
+        const response = await fetch(url);
+        if (response.ok) {
+          const blob = await response.blob();
+          await saveOfflineScheduleImage({
+            stageId: effectiveStageId,
+            photoUrl: url,
+            blob,
+            updatedAt: Date.now(),
+          });
+          if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+          const blobUrl = URL.createObjectURL(blob);
+          objectUrlRef.current = blobUrl;
+          setOfflinePhotoBlobUrl(blobUrl);
+        }
+      } catch (err) {
+        console.warn('[WeeklyListScreen] Could not cache schedule photo blob (likely offline):', err);
+        // Fall back to existing cached blob if available
+        const fallback = await getOfflineScheduleImage(effectiveStageId).catch(() => null);
+        if (fallback?.blob) {
+          if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+          const blobUrl = URL.createObjectURL(fallback.blob);
+          objectUrlRef.current = blobUrl;
+          setOfflinePhotoBlobUrl(blobUrl);
+        }
+      }
+    };
 
     // Load schedule photo. The timetable is per stage; the pre-multi-stage app
     // kept a single global doc, so fall back to it when this stage has no photo
@@ -172,12 +280,16 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     if (effectiveStageId) {
       unsubscribeSettings = onSnapshot(doc(db, 'settings', schedulePhotoDocId(effectiveStageId)), async (docSnap) => {
         if (docSnap.exists()) {
-          setSchedulePhotoUrl(docSnap.data().photoUrl);
+          const url = docSnap.data().photoUrl;
+          setSchedulePhotoUrl(url);
+          if (url) syncSchedulePhotoCache(url);
           return;
         }
         try {
           const legacy = await getDoc(doc(db, 'settings', 'weekly_schedule'));
-          setSchedulePhotoUrl(legacy.exists() ? legacy.data().photoUrl : null);
+          const url = legacy.exists() ? legacy.data().photoUrl : null;
+          setSchedulePhotoUrl(url);
+          if (url) syncSchedulePhotoCache(url);
         } catch {
           setSchedulePhotoUrl(null);
         }
@@ -215,7 +327,14 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
           .filter(l => !(l as any).archived);
         setAllLectures(lecturesData);
       } catch (error) {
-        console.error('Error fetching lectures:', error);
+        console.warn('Error fetching lectures (trying offline cache):', error);
+        try {
+          const offlineLectures = await listOfflineLectures();
+          const filtered = offlineLectures.filter(l => !l.stageId || l.stageId === effectiveStageId);
+          setAllLectures(filtered as any);
+        } catch {
+          // ignore
+        }
       }
     };
     fetchLectures();
@@ -425,6 +544,16 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   const handleToggleComplete = async (homeworkId: string) => {
     if (!user) return;
     const isCompleted = user.completedWeeklyTasks?.includes(homeworkId);
+
+    // Optimistic local update
+    const nextCompleted = isCompleted
+      ? (user.completedWeeklyTasks || []).filter(id => id !== homeworkId)
+      : [...(user.completedWeeklyTasks || []), homeworkId];
+    user.completedWeeklyTasks = nextCompleted;
+    updateCachedCompletedTasks(homeworkId, !isCompleted);
+    // Force re-render of completed / incomplete sections
+    setHomeworks(prev => [...prev]);
+
     try {
       const userRef = doc(db, 'users', user.uid);
       if (isCompleted) {
@@ -433,14 +562,26 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         await setDoc(userRef, { completedWeeklyTasks: arrayUnion(homeworkId) }, { merge: true });
       }
     } catch (error) {
-      console.error('Error toggling complete:', error);
-      alert(isRtl ? 'تعذّر حفظ حالة الإنجاز' : 'Failed to save completion status');
+      console.warn('Error toggling complete (queued or offline):', error);
+      if (navigator.onLine) {
+        alert(isRtl ? 'تعذّر حفظ حالة الإنجاز' : 'Failed to save completion status');
+      }
     }
   };
 
   const handleToggleStudied = async (lectureId: string) => {
     if (!user) return;
     const isStudied = user.studied?.includes(lectureId);
+
+    // Optimistic local update
+    const nextStudied = isStudied
+      ? (user.studied || []).filter(id => id !== lectureId)
+      : [...(user.studied || []), lectureId];
+    user.studied = nextStudied;
+    updateCachedStudied(lectureId, !isStudied);
+    // Force re-render
+    setHomeworks(prev => [...prev]);
+
     try {
       const userRef = doc(db, 'users', user.uid);
       if (isStudied) {
@@ -449,8 +590,10 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         await setDoc(userRef, { studied: arrayUnion(lectureId) }, { merge: true });
       }
     } catch (error) {
-      console.error('Error toggling studied:', error);
-      alert(isRtl ? 'تعذّر حفظ حالة الدراسة' : 'Failed to save studied state');
+      console.warn('Error toggling studied (queued or offline):', error);
+      if (navigator.onLine) {
+        alert(isRtl ? 'تعذّر حفظ حالة الدراسة' : 'Failed to save studied state');
+      }
     }
   };
 
@@ -504,6 +647,13 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         )}
       </div>
 
+      {!isOnline && (
+        <div className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-200/80 dark:border-amber-800/60 mb-6">
+          <WifiOff className="w-4 h-4 text-amber-500 shrink-0" />
+          <span>{isRtl ? 'أنت في وضع عدم الاتصال — يتم عرض البيانات والجدول الأصلي المحفوظ محلياً' : 'Offline mode — displaying locally cached tasks and original schedule'}</span>
+        </div>
+      )}
+
       {/* Schedule Photo Section */}
       <div className="mb-8 bg-white dark:bg-zinc-800 rounded-3xl p-4 border border-slate-200 dark:border-zinc-700 shadow-sm">
         <div className="flex items-center justify-between mb-4 px-2">
@@ -555,18 +705,28 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
             subgroup={user?.group}
             isRtl={isRtl}
             weekLabel={timetable.weekLabel}
-            onViewOriginal={schedulePhotoUrl ? () => setSelectedImage(schedulePhotoUrl) : undefined}
+            onViewOriginal={effectivePhotoUrl ? () => setSelectedImage(effectivePhotoUrl) : undefined}
           />
         ) : (
           <div className="w-full bg-slate-50 dark:bg-zinc-900 rounded-2xl overflow-hidden border border-slate-100 dark:border-zinc-800 min-h-[200px] flex items-center justify-center">
-            {schedulePhotoUrl ? (
+            {effectivePhotoUrl ? (
               <img
-                src={schedulePhotoUrl}
+                src={effectivePhotoUrl}
                 alt="Schedule"
                 className="w-full h-auto object-contain max-h-[500px] cursor-pointer hover:opacity-90 transition-opacity"
                 referrerPolicy="no-referrer"
-                onClick={() => setSelectedImage(schedulePhotoUrl)}
+                onClick={() => setSelectedImage(effectivePhotoUrl)}
               />
+            ) : !isOnline ? (
+              <div className="text-center p-8 text-slate-400 dark:text-slate-500">
+                <WifiOff className="w-12 h-12 mx-auto mb-2 opacity-50 text-amber-500 dark:text-amber-400" />
+                <p className="font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isRtl ? 'أنت غير متصل بالإنترنت' : 'You are offline'}
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">
+                  {isRtl ? 'لم يتم حفظ صورة الجدول الأصلي محلياً لهذه المرحلة بعد' : 'No schedule image cached locally for this stage yet'}
+                </p>
+              </div>
             ) : (
               <div className="text-center p-8 text-slate-400 dark:text-slate-500">
                 <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -1304,8 +1464,22 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         </div>
       ) : (
         <div className="text-center py-12 bg-white dark:bg-zinc-800 rounded-3xl border border-slate-200 dark:border-zinc-700 border-dashed">
-          <ClipboardCheck className="w-12 h-12 text-slate-300 dark:text-zinc-600 mx-auto mb-3" />
-          <p className="text-slate-500 dark:text-slate-400 font-medium">{t.noWeeklyTasks}</p>
+          {!isOnline ? (
+            <>
+              <WifiOff className="w-12 h-12 text-amber-500/80 dark:text-amber-400/80 mx-auto mb-3" />
+              <p className="text-slate-700 dark:text-slate-200 font-bold mb-1">
+                {isRtl ? 'أنت غير متصل بالإنترنت' : 'You are offline'}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {isRtl ? 'لم يتم حفظ واجبات لهذه المرحلة محلياً بعد' : 'No homeworks cached locally for this stage yet'}
+              </p>
+            </>
+          ) : (
+            <>
+              <ClipboardCheck className="w-12 h-12 text-slate-300 dark:text-zinc-600 mx-auto mb-3" />
+              <p className="text-slate-500 dark:text-slate-400 font-medium">{t.noWeeklyTasks}</p>
+            </>
+          )}
         </div>
       )}
     </div>

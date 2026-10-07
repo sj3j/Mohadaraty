@@ -21,7 +21,7 @@
  */
 
 const DB_NAME = 'mylecture-local';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export const STORE_ANNOTATIONS = 'pdfAnnotations';
 export const STORE_BLOBS = 'pdfBlobs';
@@ -41,6 +41,10 @@ export const STORE_OFFLINE_LECTURES = 'offlineLectures';
 export const STORE_USER_FOLDERS = 'userFolders';
 export const STORE_USER_FILES = 'userFiles';
 export const STORE_USER_BLOBS = 'userFileBlobs';
+
+/** v4 Stores for timetable schedule image and stage homeworks */
+export const STORE_SCHEDULE_IMAGES = 'scheduleImages';
+export const STORE_OFFLINE_HOMEWORKS = 'offlineHomeworks';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -99,6 +103,13 @@ export function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_USER_BLOBS)) {
         db.createObjectStore(STORE_USER_BLOBS, { keyPath: 'id' });
+      }
+      // v4. Schedule images (الجدول الأصلي) and stage homeworks
+      if (!db.objectStoreNames.contains(STORE_SCHEDULE_IMAGES)) {
+        db.createObjectStore(STORE_SCHEDULE_IMAGES, { keyPath: 'stageId' });
+      }
+      if (!db.objectStoreNames.contains(STORE_OFFLINE_HOMEWORKS)) {
+        db.createObjectStore(STORE_OFFLINE_HOMEWORKS, { keyPath: 'stageId' });
       }
     };
 
@@ -177,6 +188,47 @@ export const listOfflineLectures = () =>
 
 export const removeOfflineLecture = (id: string) =>
   dbDelete(STORE_OFFLINE_LECTURES, id);
+
+/**
+ * Cached weekly schedule image ("الجدول الأصلي") blob per stage.
+ */
+export interface OfflineScheduleImage {
+  stageId: string;
+  photoUrl: string;
+  blob: Blob;
+  updatedAt: number;
+}
+
+export const saveOfflineScheduleImage = (rec: OfflineScheduleImage) =>
+  dbPut<OfflineScheduleImage>(STORE_SCHEDULE_IMAGES, rec);
+
+export const getOfflineScheduleImage = (stageId: string) =>
+  dbGet<OfflineScheduleImage>(STORE_SCHEDULE_IMAGES, stageId);
+
+export const removeOfflineScheduleImage = (stageId: string) =>
+  dbDelete(STORE_SCHEDULE_IMAGES, stageId);
+
+/**
+ * Cached homework list for a stage.
+ */
+export interface OfflineStageHomeworks {
+  stageId: string;
+  homeworks: any[];
+  updatedAt: number;
+}
+
+export const saveOfflineHomeworks = (stageId: string, homeworks: any[]) =>
+  dbPut<OfflineStageHomeworks>(STORE_OFFLINE_HOMEWORKS, { stageId, homeworks, updatedAt: Date.now() });
+
+export const getOfflineHomeworks = async <T = any>(stageId: string): Promise<T[]> => {
+  try {
+    const rec = await dbGet<OfflineStageHomeworks>(STORE_OFFLINE_HOMEWORKS, stageId);
+    return (rec?.homeworks as T[]) ?? [];
+  } catch (err) {
+    console.warn('[localDb] getOfflineHomeworks failed:', err);
+    return [];
+  }
+};
 
 /** Deletes every record matching an index query, in one transaction. */
 export function dbDeleteByIndex(store: string, index: string, query: IDBValidKey | IDBKeyRange): Promise<number> {

@@ -10,13 +10,17 @@ import {
   Clock,
   Loader2,
   RefreshCw,
+  Lock,
+  Sparkles,
 } from 'lucide-react';
 import { Lecture, UserProfile } from '../../types';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
 import {
   getLectureAttachments,
   deleteAttachment,
+  getStudentApprovedCourseAttachmentsCount,
 } from '../../services/lectureAttachmentService';
+import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import AttachmentViewerModal from '../lecture/AttachmentViewerModal';
 import UploadAttachmentModal from '../lecture/UploadAttachmentModal';
 
@@ -27,6 +31,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   onCountChange?: (count: number) => void;
+  onOpenSubscription?: () => void;
 }
 
 export default function PdfAttachmentsDrawer({
@@ -36,16 +41,22 @@ export default function PdfAttachmentsDrawer({
   isOpen,
   onClose,
   onCountChange,
+  onOpenSubscription,
 }: Props) {
   const [attachments, setAttachments] = useState<LectureAttachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [approvedUploadsCount, setApprovedUploadsCount] = useState<number>(0);
 
   const isStaff =
     user?.role === 'admin' ||
     user?.role === 'moderator' ||
     Boolean(user?.isMasterAdmin);
+
+  const courseKey = lecture.subjectId || lecture.category;
+  const isSubscribed = hasSubscriptionAccess(user);
+  const isUnlocked = isStaff || isSubscribed || approvedUploadsCount >= 5;
 
   const load = useCallback(async () => {
     try {
@@ -53,12 +64,16 @@ export default function PdfAttachmentsDrawer({
       setAttachments(items);
       const approvedCount = items.filter((a) => a.status === 'approved').length;
       onCountChange?.(approvedCount);
+      if (user?.uid && courseKey) {
+        const count = await getStudentApprovedCourseAttachmentsCount(user.uid, courseKey);
+        setApprovedUploadsCount(count);
+      }
     } catch (err) {
       console.error('Failed to load attachments in drawer:', err);
     } finally {
       setLoading(false);
     }
-  }, [lecture.id, user, onCountChange]);
+  }, [lecture.id, user, courseKey, onCountChange]);
 
   useEffect(() => {
     if (isOpen) {
@@ -108,9 +123,17 @@ export default function PdfAttachmentsDrawer({
               <ImageIcon className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-black text-base text-slate-900 dark:text-stone-100">
-                {isRtl ? 'مرفقات المحاضرة' : 'Lecture Attachments'}
-              </h2>
+              <div className="flex items-center gap-1.5">
+                <h2 className="font-black text-base text-slate-900 dark:text-stone-100">
+                  {isRtl ? 'مرفقات المحاضرة' : 'Lecture Attachments'}
+                </h2>
+                {!isUnlocked && (
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 flex items-center gap-1">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>{isRtl ? 'للمشتركين' : 'PRO'}</span>
+                  </span>
+                )}
+              </div>
               <p className="text-[10px] text-slate-400">
                 {isRtl ? `${approvedList.length} صورة متاحة` : `${approvedList.length} images available`}
               </p>
@@ -172,60 +195,143 @@ export default function PdfAttachmentsDrawer({
           )}
 
           {!loading && displayList.length > 0 && (
-            <div className="grid grid-cols-2 gap-2.5">
-              {displayList.map((item, index) => {
-                const displayName = item.isAnonymous
-                  ? isStaff
-                    ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
-                    : isRtl
-                    ? 'طالب (مجهول)'
-                    : 'Anonymous'
-                  : item.uploaderName || (isRtl ? 'طالب' : 'Student');
+            !isUnlocked ? (
+              <div className="relative rounded-2xl overflow-hidden border border-amber-200/70 dark:border-amber-900/40 p-1 bg-gradient-to-b from-amber-50/40 to-slate-50 dark:from-zinc-900/80 dark:to-zinc-950/90 shadow-sm">
+                {/* Blurred grid preview */}
+                <div className="grid grid-cols-2 gap-2.5 filter blur-md opacity-35 dark:opacity-25 select-none pointer-events-none scale-102">
+                  {displayList.slice(0, 4).map((item) => (
+                    <div key={item.id} className="aspect-square rounded-xl overflow-hidden bg-slate-200 dark:bg-zinc-800">
+                      <img src={item.url} alt="" className="w-full h-full object-cover" />
+                    </div>
+                  ))}
+                </div>
 
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => setViewerIndex(index)}
-                    className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-800/80 aspect-square cursor-pointer hover:shadow-lg hover:border-sky-400 dark:hover:border-sky-500 transition-all select-none"
-                  >
-                    <img
-                      src={item.url}
-                      alt={item.title || 'Attachment'}
-                      loading="lazy"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                    />
+                {/* Frosted Glass Overlay */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center backdrop-blur-xs bg-white/75 dark:bg-zinc-900/85 rounded-xl z-10 space-y-2.5">
+                  <div className="inline-flex p-2.5 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-white shadow-lg shadow-amber-500/25">
+                    <Lock className="w-5 h-5 stroke-[2.5]" />
+                  </div>
 
-                    {/* Pending review badge */}
-                    {item.status === 'pending' && (
-                      <div className="absolute top-2 start-2 z-10 px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-white shadow-sm flex items-center gap-1">
-                        <Clock className="w-2.5 h-2.5" />
-                        <span>{isRtl ? 'قيد المراجعة' : 'Pending'}</span>
-                      </div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                      <h3 className="text-sm font-black text-slate-900 dark:text-stone-100">
+                        {isRtl ? 'مرفقات المحاضرة' : 'Lecture Attachments'}
+                      </h3>
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
+                        {isRtl ? 'خاص بالمشتركين' : 'PRO'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {isRtl
+                        ? `تتوفر ${approvedList.length} صور وملخصات لهذه المحاضرة.`
+                        : `${approvedList.length} photos and notes available.`}
+                    </p>
+                  </div>
+
+                  {/* Community Contributor Challenge */}
+                  <div className="w-full bg-slate-50/90 dark:bg-zinc-800/90 rounded-xl p-2.5 border border-slate-200/80 dark:border-zinc-700/60 shadow-xs space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-bold">
+                      <span className="text-slate-800 dark:text-stone-200 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-amber-500" />
+                        <span>{isRtl ? 'افتح المادة بالمساهمة' : 'Unlock Free'}</span>
+                      </span>
+                      <span className="text-amber-600 dark:text-amber-400 font-black">
+                        {approvedUploadsCount} / 5 {isRtl ? 'معتمد' : 'approved'}
+                      </span>
+                    </div>
+
+                    <div className="w-full h-1.5 bg-slate-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min(100, (approvedUploadsCount / 5) * 100)}%` }}
+                      />
+                    </div>
+
+                    <p className="text-[9px] text-slate-500 dark:text-slate-400 leading-tight text-start">
+                      {isRtl
+                        ? `ارفع 5 ملحقات معتمدة لفتح ملحقات هذه المادة مجاناً (متبقي: ${Math.max(0, 5 - approvedUploadsCount)})`
+                        : `Upload 5 approved attachments to unlock all attachments for this course free (${Math.max(0, 5 - approvedUploadsCount)} left)`}
+                    </p>
+                  </div>
+
+                  {/* Buttons */}
+                  <div className="flex flex-col gap-1.5 w-full pt-0.5">
+                    <button
+                      onClick={() => onOpenSubscription?.()}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white text-xs font-black shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>{isRtl ? 'الاشتراك لفتح جميع المرفقات' : 'Subscribe to Unlock'}</span>
+                    </button>
+
+                    {user && (
+                      <button
+                        onClick={() => setIsUploadOpen(true)}
+                        className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 border border-slate-200 dark:border-zinc-700 text-xs font-bold active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{isRtl ? 'مشاركة صورة (+1)' : 'Contribute photo'}</span>
+                      </button>
                     )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2.5">
+                {displayList.map((item, index) => {
+                  const displayName = item.isAnonymous
+                    ? isStaff
+                      ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
+                      : isRtl
+                      ? 'طالب (مجهول)'
+                      : 'Anonymous'
+                    : item.uploaderName || (isRtl ? 'طالب' : 'Student');
 
-                    {/* Info Overlay */}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex flex-col justify-end p-2 text-white">
-                      {item.title && (
-                        <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
-                          {item.title}
-                        </p>
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => setViewerIndex(index)}
+                      className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-800/80 aspect-square cursor-pointer hover:shadow-lg hover:border-sky-400 dark:hover:border-sky-500 transition-all select-none"
+                    >
+                      <img
+                        src={item.url}
+                        alt={item.title || 'Attachment'}
+                        loading="lazy"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+
+                      {/* Pending review badge */}
+                      {item.status === 'pending' && (
+                        <div className="absolute top-2 start-2 z-10 px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-white shadow-sm flex items-center gap-1">
+                          <Clock className="w-2.5 h-2.5" />
+                          <span>{isRtl ? 'قيد المراجعة' : 'Pending'}</span>
+                        </div>
                       )}
-                      <div className="flex items-center justify-between text-[9px] text-white/80">
-                        <span className="flex items-center gap-1 truncate max-w-[90px]">
-                          {item.isAnonymous ? (
-                            <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
-                          ) : (
-                            <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
-                          )}
-                          <span className="truncate">{displayName}</span>
-                        </span>
-                        <ExternalLink className="w-3 h-3 opacity-80" />
+
+                      {/* Info Overlay */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex flex-col justify-end p-2 text-white">
+                        {item.title && (
+                          <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
+                            {item.title}
+                          </p>
+                        )}
+                        <div className="flex items-center justify-between text-[9px] text-white/80">
+                          <span className="flex items-center gap-1 truncate max-w-[90px]">
+                            {item.isAnonymous ? (
+                              <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
+                            ) : (
+                              <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
+                            )}
+                            <span className="truncate">{displayName}</span>
+                          </span>
+                          <ExternalLink className="w-3 h-3 opacity-80" />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )
           )}
         </div>
       </motion.aside>

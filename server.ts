@@ -907,6 +907,22 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
   });
 
+  app.post("/api/me/banner-theme", verifyAuth, async (req, res) => {
+    try {
+      const { theme } = req.body;
+      if (!['gold', 'pink', 'black', 'white'].includes(theme)) {
+        return res.status(400).json({ error: "Invalid theme" });
+      }
+      const db = admin.firestore();
+      const uid = (req as any).user.uid;
+      await db.collection('users').doc(uid).set({ subscriptionBannerTheme: theme }, { merge: true });
+      res.json({ ok: true, theme });
+    } catch (error: any) {
+      console.error("Failed to update banner theme:", error);
+      res.status(500).json({ error: "Failed to update banner theme" });
+    }
+  });
+
   app.post("/api/admin/students", verifyAuth, verifyAdmin, async (req, res) => {
     if (!admin.apps.length) {
       return res.status(500).json({ error: "Firebase Admin is not configured." });

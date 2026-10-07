@@ -2,11 +2,13 @@ import React, { useEffect, useState, useRef } from 'react';
 import { collection, query, orderBy, limit, getDocs, where, documentId, getCountFromServer, doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { UserProfile, Language } from '../types';
-import { Flame, Medal, Crown, Loader2, Target, RefreshCw, Palmtree, MoreVertical, Users } from 'lucide-react';
+import { Flame, Medal, Crown, Loader2, Target, RefreshCw, Palmtree, MoreVertical, Users, Sparkles } from 'lucide-react';
 import { UserMCQStats } from '../types/mcq.types';
 import Podium from './ui/Podium';
 import { useStageContext } from '../contexts/StageContext';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
+import { hasLiveSubscription } from '../../shared/subscriptionAccess';
+import { BannerThemeId } from '../hooks/useSubscriptionBannerTheme';
 
 interface LeaderboardTabProps {
   user: UserProfile | null;
@@ -27,6 +29,8 @@ interface RowData {
   name?: string;
   photoUrl?: string | null;
   isMe: boolean;
+  isSubscriber?: boolean;
+  bannerTheme?: BannerThemeId;
   hideName?: boolean;
   hidePhoto?: boolean;
   primary: React.ReactNode;
@@ -34,6 +38,50 @@ interface RowData {
   /** Renders a "gap" marker above the row - used for the appended self row. */
   detached?: boolean;
 }
+
+interface LeaderboardVipStyle {
+  containerMe: string;
+  containerOther: string;
+  shimmerColor: string;
+  avatarRing: string;
+  badgeBg: string;
+  crownColor: string;
+}
+
+const LEADERBOARD_VIP_STYLES: Record<BannerThemeId, LeaderboardVipStyle> = {
+  gold: {
+    containerMe: 'bg-gradient-to-r from-amber-500/15 via-sky-50/80 to-amber-500/10 dark:from-amber-950/40 dark:via-sky-900/30 dark:to-amber-950/30 border-2 border-amber-400/90 dark:border-amber-500 shadow-md shadow-amber-500/10',
+    containerOther: 'bg-gradient-to-r from-amber-500/[0.08] via-yellow-500/[0.04] to-slate-50 dark:from-amber-950/30 dark:via-yellow-950/20 dark:to-zinc-900 border border-amber-300/80 dark:border-amber-500/40 hover:border-amber-400 dark:hover:border-amber-400/70 shadow-xs shadow-amber-500/5',
+    shimmerColor: 'via-amber-300/35 dark:via-yellow-400/20',
+    avatarRing: 'bg-gradient-to-tr from-amber-400 to-yellow-300 shadow-xs shadow-amber-500/20',
+    badgeBg: 'bg-gradient-to-r from-amber-500 to-yellow-500 text-white',
+    crownColor: 'bg-amber-500 text-white',
+  },
+  pink: {
+    containerMe: 'bg-gradient-to-r from-pink-500/15 via-rose-50/80 to-pink-500/10 dark:from-pink-950/40 dark:via-rose-900/30 dark:to-pink-950/30 border-2 border-pink-400/90 dark:border-pink-500 shadow-md shadow-pink-500/10',
+    containerOther: 'bg-gradient-to-r from-pink-500/[0.08] via-rose-500/[0.04] to-slate-50 dark:from-pink-950/30 dark:via-rose-950/20 dark:to-zinc-900 border border-pink-300/80 dark:border-pink-500/40 hover:border-pink-400 dark:hover:border-pink-400/70 shadow-xs shadow-pink-500/5',
+    shimmerColor: 'via-pink-300/35 dark:via-rose-400/20',
+    avatarRing: 'bg-gradient-to-tr from-pink-400 to-rose-400 shadow-xs shadow-pink-500/20',
+    badgeBg: 'bg-gradient-to-r from-pink-500 to-rose-500 text-white',
+    crownColor: 'bg-pink-500 text-white',
+  },
+  black: {
+    containerMe: 'bg-gradient-to-r from-zinc-900/25 via-slate-100 to-zinc-900/15 dark:from-zinc-950 dark:via-zinc-900 dark:to-black border-2 border-zinc-700 dark:border-zinc-500 shadow-md shadow-black/20',
+    containerOther: 'bg-gradient-to-r from-zinc-800/[0.06] via-zinc-900/[0.03] to-slate-50 dark:from-zinc-900/50 dark:via-zinc-950/40 dark:to-zinc-900 border border-zinc-400/80 dark:border-zinc-700/80 hover:border-zinc-600 dark:hover:border-zinc-500 shadow-xs shadow-black/10',
+    shimmerColor: 'via-white/30 dark:via-white/20',
+    avatarRing: 'bg-gradient-to-tr from-zinc-700 to-black shadow-xs shadow-black/30 border border-zinc-500',
+    badgeBg: 'bg-gradient-to-r from-zinc-900 to-black text-white border border-zinc-700',
+    crownColor: 'bg-zinc-800 text-white border border-zinc-600',
+  },
+  white: {
+    containerMe: 'bg-gradient-to-r from-slate-100 via-white to-slate-100 dark:from-slate-800/40 dark:via-zinc-900 dark:to-slate-800/30 border-2 border-slate-300 dark:border-slate-400 shadow-md shadow-slate-300/20 dark:shadow-black/20',
+    containerOther: 'bg-gradient-to-r from-white via-slate-50 to-slate-100 dark:from-zinc-900 dark:via-slate-900/40 dark:to-zinc-900 border border-slate-300/80 dark:border-slate-500/50 hover:border-slate-400 dark:hover:border-slate-400 shadow-xs shadow-slate-300/10',
+    shimmerColor: 'via-sky-300/35 dark:via-sky-400/20',
+    avatarRing: 'bg-gradient-to-tr from-slate-200 via-white to-slate-300 shadow-xs border border-slate-300',
+    badgeBg: 'bg-gradient-to-r from-slate-100 via-white to-slate-200 text-slate-900 border border-slate-300 shadow-xs dark:text-zinc-900',
+    crownColor: 'bg-slate-200 text-slate-800 border border-slate-300',
+  },
+};
 
 /** '2027-01-31' -> '2027/1/31'. */
 function formatDate(iso: string): string {
@@ -57,6 +105,18 @@ function LeaderboardRow({ row, isRtl, accent }: { row: RowData; isRtl: boolean; 
   const displayName = anonymous ? (isRtl ? 'مستخدم مجهول' : 'Anonymous User') : row.name;
   const displayPhoto = row.hidePhoto && !row.isMe ? null : row.photoUrl;
   const accentText = accent === 'orange' ? 'text-orange-600 dark:text-orange-400' : 'text-sky-600 dark:text-sky-400';
+  const vipStyle = row.isSubscriber ? (LEADERBOARD_VIP_STYLES[row.bannerTheme || 'gold'] || LEADERBOARD_VIP_STYLES.gold) : null;
+
+  // Base styling classes
+  let containerStyle = 'bg-slate-50 dark:bg-zinc-900 border border-transparent hover:border-slate-200 dark:hover:border-zinc-700';
+
+  if (row.isMe && row.isSubscriber && vipStyle) {
+    containerStyle = vipStyle.containerMe;
+  } else if (row.isMe) {
+    containerStyle = 'bg-sky-50 dark:bg-sky-900/20 border-2 border-sky-100 dark:border-sky-900/50';
+  } else if (row.isSubscriber && vipStyle) {
+    containerStyle = vipStyle.containerOther;
+  }
 
   return (
     <>
@@ -66,39 +126,67 @@ function LeaderboardRow({ row, isRtl, accent }: { row: RowData; isRtl: boolean; 
         </div>
       )}
       <div
-        className={`flex items-center justify-between p-3 sm:p-4 rounded-2xl transition-all ${
-          row.isMe
-            ? 'bg-sky-50 dark:bg-sky-900/20 border-2 border-sky-100 dark:border-sky-900/50'
-            : 'bg-slate-50 dark:bg-zinc-900 border border-transparent hover:border-slate-200 dark:hover:border-zinc-700'
-        }`}
+        className={`group relative overflow-hidden flex items-center justify-between p-3 sm:p-4 rounded-2xl transition-all ${containerStyle}`}
       >
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+        {/* Shimmer animation for subscribers */}
+        {row.isSubscriber && vipStyle && (
+          <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl opacity-70 dark:opacity-40">
+            <div className={`w-1/2 h-full bg-gradient-to-r from-transparent ${vipStyle.shimmerColor} to-transparent -skew-x-12 animate-[goldShimmer_4s_infinite]`} />
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0 relative z-1">
           <div className="w-8 flex justify-center shrink-0">{rankBadge(row.rank)}</div>
 
           {displayPhoto ? (
-            <img
-              src={displayPhoto}
-              alt={displayName}
-              referrerPolicy="no-referrer"
-              className="w-10 h-10 rounded-full object-cover border-2 border-white dark:border-zinc-800 shadow-sm shrink-0"
-            />
+            <div className={`relative shrink-0 rounded-full ${row.isSubscriber && vipStyle ? `p-0.5 ${vipStyle.avatarRing}` : ''}`}>
+              <img
+                src={displayPhoto}
+                alt={displayName}
+                referrerPolicy="no-referrer"
+                className="w-10 h-10 rounded-full object-cover border-2 border-white dark:border-zinc-800 shadow-sm"
+              />
+              {row.isSubscriber && vipStyle && (
+                <div className={`absolute -bottom-1 -end-1 ${vipStyle.crownColor} rounded-full p-0.5 shadow-xs border border-white dark:border-zinc-800`}>
+                  <Crown className="w-2.5 h-2.5 fill-current" />
+                </div>
+              )}
+            </div>
           ) : (
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-[#2196F3] flex items-center justify-center text-white font-bold text-lg shadow-sm border-2 border-white dark:border-zinc-800 shrink-0">
-              {anonymous ? '?' : displayName?.charAt(0).toUpperCase()}
+            <div className={`relative shrink-0 rounded-full ${row.isSubscriber && vipStyle ? `p-0.5 ${vipStyle.avatarRing}` : ''}`}>
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-[#2196F3] flex items-center justify-center text-white font-bold text-lg shadow-sm border-2 border-white dark:border-zinc-800">
+                {anonymous ? '?' : displayName?.charAt(0).toUpperCase()}
+              </div>
+              {row.isSubscriber && vipStyle && (
+                <div className={`absolute -bottom-1 -end-1 ${vipStyle.crownColor} rounded-full p-0.5 shadow-xs border border-white dark:border-zinc-800`}>
+                  <Crown className="w-2.5 h-2.5 fill-current" />
+                </div>
+              )}
             </div>
           )}
 
           <div className="min-w-0">
-            <h3 className={`font-bold sm:text-lg truncate ${row.isMe ? accentText : 'text-slate-800 dark:text-slate-200'}`}>
-              {displayName} {row.isMe && (isRtl ? '(أنت)' : '(You)')}
-            </h3>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h3 className={`font-bold sm:text-lg truncate ${row.isMe ? accentText : 'text-slate-800 dark:text-slate-200'}`}>
+                {displayName} {row.isMe && (isRtl ? '(أنت)' : '(You)')}
+              </h3>
+              {row.isSubscriber && vipStyle && (
+                <span
+                  title={isRtl ? 'مشترك مميز' : 'VIP Subscriber'}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black ${vipStyle.badgeBg} shadow-xs shrink-0 select-none tracking-tight`}
+                >
+                  <Sparkles className="w-2.5 h-2.5 fill-current" />
+                  <span>{isRtl ? 'مشترك مميز' : 'VIP'}</span>
+                </span>
+              )}
+            </div>
             {row.secondary && (
               <p className={`text-xs truncate ${row.isMe ? accentText : 'text-slate-500'}`}>{row.secondary}</p>
             )}
           </div>
         </div>
 
-        <div className={`flex items-center gap-1.5 font-black text-lg sm:text-xl shrink-0 ${
+        <div className={`flex items-center gap-1.5 font-black text-lg sm:text-xl shrink-0 relative z-1 ${
           row.isMe ? accentText : 'text-slate-700 dark:text-slate-300'
         }`}>
           {row.primary}
@@ -202,6 +290,9 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
           photoUrl: live?.photoUrl || (live as any)?.photoURL || s.photoUrl,
           hideNameOnLeaderboard: live?.hideNameOnLeaderboard ?? s.hideNameOnLeaderboard,
           hidePhotoOnLeaderboard: live?.hidePhotoOnLeaderboard ?? s.hidePhotoOnLeaderboard,
+          isSubscribed: live?.isSubscribed ?? s.isSubscribed,
+          subscriptionEnd: live?.subscriptionEnd ?? s.subscriptionEnd,
+          subscriptionBannerTheme: live?.subscriptionBannerTheme ?? s.subscriptionBannerTheme,
         };
       }));
       return;
@@ -256,6 +347,9 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
         longestStreak: user.longestStreak || 0,
         hideNameOnLeaderboard: user.hideNameOnLeaderboard,
         hidePhotoOnLeaderboard: user.hidePhotoOnLeaderboard,
+        isSubscribed: user.isSubscribed,
+        subscriptionEnd: user.subscriptionEnd,
+        subscriptionBannerTheme: user.subscriptionBannerTheme,
         _rank: myRank,
         _detached: true,
       });
@@ -440,6 +534,8 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     name: l.name,
     photoUrl: l.photoUrl || l.photoURL,
     isMe: user?.uid === (l.uid || l.userId),
+    isSubscriber: hasLiveSubscription(l),
+    bannerTheme: ((user?.uid === (l.uid || l.userId) ? user.subscriptionBannerTheme : null) || l.subscriptionBannerTheme || 'gold') as BannerThemeId,
     hideName: l.hideNameOnLeaderboard,
     hidePhoto: l.hidePhotoOnLeaderboard,
     detached: l._detached,
@@ -456,6 +552,8 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     name: l.profile?.name,
     photoUrl: l.profile?.photoUrl || (l.profile as any)?.photoURL,
     isMe: user?.uid === l.userId,
+    isSubscriber: hasLiveSubscription(l.profile || (user?.uid === l.userId ? user : l)),
+    bannerTheme: ((user?.uid === l.userId ? user.subscriptionBannerTheme : null) || l.profile?.subscriptionBannerTheme || (l as any).subscriptionBannerTheme || 'gold') as BannerThemeId,
     hideName: l.profile?.hideNameOnLeaderboard,
     hidePhoto: l.profile?.hidePhotoOnLeaderboard,
     detached: (l as any)._detached,
@@ -476,6 +574,12 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
 
   return (
     <div className="max-w-2xl mx-auto relative" dir={isRtl ? 'rtl' : 'ltr'}>
+      <style>{`
+        @keyframes goldShimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(200%); }
+        }
+      `}</style>
       <div className="flex items-center gap-2 mb-4 mx-2">
         <div className="flex bg-slate-200 dark:bg-zinc-800 p-1 rounded-xl flex-1">
           <button

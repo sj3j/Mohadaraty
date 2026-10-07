@@ -1,11 +1,41 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
+import { Sparkles } from 'lucide-react';
+import { hasLiveSubscription } from '../../../shared/subscriptionAccess';
+import { BannerThemeId } from '../../hooks/useSubscriptionBannerTheme';
 
 interface PodiumProps {
   topStudents: any[];
   isRtl: boolean;
   type: 'streak' | 'mcq';
 }
+
+const PODIUM_VIP_THEMES: Record<BannerThemeId, {
+  ringBorder: string;
+  badgeBg: string;
+  haloAnimation: string;
+}> = {
+  gold: {
+    ringBorder: 'border-amber-400',
+    badgeBg: 'bg-gradient-to-r from-amber-500 to-yellow-400 text-white',
+    haloAnimation: 'subscriberHaloGold 2.5s infinite',
+  },
+  pink: {
+    ringBorder: 'border-pink-400',
+    badgeBg: 'bg-gradient-to-r from-pink-500 to-rose-400 text-white',
+    haloAnimation: 'subscriberHaloPink 2.5s infinite',
+  },
+  black: {
+    ringBorder: 'border-zinc-700 dark:border-zinc-500',
+    badgeBg: 'bg-gradient-to-r from-zinc-900 to-neutral-800 text-zinc-100 border border-zinc-700',
+    haloAnimation: 'subscriberHaloBlack 2.5s infinite',
+  },
+  white: {
+    ringBorder: 'border-slate-300 dark:border-slate-200',
+    badgeBg: 'bg-gradient-to-r from-slate-100 to-white text-slate-800 border border-slate-300 shadow-xs',
+    haloAnimation: 'subscriberHaloWhite 2.5s infinite',
+  },
+};
 
 export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
   const [showConfetti, setShowConfetti] = useState(true);
@@ -66,6 +96,26 @@ export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
           0% { box-shadow: 0 0 10px #FFD70040; }
           50% { box-shadow: 0 0 25px #FFD70080; }
           100% { box-shadow: 0 0 10px #FFD70040; }
+        }
+        @keyframes subscriberHaloGold {
+          0% { box-shadow: 0 0 12px #FFD70060, 0 0 0 2px #FFD700; }
+          50% { box-shadow: 0 0 25px #FFD700B0, 0 0 0 3px #FFD700; }
+          100% { box-shadow: 0 0 12px #FFD70060, 0 0 0 2px #FFD700; }
+        }
+        @keyframes subscriberHaloPink {
+          0% { box-shadow: 0 0 12px #EC489960, 0 0 0 2px #EC4899; }
+          50% { box-shadow: 0 0 25px #EC4899B0, 0 0 0 3px #EC4899; }
+          100% { box-shadow: 0 0 12px #EC489960, 0 0 0 2px #EC4899; }
+        }
+        @keyframes subscriberHaloBlack {
+          0% { box-shadow: 0 0 12px #18181B70, 0 0 0 2px #3F3F46; }
+          50% { box-shadow: 0 0 25px #18181BB0, 0 0 0 3px #52525B; }
+          100% { box-shadow: 0 0 12px #18181B70, 0 0 0 2px #3F3F46; }
+        }
+        @keyframes subscriberHaloWhite {
+          0% { box-shadow: 0 0 12px #E2E8F080, 0 0 0 2px #CBD5E1; }
+          50% { box-shadow: 0 0 25px #FFFFFFB0, 0 0 0 3px #FFFFFF; }
+          100% { box-shadow: 0 0 12px #E2E8F080, 0 0 0 2px #CBD5E1; }
         }
         @keyframes confettiFall {
           0% { transform: translateY(-30px) rotate(0deg); opacity: 1; }
@@ -132,6 +182,10 @@ export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
         const displayName = hideName ? (isRtl ? 'مستخدم مجهول' : 'Anon') : formatName(rawName);
         const hidePhoto = student.hidePhotoOnLeaderboard || (student.profile ? student.profile.hidePhotoOnLeaderboard : false);
         const displayPhoto = hidePhoto ? null : ((student.photoUrl || student.photoURL) || (student.profile ? (student.profile.photoUrl || student.profile.photoURL) : null));
+        const isSubscriber = hasLiveSubscription(student) || hasLiveSubscription(student.profile);
+        const vipThemeKey: BannerThemeId = (student.subscriptionBannerTheme || student.profile?.subscriptionBannerTheme || 'gold') as BannerThemeId;
+        const vipTheme = PODIUM_VIP_THEMES[vipThemeKey] || PODIUM_VIP_THEMES.gold;
+        const finalRingClass = isSubscriber && !isFirst ? `border-4 ${vipTheme.ringBorder}` : ringClass;
 
         return (
           <motion.div 
@@ -151,8 +205,8 @@ export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
               </div>
             )}
             
-            <div className={`relative mb-2 rounded-full ${ringClass} overflow-hidden bg-white dark:bg-zinc-800 shadow-lg`}
-                 style={isFirst ? { animation: 'starGlow 2s infinite' } : {}}
+            <div className={`relative mb-2 rounded-full ${finalRingClass} overflow-hidden bg-white dark:bg-zinc-800 shadow-lg`}
+                 style={isFirst ? { animation: 'starGlow 2s infinite' } : isSubscriber ? { animation: vipTheme.haloAnimation } : {}}
             >
               <div className={`${isFirst ? 'w-16 h-16 sm:w-20 sm:h-20' : 'w-12 h-12 sm:w-16 sm:h-16'} flex items-center justify-center bg-slate-100 dark:bg-zinc-800`}>
                 {displayPhoto ? (
@@ -165,9 +219,20 @@ export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
               </div>
             </div>
 
-            <span className={`font-bold block whitespace-nowrap text-center mb-1 ${isFirst ? 'text-[14px] sm:text-[15px]' : 'text-[12px] sm:text-[13px]'} text-slate-800 dark:text-slate-200`}>
-              {displayName}
-            </span>
+            <div className="flex items-center justify-center gap-1 mb-1 max-w-[110px] sm:max-w-[130px]">
+              <span className={`font-bold block truncate text-center ${isFirst ? 'text-[14px] sm:text-[15px]' : 'text-[12px] sm:text-[13px]'} text-slate-800 dark:text-slate-200`}>
+                {displayName}
+              </span>
+              {isSubscriber && (
+                <span
+                  title={isRtl ? 'مشترك مميز' : 'VIP'}
+                  className={`inline-flex items-center gap-0.5 px-1 py-0.2 rounded-full text-[8px] sm:text-[9px] font-black ${vipTheme.badgeBg} shadow-xs shrink-0 select-none`}
+                >
+                  <Sparkles className="w-2 h-2 fill-current" />
+                  <span>VIP</span>
+                </span>
+              )}
+            </div>
 
             <div className="bg-white/80 dark:bg-zinc-800/80 backdrop-blur-sm px-2 py-0.5 rounded-full mb-2 border border-slate-200/50 dark:border-zinc-700/50 shadow-sm">
               <span className={`text-[10px] sm:text-xs font-black ${textClass}`}>

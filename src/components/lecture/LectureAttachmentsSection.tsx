@@ -12,6 +12,7 @@ import {
   Trash2,
   AlertTriangle,
   Sparkles,
+  Lock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Lecture, UserProfile, Language } from '../../types';
@@ -21,7 +22,9 @@ import {
   approveAttachment,
   rejectAttachment,
   deleteAttachment,
+  getStudentApprovedCourseAttachmentsCount,
 } from '../../services/lectureAttachmentService';
+import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import { canManage } from '../../lib/permissions';
 import AttachmentViewerModal from './AttachmentViewerModal';
 import UploadAttachmentModal from './UploadAttachmentModal';
@@ -31,6 +34,7 @@ interface LectureAttachmentsSectionProps {
   user: UserProfile | null;
   lang: Language;
   onAttachmentsCountChanged?: (count: number) => void;
+  onShowPaywall?: () => void;
 }
 
 export default function LectureAttachmentsSection({
@@ -38,6 +42,7 @@ export default function LectureAttachmentsSection({
   user,
   lang,
   onAttachmentsCountChanged,
+  onShowPaywall,
 }: LectureAttachmentsSectionProps) {
   const isRtl = lang === 'ar';
 
@@ -45,6 +50,7 @@ export default function LectureAttachmentsSection({
   const [loading, setLoading] = useState(true);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [approvedUploadsCount, setApprovedUploadsCount] = useState<number>(0);
 
   // Rejection modal state
   const [rejectingItem, setRejectingItem] = useState<LectureAttachment | null>(null);
@@ -57,6 +63,10 @@ export default function LectureAttachmentsSection({
     Boolean(user?.isMasterAdmin) ||
     canManage(user, 'manageLectures');
 
+  const courseKey = lecture.subjectId || lecture.category;
+  const isSubscribed = hasSubscriptionAccess(user);
+  const isUnlocked = isStaff || isSubscribed || approvedUploadsCount >= 5;
+
   const loadAttachments = useCallback(async () => {
     try {
       const items = await getLectureAttachments(lecture.id, user);
@@ -64,12 +74,16 @@ export default function LectureAttachmentsSection({
       onAttachmentsCountChanged?.(
         items.filter((a) => a.status === 'approved').length
       );
+      if (user?.uid && courseKey) {
+        const count = await getStudentApprovedCourseAttachmentsCount(user.uid, courseKey);
+        setApprovedUploadsCount(count);
+      }
     } catch (err) {
       console.error('Failed to load attachments:', err);
     } finally {
       setLoading(false);
     }
-  }, [lecture.id, user, onAttachmentsCountChanged]);
+  }, [lecture.id, user, courseKey, onAttachmentsCountChanged]);
 
   useEffect(() => {
     loadAttachments();
@@ -123,6 +137,12 @@ export default function LectureAttachmentsSection({
             <h4 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-stone-200">
               {isRtl ? 'مرفقات وصور المحاضرة' : 'Lecture Attachments'}
             </h4>
+            {!isUnlocked && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 flex items-center gap-1">
+                <Lock className="w-2.5 h-2.5" />
+                <span>{isRtl ? 'للمشتركين' : 'PRO'}</span>
+              </span>
+            )}
             <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-400">
               {approvedList.length}
             </span>
@@ -300,57 +320,141 @@ export default function LectureAttachmentsSection({
         </div>
       )}
 
-      {/* Approved Attachments Gallery Grid */}
+      {/* Approved Attachments Gallery Grid / Locked Paywall Blur View */}
       {!loading && approvedList.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-2.5">
-          {approvedList.map((item, index) => {
-            const displayName = item.isAnonymous
-              ? isStaff
-                ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
-                : isRtl
-                ? 'طالب (مجهول)'
-                : 'Anonymous'
-              : item.uploaderName || (isRtl ? 'طالب' : 'Student');
+        !isUnlocked ? (
+          <div className="relative rounded-2xl sm:rounded-3xl overflow-hidden border border-amber-200/70 dark:border-amber-900/40 p-1 sm:p-1.5 bg-gradient-to-b from-amber-50/40 to-slate-50 dark:from-zinc-900/80 dark:to-zinc-950/90 shadow-sm">
+            {/* The blurred background grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-2.5 filter blur-md sm:blur-lg opacity-35 dark:opacity-25 select-none pointer-events-none scale-102 transition-all">
+              {approvedList.slice(0, 4).map((item) => (
+                <div key={item.id} className="aspect-[4/3] rounded-xl overflow-hidden bg-slate-200 dark:bg-zinc-800">
+                  <img src={item.url} alt="" className="w-full h-full object-cover" />
+                </div>
+              ))}
+            </div>
 
-            return (
-              <div
-                key={item.id}
-                onClick={() => {
-                  const idx = attachments.findIndex((a) => a.id === item.id);
-                  if (idx !== -1) setViewerIndex(idx);
-                }}
-                className="group relative rounded-xl sm:rounded-2xl overflow-hidden border border-slate-200 dark:border-zinc-700/80 bg-slate-50 dark:bg-zinc-800 aspect-[4/3] cursor-pointer hover:shadow-lg hover:border-sky-300 dark:hover:border-sky-500 transition-all select-none"
-              >
-                <img
-                  src={item.url}
-                  alt={item.title || 'Attachment'}
-                  loading="lazy"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                />
+            {/* Frosted Glass Overlay with Lock & Contributor Challenge */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-3 sm:p-5 text-center backdrop-blur-xs bg-white/75 dark:bg-zinc-900/85 rounded-2xl z-10 space-y-2.5 sm:space-y-3">
+              <div className="inline-flex p-2.5 sm:p-3 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-white shadow-lg shadow-amber-500/25">
+                <Lock className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
+              </div>
 
-                {/* Gradient overlay on hover */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 text-white">
-                  {item.title && (
-                    <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
-                      {item.title}
-                    </p>
-                  )}
-                  <div className="flex items-center justify-between text-[9px] text-white/80">
-                    <span className="flex items-center gap-1 truncate max-w-[80px]">
-                      {item.isAnonymous ? (
-                        <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
-                      ) : (
-                        <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
-                      )}
-                      <span className="truncate">{displayName}</span>
-                    </span>
-                    <ExternalLink className="w-3 h-3 opacity-70" />
+              <div className="max-w-md space-y-0.5 sm:space-y-1">
+                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                  <h5 className="text-sm sm:text-base font-black text-slate-900 dark:text-stone-100">
+                    {isRtl ? 'ملحقات وصور المحاضرة' : 'Lecture Attachments'}
+                  </h5>
+                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
+                    {isRtl ? 'ميزة حصرية للمشتركين' : 'PRO Only'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {isRtl
+                    ? `تتوفر ${approvedList.length} صور وملحقات مفيدة لهذه المحاضرة.`
+                    : `${approvedList.length} photos and study attachments available for this lecture.`}
+                </p>
+              </div>
+
+              {/* Community Contributor Progress Bar (Unlock via 5 approved uploads) */}
+              <div className="w-full max-w-xs bg-slate-50/90 dark:bg-zinc-800/90 rounded-2xl p-2.5 sm:p-3 border border-slate-200/80 dark:border-zinc-700/60 shadow-xs space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="text-slate-800 dark:text-stone-200 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isRtl ? 'افتح ملحقات المادة مجاناً' : 'Unlock Course Free'}</span>
+                  </span>
+                  <span className="text-amber-600 dark:text-amber-400 font-black">
+                    {approvedUploadsCount} / 5 {isRtl ? 'معتمد' : 'approved'}
+                  </span>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-full h-2 bg-slate-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, (approvedUploadsCount / 5) * 100)}%` }}
+                  />
+                </div>
+
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight text-start">
+                  {isRtl
+                    ? `ارفع 5 ملحقات معتمدة لفتح ملحقات مادة ${lecture.subjectNameAr || 'هذه المادة'} مجاناً (متبقي: ${Math.max(0, 5 - approvedUploadsCount)})`
+                    : `Upload 5 approved attachments to unlock all attachments for this course for free (${Math.max(0, 5 - approvedUploadsCount)} left)`}
+                </p>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-2 flex-wrap justify-center pt-0.5">
+                <button
+                  onClick={() => onShowPaywall?.()}
+                  className="inline-flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white text-xs font-black shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isRtl ? 'الاشتراك لفتح جميع الملحقات' : 'Subscribe to Unlock'}</span>
+                </button>
+
+                {user && (
+                  <button
+                    onClick={() => setIsUploadOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 border border-slate-200 dark:border-zinc-700 text-xs font-bold active:scale-95 transition-all cursor-pointer shadow-xs"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isRtl ? 'مشاركة صورة (+1)' : 'Contribute photo'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-2.5">
+            {approvedList.map((item, index) => {
+              const displayName = item.isAnonymous
+                ? isStaff
+                  ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
+                  : isRtl
+                  ? 'طالب (مجهول)'
+                  : 'Anonymous'
+                : item.uploaderName || (isRtl ? 'طالب' : 'Student');
+
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => {
+                    const idx = attachments.findIndex((a) => a.id === item.id);
+                    if (idx !== -1) setViewerIndex(idx);
+                  }}
+                  className="group relative rounded-xl sm:rounded-2xl overflow-hidden border border-slate-200 dark:border-zinc-700/80 bg-slate-50 dark:bg-zinc-800 aspect-[4/3] cursor-pointer hover:shadow-lg hover:border-sky-300 dark:hover:border-sky-500 transition-all select-none"
+                >
+                  <img
+                    src={item.url}
+                    alt={item.title || 'Attachment'}
+                    loading="lazy"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+
+                  {/* Gradient overlay on hover */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 text-white">
+                    {item.title && (
+                      <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
+                        {item.title}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between text-[9px] text-white/80">
+                      <span className="flex items-center gap-1 truncate max-w-[80px]">
+                        {item.isAnonymous ? (
+                          <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
+                        ) : (
+                          <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
+                        )}
+                        <span className="truncate">{displayName}</span>
+                      </span>
+                      <ExternalLink className="w-3 h-3 opacity-70" />
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )
       )}
 
       {/* Reject Reason Modal */}

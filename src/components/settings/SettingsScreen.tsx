@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crown, Sparkles, Clock } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { Language, UserProfile } from '../../types';
@@ -16,6 +16,8 @@ import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
 import { useBackDismiss } from '../../hooks/useBackDismiss';
+import { hasLiveSubscription } from '../../../shared/subscriptionAccess';
+import { useSubscriptionBannerTheme } from '../../hooks/useSubscriptionBannerTheme';
 import {
   canManageAssistants, canManageStudents, canManageGrades,
   canManageStreakSystem, canManageSubscriptions, canViewAdminLogs, canManageSimosanBilling,
@@ -69,6 +71,30 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   const [page, setPage] = useState<Page>('root');
   const { stages, currentAppStage } = useStageContext();
 
+  const isSubscriber = hasLiveSubscription(user);
+  const { themeId: bannerThemeId, theme: bannerTheme, changeTheme: changeBannerTheme, allThemes } = useSubscriptionBannerTheme(user);
+
+  const expiryFormatted = (() => {
+    if (!user?.subscriptionEnd) return null;
+    const raw = user.subscriptionEnd;
+    const d = typeof raw?.toDate === 'function' ? raw.toDate() : new Date(raw);
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleDateString(isRtl ? 'ar-IQ' : 'en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  })();
+
+  const daysRemaining = (() => {
+    if (!user?.subscriptionEnd) return null;
+    const raw = user.subscriptionEnd;
+    const d = typeof raw?.toDate === 'function' ? raw.toDate() : new Date(raw);
+    const diff = d.getTime() - Date.now();
+    if (diff <= 0) return 0;
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  })();
+
   const Back = isRtl ? ChevronRight : ChevronLeft;
   const goBack = () => (page === 'root' ? onBack() : setPage('root'));
 
@@ -77,12 +103,12 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   useBackDismiss(true, goBack, 'settings');
 
   const TITLES: Record<Page, { ar: string; en: string }> = {
-    root:       { ar: 'الإعدادات',            en: 'Settings' },
-    appearance: { ar: 'المظهر',               en: 'Appearance' },
-    blocked:    { ar: 'المستخدمون المحظورون', en: 'Blocked users' },
-    security:   { ar: 'الحساب وكلمة المرور',  en: 'Account & password' },
-    stage:      { ar: 'المرحلة المعروضة',     en: 'Viewing stage' },
-    faq:        { ar: 'الأسئلة الشائعة',      en: 'FAQ' },
+    root: { ar: 'الإعدادات', en: 'Settings' },
+    appearance: { ar: 'المظهر', en: 'Appearance' },
+    blocked: { ar: 'المستخدمون المحظورون', en: 'Blocked users' },
+    security: { ar: 'الحساب وكلمة المرور', en: 'Account & password' },
+    stage: { ar: 'المرحلة المعروضة', en: 'Viewing stage' },
+    faq: { ar: 'الأسئلة الشائعة', en: 'FAQ' },
   };
 
   const notifLabel = notificationPermission === 'granted'
@@ -116,10 +142,10 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   };
 
   const NOTIFICATION_ROWS: { key: NotificationKey; ar: string; en: string }[] = [
-    { key: 'lectures',      ar: 'المحاضرات الجديدة', en: 'New lectures' },
-    { key: 'announcements', ar: 'التبليغات',         en: 'Announcements' },
-    { key: 'records',       ar: 'التسجيلات',         en: 'Records' },
-    { key: 'homeworks',     ar: 'الواجبات',          en: 'Homework' },
+    { key: 'lectures', ar: 'المحاضرات الجديدة', en: 'New lectures' },
+    { key: 'announcements', ar: 'التبليغات', en: 'Announcements' },
+    { key: 'records', ar: 'التسجيلات', en: 'Records' },
+    { key: 'homeworks', ar: 'الواجبات', en: 'Homework' },
   ];
 
   return (
@@ -140,7 +166,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
       <div className="space-y-6">
         {page === 'appearance' && (
-          <AppearanceSettings lang={lang} theme={theme} setTheme={setTheme} />
+          <AppearanceSettings lang={lang} theme={theme} setTheme={setTheme} user={user} />
         )}
 
         {page === 'blocked' && (
@@ -161,15 +187,114 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
         {page === 'root' && (
           <>
+            {/* Aesthetic Subscription Banner with Slow Shimmer & Custom Color */}
+            <div className={`relative overflow-hidden rounded-3xl p-5 border-2 transition-all duration-300 ${bannerTheme.cardBg} ${bannerTheme.cardBorder} ${bannerTheme.shadow} mb-6`}>
+              {/* Slow Diagonal Horizon Shimmer beam */}
+              <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                <div className={`absolute -inset-full w-[250%] h-[250%] bg-gradient-to-r ${bannerTheme.shimmerColor} animate-horizon-shimmer`} />
+              </div>
+
+              {/* Ambient aura in background */}
+              <div className="absolute -top-12 -right-12 w-40 h-40 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+
+              <div className="relative z-10">
+                {/* Header row: Status badge + Quick Color Switcher */}
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 shadow-sm ${bannerTheme.iconBg}`}>
+                      <Crown className="w-6 h-6" strokeWidth={2.5} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-black tracking-wide ${bannerTheme.badgeBg}`}>
+                          {isSubscriber
+                            ? (isRtl ? 'مشترك مميز' : 'VIP SUBSCRIBER')
+                            : (isRtl ? 'محاضراتي VIP' : 'MOHADARATY VIP')}
+                        </span>
+                      </div>
+                      <h3 className="font-black text-lg leading-tight mt-1">
+                        {isSubscriber
+                          ? (isRtl ? 'اشتراكك مفعّل' : 'Active VIP Membership')
+                          : (isRtl ? 'انضم إلى نخبة المشتركين' : 'Upgrade to Mohadaraty VIP')}
+                      </h3>
+                    </div>
+                  </div>
+
+                  {/* Quick Color Palette Switcher */}
+                  <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-black/15 dark:bg-white/10 backdrop-blur-md border border-white/20 shrink-0">
+                    {allThemes.map(th => {
+                      const active = bannerThemeId === th.id;
+                      return (
+                        <button
+                          key={th.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            changeBannerTheme(th.id);
+                          }}
+                          title={isRtl ? th.nameAr : th.nameEn}
+                          aria-label={isRtl ? th.nameAr : th.nameEn}
+                          className={`w-4 h-4 rounded-full transition-all duration-200 ${th.swatchPreview} ${active ? 'scale-125 ring-2 ring-white shadow-md' : 'opacity-70 hover:opacity-100 hover:scale-110'
+                            }`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Subtext */}
+                <p className={`text-xs font-medium leading-relaxed mb-4 opacity-95 ${bannerTheme.textMuted}`}>
+                  {isSubscriber
+                    ? (isRtl
+                      ? 'استمتع بكافة الميزات غير المحدودة وبنك الأسئلة وملحقات المحاضرات الحصرية.'
+                      : 'Enjoy full unrestricted access to question bank, AI tutor, and lecture attachments.')
+                    : (isRtl
+                      ? 'افتح ملحقات المحاضرات، بنك الأسئلة الشامل، وملخصات الذكاء الاصطناعي مع تجربة مخصصة فاخرة.'
+                      : 'Unlock lecture attachments, question bank, AI summaries, and priority features.')}
+                </p>
+
+                {/* Footer row: Expiry details / Perks + CTA button */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/20">
+                  {isSubscriber && expiryFormatted ? (
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <Clock className="w-4 h-4 opacity-80" />
+                      <span className={bannerTheme.textMuted}>
+                        {isRtl ? `ينتهي في ${expiryFormatted}` : `Expires ${expiryFormatted}`}
+                        {daysRemaining !== null && ` (${daysRemaining} ${isRtl ? 'يوم متبقي' : 'days left'})`}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-xs font-semibold opacity-90">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span className={bannerTheme.textMuted}>
+                        {isRtl ? '4 ثيمات حصرية + حركة زجاجية' : '4 Exclusive Themes + Horizon Glow'}
+                      </span>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => onOpen('subscription')}
+                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black transition-all ${bannerTheme.accentButton}`}
+                  >
+                    <span>
+                      {isSubscriber
+                        ? (isRtl ? 'إدارة الاشتراك' : 'Manage Subscription')
+                        : (isRtl ? 'ترقية الحساب الآن' : 'Upgrade Now')}
+                    </span>
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <SettingsGroup title={isRtl ? 'التطبيق' : 'App'}>
               <SettingsRow
                 isRtl={isRtl} icon={SETTINGS_ICONS.appearance}
                 label={isRtl ? 'المظهر' : 'Appearance'}
                 sublabel={
                   theme === 'system' ? (isRtl ? 'حسب النظام' : 'Match system')
-                  : theme === 'light' ? (isRtl ? 'فاتح' : 'Light')
-                  : theme === 'dark' ? (isRtl ? 'داكن' : 'Dark')
-                  : (isRtl ? 'أسود كامل' : 'True black')
+                    : theme === 'light' ? (isRtl ? 'فاتح' : 'Light')
+                      : theme === 'dark' ? (isRtl ? 'داكن' : 'Dark')
+                        : (isRtl ? 'أسود كامل' : 'True black')
                 }
                 onClick={() => setPage('appearance')}
               />
@@ -324,100 +449,100 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                 included - would not render for them. */}
             {(canManageAssistants(user) || canManageStudents(user) || canManageGrades(user)
               || canManageStreakSystem(user) || canViewAdminLogs(user) || isCrossStage(user)) && (
-              <SettingsGroup title={isRtl ? 'الإدارة' : 'Administration'}>
-                {/* Which stage the whole app is showing. Master admin only, and
+                <SettingsGroup title={isRtl ? 'الإدارة' : 'Administration'}>
+                  {/* Which stage the whole app is showing. Master admin only, and
                     first in the group because every row under it is scoped by it.
                     It used to be a <select> in the app header. */}
-                {isCrossStage(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.stage}
-                    label={isRtl ? 'المرحلة المعروضة' : 'Viewing stage'}
-                    sublabel={(() => {
-                      const active = stages.find(st => st.id === (currentAppStage || stages[0]?.id));
-                      return active ? (isRtl ? active.nameAr : active.nameEn) : '—';
-                    })()}
-                    onClick={() => setPage('stage')}
-                  />
-                )}
-                {/* Master admin only, stated directly rather than borrowing
+                  {isCrossStage(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.stage}
+                      label={isRtl ? 'المرحلة المعروضة' : 'Viewing stage'}
+                      sublabel={(() => {
+                        const active = stages.find(st => st.id === (currentAppStage || stages[0]?.id));
+                        return active ? (isRtl ? active.nameAr : active.nameEn) : '—';
+                      })()}
+                      onClick={() => setPage('stage')}
+                    />
+                  )}
+                  {/* Master admin only, stated directly rather than borrowing
                     canManageStreakSystem - this screen holds the year-end wipe
                     and the content export, and the two permissions coinciding
                     today is a coincidence, not a rule. */}
-                {canManageCalendar(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.calendar}
-                    label={isRtl ? 'التقويم الدراسي' : 'Academic calendar'}
-                    sublabel={isRtl ? 'المواسم والنتائج والترقية' : 'Seasons, results and progression'}
-                    onClick={() => onOpen('calendar')}
-                  />
-                )}
-                {canManageStudents(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.students}
-                    label={isRtl ? 'إدارة الطلاب' : 'Manage students'}
-                    onClick={() => onOpen('studentManage')}
-                  />
-                )}
-                {canManageAssistants(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.assistants}
-                    label={isRtl ? 'إدارة المساعدين' : 'Manage assistants'}
-                    onClick={() => onOpen('adminManage')}
-                  />
-                )}
-                {canManageStreakSystem(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.streakAdmin}
-                    label={isRtl ? 'إدارة الستريك' : 'Streak management'}
-                    onClick={() => onOpen('streakManage')}
-                  />
-                )}
-                {canManageGrades(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.gradesAdmin}
-                    label={isRtl ? 'إدارة السعيّات' : 'Manage grades'}
-                    onClick={() => onOpen('adminGrades')}
-                  />
-                )}
-                {/* Web only: SubscriptionManagement is build-time stubbed for
+                  {canManageCalendar(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.calendar}
+                      label={isRtl ? 'التقويم الدراسي' : 'Academic calendar'}
+                      sublabel={isRtl ? 'المواسم والنتائج والترقية' : 'Seasons, results and progression'}
+                      onClick={() => onOpen('calendar')}
+                    />
+                  )}
+                  {canManageStudents(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.students}
+                      label={isRtl ? 'إدارة الطلاب' : 'Manage students'}
+                      onClick={() => onOpen('studentManage')}
+                    />
+                  )}
+                  {canManageAssistants(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.assistants}
+                      label={isRtl ? 'إدارة المساعدين' : 'Manage assistants'}
+                      onClick={() => onOpen('adminManage')}
+                    />
+                  )}
+                  {canManageStreakSystem(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.streakAdmin}
+                      label={isRtl ? 'إدارة الستريك' : 'Streak management'}
+                      onClick={() => onOpen('streakManage')}
+                    />
+                  )}
+                  {canManageGrades(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.gradesAdmin}
+                      label={isRtl ? 'إدارة السعيّات' : 'Manage grades'}
+                      onClick={() => onOpen('adminGrades')}
+                    />
+                  )}
+                  {/* Web only: SubscriptionManagement is build-time stubbed for
                     native, so on a store build this row would open nothing.
                     canManageSubscriptions, not isMasterAdmin: support reaches
                     the screen when ticked, and sees only the statistics and
                     منح اشتراك once inside. */}
-                {!IS_STORE_BUILD && canManageSubscriptions(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.subsAdmin}
-                    label={isRtl ? 'إدارة الاشتراكات' : 'Manage subscriptions'}
-                    onClick={() => onOpen('subManage')}
-                  />
-                )}
-                {canViewAdminLogs(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.logs}
-                    label={isRtl ? 'سجل الإدارة' : 'Admin log'}
-                    onClick={() => onOpen('adminLogs')}
-                  />
-                )}
-                {/* Web only. The dashboard reports spend in dollars and is
+                  {!IS_STORE_BUILD && canManageSubscriptions(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.subsAdmin}
+                      label={isRtl ? 'إدارة الاشتراكات' : 'Manage subscriptions'}
+                      onClick={() => onOpen('subManage')}
+                    />
+                  )}
+                  {canViewAdminLogs(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.logs}
+                      label={isRtl ? 'سجل الإدارة' : 'Admin log'}
+                      onClick={() => onOpen('adminLogs')}
+                    />
+                  )}
+                  {/* Web only. The dashboard reports spend in dollars and is
                     build-time stubbed out of the native bundle, so the row
                     would otherwise open a screen that renders nothing. */}
-                {!IS_STORE_BUILD && canManageSimosanBilling(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.simosan}
-                    label={isRtl ? 'استخدام سيموسان' : 'Simosan usage'}
-                    onClick={() => onOpen('simosanAdmin')}
-                  />
-                )}
-                {canManageTelegramMirror(user) && (
-                  <SettingsRow
-                    isRtl={isRtl} icon={SETTINGS_ICONS.telegram}
-                    label={isRtl ? 'مزامنة تيليجرام' : 'Telegram mirror'}
-                    sublabel={isRtl ? 'قناة لكل مرحلة، بالاتجاهين' : 'One channel per stage, both directions'}
-                    onClick={() => onOpen('telegramMirror')}
-                  />
-                )}
-              </SettingsGroup>
-            )}
+                  {!IS_STORE_BUILD && canManageSimosanBilling(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.simosan}
+                      label={isRtl ? 'استخدام سيموسان' : 'Simosan usage'}
+                      onClick={() => onOpen('simosanAdmin')}
+                    />
+                  )}
+                  {canManageTelegramMirror(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.telegram}
+                      label={isRtl ? 'مزامنة تيليجرام' : 'Telegram mirror'}
+                      sublabel={isRtl ? 'قناة لكل مرحلة، بالاتجاهين' : 'One channel per stage, both directions'}
+                      onClick={() => onOpen('telegramMirror')}
+                    />
+                  )}
+                </SettingsGroup>
+              )}
 
             <SettingsGroup>
               <SettingsRow

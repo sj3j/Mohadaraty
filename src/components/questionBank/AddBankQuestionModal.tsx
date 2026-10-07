@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { collection, query, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { X, Save } from 'lucide-react';
+import { X, Save, ShieldAlert } from 'lucide-react';
 import { BankQuestion, QuestionScope, QuestionTag, QuestionType, StemFormat, Difficulty, BankChoice } from '../../types/questionBank.types';
-import { addBankQuestion, editBankQuestion, bankLectureIdFor } from '../../services/questionBankService';
+import { addBankQuestion, editBankQuestion, bankLectureIdFor, replyToQuestionReport } from '../../services/questionBankService';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { useStageContext } from '../../contexts/StageContext';
@@ -15,11 +15,12 @@ interface Props {
   onClose: () => void;
   onAdded: () => void;
   initialData?: BankQuestion | null;
+  targetAlert?: any | null;
 }
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
-export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initialData }: Props) {
+export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initialData, targetAlert }: Props) {
   const { effectiveStageId } = useStageContext();
   const { subjects } = useStageSubjects();
   const hasCurriculum = subjects.length > 0;
@@ -51,6 +52,11 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
   ]);
   const [correctAnswerIndex, setCorrectAnswerIndex] = useState<number>(0);
   const [explanation, setExplanation] = useState<string>('');
+
+  const [shouldReply, setShouldReply] = useState<boolean>(Boolean(targetAlert && !targetAlert.replied));
+  const [replyText, setReplyText] = useState<string>(
+    targetAlert ? 'تمت مراجعة وتعديل السؤال في بنك الأسئلة، شكراً لملاحظتك.' : ''
+  );
 
   const addChoice = () => {
     const nextLabel = String.fromCharCode(65 + choices.length); // A, B, C...
@@ -210,6 +216,15 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
       } else {
         await addBankQuestion(payload);
       }
+
+      if (shouldReply && targetAlert && replyText.trim()) {
+        try {
+          await replyToQuestionReport(targetAlert.id, targetAlert.reportedBy, replyText.trim(), true);
+        } catch (repErr) {
+          console.error("Failed to send student reply:", repErr);
+        }
+      }
+
       onAdded();
       onClose();
     } catch (e: any) {
@@ -232,6 +247,18 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
             <X className="w-6 h-6" />
           </button>
         </div>
+
+        {targetAlert && (
+          <div className="m-4 mb-0 p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
+            <div className="flex items-center gap-2 font-bold text-amber-800 dark:text-amber-300">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>بلاغ نشط من الطالب: {targetAlert.reportedByName || targetAlert.reportedBy}</span>
+            </div>
+            <p className="bg-white/70 dark:bg-zinc-900/70 p-2 rounded-xl border border-amber-100 dark:border-amber-900/30 font-medium">
+              تفاصيل البلاغ: {targetAlert.reason || targetAlert.message || 'لا توجد تفاصيل'}
+            </p>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           
@@ -467,6 +494,32 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
             />
           </div>
 
+          {/* Student Report Reply Section */}
+          {targetAlert && (
+            <div className="p-4 bg-amber-50/70 dark:bg-amber-950/20 rounded-2xl border border-amber-200/80 dark:border-amber-900/40 space-y-2.5">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={shouldReply}
+                  onChange={e => setShouldReply(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600 focus:ring-sky-500 w-4 h-4"
+                />
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  إرسال رد للطالب وحل البلاغ عند حفظ التعديل
+                </span>
+              </label>
+              {shouldReply && (
+                <input
+                  type="text"
+                  value={replyText}
+                  onChange={e => setReplyText(e.target.value)}
+                  placeholder="اكتب ردك للطالب..."
+                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-xs focus:border-sky-500 focus:outline-none"
+                />
+              )}
+            </div>
+          )}
+
         </div>
 
         <div className="p-4 border-t border-gray-100 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900">
@@ -476,7 +529,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
              className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white p-4 rounded-xl font-bold transition-colors disabled:opacity-50"
            >
              {submitting ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
-             حفظ السؤال
+             {shouldReply ? 'حفظ التعديل وحل البلاغ' : 'حفظ السؤال'}
            </button>
         </div>
       </div>

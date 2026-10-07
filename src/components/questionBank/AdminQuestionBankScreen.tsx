@@ -15,9 +15,11 @@ interface AdminQuestionBankScreenProps {
   isOpen: boolean;
   onClose: () => void;
   lang: Language;
+  targetQuestionId?: string | null;
+  targetAlert?: any | null;
 }
 
-export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: AdminQuestionBankScreenProps) {
+export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQuestionId, targetAlert }: AdminQuestionBankScreenProps) {
   const { subjects } = useStageSubjects();
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [lectures, setLectures] = useState<any[]>([]);
@@ -54,6 +56,19 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
       setQuestions(enrichedQuestions);
       const snap = await getDocs(query(collection(db, 'lectures')));
       setLectures(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+      // Auto-target question if requested
+      if (targetQuestionId) {
+        const found = enrichedQuestions.find(item => item.id === targetQuestionId);
+        if (found) {
+          setEditingQuestion(found);
+          setSearchTerm(found.stem ? found.stem.substring(0, 30) : '');
+        } else if (targetAlert?.questionStem) {
+          setSearchTerm(targetAlert.questionStem.substring(0, 30));
+        }
+      } else if (targetAlert?.questionStem) {
+        setSearchTerm(targetAlert.questionStem.substring(0, 30));
+      }
     } catch (err: any) {
       console.error(err);
       alert('Error fetching questions: ' + err.message);
@@ -64,7 +79,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
 
   useEffect(() => {
     if (isOpen) fetchQuestionsAndLectures();
-  }, [isOpen]);
+  }, [isOpen, targetQuestionId]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -95,6 +110,26 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
             <X className="w-6 h-6" />
           </button>
         </div>
+
+        {targetAlert && (
+          <div className="bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900/60 p-3 px-4 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200 font-bold">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                بلاغ نشط من الطالب: {targetAlert.reportedByName || targetAlert.reportedBy} ({targetAlert.reason || targetAlert.message || 'بلا تفاصيل'})
+              </span>
+            </div>
+            {targetAlert.replied ? (
+              <span className="text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded-lg">
+                تم الرد سابقاً
+              </span>
+            ) : (
+              <span className="text-amber-700 dark:text-amber-300 font-semibold">
+                يرجى مراجعة وتعديل السؤال لحل البلاغ
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="p-4 border-b border-gray-100 dark:border-zinc-800">
            <div className="flex flex-col sm:flex-row flex-wrap gap-4 mb-4">
@@ -239,6 +274,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang }: Admin
         <AddBankQuestionModal 
           isOpen={true} 
           initialData={editingQuestion}
+          targetAlert={targetAlert && (targetAlert.questionId === editingQuestion.id || (editingQuestion.stem && targetAlert.questionStem && editingQuestion.stem.includes(targetAlert.questionStem.substring(0, 25)))) ? targetAlert : undefined}
           onClose={() => setEditingQuestion(null)} 
           onAdded={() => {
             setEditingQuestion(null);

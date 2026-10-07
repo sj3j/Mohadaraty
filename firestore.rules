@@ -353,7 +353,8 @@ service cloud.firestore {
              (!('isSubscribed' in data) || data.isSubscribed is bool) &&
              (!('subscriptionEnd' in data) || data.subscriptionEnd == null || data.subscriptionEnd is timestamp) &&
              (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']) &&
-             (!('pendingStageId' in data) || data.pendingStageId == null || data.pendingStageId is string);
+             (!('pendingStageId' in data) || data.pendingStageId == null || data.pendingStageId is string) &&
+             (!('subscriptionBannerTheme' in data) || data.subscriptionBannerTheme in ['gold', 'pink', 'black', 'white']);
     }
 
     function isWhitelisted() {
@@ -614,7 +615,8 @@ service cloud.firestore {
                           'hideNameOnLeaderboard', 'hidePhotoOnLeaderboard', 
                           'blockedUsers', 'notificationPreferences', 
                           'examCodePromptSnoozedUntil', 'lastActiveAt', 'pushToken',
-                          'studied', 'completedWeeklyTasks'
+                          'studied', 'completedWeeklyTasks',
+                          'subscriptionBannerTheme'
                         ])
                       ));
                       // Progression is recorded by /api/progression/submit with the

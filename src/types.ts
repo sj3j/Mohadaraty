@@ -292,6 +292,7 @@ export interface UserProfile {
   isSubscribed?: boolean;
   subscriptionEnd?: any; // Firestore Timestamp
   subscriptionPlan?: SubscriptionPlan;
+  subscriptionBannerTheme?: 'gold' | 'pink' | 'black' | 'white';
   
   // Multi-Stage & Progression fields
   stageId?: string;

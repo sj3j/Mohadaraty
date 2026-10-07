@@ -20,10 +20,11 @@ interface LectureCardProps {
   onRemoveDownload?: (lecture: Lecture) => void;
   onOpenMCQ?: (lecture: Lecture) => void;
   onOpenReader?: (lecture: Lecture) => void;
+  onShowPaywall?: () => void;
   key?: string;
 }
 
-export default React.memo(function LectureCard({ lecture, lang, user, onEdit, onRemoveDownload, onOpenMCQ, onOpenReader }: LectureCardProps) {
+export default React.memo(function LectureCard({ lecture, lang, user, onEdit, onRemoveDownload, onOpenMCQ, onOpenReader, onShowPaywall }: LectureCardProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const [showPreview, setShowPreview] = useState(false);
@@ -725,6 +726,7 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
                     lecture={lecture}
                     user={user}
                     lang={lang}
+                    onShowPaywall={onShowPaywall}
                   />
                 </div>
 

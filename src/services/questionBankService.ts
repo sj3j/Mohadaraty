@@ -120,7 +120,21 @@ export async function getAllBankQuestionsForAdmin(): Promise<BankQuestion[]> {
   return results;
 }
 
-export async function reportBankQuestion(questionId: string, reason: string, stem: string, userName: string) {
+export interface QuestionReportMetadata {
+  source?: 'bank' | 'lecture';
+  lectureId?: string;
+  lectureTitle?: string;
+  subjectId?: string;
+  tags?: string[];
+}
+
+export async function reportBankQuestion(
+  questionId: string, 
+  reason: string, 
+  stem: string, 
+  userName: string,
+  metadata?: QuestionReportMetadata
+) {
   const user = auth.currentUser;
   if (!user) throw new Error('Not logged in');
 
@@ -133,7 +147,37 @@ export async function reportBankQuestion(questionId: string, reason: string, ste
     reason,
     reportedBy: user.uid,
     reportedByName: userName,
-    createdAt: serverTimestamp()
+    createdAt: serverTimestamp(),
+    source: metadata?.source || 'bank',
+    lectureId: metadata?.lectureId || null,
+    lectureTitle: metadata?.lectureTitle || null,
+    subjectId: metadata?.subjectId || null,
+    tags: metadata?.tags || null
+  });
+}
+
+export async function replyToQuestionReport(
+  notificationId: string, 
+  reportedByUserId: string, 
+  replyText: string, 
+  isRtl: boolean = true
+) {
+  if (!replyText || !replyText.trim()) return;
+
+  // 1. Notify the student
+  await addDoc(collection(db, 'systemNotifications'), {
+    userId: reportedByUserId,
+    title: isRtl ? 'رد على التبليغ عن سؤال' : 'Response to Question Report',
+    body: replyText.trim(),
+    createdAt: serverTimestamp(),
+  });
+
+  // 2. Mark the admin alert as replied
+  const alertRef = doc(db, 'adminAlerts', notificationId);
+  await updateDoc(alertRef, {
+    replied: true,
+    replyText: replyText.trim(),
+    repliedAt: serverTimestamp()
   });
 }
 

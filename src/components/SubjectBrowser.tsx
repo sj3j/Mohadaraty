@@ -21,9 +21,10 @@ interface SubjectBrowserProps {
   searchQuery?: string;
   isLoading?: boolean;
   onRemoveDownload?: (lecture: Lecture) => void;
+  onShowPaywall?: () => void;
 }
 
-export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload }: SubjectBrowserProps) {
+export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload, onShowPaywall }: SubjectBrowserProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   
@@ -152,7 +153,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           'grid-cols-3'
         }`}>
           {lectures.map(lecture => (
-            <LectureCard key={lecture.id} lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} />
+            <LectureCard key={lecture.id} lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} onShowPaywall={onShowPaywall} />
           ))}
         </div>
       </div>
@@ -453,7 +454,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.15 }} 
                 >
-                  <LectureCard lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} />
+                  <LectureCard lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} onShowPaywall={onShowPaywall} />
                 </motion.div>
               ))}
             </AnimatePresence>

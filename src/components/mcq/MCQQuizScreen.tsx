@@ -270,7 +270,12 @@ ${questionText}`;
       const { reportBankQuestion } = await import('../../services/questionBankService');
       const { auth } = await import('../../lib/firebase');
       const userName = user?.name || auth.currentUser?.displayName || auth.currentUser?.email || 'طالب';
-      await reportBankQuestion(reportQuestion.id, reportReason, reportQuestion.stem, userName);
+      await reportBankQuestion(reportQuestion.id, reportReason, reportQuestion.stem, userName, {
+        source: 'lecture',
+        lectureId: lecture.id,
+        lectureTitle: lecture.title,
+        subjectId: lecture.subjectId || lecture.category
+      });
       setReportQuestion(null);
       setShowReportSuccess(true);
       setTimeout(() => setShowReportSuccess(false), 3000);

@@ -17,6 +17,8 @@ import {
   onPaymentContact, uploadPaymentReceipt, reconcileZainCash,
   getRemainingDays, formatSubscriptionDate
 } from '../services/subscriptionService';
+import { useSubscriptionBannerTheme } from '../hooks/useSubscriptionBannerTheme';
+import SubscriptionPerksModal from './subscription/SubscriptionPerksModal';
 
 interface SubscriptionScreenProps {
   user: UserProfile;
@@ -29,7 +31,9 @@ type ViewState = 'plans' | 'payment' | 'superkey_form' | 'success' | 'pending';
 export default function SubscriptionScreen({ user, lang }: SubscriptionScreenProps) {
   const isRtl = lang === 'ar';
   const t = TRANSLATIONS[lang];
+  const { themeId: bannerThemeId, theme: bannerTheme, changeTheme: changeBannerTheme, allThemes } = useSubscriptionBannerTheme(user);
 
+  const [showPerksModal, setShowPerksModal] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan>('seasonal');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('zaincash');
   const [viewState, setViewState] = useState<ViewState>('plans');
@@ -105,6 +109,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
 
   const activeSubscription = subscriptions.find(s => s.status === 'active');
   const pendingSubscription = subscriptions.find(s => s.status === 'pending');
+  const pendingTransactions = subscriptions.filter(s => s.status === 'pending');
   const remainingDays = activeSubscription ? getRemainingDays(activeSubscription.endDate) : 0;
 
   const handleZainCashPayment = async () => {
@@ -248,33 +253,88 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   const proofReady = isProofSufficient(superkeyRef, !!receipt);
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="max-w-lg mx-auto px-4 pt-4 pb-12" dir={isRtl ? 'rtl' : 'ltr'}>
+      {/* Top Header Bar */}
+      <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100 dark:border-zinc-800">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+            <Sparkles className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-black text-slate-900 dark:text-white leading-tight">
+              {isRtl ? 'الاشتراك المميز VIP' : 'VIP Subscription'}
+            </h1>
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              {isRtl ? 'تفوق بلا حدود وميزات تعليمية متكاملة' : 'Unlimited learning & full academic potential'}
+            </p>
+          </div>
+        </div>
+
+        {/* Circular Perks Button */}
+        <button
+          type="button"
+          onClick={() => setShowPerksModal(true)}
+          title={isRtl ? 'عرض كامل ميزات الاشتراك' : 'View all subscription perks'}
+          aria-label={isRtl ? 'عرض كامل ميزات الاشتراك' : 'View all subscription perks'}
+          className="relative group w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-600 text-white shadow-md shadow-amber-500/30 hover:shadow-lg hover:shadow-amber-500/40 hover:scale-105 active:scale-95 transition-all ring-2 ring-amber-300/50 dark:ring-amber-400/40 shrink-0"
+        >
+          <Crown className="w-5 h-5 drop-shadow-xs" />
+          <span className="absolute -top-0.5 -end-0.5 w-3 h-3 bg-red-500 rounded-full border-2 border-white dark:border-zinc-900 animate-pulse" />
+        </button>
+      </div>
       {/* Active Subscription Banner */}
       {activeSubscription && (
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-6 p-5 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/20"
+          className={`relative overflow-hidden mb-6 p-5 rounded-3xl border-2 transition-all duration-300 ${bannerTheme.cardBg} ${bannerTheme.cardBorder} ${bannerTheme.shadow}`}
         >
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-2 rounded-xl bg-white/20">
-              <Crown className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="font-bold text-lg">{t.subscriptionActive}</h3>
-              <p className="text-emerald-100 text-sm">{planLabels[activeSubscription.plan]}</p>
-            </div>
+          {/* Slow Diagonal Horizon Shimmer beam */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className={`absolute -inset-full w-[250%] h-[250%] bg-gradient-to-r ${bannerTheme.shimmerColor} animate-horizon-shimmer`} />
           </div>
-          <div className="flex items-center justify-between mt-2 pt-3 border-t border-white/20">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-emerald-200" />
-              <span className="text-sm text-emerald-100">
-                {remainingDays} {t.daysRemaining}
+
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-2xl ${bannerTheme.iconBg}`}>
+                  <Crown className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg leading-snug">{t.subscriptionActive}</h3>
+                  <p className={`text-sm font-semibold opacity-90 ${bannerTheme.textMuted}`}>{planLabels[activeSubscription.plan]}</p>
+                </div>
+              </div>
+
+              {/* Quick theme selector swatches */}
+              <div className="flex items-center gap-1.5 p-1 rounded-full bg-black/15 dark:bg-white/10 backdrop-blur-sm border border-white/20">
+                {allThemes.map(th => {
+                  const active = bannerThemeId === th.id;
+                  return (
+                    <button
+                      key={th.id}
+                      onClick={() => changeBannerTheme(th.id)}
+                      title={isRtl ? th.nameAr : th.nameEn}
+                      className={`w-4 h-4 rounded-full transition-transform ${th.swatchPreview} ${
+                        active ? 'scale-125 ring-2 ring-white shadow-sm' : 'opacity-70 hover:opacity-100 hover:scale-110'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between mt-2 pt-3 border-t border-white/20">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 opacity-80" />
+                <span className={`text-sm font-medium ${bannerTheme.textMuted}`}>
+                  {remainingDays} {t.daysRemaining}
+                </span>
+              </div>
+              <span className={`text-sm font-medium ${bannerTheme.textMuted}`}>
+                {t.expiresOn}: {formatSubscriptionDate(activeSubscription.endDate)}
               </span>
             </div>
-            <span className="text-sm text-emerald-100">
-              {t.expiresOn}: {formatSubscriptionDate(activeSubscription.endDate)}
-            </span>
           </div>
         </motion.div>
       )}
@@ -315,6 +375,16 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
               <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
                 {isRtl ? 'اختر الخطة المناسبة لك' : 'Choose the plan that suits you'}
               </p>
+              <div className="flex justify-center mt-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowPerksModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-all active:scale-95"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-500" />
+                  <span>{isRtl ? 'استعراض كامل ميزات الاشتراك' : 'Explore all subscription perks'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Store build message (Compliance: No prices, no plans, no 'Ask Representative') */}
@@ -707,8 +777,8 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
         )}
       </AnimatePresence>
 
-      {/* Transaction History */}
-      {subscriptions.length > 0 && (
+      {/* Transaction History - Pending Only */}
+      {pendingTransactions.length > 0 && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -717,7 +787,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
         >
           <h3 className="font-bold text-slate-900 dark:text-white mb-3">{t.transactionHistory}</h3>
           <div className="space-y-2">
-            {subscriptions.map((sub) => (
+            {pendingTransactions.map((sub) => (
               <div
                 key={sub.id}
                 className="p-3.5 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 flex items-center justify-between"
@@ -733,11 +803,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                     </p>
                   </div>
                 </div>
-                <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-                  sub.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' :
-                  sub.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
-                  'bg-slate-100 text-slate-500 dark:bg-zinc-700 dark:text-slate-400'
-                }`}>
+                <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
                   {statusLabels[sub.status]}
                 </span>
               </div>
@@ -745,6 +811,13 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
           </div>
         </motion.div>
       )}
+
+      {/* Subscription Perks Modal */}
+      <SubscriptionPerksModal
+        isOpen={showPerksModal}
+        onClose={() => setShowPerksModal(false)}
+        lang={lang}
+      />
     </div>
   );
 }

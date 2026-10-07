@@ -224,7 +224,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   }, [user.pendingStageId]);
 
   return (
-    <div className="fixed inset-0 z-[100] bg-white dark:bg-zinc-900 flex flex-col" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="fixed inset-0 h-[100dvh] z-[100] bg-white dark:bg-zinc-900 flex flex-col overflow-hidden" dir={isRtl ? 'rtl' : 'ltr'}>
       <AnimatePresence mode="wait">
         {route === 'init_loading' && (
           <motion.div 

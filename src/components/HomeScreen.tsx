@@ -300,8 +300,10 @@ export default function HomeScreen({
                 user={user}
                 searchQuery={searchQuery}
                 isLoading={isLoading}
-                      onEdit={onEdit}
-                onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
+                onEdit={onEdit}
+                onOpenMCQ={onOpenMCQ}
+                onOpenReader={onOpenReader}
+                onShowPaywall={onShowPaywall}
               />
               
               {tahmeelLectures.length > 0 && (
@@ -320,8 +322,10 @@ export default function HomeScreen({
                     user={user}
                     searchQuery={searchQuery}
                     isLoading={isLoading}
-                              onEdit={onEdit}
-                    onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader}
+                    onEdit={onEdit}
+                    onOpenMCQ={onOpenMCQ}
+                    onOpenReader={onOpenReader}
+                    onShowPaywall={onShowPaywall}
                   />
                 </div>
               )}

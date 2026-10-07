@@ -351,3 +351,37 @@ export async function deleteAttachment(attachment: LectureAttachment): Promise<v
   const docRef = doc(db, 'lecture_attachments', attachment.id);
   await deleteDoc(docRef);
 }
+
+/**
+ * Count approved attachments uploaded by a student for a specific course/subject.
+ * Used for the community contributor rule: 5 approved uploads unlocks all attachments for that course.
+ */
+export async function getStudentApprovedCourseAttachmentsCount(
+  userId: string,
+  courseKey?: string | null
+): Promise<number> {
+  if (!userId || !courseKey) return 0;
+  try {
+    const q = query(
+      collection(db, 'lecture_attachments'),
+      where('uploadedBy', '==', userId),
+      where('status', '==', 'approved')
+    );
+    const snap = await getDocs(q);
+    let count = 0;
+    snap.forEach((d) => {
+      const data = d.data();
+      if (
+        data.subjectId === courseKey ||
+        (data as any).category === courseKey ||
+        (!data.subjectId && !(data as any).category)
+      ) {
+        count++;
+      }
+    });
+    return count;
+  } catch (err) {
+    console.warn('[lectureAttachmentService] Failed to count approved course attachments:', err);
+    return 0;
+  }
+}

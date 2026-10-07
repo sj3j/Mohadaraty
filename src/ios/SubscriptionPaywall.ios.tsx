@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Crown, Sparkles } from 'lucide-react';
+import { X, Crown, Sparkles, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../types';
+import SubscriptionPerksModal from '../components/subscription/SubscriptionPerksModal';
 
 interface SubscriptionPaywallProps {
   lang: Language;
@@ -28,6 +29,8 @@ interface SubscriptionPaywallProps {
 export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: SubscriptionPaywallProps) {
   const isRtl = lang === 'ar';
   const t = TRANSLATIONS[lang] as any;
+  const [showPerksModal, setShowPerksModal] = useState(false);
+  const ChevronIcon = isRtl ? ChevronLeft : ChevronRight;
 
   return (
     <AnimatePresence>
@@ -61,6 +64,18 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
               <X className="w-5 h-5" />
             </button>
 
+            {/* Circular Perks Header Button */}
+            <button
+              type="button"
+              onClick={() => setShowPerksModal(true)}
+              title={isRtl ? 'عرض كامل ميزات الاشتراك' : 'View all subscription perks'}
+              aria-label={isRtl ? 'عرض كامل ميزات الاشتراك' : 'View all subscription perks'}
+              className="absolute top-4 right-4 rtl:right-auto rtl:left-4 p-2 rounded-full bg-white/20 hover:bg-white/30 hover:scale-105 active:scale-95 transition-all flex items-center justify-center group"
+            >
+              <Crown className="w-5 h-5 text-amber-200 group-hover:text-amber-100" />
+              <span className="absolute -top-0.5 -end-0.5 w-2.5 h-2.5 bg-amber-300 rounded-full border-2 border-orange-500 animate-pulse" />
+            </button>
+
             <div className="relative z-10 text-center pt-2">
               <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center mx-auto mb-3">
                 <Crown className="w-8 h-8" strokeWidth={2.5} />
@@ -70,21 +85,53 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
           </div>
 
           <div className="p-6 space-y-3">
+            {/* Interactive VIP Perks Card Button */}
+            <button
+              type="button"
+              onClick={() => setShowPerksModal(true)}
+              className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/5 dark:from-amber-400/15 dark:via-orange-400/10 dark:to-transparent border border-amber-400/40 dark:border-amber-500/30 text-amber-950 dark:text-amber-200 hover:border-amber-500/60 dark:hover:border-amber-400/50 hover:bg-amber-500/15 transition-all shadow-xs active:scale-[0.99] group text-start"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-400 flex items-center justify-center text-white shadow-xs group-hover:scale-105 transition-transform shrink-0">
+                  <Crown className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <div className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <span>{isRtl ? 'استعراض كامل ميزات الاشتراك VIP' : 'Explore all VIP perks'}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-md font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                      VIP
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium line-clamp-1 mt-0.5">
+                    {isRtl ? 'ملحقات المحاضرات، بنك الأسئلة، سيموسان AI والمزيد' : 'Full attachments, question bank, Simosan AI & more'}
+                  </div>
+                </div>
+              </div>
+              <ChevronIcon className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 transition-transform" />
+            </button>
+
             <button
               onClick={onSubscribe}
-              className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-black transition-colors"
+              className="w-full flex items-center justify-center gap-2 rounded-2xl px-5 py-3.5 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-white text-sm font-black shadow-lg shadow-orange-500/25 transition-all"
             >
               <Sparkles className="w-4 h-4" />
               {t.paySubscribe}
             </button>
             <button
               onClick={onClose}
-              className="w-full rounded-2xl px-5 py-3 text-sm font-black text-slate-500 dark:text-slate-400"
+              className="w-full rounded-2xl px-5 py-3 text-sm font-black text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
             >
               {isRtl ? 'ليس الآن' : 'Not now'}
             </button>
           </div>
         </motion.div>
+
+        {/* Subscription Perks Modal */}
+        <SubscriptionPerksModal
+          isOpen={showPerksModal}
+          onClose={() => setShowPerksModal(false)}
+          lang={lang}
+        />
       </motion.div>
     </AnimatePresence>
   );

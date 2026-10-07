@@ -198,8 +198,15 @@ export async function getPlans(): Promise<PurchasesPackage[]> {
   if (!Purchases || !configured) return [];
   try {
     const offerings = await Purchases.getOfferings();
-    const current: PurchasesOffering | null = offerings?.current ?? null;
-    return current?.availablePackages ?? [];
+    const current: PurchasesOffering | null =
+      offerings?.current ??
+      (offerings?.all && Object.values(offerings.all).length > 0 ? Object.values(offerings.all)[0] : null) ??
+      null;
+    const pkgs = current?.availablePackages ?? [];
+    if (pkgs.length === 0) {
+      console.warn('[iap] getOfferings returned 0 available packages. Offerings structure:', offerings);
+    }
+    return pkgs;
   } catch (err) {
     console.warn('[iap] getOfferings failed', err);
     return [];

@@ -42,6 +42,7 @@
     "test:subjects": "npx tsx scripts/subjectSplit.test.ts",
     "test:timetable": "npx tsx scripts/timetable.test.ts",
     "test:homework": "npx tsx scripts/homeworkSchedule.test.ts",
+    "test:offline": "npx tsx scripts/offlinePersistence.test.ts",
     "test:subject-display": "npx tsx scripts/subjectDisplay.test.ts",
     "test:payments": "npx tsx scripts/paymentContact.test.ts",
     "test:support": "npx tsx scripts/support.test.ts",

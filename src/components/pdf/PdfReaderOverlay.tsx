@@ -1655,6 +1655,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
             isOpen={attachmentsOpen}
             onClose={() => setAttachmentsOpen(false)}
             onCountChange={setAttachmentsCount}
+            onOpenSubscription={onOpenSubscription}
           />
         )}
       </AnimatePresence>
