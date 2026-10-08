@@ -378,17 +378,17 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
       await logAdminAction('UPDATE_ADMIN_PERMISSIONS', `Updated permissions for ${roleToSave}: ${email}`, id);
       
       // Update users collection if doc exists
-      const q = query(collection(db, 'users'), where('email', '==', email));
+      const q = query(collection(db, 'users'), where('email', '==', email.toLowerCase()));
       const userSnap = await getDocs(q);
-      if (!userSnap.empty) {
+      for (const userDocItem of userSnap.docs) {
          try {
-            await setDoc(doc(db, 'users', userSnap.docs[0].id), {
+            await setDoc(doc(db, 'users', userDocItem.id), {
                role: roleToSave,
                ...(stageToSave ? { managedStageId: stageToSave } : {}),
                permissions: permsToSave
             }, { merge: true });
          } catch (e) {
-            console.error(e);
+            console.error('Failed to update users doc for admin:', e);
          }
       }
 

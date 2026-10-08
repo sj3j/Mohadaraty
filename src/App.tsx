@@ -458,7 +458,7 @@ export default function App() {
           }
 
           if (userDoc.exists()) {
-            const whitelistRole = ['admin', 'moderator'].includes(studentData?.role) ? studentData.role : null;
+            const whitelistRole = ['admin', 'moderator', 'support'].includes(studentData?.role) ? studentData.role : null;
             
             const defaultEmailName = firebaseUser.email ? firebaseUser.email.split('@')[0] : '';
             const isDefaultName = userDoc.data().name === defaultEmailName || 

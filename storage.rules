@@ -39,7 +39,7 @@ service firebase.storage {
     }
 
     function isStaff() {
-      return isMasterAdmin() || (hasUserDoc() && userDoc().role in ['admin', 'moderator']);
+      return isMasterAdmin() || (hasUserDoc() && userDoc().role in ['admin', 'moderator', 'support']);
     }
 
     // Content-write scope for a stage, mirroring canWriteStage() in
@@ -49,6 +49,7 @@ service firebase.storage {
     function canWriteStage(stageId) {
       return isMasterAdmin() || (
         isStaff() && (
+          userDoc().role == 'support' ||
           !('managedStageId' in userDoc()) ||
           userDoc().managedStageId == '' ||
           userDoc().managedStageId == stageId

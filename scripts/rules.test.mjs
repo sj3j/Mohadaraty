@@ -129,11 +129,30 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
       manageLectures: true, manageAnnouncements: true, manageRecords: true,
       manageHomeworks: true, manageStudents: true,
       manageGrades: true, manageAdmins: true, manageGroups: true,
+      manageStreakSystem: true, manageAntiCheat: true, manageMcqSystem: true,
     },
   });
   await setDoc(doc(db, 'allowed_admins/sup@x.com'), {
     email: 'sup@x.com', role: 'support', managedStageId: 'stage_4',
   });
+
+  // A representative with managedStageId set in allowed_admins only, not yet on users doc
+  await setDoc(doc(db, 'users/rep_nostage_uid'), {
+    role: 'admin', email: 'repnostage@x.com',
+  });
+  await setDoc(doc(db, 'allowed_admins/repnostage@x.com'), {
+    email: 'repnostage@x.com', role: 'admin', managedStageId: 'stage_3',
+  });
+
+  await setDoc(doc(db, 'pending_streak_resets/p_stu'), { userId: 'stu_uid', streak: 5 });
+  await setDoc(doc(db, 'streak_history/sh_stu'), { userId: 'stu_uid', finalStreak: 10 });
+  await setDoc(doc(db, 'streak_recoveries/sr1'), { reason: 'app_glitch' });
+  await setDoc(doc(db, 'streakLog/stu_uid/days/2026-10-08'), { status: 'completed' });
+  await setDoc(doc(db, 'antiCheatLogs/ac1'), { reason: 'tab_switch' });
+  await setDoc(doc(db, 'mcqs/lec1'), { lectureId: 'lec1', questions: [] });
+  await setDoc(doc(db, 'mcqRequests/mr1'), { lectureId: 'lec1' });
+  await setDoc(doc(db, 'signup_requests/sq@x.com'), { name: 'New' });
+  await setDoc(doc(db, 'content_reports/cr1'), { reporterId: 'stu_uid', messageId: 'm1', reason: 'spam' });
 
   // A support account with an EMPTY permissions map. Support resolves an absent
   // key as denied, so this one holds nothing - the assertion that the arm was
@@ -265,6 +284,7 @@ const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
+const repNoStage = ctxFor('rep_nostage_uid', 'repnostage@x.com');
 const observer = ctxFor('observer_uid', 'info@alsafwa.edu.iq');
 
 console.log('\nModerator is walled off from student data');
@@ -278,6 +298,12 @@ await check('moderator CANNOT read degreeBatches',
 console.log('\nModerator keeps content permissions');
 await check('moderator CAN create a lecture on their stage',
   assertSucceeds(setDoc(doc(mod, 'lectures/lec_mod'), { title: 'M', stageId: 'stage_3' })));
+await check('moderator CAN read lectures on their stage',
+  assertSucceeds(getDoc(doc(mod, 'lectures/lec1'))));
+await check('moderator CANNOT read lectures on another stage',
+  assertFails(getDoc(doc(mod, 'lectures/lec_s4'))));
+await check('moderator CAN configure announcement reactions in settings',
+  assertSucceeds(setDoc(doc(mod, 'settings/announcements'), { allowedReactions: ['x', 'y'] }, { merge: true })));
 await check('moderator CAN create a record',
   assertSucceeds(setDoc(doc(mod, 'records/rec_mod'), { title: 'R', stageId: 'stage_3' })));
 await check('moderator CANNOT write a lecture on another stage',
@@ -303,6 +329,10 @@ console.log('\nRepresentative may appoint moderators, but not admins');
 await check('representative CAN create a moderator on their stage',
   assertSucceeds(setDoc(doc(rep, 'allowed_admins/new_mod@x.com'), {
     email: 'new_mod@x.com', role: 'moderator', managedStageId: 'stage_3',
+  })));
+await check('representative with managedStageId in allowed_admins only CAN create a moderator on their stage',
+  assertSucceeds(setDoc(doc(repNoStage, 'allowed_admins/mod_from_fallback@x.com'), {
+    email: 'mod_from_fallback@x.com', role: 'moderator', managedStageId: 'stage_3',
   })));
 await check('representative CANNOT create an admin',
   assertFails(setDoc(doc(rep, 'allowed_admins/new_admin@x.com'), {
@@ -951,6 +981,61 @@ await check('support CAN appoint a moderator on a stage it does not manage',
   assertSucceeds(updateDoc(doc(support, 'users/stu2_uid'), {
     role: 'moderator', managedStageId: 'stage_3', permissions: { manageLectures: true },
   })));
+
+console.log('\nSupport capabilities match granted permissions');
+await check('support with manageGrades CAN read degrees',
+  assertSucceeds(getDoc(doc(support, 'degrees/stu_uid/exams/exam_b1'))));
+await check('support with manageGrades CAN read degreeBatches',
+  assertSucceeds(getDoc(doc(support, 'degreeBatches/b1'))));
+await check('bare support CANNOT read degrees',
+  assertFails(getDoc(doc(supportBare, 'degrees/stu_uid/exams/exam_b1'))));
+await check('bare support CANNOT read degreeBatches',
+  assertFails(getDoc(doc(supportBare, 'degreeBatches/b1'))));
+
+await check('support with manageStreakSystem CAN read pending_streak_resets',
+  assertSucceeds(getDoc(doc(support, 'pending_streak_resets/p_stu'))));
+await check('support with manageStreakSystem CAN read streak_history',
+  assertSucceeds(getDoc(doc(support, 'streak_history/sh_stu'))));
+await check('support with manageStreakSystem CAN read streak_recoveries',
+  assertSucceeds(getDoc(doc(support, 'streak_recoveries/sr1'))));
+await check('support with manageStreakSystem CAN read streakLog',
+  assertSucceeds(getDoc(doc(support, 'streakLog/stu_uid/days/2026-10-08'))));
+await check('bare support CANNOT read pending_streak_resets',
+  assertFails(getDoc(doc(supportBare, 'pending_streak_resets/p_stu'))));
+await check('bare support CANNOT read streak_history',
+  assertFails(getDoc(doc(supportBare, 'streak_history/sh_stu'))));
+await check('bare support CANNOT read streak_recoveries',
+  assertFails(getDoc(doc(supportBare, 'streak_recoveries/sr1'))));
+
+await check('support with manageAntiCheat CAN read antiCheatLogs',
+  assertSucceeds(getDoc(doc(support, 'antiCheatLogs/ac1'))));
+await check('support with manageAntiCheat CAN write systemNotifications',
+  assertSucceeds(setDoc(doc(support, 'systemNotifications/notif_sup'), { userId: 'stu_uid', title: 'Warning' })));
+await check('bare support CANNOT read antiCheatLogs',
+  assertFails(getDoc(doc(supportBare, 'antiCheatLogs/ac1'))));
+await check('bare support CANNOT write systemNotifications',
+  assertFails(setDoc(doc(supportBare, 'systemNotifications/notif_bare'), { userId: 'stu_uid', title: 'Warning' })));
+
+await check('support with manageMcqSystem CAN update mcqs',
+  assertSucceeds(setDoc(doc(support, 'mcqs/lec1'), { updated: true }, { merge: true })));
+await check('support with manageMcqSystem CAN read mcqRequests',
+  assertSucceeds(getDoc(doc(support, 'mcqRequests/mr1'))));
+await check('bare support CANNOT update mcqs',
+  assertFails(setDoc(doc(supportBare, 'mcqs/lec1'), { updated: true }, { merge: true })));
+await check('bare support CANNOT read mcqRequests',
+  assertFails(getDoc(doc(supportBare, 'mcqRequests/mr1'))));
+
+await check('support with manageGroups CAN create subjects',
+  assertSucceeds(setDoc(doc(support, 'subjects/stage_3__new_sub'), { stageId: 'stage_3', nameEn: 'Sub' })));
+await check('support with manageGroups CAN update subjects',
+  assertSucceeds(updateDoc(doc(support, 'subjects/stage_3__biochemistry_ii'), { nameEn: 'Biochemistry II Edit' })));
+await check('bare support CANNOT create subjects',
+  assertFails(setDoc(doc(supportBare, 'subjects/stage_3__new_sub_bare'), { stageId: 'stage_3', nameEn: 'Sub' })));
+
+await check('support CAN read signup_requests',
+  assertSucceeds(getDoc(doc(support, 'signup_requests/sq@x.com'))));
+await check('support CAN read content_reports',
+  assertSucceeds(getDoc(doc(support, 'content_reports/cr1'))));
 
 console.log('\nGrades are stage-scoped on WRITE, and readable regardless');
 await check('representative CAN write a degree for a student on their own stage',
