@@ -46,8 +46,9 @@ function rankWithinStages<T>(
 /**
  * Ends the current season and starts a fresh one.
  *
- * Archives BOTH boards into each student's own profile (with their final rank),
- * writes a per-stage top list for the record, and zeroes the live boards.
+ * Archives BOTH boards into each student's own profile (with their current
+ * rank) and writes a per-stage top list for the record. MCQ totals are annual:
+ * term/season rollover must never zero them. The year wipe owns that reset.
  *
  * Per-lecture MCQ answers (`userMCQAnswers`) are deliberately left untouched:
  * students keep their review history, and because the new season runs on a new
@@ -74,11 +75,14 @@ export async function startNewSeason(
 
   const [usersSnap, statsSnap] = await Promise.all([
     db.collection('users').get(),
-    db.collection('userMCQStats').get(),
+    db.collection('userStageMCQStats').get(),
   ]);
 
   const users = usersSnap.docs.map(d => ({ uid: d.id, ref: d.ref, ...(d.data() as any) }));
-  const stats = statsSnap.docs.map(d => ({ uid: d.id, ref: d.ref, ...(d.data() as any) }));
+  const stats = statsSnap.docs.filter(d => d.data()?.isActiveInStage !== false).map(d => {
+    const data = d.data() as any;
+    return { uid: data.userId || d.id.split('_stage_')[0], ref: d.ref, ...data };
+  });
 
   // Stage lookup for stats docs, which may predate stageId being written.
   const stageByUid = new Map(users.map(u => [u.uid, u.stageId || 'unassigned']));
@@ -183,18 +187,6 @@ export async function startNewSeason(
     });
     ops++;
 
-    // Zero the aggregate. userMCQAnswers is intentionally left alone.
-    batch.update(s.ref, {
-      totalFirstAttemptCorrect: 0,
-      totalFirstAttemptAnswered: 0,
-      lecturesAttempted: 0,
-      mcqLeaderboardScore: 0,
-      accuracy: 0,
-      mcqRankScore: FieldValue.delete(),
-      subjectStats: {},
-      lastUpdated: FieldValue.serverTimestamp(),
-    });
-    ops++;
     await flush();
   }
   await flush(true);

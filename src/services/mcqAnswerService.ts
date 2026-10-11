@@ -24,14 +24,24 @@ export async function syncPendingSubmissions() {
     const queue = JSON.parse(rawQueue);
     if (!queue.length) return;
 
+    const remaining: any[] = [];
     for (const item of queue) {
-      if (item.type === 'retake') {
-        await submitRetakeAttempt(item.userId, item.lectureId, item.answers, item.totalQuestions);
+      try {
+        const result = item.type === 'first'
+          ? await finalizeFirstAttempt(
+              item.userId, item.lectureId, item.subjectId, item.answers,
+              item.totalQuestions, item.lectureStageId,
+            )
+          : await submitRetakeAttempt(item.userId, item.lectureId, item.answers, item.totalQuestions);
+        if (result.offline) remaining.push(item);
+      } catch (error) {
+        console.error('Pending MCQ submission is still not ready to sync', error);
+        remaining.push(item);
       }
     }
-    // If all pass, clear
-    localStorage.removeItem(PENDING_QUEUE_KEY);
-    console.log("Synced pending MCQ submissions.");
+    if (remaining.length) localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(remaining));
+    else localStorage.removeItem(PENDING_QUEUE_KEY);
+    console.log(`Synced ${queue.length - remaining.length} pending MCQ submissions.`);
   } catch (err) {
     console.error("Failed to sync pending submissions", err);
   }
@@ -40,8 +50,18 @@ export async function syncPendingSubmissions() {
 function addToOfflineQueue(type: 'first' | 'retake', payload: any) {
   const rawQueue = localStorage.getItem(PENDING_QUEUE_KEY);
   const queue = rawQueue ? JSON.parse(rawQueue) : [];
-  queue.push({ type, ...payload });
-  localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue));
+  const key = `${type}:${payload.userId}:${payload.lectureId}`;
+  const next = queue.filter((item: any) => `${item.type}:${item.userId}:${item.lectureId}` !== key);
+  next.push({ type, ...payload });
+  localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(next));
+}
+
+function isRetryableNetworkError(error: any): boolean {
+  const code = String(error?.code || '').toLowerCase();
+  return !navigator.onLine || [
+    'unavailable', 'deadline-exceeded', 'network-request-failed',
+    'firestore/unavailable', 'firestore/deadline-exceeded', 'auth/network-request-failed',
+  ].includes(code);
 }
 
 /**
@@ -166,6 +186,9 @@ export async function finalizeFirstAttempt(
   const scorePercentage = (correctCount / totalQuestions) * 100;
 
   if (!navigator.onLine) {
+    addToOfflineQueue('first', {
+      userId, lectureId, subjectId, answers, totalQuestions, lectureStageId,
+    });
     return { success: true, score: scorePercentage, correct: correctCount, offline: true };
   }
 
@@ -189,10 +212,21 @@ export async function finalizeFirstAttempt(
         return;
       }
 
+      // Firestore requires every transaction read to complete before its first
+      // write. Keep the read phase together; the previous implementation wrote
+      // answersDocRef here and then read both stats documents, causing every
+      // completed first attempt to be rejected by the Web SDK.
       const userRef = doc(db, `users/${userId}`);
       const userDoc = await transaction.get(userRef);
       const userStageId = userDoc.exists() ? userDoc.data().stageId : undefined;
       const targetStageId = lectureStageId || userStageId;
+
+      const stageStatsRef = targetStageId
+        ? doc(db, `userStageMCQStats/${userId}_${targetStageId}`)
+        : null;
+      const statsRef = doc(db, `userMCQStats/${userId}`);
+      const stageStatsDoc = stageStatsRef ? await transaction.get(stageStatsRef) : null;
+      const statsDoc = await transaction.get(statsRef);
 
       const answerDocData = {
         lectureId,
@@ -207,12 +241,8 @@ export async function finalizeFirstAttempt(
         createdAt: serverTimestamp()
       };
 
-      transaction.set(answersDocRef, answerDocData);
-
       // --- 1. Stage-scoped stats (userStageMCQStats) -----------------------
-      if (targetStageId) {
-        const stageStatsRef = doc(db, `userStageMCQStats/${userId}_${targetStageId}`);
-        const stageStatsDoc = await transaction.get(stageStatsRef);
+      if (targetStageId && stageStatsRef && stageStatsDoc) {
 
         let stageTotalCorrect = correctCount;
         let stageTotalAnswered = totalQuestions;
@@ -268,9 +298,6 @@ export async function finalizeFirstAttempt(
       }
 
       // --- 2. Legacy userMCQStats (kept for backward compatibility) ----------
-      const statsRef = doc(db, `userMCQStats/${userId}`);
-      const statsDoc = await transaction.get(statsRef);
-
       let newTotalCorrect = correctCount;
       let newTotalAnswered = totalQuestions;
       let newLecturesAttempted = 1;
@@ -320,6 +347,7 @@ export async function finalizeFirstAttempt(
       };
 
       transaction.set(statsRef, statsData, { merge: true });
+      transaction.set(answersDocRef, answerDocData);
     });
 
     if (alreadyCompleted) {
@@ -329,7 +357,13 @@ export async function finalizeFirstAttempt(
     return { success: true, score: scorePercentage, correct: correctCount };
   } catch (error) {
     console.error("Submission failed: ", error);
-    return { success: true, score: scorePercentage, correct: correctCount, offline: true };
+    if (isRetryableNetworkError(error)) {
+      addToOfflineQueue('first', {
+        userId, lectureId, subjectId, answers, totalQuestions, lectureStageId,
+      });
+      return { success: true, score: scorePercentage, correct: correctCount, offline: true };
+    }
+    throw error;
   }
 }
 

@@ -63,6 +63,15 @@ for (const u of seed) {
       lecturesAttempted: Math.round(u.answered / 20),
       subjectStats: { biochemistry: { correct: u.correct, total: u.answered, lecturesAttempted: 1 } },
     });
+    await db.collection('userStageMCQStats').doc(`${u.uid}_${u.stageId}`).set({
+      userId: u.uid, stageId: u.stageId, isActiveInStage: true,
+      totalFirstAttemptCorrect: u.correct, totalFirstAttemptAnswered: u.answered,
+      accuracy: (u.correct / u.answered) * 100,
+      mcqLeaderboardScore: u.correct * 10,
+      mcqRankScore: Math.round((u.correct * u.correct * 100) / u.answered),
+      lecturesAttempted: Math.round(u.answered / 20),
+      subjectStats: { biochemistry: { correct: u.correct, total: u.answered, lecturesAttempted: 1 } },
+    });
   }
 }
 
@@ -125,7 +134,7 @@ const lowMcq = (await db.doc(`users/s3_low/mcqHistory/${seasonId}`).get()).data(
 check('blended ranking places 91%/220 above 61%/340',
   (midMcq?.rank as number) < (lowMcq?.rank as number), `mid=${midMcq?.rank} low=${lowMcq?.rank}`);
 
-// ---- live boards zeroed ---------------------------------------------------
+// ---- streak resets; annual MCQ board remains live -------------------------
 const topUser = (await db.doc('users/s3_top').get()).data();
 check('streak zeroed', topUser?.streakCount === 0 && topUser?.longestStreak === 0,
   `${topUser?.streakCount}/${topUser?.longestStreak}`);
@@ -150,13 +159,13 @@ check('hasPendingStreakReset cleared by the reset',
 check('pending_streak_resets doc deleted by the reset',
   !(await db.doc('pending_streak_resets/s3_mid').get()).exists);
 
-const topStats = (await db.doc('userMCQStats/s3_top').get()).data();
-check('mcq totals zeroed',
-  topStats?.totalFirstAttemptCorrect === 0 && topStats?.totalFirstAttemptAnswered === 0,
+const topStats = (await db.doc('userStageMCQStats/s3_top_stage_3').get()).data();
+check('mcq totals remain cumulative through a term rollover',
+  topStats?.totalFirstAttemptCorrect === 408 && topStats?.totalFirstAttemptAnswered === 440,
   `${topStats?.totalFirstAttemptCorrect}/${topStats?.totalFirstAttemptAnswered}`);
-check('mcqRankScore removed so the board excludes them',
-  topStats?.mcqRankScore === undefined, String(topStats?.mcqRankScore));
-check('subjectStats cleared', Object.keys(topStats?.subjectStats || {}).length === 0);
+check('mcqRankScore remains live until the annual reset',
+  topStats?.mcqRankScore === Math.round((408 * 408 * 100) / 440), String(topStats?.mcqRankScore));
+check('subjectStats remain cumulative', Object.keys(topStats?.subjectStats || {}).length === 1);
 
 // ---- what must survive ----------------------------------------------------
 const answers = (await db.doc('userMCQAnswers/s3_top/lectures/lec1').get()).data();

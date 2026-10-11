@@ -102,10 +102,17 @@ await db.collection('degrees').doc('u1').collection('exams').doc('e1').set({ deg
 await db.collection('users').doc('u1').set({
   email: 'stu@x.com', stageId: 'stage_3', role: 'student',
   studied: ['lec1', 'lec2'], completedWeeklyTasks: ['hw1'], favorites: ['lec1'],
+  progressionYear: YEAR, progressionState: 'completed', hasCompletedProgression: true,
 });
 await db.collection('users').doc('u2').set({ email: 'b@x.com', stageId: 'stage_4', role: 'student', studied: [] });
 await db.collection('userMCQStats').doc('u1').set({
   userId: 'u1', stageId: 'stage_3', totalFirstAttemptCorrect: 80, totalFirstAttemptAnswered: 100,
+});
+await db.collection('userStageMCQStats').doc('u1_stage_3').set({
+  userId: 'u1', stageId: 'stage_3', isActiveInStage: true,
+  totalFirstAttemptCorrect: 80, totalFirstAttemptAnswered: 100,
+  mcqLeaderboardScore: 800, mcqRankScore: 6400, accuracy: 80,
+  lecturesAttempted: 5, subjectStats: { biochemistry: { correct: 80, total: 100 } },
 });
 await db.collection('userMCQAnswers').doc('u1').collection('lectures').doc('lec1').set({ locked: true });
 await db.collection('userBankAnswers').doc('u1').collection('questions').doc('a1').set({ questionId: 'q1' });
@@ -204,6 +211,14 @@ check('studied emptied', Array.isArray(u1.studied) && u1.studied.length === 0);
 check('completed tasks emptied', Array.isArray(u1.completedWeeklyTasks) && u1.completedWeeklyTasks.length === 0);
 check('favorites emptied', Array.isArray(u1.favorites) && u1.favorites.length === 0);
 check('the account itself is intact', u1.email === 'stu@x.com' && u1.stageId === 'stage_3');
+check('progression completion is cleared for the next academic year',
+  u1.progressionYear === undefined && u1.progressionState === undefined && u1.hasCompletedProgression === undefined);
+const resetStats = (await db.doc('userStageMCQStats/u1_stage_3').get()).data() || {};
+check('active stage MCQ totals reset only at year wipe',
+  resetStats.totalFirstAttemptCorrect === 0 && resetStats.totalFirstAttemptAnswered === 0);
+const stageArchive = (await db.doc(`users/u1/stageHistory/${YEAR}_stage_3`).get()).data() || {};
+check('year wipe archives immutable stage performance before reset',
+  stageArchive.totalFirstAttemptCorrect === 80 && stageArchive.mcqLeaderboardScore === 800);
 check('users cleaned counted', result.usersCleaned === 1, `got ${result.usersCleaned}`);
 
 console.log('\nA retry is a no-op:');

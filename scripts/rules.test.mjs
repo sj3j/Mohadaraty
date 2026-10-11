@@ -75,6 +75,9 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'students/stu@x.com'), {
     email: 'stu@x.com', name: 'Student', isActive: true, stageId: 'stage_3', password: 'HASH',
   });
+  await setDoc(doc(db, 'users/stu_uid/stageHistory/2026-2027_stage_3'), {
+    yearLabel: '2026-2027', stageId: 'stage_3', mcqLeaderboardScore: 120,
+  });
 
   // A student on ANOTHER stage. The stage_3 representative must not be able to
   // see or touch this one - before the students rules were scoped they could
@@ -284,6 +287,16 @@ const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
+
+console.log('\nStage history is immutable and owner-readable');
+await check('student CAN read their own archived stage stats',
+  assertSucceeds(getDoc(doc(student, 'users/stu_uid/stageHistory/2026-2027_stage_3'))));
+await check('another student CANNOT read archived stage stats',
+  assertFails(getDoc(doc(student2, 'users/stu_uid/stageHistory/2026-2027_stage_3'))));
+await check('student CANNOT overwrite archived stage stats',
+  assertFails(setDoc(doc(student, 'users/stu_uid/stageHistory/2026-2027_stage_3'), { mcqLeaderboardScore: 999 })));
+await check('representative CANNOT overwrite archived stage stats',
+  assertFails(setDoc(doc(rep, 'users/stu_uid/stageHistory/2026-2027_stage_3'), { mcqLeaderboardScore: 999 })));
 const repNoStage = ctxFor('rep_nostage_uid', 'repnostage@x.com');
 const observer = ctxFor('observer_uid', 'info@alsafwa.edu.iq');
 
@@ -1305,6 +1318,14 @@ await check('unauthenticated guest CANNOT read userMCQStats',
 await check('student CANNOT write someone else userStageMCQStats',
   assertFails(setDoc(doc(student, 'userStageMCQStats/other_uid_stage_3'), {
     userId: 'other_uid', stageId: 'stage_3', mcqRankScore: 100,
+  })));
+await check('student CAN update their active current-stage MCQ stats',
+  assertSucceeds(setDoc(doc(student, 'userStageMCQStats/stu_uid_stage_3'), {
+    userId: 'stu_uid', stageId: 'stage_3', isActiveInStage: true, mcqRankScore: 101,
+  }, { merge: true })));
+await check('student CANNOT reactivate or rewrite archived stage stats',
+  assertFails(setDoc(doc(student, 'userStageMCQStats/stu_uid_stage_2'), {
+    userId: 'stu_uid', stageId: 'stage_2', isActiveInStage: true, mcqRankScore: 999,
   })));
 
 console.log('\nLecture Attachments & Moderation Permissions');

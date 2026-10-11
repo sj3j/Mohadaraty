@@ -25,6 +25,7 @@ import {
   requestAccountDeletion,
   cancelAccountDeletion,
   reviewDeletionRequest,
+  purgeGraduatedStudent,
   DeletionError,
 } from "./shared/accountDeletion.js";
 import {
@@ -1440,8 +1441,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   });
 
 
-  // Ends the current season: archives BOTH boards into each student's profile
-  // with their final rank, zeroes the live boards, and starts the new season.
+  // Ends the current streak season and snapshots the cumulative annual MCQ board.
 
   // Records a student's end-of-year result and moves them if they passed.
   //
@@ -1452,7 +1452,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.post("/api/progression/submit", verifyAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const { round, answer, tahmeelSubjects } = req.body || {};
+      const { round, answer, tahmeelSubjects, replacementRepresentativeEmail } = req.body || {};
       const db = admin.firestore();
       const calendar = await loadCalendar(db);
 
@@ -1461,6 +1461,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         round,
         answer,
         tahmeelSubjects: Array.isArray(tahmeelSubjects) ? tahmeelSubjects : [],
+        replacementRepresentativeEmail,
+      }, {
+        purgeGraduatedStudent: identity => purgeGraduatedStudent(
+          db, admin.auth(), admin.firestore.FieldValue as any, identity),
       });
 
       return res.json({ success: true, ...result });

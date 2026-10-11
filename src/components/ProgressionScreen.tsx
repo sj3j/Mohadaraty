@@ -44,6 +44,8 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
   const [error, setError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isSettingPending, setIsSettingPending] = useState(false);
+  const [representativeCandidates, setRepresentativeCandidates] = useState<Array<{ email: string; name: string }>>([]);
+  const [replacementRepresentativeEmail, setReplacementRepresentativeEmail] = useState('');
   const [result, setResult] = useState<{ promoted: boolean; graduated: boolean; stageName: string | null } | null>(null);
 
   // Subjects of the stage they are LEAVING - تحميل carries them forward.
@@ -64,6 +66,16 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
       .finally(() => { if (!cancelled) setLoadingSubjects(false); });
     return () => { cancelled = true; };
   }, [round, user.stageId]);
+
+  useEffect(() => {
+    if (user.role !== 'admin' || user.isMasterAdmin || !user.stageId) return;
+    getDocs(query(collection(db, 'students'), where('stageId', '==', user.stageId)))
+      .then(snap => setRepresentativeCandidates(snap.docs
+        .map(d => ({ email: d.id.toLowerCase(), name: String(d.data().name || d.id), active: d.data().isActive !== false }))
+        .filter(candidate => candidate.active && candidate.email !== String(user.email || '').toLowerCase())
+        .map(({ email, name }) => ({ email, name }))))
+      .catch(err => console.error('Could not load representative candidates:', err));
+  }, [user.role, user.isMasterAdmin, user.stageId, user.email]);
 
   const byCourse = useMemo(() => {
     const map = new Map<CourseId, Subject[]>();
@@ -96,6 +108,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
           round,
           answer: choice,
           tahmeelSubjects: choice === 'tahmeel' ? selectedTahmeel : [],
+          replacementRepresentativeEmail: replacementRepresentativeEmail || undefined,
         }),
       });
       const data = await res.json();
@@ -151,7 +164,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
             {result.graduated
               ? (isRtl
                   ? 'أكملت مراحل الدراسة كلها. يبقى حسابك مفتوحاً للاطلاع على المحتوى.'
-                  : 'You have completed every stage. Your account stays open for reading the content.')
+                  : 'You have completed every stage. Your student account and associated data have now been removed.')
               : (isRtl
                   ? `تم نقلك إلى ${result.stageName || 'المرحلة التالية'}. اختر شعبتك الجديدة للمتابعة.`
                   : `You have moved up to ${result.stageName || 'the next stage'}. Pick your new group to continue.`)}
@@ -169,8 +182,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
 
   // ---- the question --------------------------------------------------------
   const handlePendingResults = async () => {
-    const isCompletedProgression = user.hasCompletedProgression || user.progressionState === 'completed';
-    if (!isFinalStage && nextStage && !user.pendingStageId && !isCompletedProgression) {
+    if (!isFinalStage && nextStage && !user.pendingStageId) {
       setIsSettingPending(true);
       try {
         const token = await auth.currentUser?.getIdToken();
@@ -400,6 +412,24 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
             </>
           )}
         </div>
+
+        {user.role === 'admin' && !user.isMasterAdmin && (choice === 'passed' || choice === 'tahmeel') && (
+          <div className="mb-5 rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-900/20 p-4 text-start">
+            <label className="block text-sm font-bold text-sky-900 dark:text-sky-200 mb-2">
+              {isRtl ? 'ØªØ³Ù„ÙŠÙ… Ù…Ù…Ø«Ù„ Ø§Ù„Ù…Ø±Ø­Ù„Ø© (Ø§Ø®ØªÙŠØ§Ø±ÙŠ)' : 'Transfer stage representative role (optional)'}
+            </label>
+            <select
+              value={replacementRepresentativeEmail}
+              onChange={event => setReplacementRepresentativeEmail(event.target.value)}
+              className="w-full rounded-xl border border-sky-200 dark:border-sky-800 bg-white dark:bg-zinc-900 px-3 py-3 text-sm"
+            >
+              <option value="">{isRtl ? 'Ø³ÙŠØªÙ… Ø¥Ø®Ù„Ø§Ø¡ Ø§Ù„Ù…Ù†ØµØ¨' : 'Leave the seat vacant'}</option>
+              {representativeCandidates.map(candidate => (
+                <option key={candidate.email} value={candidate.email}>{candidate.name} — {candidate.email}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-100 dark:border-red-900/50 text-red-600 dark:text-red-400 rounded-xl text-sm">

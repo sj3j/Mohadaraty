@@ -17,6 +17,7 @@ import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks/useAuthWatchdog';
 import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile } from './lib/authPersistence';
+import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
 import { nextProgressionStep, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
@@ -127,7 +128,7 @@ export default function App() {
   useEffect(() => {
     if (!user) { setProgressionRound(null); return; }
     // Completed students must never have a progression modal latched
-    const isCompleted = user.hasCompletedProgression === true || (user.progressionState === 'completed' && user.progressionYear === academicYearLabel);
+    const isCompleted = user.progressionState === 'completed' && user.progressionYear === academicYearLabel;
     if (isCompleted) {
       if (progressionRound !== null) setProgressionRound(null);
       return;
@@ -309,6 +310,12 @@ export default function App() {
       }
 
       if (firebaseUser) {
+        logSessionBootstrap(resolveAuthState({
+          firebaseUserPresent: true,
+          isOnline: navigator.onLine,
+          wasSignedIn: safeGetStorageItem('wasSignedIn') === 'true',
+          cachedProfileAvailable: getCachedUserProfile() !== null,
+        }));
         safeSetStorageItem('wasSignedIn', 'true');
         const userEmail = firebaseUser.email || firebaseUser.uid;
         // Offline this needs an STS round-trip whenever the cached token is more
@@ -331,6 +338,7 @@ export default function App() {
         const isObserver = tokenResult?.claims.role === 'observer' || isObserverEmail(userEmail);
         
         let studentData: any = null;
+        let whitelistConfirmedByServer = true;
 
         if (isMasterAdminEmail(userEmail) && tokenResult?.claims.role !== 'master_admin') {
           try {
@@ -352,6 +360,7 @@ export default function App() {
             
             // Check allowed_admins
             const adminDoc = await getDoc(doc(db, 'allowed_admins', emailLower));
+            whitelistConfirmedByServer = whitelistConfirmedByServer && !adminDoc.metadata.fromCache;
             if (adminDoc.exists()) {
               const data = adminDoc.data();
               studentData = {
@@ -365,6 +374,7 @@ export default function App() {
             } else {
               // Check students collection
               const studentDoc = await getDoc(doc(db, 'students', emailLower));
+              whitelistConfirmedByServer = whitelistConfirmedByServer && !studentDoc.metadata.fromCache;
               if (studentDoc.exists()) {
                 const data = studentDoc.data();
                 studentData = {
@@ -375,9 +385,14 @@ export default function App() {
             }
 
             if (!studentData) {
-              if (!navigator.onLine) {
-                console.warn('Whitelist data unavailable while offline; keeping session.');
-              } else {
+              const decision = resolveWhitelistVerification({
+                outcome: 'missing',
+                isOnline: navigator.onLine,
+                isTransientError: false,
+                confirmedByServer: whitelistConfirmedByServer,
+              });
+              logSessionBootstrap(decision);
+              if (decision.shouldSignOut) {
                 await signOut(auth);
                 setLoginError(isRtl ? 'هذا الحساب غير مسجل في التطبيق. يرجى التواصل مع الإدارة.' : 'This account is not registered. Please contact administration.');
                 setUser(null);
@@ -388,12 +403,21 @@ export default function App() {
             }
             
             if (studentData && !studentData.isActive) {
-              await signOut(auth);
-              setLoginError(isRtl ? 'تم تعطيل حسابك. يرجى التواصل مع الإدارة.' : 'Your account has been deactivated. Please contact administration.');
-              setUser(null);
-              clearCachedUserProfile();
-              setIsAuthReady(true);
-              return;
+              const decision = resolveWhitelistVerification({
+                outcome: 'disabled',
+                isOnline: navigator.onLine,
+                isTransientError: false,
+                confirmedByServer: whitelistConfirmedByServer,
+              });
+              logSessionBootstrap(decision);
+              if (decision.shouldSignOut) {
+                await signOut(auth);
+                setLoginError(isRtl ? 'تم تعطيل حسابك. يرجى التواصل مع الإدارة.' : 'Your account has been deactivated. Please contact administration.');
+                setUser(null);
+                clearCachedUserProfile();
+                setIsAuthReady(true);
+                return;
+              }
             }
           } catch (error: any) {
             console.error("Error checking student whitelist:", error);
@@ -408,16 +432,15 @@ export default function App() {
             // without a network. "Cannot reach the server" is not a verdict
             // about the account; leave the session alone and let the users/{uid}
             // listener below populate the profile from cache.
-            if (isTransientNetworkError(error) || !navigator.onLine) {
-              console.warn('Whitelist check unavailable (offline); keeping the session.');
-            } else {
-              await signOut(auth);
-              setLoginError(isRtl ? 'حدث خطأ أثناء التحقق من الحساب.' : 'Error verifying account.');
-              setUser(null);
-              clearCachedUserProfile();
-              setIsAuthReady(true);
-              return;
-            }
+            // A thrown read is never an account verdict, even for errors such
+            // as permission-denied. Preserve credentials and retry later.
+            const decision = resolveWhitelistVerification({
+              outcome: 'error',
+              isOnline: navigator.onLine,
+              isTransientError: isTransientNetworkError(error),
+              confirmedByServer: false,
+            });
+            logSessionBootstrap(decision);
           }
         }
 
@@ -433,25 +456,30 @@ export default function App() {
           // out every master admin and Google-uid account on an offline launch
           // (roster students dodged it only because their uid contains an '@').
           // Absence is only meaningful when it comes from the server.
-          if (!userDoc.exists() && !servedFromCache && !firebaseUser.uid.includes('@')) {
-            if (!navigator.onLine) {
-              console.warn('User doc missing while offline; preserving cached session.');
-            } else {
-              await signOut(auth);
-              setLoginError(isRtl ? 'يرجى إعادة تسجيل الدخول' : 'Please sign in again');
-              setUser(null);
-              clearCachedUserProfile();
-              setIsAuthReady(true);
-              return;
-            }
+          const cachedProfile = getCachedUserProfile();
+          const userDocumentDecision = resolveUserDocument({
+            exists: userDoc.exists(),
+            fromCache: servedFromCache,
+            isOnline: navigator.onLine,
+            rosterUser: firebaseUser.uid.includes('@'),
+            cachedProfileAvailable: cachedProfile !== null,
+          });
+          if (userDocumentDecision.shouldSignOut) {
+            logSessionBootstrap(userDocumentDecision);
+            await signOut(auth);
+            setLoginError(isRtl ? 'يرجى إعادة تسجيل الدخول' : 'Please sign in again');
+            setUser(null);
+            clearCachedUserProfile();
+            setIsAuthReady(true);
+            return;
           }
 
           // Cached miss: nothing to render a profile from, but the session is
           // fine. Fall back to local cached profile if available!
           if (!userDoc.exists() && servedFromCache) {
-            const cached = getCachedUserProfile();
-            if (cached) {
-              setUser(cached);
+            logSessionBootstrap(userDocumentDecision);
+            if (userDocumentDecision.useCachedProfile && cachedProfile) {
+              setUser(cachedProfile);
             }
             setIsAuthReady(true);
             return;
@@ -517,7 +545,8 @@ export default function App() {
               stageId: userDoc.data().stageId || studentData?.stageId || undefined,
               pendingStageId: (() => {
                 const docData = userDoc.data();
-                const hasCompleted = docData.hasCompletedProgression === true || docData.progressionState === 'completed';
+                const hasCompleted = docData.progressionState === 'completed'
+                  && docData.progressionYear === academicYearLabel;
                 if (hasCompleted) {
                   // Asynchronously self-heal stale pendingStageId in Firestore
                   if (docData.pendingStageId) {
@@ -627,14 +656,18 @@ export default function App() {
         });
       } else {
         const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
-        if (!navigator.onLine && wasSignedIn) {
-          console.warn('Auth state reported null while offline for signed-in user; keeping cached session.');
-          const cached = getCachedUserProfile();
-          if (cached) {
-            setUser(cached);
-            setIsAuthReady(true);
-            return;
-          }
+        const cached = getCachedUserProfile();
+        const decision = resolveAuthState({
+          firebaseUserPresent: false,
+          isOnline: navigator.onLine,
+          wasSignedIn,
+          cachedProfileAvailable: cached !== null,
+        });
+        logSessionBootstrap(decision);
+        if (decision.useCachedProfile && cached) {
+          setUser(cached);
+          setIsAuthReady(true);
+          return;
         }
 
         safeSetStorageItem('wasSignedIn', 'false');
@@ -936,7 +969,7 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
-  const isCompletedStudent = Boolean(user?.hasCompletedProgression || (user?.progressionState === 'completed' && user?.progressionYear === academicYearLabel));
+  const isCompletedStudent = Boolean(user?.progressionState === 'completed' && user?.progressionYear === academicYearLabel);
   const effectiveProgressionRound = progressionRound || (!isCompletedStudent && user?.pendingStageId ? (progressionGateNow === 'resit_round' ? 'resit' : 'first') : null);
 
   if (effectiveProgressionRound && (!isProgressionSnoozed || forceShowProgression)) {
@@ -1097,7 +1130,13 @@ export default function App() {
             localStorage.setItem('lastReadInbox', Date.now().toString());
           }}
           onOpenTour={() => setShowOnboarding(true)}
-          onLogout={() => { setCurrentTab('profile'); clearCachedUserProfile(); signOut(auth); }}
+          onLogout={() => {
+            console.info('[auth-session] signed-out: explicit-logout');
+            setCurrentTab('profile');
+            safeSetStorageItem('wasSignedIn', 'false');
+            clearCachedUserProfile();
+            void signOut(auth);
+          }}
           onOpen={(what) => {
             if (what === 'adminManage') setShowAdminManage(true);
             else if (what === 'studentManage') setShowStudentManage(true);

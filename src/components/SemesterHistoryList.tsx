@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { collection, query, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { History, Award, Calendar, Target, Flame, Hash, BookOpen } from 'lucide-react';
+import { History, Award, Calendar, Target, Flame, Hash, BookOpen, GraduationCap } from 'lucide-react';
 
 interface SemesterHistoryListProps {
   userUid: string;
@@ -11,6 +11,7 @@ interface SemesterHistoryListProps {
 export default function SemesterHistoryList({ userUid, isRtl }: SemesterHistoryListProps) {
   const [history, setHistory] = useState<any[]>([]);
   const [years, setYears] = useState<any[]>([]);
+  const [stages, setStages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,7 +19,7 @@ export default function SemesterHistoryList({ userUid, isRtl }: SemesterHistoryL
       try {
         // Streak and MCQ are archived under the same season id, so the two
         // subcollections merge into one row per season.
-        const [streakSnap, mcqSnap, yearSnap] = await Promise.all([
+        const [streakSnap, mcqSnap, yearSnap, stageSnap] = await Promise.all([
           getDocs(query(collection(db, 'users', userUid, 'streakHistory'), orderBy('archivedAt', 'desc'))),
           getDocs(query(collection(db, 'users', userUid, 'mcqHistory'), orderBy('archivedAt', 'desc')))
             .catch(() => null), // collection may not exist yet
@@ -26,9 +27,12 @@ export default function SemesterHistoryList({ userUid, isRtl }: SemesterHistoryL
           // year-end wipe, so this is all that is left of that year.
           getDocs(query(collection(db, 'users', userUid, 'yearHistory'), orderBy('archivedAt', 'desc')))
             .catch(() => null),
+          getDocs(query(collection(db, 'users', userUid, 'stageHistory'), orderBy('archivedAt', 'desc')))
+            .catch(() => null),
         ]);
 
         setYears((yearSnap?.docs || []).map(d => ({ id: d.id, ...d.data() })));
+        setStages((stageSnap?.docs || []).map(d => ({ id: d.id, ...d.data() })));
 
         const merged = new Map<string, any>();
         streakSnap.docs.forEach(d => {
@@ -54,10 +58,33 @@ export default function SemesterHistoryList({ userUid, isRtl }: SemesterHistoryL
   }, [userUid]);
 
   if (loading) return null;
-  if (history.length === 0 && years.length === 0) return null;
+  if (history.length === 0 && years.length === 0 && stages.length === 0) return null;
 
   return (
     <>
+    {stages.length > 0 && (
+      <div className="mt-8 border-t border-orange-100 dark:border-orange-800/30 pt-6">
+        <h4 className="text-sm font-bold text-orange-900 dark:text-orange-300 mb-4 flex items-center gap-2">
+          <GraduationCap className="w-4 h-4 text-orange-500" />
+          {isRtl ? 'Ø¥Ù†Ø¬Ø§Ø²Ø§Øª Ø§Ù„Ù…Ø±Ø§Ø­Ù„ Ø§Ù„Ø³Ø§Ø¨Ù‚Ø©' : 'Previous Stage Achievements'}
+        </h4>
+        <div className="space-y-3">
+          {stages.map(stage => (
+            <div key={stage.id} className="bg-white/60 dark:bg-zinc-800/60 rounded-2xl p-4 border border-orange-100 dark:border-orange-800/30 shadow-sm">
+              <div className="font-bold text-slate-800 dark:text-slate-200 mb-3">
+                {stage.stageId} · {stage.yearLabel}
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-100 dark:border-zinc-700/60 pt-3">
+                <Stat label={isRtl ? 'Ø§Ù„Ù†Ù‚Ø§Ø·' : 'Points'} value={stage.mcqLeaderboardScore || 0} tone="sky" />
+                <Stat label={isRtl ? 'Ø§Ù„ØµØ­ÙŠØ­Ø©' : 'Correct'} value={`${stage.totalFirstAttemptCorrect || 0}/${stage.totalFirstAttemptAnswered || 0}`} tone="slate" />
+                <Stat label={isRtl ? 'Ø§Ù„Ø¯Ù‚Ø©' : 'Accuracy'} value={`${Math.round(stage.accuracy || 0)}%`} tone="emerald" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
     {years.length > 0 && (
       <div className="mt-8 border-t border-orange-100 dark:border-orange-800/30 pt-6">
         <h4 className="text-sm font-bold text-orange-900 dark:text-orange-300 mb-4 flex items-center gap-2">

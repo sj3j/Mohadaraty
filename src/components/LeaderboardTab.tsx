@@ -360,8 +360,8 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
 
   const fetchMcqBoard = async (paused: boolean, lastArchiveId: string | null) => {
     // ---- Archived season (break) -----------------------------------------
-    // The reset removes mcqRankScore, so without this the MCQ tab would be
-    // empty for the whole break instead of showing the season's winners.
+    // During a break, show the frozen term-close snapshot. The live MCQ totals
+    // remain cumulative and resume unchanged when the next term opens.
     if (paused && lastArchiveId) {
       const { rows, profiles } = await fetchArchivedRows(lastArchiveId, 'topMcqStudents');
       setMcqUnranked(false);

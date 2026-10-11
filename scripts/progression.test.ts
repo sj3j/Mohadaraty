@@ -248,13 +248,18 @@ check('but is done for the year', failUser?.progressionState === 'completed');
 check('and is not asked again', step('resit_round', failUser) === 'none');
 
 console.log('\nGraduation:');
+let graduationPurge: any = null;
 const gradRes = await submitProgression(db, FieldValue as any, firstOpen, {
   uid: 'u_final', round: 'first', answer: 'passed',
+}, {
+  purgeGraduatedStudent: async identity => { graduationPurge = identity; },
 });
 check('passing the last stage graduates rather than promotes',
   gradRes.graduated === true && gradRes.promoted === false, JSON.stringify(gradRes));
+check('graduation invokes the complete purge lifecycle',
+  gradRes.purged === true && graduationPurge?.uid === 'u_final' && graduationPurge?.studentId === 'final@x.com');
 const gradUser = (await db.doc('users/u_final').get()).data();
-check('stays in the final stage for content access', gradUser?.stageId === 'stage_5');
+check('the pre-purge transition retains the final stage identity', gradUser?.stageId === 'stage_5');
 check('flagged graduated', gradUser?.graduated === true);
 check('never asked again', step('resit_round', gradUser) === 'none');
 
@@ -327,9 +332,11 @@ await db.collection('students').doc('rep@x.com').set({ email: 'rep@x.com', stage
 await db.collection('allowed_admins').doc('rep@x.com').set({
   email: 'rep@x.com', role: 'admin', managedStageId: 'stage_3',
 });
+await seedStudent('u_rep_successor', 'successor@x.com', 'stage_3');
 
 const repRes = await submitProgression(db, FieldValue as any, firstOpen, {
   uid: 'u_rep', round: 'first', answer: 'passed',
+  replacementRepresentativeEmail: 'successor@x.com',
 });
 const repDoc = (await db.doc('users/u_rep').get()).data() || {};
 check('the representative is promoted like any student', repRes.stageId === 'stage_4');
@@ -338,6 +345,11 @@ check('managedStageId is cleared', repDoc.managedStageId === undefined);
 check('permissions are cleared', repDoc.permissions === undefined);
 check('the allowed_admins entry is deleted, so login cannot restore the role',
   !(await db.doc('allowed_admins/rep@x.com').get()).exists);
+const successor = (await db.doc('users/u_rep_successor').get()).data() || {};
+const successorAllowed = (await db.doc('allowed_admins/successor@x.com').get()).data() || {};
+check('outgoing representative transfers the stage seat atomically',
+  successor.role === 'admin' && successor.managedStageId === 'stage_3'
+    && successorAllowed.role === 'admin' && successorAllowed.managedStageId === 'stage_3');
 
 // The master admin is staff, not a student - nothing about them changes.
 console.log('\nA moderator is released on the same rule:');
@@ -430,6 +442,9 @@ check('stage 3 stats remain preserved with their full score',
   s3StageStats.mcqRankScore === 400 && s3StageStats.totalFirstAttemptCorrect === 20);
 check('and stage 3 stats marked inactive so they leave the active stage race',
   s3StageStats.isActiveInStage === false);
+const archivedStageStats = (await db.doc('users/u_mcq/stageHistory/2026-2027_stage_3').get()).data() || {};
+check('promotion creates an immutable year-and-stage snapshot',
+  archivedStageStats.totalFirstAttemptCorrect === 20 && archivedStageStats.mcqRankScore === 400);
 
 // A student who has never answered an MCQ has no stats document at all, and
 // update() on a missing document fails the WHOLE batch - which would take the

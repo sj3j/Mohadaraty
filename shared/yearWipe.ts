@@ -9,10 +9,10 @@
  *
  * ORDER IS LOAD-BEARING. The caller must run, in this order:
  *   1. summariseYear()   - shared/yearSummary.ts, while the answer data still exists
- *   2. startNewSeason()  - shared/seasonReset.ts, archives the leaderboard cards
+ *   2. startNewSeason()  - shared/seasonReset.ts, archives term leaderboard cards
  *   3. exportYear()      - snapshot
  *   4. wipeYear()        - delete
- * Any other order silently archives zeroes.
+ * Annual MCQ aggregates are archived and reset inside wipeYear(), after export.
  *
  * WHAT SURVIVES, and why each one matters:
  *   questionBank    - the whole point; ministry/past-year/professor questions, not regenerable
@@ -70,6 +70,90 @@ export interface WipeResult {
   lectureStubs: number;
   usersCleaned: number;
   filesListed: number;
+  mcqStatsReset: number;
+}
+
+/**
+ * Archives and resets the active annual MCQ aggregates.
+ *
+ * Each row is handled transactionally with a deterministic history id. A
+ * retry therefore cannot replace a real snapshot with the already-zeroed
+ * aggregate, and cannot create duplicate history cards.
+ */
+export async function resetAnnualMcqStats(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { serverTimestamp(): any; delete(): any },
+  yearLabel: string,
+): Promise<number> {
+  const allStageStats = await db.collection('userStageMCQStats').get();
+  // Rows created before isActiveInStage was introduced are active by default;
+  // progression explicitly stamps archived rows false.
+  const active = allStageStats.docs.filter(row => row.data()?.isActiveInStage !== false);
+  let reset = 0;
+
+  for (const row of active) {
+    await db.runTransaction(async tx => {
+      const live = await tx.get(row.ref);
+      if (!live.exists) return;
+      const data = live.data() || {};
+      const uid = String(data.userId || '');
+      const stageId = String(data.stageId || 'unassigned');
+      if (!uid) return;
+
+      const historyRef = db.collection('users').doc(uid)
+        .collection('stageHistory').doc(`${yearLabel}_${stageId}`);
+      const history = await tx.get(historyRef);
+
+      if (!history.exists) {
+        tx.set(historyRef, {
+          yearLabel,
+          stageId,
+          totalFirstAttemptCorrect: data.totalFirstAttemptCorrect || 0,
+          totalFirstAttemptAnswered: data.totalFirstAttemptAnswered || 0,
+          lecturesAttempted: data.lecturesAttempted || 0,
+          mcqLeaderboardScore: data.mcqLeaderboardScore || 0,
+          mcqRankScore: data.mcqRankScore ?? null,
+          accuracy: data.accuracy || 0,
+          subjectStats: data.subjectStats || {},
+          reason: 'academic_year_closed',
+          archivedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      tx.set(row.ref, {
+        totalFirstAttemptCorrect: 0,
+        totalFirstAttemptAnswered: 0,
+        lecturesAttempted: 0,
+        mcqLeaderboardScore: 0,
+        accuracy: 0,
+        mcqRankScore: FieldValue.delete(),
+        subjectStats: {},
+        academicYear: FieldValue.delete(),
+        lastUpdated: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+    reset++;
+  }
+
+  const legacy = await db.collection('userMCQStats').get();
+  let batch = db.batch();
+  let ops = 0;
+  for (const row of legacy.docs) {
+    batch.set(row.ref, {
+      totalFirstAttemptCorrect: 0,
+      totalFirstAttemptAnswered: 0,
+      lecturesAttempted: 0,
+      mcqLeaderboardScore: 0,
+      accuracy: 0,
+      mcqRankScore: FieldValue.delete(),
+      subjectStats: {},
+      lastUpdated: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    ops++;
+    if (ops >= 400) { await batch.commit(); batch = db.batch(); ops = 0; }
+  }
+  if (ops) await batch.commit();
+  return reset;
 }
 
 /**
@@ -121,8 +205,8 @@ export class YearWipeError extends Error {
  * destroy something unrecoverable:
  *   - the year label must match the live calendar, so a stale browser tab cannot
  *     wipe the wrong year
- *   - the final term's season must already be archived, or the leaderboard cards
- *     for that term are lost: startNewSeason reads the very stats we delete
+ *   - the final term's season must already be archived, or its leaderboard
+ *     snapshot would be missing from the historical record
  *   - the latch makes a second click a no-op
  *
  * Returns the plan so the caller can hand the file manifest to deleteWipedFiles.
@@ -158,8 +242,7 @@ export async function runYearWipe(
     throw new YearWipeError(`${yearLabel} has already been wiped.`, 409);
   }
 
-  // Without this the season archive would read stats we are about to delete and
-  // file a year of empty leaderboard cards.
+  // The term archive is a required historical checkpoint before annual reset.
   if (finalTermId && settings.seasonClosedFor !== finalTermId) {
     throw new YearWipeError(
       'Archive the final season first - run the season rollover, then wipe.', 409);
@@ -314,6 +397,8 @@ export async function wipeYear(
   const { yearLabel, performedBy } = opts;
   if (!yearLabel) throw new Error('wipeYear needs a yearLabel');
 
+  const mcqStatsReset = await resetAnnualMcqStats(db, FieldValue, yearLabel);
+
   let batch = db.batch();
   let ops = 0;
   const flush = async (force = false) => {
@@ -367,6 +452,15 @@ export async function wipeYear(
   for (const doc of usersSnap.docs) {
     const d = doc.data() || {};
     const patch: Record<string, any> = {};
+    // Completion belongs to the year being closed. Clearing the legacy flag
+    // prevents it from suppressing next year's self-service question. Only add
+    // existing fields so an idempotent retry does not rewrite every user.
+    for (const field of [
+      'hasCompletedProgression', 'lastProgressionYear', 'progressionYear',
+      'progressionState', 'progressionAnsweredAt', 'pendingStageId',
+    ]) {
+      if (field in d) patch[field] = FieldValue.delete();
+    }
     for (const field of DEAD_ID_ARRAYS) {
       if (Array.isArray(d[field]) && d[field].length > 0) patch[field] = [];
     }
@@ -390,5 +484,6 @@ export async function wipeYear(
     lectureStubs: lectureSnap.size,
     usersCleaned,
     filesListed: 0,
+    mcqStatsReset,
   };
 }

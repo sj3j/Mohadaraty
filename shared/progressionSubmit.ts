@@ -26,6 +26,11 @@ export interface SubmitResult {
   stageNameAr: string | null;
   stageNameEn: string | null;
   tahmeelSubjects: string[];
+  purged?: boolean;
+}
+
+export interface ProgressionLifecycle {
+  purgeGraduatedStudent?: (identity: { uid: string; studentId: string }) => Promise<unknown>;
 }
 
 export class ProgressionError extends Error {
@@ -43,7 +48,9 @@ export async function submitProgression(
     round: ProgressionRound;
     answer: ProgressionAnswer;
     tahmeelSubjects?: string[];
+    replacementRepresentativeEmail?: string;
   },
+  lifecycle: ProgressionLifecycle = {},
 ): Promise<SubmitResult> {
   const { uid, round, answer } = opts;
 
@@ -99,6 +106,32 @@ export async function submitProgression(
 
   const outcome = progressionOutcome({ round, answer, user, stages, tahmeelSubjects: tahmeel });
 
+  const wasRepresentative = user.role === 'admin' && !user.isMasterAdmin;
+  const leavingStage = outcome.promoted || outcome.graduated;
+  const replacementEmail = String(opts.replacementRepresentativeEmail || '').toLowerCase().trim();
+  let replacementUserRef: FirebaseFirestore.DocumentReference | null = null;
+  let replacementAllowedRef: FirebaseFirestore.DocumentReference | null = null;
+
+  if (replacementEmail) {
+    if (!wasRepresentative || !leavingStage) {
+      throw new ProgressionError('Only an outgoing stage representative may transfer the seat.', 403);
+    }
+    if (replacementEmail === String(user.email || '').toLowerCase().trim()) {
+      throw new ProgressionError('Choose another student as the representative.');
+    }
+    const replacementRoster = await db.collection('students').doc(replacementEmail).get();
+    if (!replacementRoster.exists || replacementRoster.data()?.isActive === false
+        || replacementRoster.data()?.stageId !== user.stageId) {
+      throw new ProgressionError('The replacement must be an active student in your current stage.', 409);
+    }
+    const replacementUsers = await db.collection('users').where('email', '==', replacementEmail).limit(1).get();
+    if (replacementUsers.empty || replacementUsers.docs[0].data()?.stageId !== user.stageId) {
+      throw new ProgressionError('The replacement must sign in once before the role can be transferred.', 409);
+    }
+    replacementUserRef = replacementUsers.docs[0].ref;
+    replacementAllowedRef = db.collection('allowed_admins').doc(replacementEmail);
+  }
+
   const batch = db.batch();
 
   const nextStage = nextStageOf(stages, user.stageId);
@@ -134,7 +167,6 @@ export async function submitProgression(
   // it has left the stage keeps a role this demotion path would no longer
   // recognise on any later pass.
   const wasStaff = user.role === 'admin' || user.role === 'moderator' || user.role === 'support';
-  const leavingStage = outcome.promoted || outcome.graduated;
   if (wasStaff && leavingStage && !user.isMasterAdmin) {
     userPatch.role = 'student';
     userPatch.managedStageId = FieldValue.delete();
@@ -164,13 +196,43 @@ export async function submitProgression(
     }
   }
 
+  if (replacementUserRef && replacementAllowedRef) {
+    const representative = {
+      role: 'admin',
+      managedStageId: user.stageId,
+      permissions: {},
+    };
+    batch.set(replacementUserRef, representative, { merge: true });
+    batch.set(replacementAllowedRef, {
+      email: replacementEmail,
+      ...representative,
+      appointedBy: uid,
+      appointedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
   // Stage-isolated MCQ stats:
   // When promoted or graduated, mark their previous stage stats as isActiveInStage: false.
   // Their score earned in the previous stage remains permanently preserved in userStageMCQStats,
   // but they leave the active race so new incoming cohorts start on a fair, clean slate.
   if (user.stageId && (outcome.promoted || outcome.graduated)) {
     const prevStageStatRef = db.collection('userStageMCQStats').doc(`${uid}_${user.stageId}`);
-    if ((await prevStageStatRef.get()).exists) {
+    const prevStageStat = await prevStageStatRef.get();
+    if (prevStageStat.exists) {
+      const stats = prevStageStat.data() || {};
+      batch.set(userRef.collection('stageHistory').doc(`${calendar.yearLabel}_${user.stageId}`), {
+        yearLabel: calendar.yearLabel,
+        stageId: user.stageId,
+        totalFirstAttemptCorrect: stats.totalFirstAttemptCorrect || 0,
+        totalFirstAttemptAnswered: stats.totalFirstAttemptAnswered || 0,
+        lecturesAttempted: stats.lecturesAttempted || 0,
+        mcqLeaderboardScore: stats.mcqLeaderboardScore || 0,
+        mcqRankScore: stats.mcqRankScore ?? null,
+        accuracy: stats.accuracy || 0,
+        subjectStats: stats.subjectStats || {},
+        reason: outcome.graduated ? 'graduated' : 'promoted',
+        archivedAt: FieldValue.serverTimestamp(),
+      });
       batch.set(prevStageStatRef, {
         isActiveInStage: false,
         lastUpdated: FieldValue.serverTimestamp(),
@@ -200,6 +262,12 @@ export async function submitProgression(
 
   await batch.commit();
 
+  let purged = false;
+  if (outcome.graduated && lifecycle.purgeGraduatedStudent) {
+    await lifecycle.purgeGraduatedStudent({ uid, studentId: email });
+    purged = true;
+  }
+
   const landed = stages.find(s => s.id === outcome.stageId) || null;
   return {
     promoted: outcome.promoted,
@@ -208,6 +276,7 @@ export async function submitProgression(
     stageNameAr: landed?.nameAr ?? null,
     stageNameEn: landed?.nameEn ?? null,
     tahmeelSubjects: outcome.tahmeelSubjects,
+    purged,
   };
 }
 
@@ -339,7 +408,7 @@ export async function setPendingProgression(
   if (!userSnap.exists) throw new ProgressionError('User not found', 404);
   const user = userSnap.data() as any;
 
-  if (user.hasCompletedProgression || (user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel)) {
+  if (user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel) {
     throw new ProgressionError('لقد تم تأكيد نتيجتك بالفعل لهذه السنة الأكاديمية.', 400);
   }
   if (calendar.progressionStages && calendar.progressionStages.length > 0 && !calendar.progressionStages.includes(user.stageId)) {

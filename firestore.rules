@@ -525,6 +525,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Immutable snapshots created by progression/year-rollover server code.
+    // A student may view only their own former-stage achievements and no
+    // client, including staff, may rewrite the historical evidence.
+    match /users/{userId}/stageHistory/{document=**} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isObserver());
+      allow write: if false;
+    }
+
     match /allowed_admins/{email} {
       allow read: if isAuthenticated();
       // A representative may only create/edit MODERATORS, and only on the stage
@@ -926,6 +934,9 @@ service cloud.firestore {
       allow write: if isAdmin() || (
         isAuthenticated() &&
         request.resource.data.userId == request.auth.uid &&
+        request.resource.data.stageId == userStage() &&
+        statId == request.auth.uid + '_' + userStage() &&
+        request.resource.data.get('isActiveInStage', true) == true &&
         !isPendingProgression()
       );
     }

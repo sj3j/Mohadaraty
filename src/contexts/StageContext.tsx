@@ -5,6 +5,7 @@ import {
 } from '../types';
 import { db } from '../lib/firebase';
 import { collection, getDocs, orderBy, query, setDoc, doc, updateDoc } from 'firebase/firestore';
+import { useAcademicPhase } from '../hooks/useAcademicPhase';
 
 // Canonical stage list. Kept in sync with scripts/migrateToStages.js so that
 // seeding from either side produces identical documents.
@@ -75,6 +76,7 @@ interface StageContextType {
 const StageContext = createContext<StageContextType | undefined>(undefined);
 
 export function StageProvider({ children }: { children: ReactNode }) {
+  const { calendar } = useAcademicPhase();
   const [stages, setStages] = useState<Stage[]>(DEFAULT_STAGES);
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
   const [currentAppStage, setCurrentAppStage] = useState<string | null>(() => {
@@ -250,7 +252,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
       return activeUser.managedStageId || null;
     }
     const isCompletedProgression = Boolean(
-      activeUser.hasCompletedProgression || activeUser.progressionState === 'completed'
+      activeUser.progressionState === 'completed' && activeUser.progressionYear === calendar.yearLabel
     );
     // Students with pending progression default to next stage (pendingStageId),
     // but can toggle back to their current stage via selectedStudentStage.
@@ -263,13 +265,12 @@ export function StageProvider({ children }: { children: ReactNode }) {
     }
     // Students only ever see their own stage.
     return activeUser.stageId || null;
-  }, [activeUser, currentAppStage, selectedStudentStage]);
+  }, [activeUser, currentAppStage, selectedStudentStage, calendar.yearLabel]);
 
   const isPendingProgression = Boolean(
     activeUser?.role === 'student' &&
     activeUser?.pendingStageId &&
-    !activeUser?.hasCompletedProgression &&
-    activeUser?.progressionState !== 'completed'
+    !(activeUser?.progressionState === 'completed' && activeUser?.progressionYear === calendar.yearLabel)
   );
 
   const provisionalStages = useMemo(() => {

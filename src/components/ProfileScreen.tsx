@@ -59,7 +59,7 @@ export default function ProfileScreen({
   onOpenProgression, hasPendingProgression,
 }: ProfileScreenProps) {
   const isRtl = lang === 'ar';
-  const { phase } = useAcademicPhase();
+  const { phase, calendar } = useAcademicPhase();
   const { stages, effectiveStageId } = useStageContext();
 
   /** '2027-01-31' -> '2027/1/31'. */
@@ -540,7 +540,7 @@ export default function ProfileScreen({
           />
         </div>
 
-        {!user.hasCompletedProgression && user.progressionState !== 'completed' && (user.pendingStageId || hasPendingProgression) && onOpenProgression && (
+        {!(user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel) && (user.pendingStageId || hasPendingProgression) && onOpenProgression && (
           <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/15 border-2 border-amber-300 dark:border-amber-700/60 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">

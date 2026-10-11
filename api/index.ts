@@ -20,6 +20,7 @@ import {
   requestAccountDeletion,
   cancelAccountDeletion,
   reviewDeletionRequest,
+  purgeGraduatedStudent,
   DeletionError,
 } from "../shared/accountDeletion.js";
 import {
@@ -1273,8 +1274,7 @@ app.post("/api/admin/resolve-pending-streak", verifyAuth, verifyAdmin, streak.re
 app.post("/api/admin/fix-calendar", verifyAuth, verifyAdmin, streak.fixCalendar);
 app.post("/api/cron/streak-warnings", streak.warningsCron);
 
-// Ends the current season: archives BOTH boards into each student's profile
-// with their final rank, zeroes the live boards, and starts the new season.
+// Ends the current streak season and snapshots the cumulative annual MCQ board.
 
 // Records a student's end-of-year result and moves them if they passed.
 //
@@ -1285,7 +1285,7 @@ app.post("/api/cron/streak-warnings", streak.warningsCron);
 app.post("/api/progression/submit", verifyAuth, async (req, res) => {
   try {
     const user = (req as any).user;
-    const { round, answer, tahmeelSubjects } = req.body || {};
+    const { round, answer, tahmeelSubjects, replacementRepresentativeEmail } = req.body || {};
     const db = admin.firestore();
     const calendar = await loadCalendar(db);
 
@@ -1294,6 +1294,10 @@ app.post("/api/progression/submit", verifyAuth, async (req, res) => {
       round,
       answer,
       tahmeelSubjects: Array.isArray(tahmeelSubjects) ? tahmeelSubjects : [],
+      replacementRepresentativeEmail,
+    }, {
+      purgeGraduatedStudent: identity => purgeGraduatedStudent(
+        db, admin.auth(), admin.firestore.FieldValue as any, identity),
     });
 
     return res.json({ success: true, ...result });

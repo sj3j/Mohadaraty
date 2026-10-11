@@ -1,4 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { StatusBar, Style } from '@capacitor/status-bar';
+
+interface SystemBarsPlugin {
+  setStyle(options: { darkBackground: boolean }): Promise<{ darkBackground: boolean }>;
+}
+
+const SystemBars = registerPlugin<SystemBarsPlugin>('SystemBars');
+
+function syncNativeSystemBars(darkBackground: boolean) {
+  if (!Capacitor.isNativePlatform()) return;
+  void Promise.all([
+    StatusBar.setStyle({ style: darkBackground ? Style.Dark : Style.Light }),
+    SystemBars.setStyle({ darkBackground }),
+  ]).catch(error => console.warn('[system-bars] Failed to synchronize icon contrast:', error));
+}
 
 /**
  * Light / dark / true-black / follow-system.
@@ -34,6 +50,7 @@ function apply(choice: ThemeChoice) {
   const dark = choice === 'dark' || choice === 'black' || (choice === 'system' && prefersDark());
   root.classList.toggle('dark', dark);
   root.classList.toggle('theme-black', choice === 'black');
+  syncNativeSystemBars(dark);
 
   // Keeps the Android status bar and the browser chrome in step with the app.
   const meta = document.querySelector('meta[name="theme-color"]');

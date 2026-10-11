@@ -28,6 +28,7 @@ import { resetStudentPassword, assertStageAuthority, StudentAdminError } from '.
 import {
   requestAccountDeletion, cancelAccountDeletion, reviewDeletionRequest,
   purgeAccount, DeletionError, DELETED_AUTHOR_AR,
+  purgeGraduatedStudent,
 } from '../shared/accountDeletion';
 
 const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
@@ -438,6 +439,33 @@ console.log('\nAccount deletion requests:');
   // Purging is idempotent - a retry after a partial failure must not throw.
   const again = await purgeAccount(db, fakeAuth, FieldValue, { uid: DEL_UID, studentId: DEL });
   check('a second purge is harmless', Array.isArray(again.steps));
+
+  console.log('\nStage-5 graduation hard purge:');
+  const GRAD_UID = 'graduate_uid';
+  const GRAD_EMAIL = 'graduate@x.com';
+  await db.doc(`users/${GRAD_UID}`).set({ email: GRAD_EMAIL, stageId: 'stage_5' });
+  await db.doc(`users/${GRAD_UID}/stageHistory/2026-2027_stage_5`).set({ score: 99 });
+  await db.doc(`students/${GRAD_EMAIL}`).set({ email: GRAD_EMAIL, stageId: 'stage_5', password: 'HASH' });
+  await db.doc(`degrees/${GRAD_EMAIL}/exams/final`).set({ degree: 99 });
+  await db.doc(`userStageMCQStats/${GRAD_UID}_stage_5`).set({ userId: GRAD_UID, stageId: 'stage_5' });
+  await db.doc(`userMCQAnswers/${GRAD_UID}/lectures/final`).set({ hasCompletedFirstAttempt: true });
+  await db.doc('chat_messages/grad_message').set({ senderId: GRAD_UID, text: 'goodbye' });
+  await db.doc(`allowed_admins/${GRAD_EMAIL}`).set({ role: 'admin', managedStageId: 'stage_5' });
+
+  const graduated = await purgeGraduatedStudent(db, fakeAuth, FieldValue, {
+    uid: GRAD_UID, studentId: GRAD_EMAIL,
+  });
+  check('graduation purge reports no failed steps', !graduated.steps.some(step => step.endsWith(':failed')));
+  check('graduation deletes Auth identity', fakeAuth.deleted.includes(GRAD_UID));
+  check('graduation hard-deletes roster and grade records',
+    !(await db.doc(`students/${GRAD_EMAIL}`).get()).exists
+      && (await db.collection(`degrees/${GRAD_EMAIL}/exams`).get()).empty);
+  check('graduation deletes profile history, answers, stats, messages, and representative seat',
+    (await db.collection(`users/${GRAD_UID}/stageHistory`).get()).empty
+      && (await db.collection(`userMCQAnswers/${GRAD_UID}/lectures`).get()).empty
+      && !(await db.doc(`userStageMCQStats/${GRAD_UID}_stage_5`).get()).exists
+      && !(await db.doc('chat_messages/grad_message').get()).exists
+      && !(await db.doc(`allowed_admins/${GRAD_EMAIL}`).get()).exists);
 }
 
 

@@ -110,6 +110,22 @@ async function purgeCollection(db: Db, ref: any): Promise<void> {
   }
 }
 
+async function purgeWhere(db: Db, collectionName: string, field: string, value: string): Promise<void> {
+  while (true) {
+    const snap = await db.collection(collectionName).where(field, '==', value).limit(300).get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    snap.docs.forEach((d: any) => batch.delete(d.ref));
+    await batch.commit();
+    if (snap.size < 300) return;
+  }
+}
+
+async function purgeTree(db: Db, ref: any): Promise<void> {
+  if (typeof db.recursiveDelete === 'function') await db.recursiveDelete(ref);
+  else await ref.delete();
+}
+
 /**
  * Irreversibly removes the personal account behind `uid`.
  *
@@ -124,9 +140,9 @@ export async function purgeAccount(
   db: Db,
   auth: Auth,
   FieldValue: FieldValueLike,
-  input: { uid: string; studentId: string },
+  input: { uid: string; studentId: string; hardDeleteAcademicRecord?: boolean },
 ): Promise<{ steps: string[] }> {
-  const { uid, studentId } = input;
+  const { uid, studentId, hardDeleteAcademicRecord = false } = input;
   const steps: string[] = [];
   const attempt = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -139,7 +155,13 @@ export async function purgeAccount(
   };
 
   // 1. Kill the credentials before anything else.
-  if (studentId) {
+  if (studentId && hardDeleteAcademicRecord) {
+    await attempt('degrees:purged', async () => {
+      await purgeTree(db, db.collection('degrees').doc(studentId));
+      if (studentId !== uid) await purgeTree(db, db.collection('degrees').doc(uid));
+    });
+    await attempt('students:deleted', () => db.collection('students').doc(studentId).delete());
+  } else if (studentId) {
     await attempt('students:disabled', () => db.collection('students').doc(studentId).update({
       isActive: false,
       password: FieldValue.delete(),
@@ -156,17 +178,35 @@ export async function purgeAccount(
   // 2. The sign-in identity itself.
   await attempt('auth:deleted', () => auth.deleteUser(uid));
 
-  // 3. The profile and everything keyed by uid.
-  await attempt('users:deleted', () => db.collection('users').doc(uid).delete());
+  // 3. The profile and everything keyed by uid. Firestore does not cascade
+  // subcollections when a parent is deleted, so remove every known history
+  // collection first.
+  for (const child of ['streakHistory', 'mcqHistory', 'yearHistory', 'stageHistory']) {
+    await attempt(`users/${child}:purged`,
+      () => purgeCollection(db, db.collection('users').doc(uid).collection(child)));
+  }
+  await attempt('users:deleted', () => hardDeleteAcademicRecord
+    ? purgeTree(db, db.collection('users').doc(uid))
+    : db.collection('users').doc(uid).delete());
   await attempt('fcmToken:deleted', () => db.collection('fcm_tokens').doc(uid).delete());
   await attempt('mcqStats:deleted', () => db.collection('userMCQStats').doc(uid).delete());
+  await attempt('stageMcqStats:purged', async () => {
+    const snap = await db.collection('userStageMCQStats').where('userId', '==', uid).get();
+    for (let i = 0; i < snap.docs.length; i += 300) {
+      const batch = db.batch();
+      snap.docs.slice(i, i + 300).forEach((d: any) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  });
   await attempt('pendingStreakReset:deleted',
     () => db.collection('pending_streak_resets').doc(uid).delete());
 
   await attempt('mcqAnswers:purged',
     () => purgeCollection(db, db.collection('userMCQAnswers').doc(uid).collection('lectures')));
+  await attempt('mcqAnswersRoot:deleted', () => db.collection('userMCQAnswers').doc(uid).delete());
   await attempt('bankAnswers:purged',
     () => purgeCollection(db, db.collection('userBankAnswers').doc(uid).collection('questions')));
+  await attempt('bankAnswersRoot:deleted', () => db.collection('userBankAnswers').doc(uid).delete());
 
   await attempt('streakHistory:purged', async () => {
     const snap = await db.collection('streak_history').where('userId', '==', uid).limit(300).get();
@@ -183,27 +223,60 @@ export async function purgeAccount(
   await attempt('streakLog:purged',
     () => purgeCollection(db, db.collection('streakLog').doc(uid).collection('days')));
 
-  // 4. Chat is anonymised, not deleted - see the module comment.
-  await attempt('chat:anonymised', async () => {
+  // 4. Normal account deletion preserves conversations by anonymising them.
+  // Graduation follows the product's explicit hard-purge policy instead.
+  await attempt(hardDeleteAcademicRecord ? 'chat:deleted' : 'chat:anonymised', async () => {
     const snap = await db.collection('chat_messages').where('senderId', '==', uid).get();
     if (snap.empty) return;
     for (let i = 0; i < snap.docs.length; i += 300) {
       const batch = db.batch();
       for (const d of snap.docs.slice(i, i + 300)) {
-        batch.update(d.ref, {
-          senderName: DELETED_AUTHOR_AR,
-          senderId: FieldValue.delete(),
-          senderEmail: FieldValue.delete(),
-          senderPhotoUrl: FieldValue.delete(),
-          originalSenderName: FieldValue.delete(),
-          originalSenderExamCode: FieldValue.delete(),
-        });
+        if (hardDeleteAcademicRecord) batch.delete(d.ref);
+        else batch.update(d.ref, {
+            senderName: DELETED_AUTHOR_AR,
+            senderId: FieldValue.delete(),
+            senderEmail: FieldValue.delete(),
+            senderPhotoUrl: FieldValue.delete(),
+            originalSenderName: FieldValue.delete(),
+            originalSenderExamCode: FieldValue.delete(),
+          });
       }
       await batch.commit();
     }
   });
 
+  if (hardDeleteAcademicRecord) {
+    await attempt('aiChats:purged', () => purgeTree(db, db.collection('aiChats').doc(uid)));
+    await attempt('aiUsage:purged', () => purgeWhere(db, 'aiUsage', 'uid', uid));
+    await attempt('subscriptions:purged', () => purgeWhere(db, 'subscriptions', 'userId', uid));
+    await attempt('revenueCatLinks:purged', () => purgeWhere(db, 'rcLinks', 'uid', uid));
+    for (const collectionName of ['antiCheatLogs', 'adminAlerts', 'systemNotifications', 'mcqRequests']) {
+      await attempt(`${collectionName}:purged`, () => purgeWhere(db, collectionName, 'userId', uid));
+    }
+    await attempt('allowedAdmin:deleted', () => db.collection('allowed_admins').doc(studentId).delete());
+    await attempt('deletionRequest:deleted', () => db.collection('deletion_requests').doc(uid).delete());
+    await attempt('signupRequest:deleted', () => db.collection('signup_requests').doc(studentId).delete());
+  }
+
   return { steps };
+}
+
+/** Stage-5 graduation is intentionally stricter than a normal deletion request. */
+export async function purgeGraduatedStudent(
+  db: Db,
+  auth: Auth,
+  FieldValue: FieldValueLike,
+  input: { uid: string; studentId: string },
+): Promise<{ steps: string[] }> {
+  const result = await purgeAccount(db, auth, FieldValue, {
+    ...input,
+    hardDeleteAcademicRecord: true,
+  });
+  const failures = result.steps.filter(step => step.endsWith(':failed'));
+  if (failures.length) {
+    throw new DeletionError(`Graduation purge incomplete: ${failures.join(', ')}`, 500, 'PURGE_INCOMPLETE');
+  }
+  return result;
 }
 
 /**

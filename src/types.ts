@@ -221,7 +221,7 @@ export interface UserProfile {
   favorites?: string[];
   studied?: string[];
   streakCount?: number;
-  /** Peak of the CURRENT season only - startNewSeason zeroes this. */
+  /** Peak of the current streak season; MCQ totals use a separate annual cycle. */
   longestStreak?: number;
   /**
    * Peak across every season. Deliberately left out of the reset patch in

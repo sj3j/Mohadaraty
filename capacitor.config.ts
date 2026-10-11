@@ -23,6 +23,11 @@ const config: CapacitorConfig = {
     // The origin the WebView reports. Must match the CORS allowlist on the API
     // and Firebase Auth's authorized domains.
     allowMixedContent: false,
+    // Capacitor applies system-bar and display-cutout insets to its WebView on
+    // every supported Android version. The web UI already handles iOS safe
+    // areas through CSS; Android WebView safe-area env() values remain zero, so
+    // native margins avoid both clipping and double-padding.
+    adjustMarginsForEdgeToEdge: 'force',
   },
 
   ios: {

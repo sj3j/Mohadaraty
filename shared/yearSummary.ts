@@ -8,9 +8,8 @@
  * answered. Nothing else about the year survives.
  *
  * Ordering matters twice over:
- *   - run this BEFORE `startNewSeason`, which zeroes `userMCQStats`
- *   - run it BEFORE `wipeYear`, which deletes `userBankAnswers`
- * Either one first leaves this reading zeroes.
+ * Run it before `wipeYear`, which resets MCQ aggregates and deletes
+ * `userBankAnswers`.
  *
  * Lives in shared/ for the usual reason: server.ts and api/index.ts are
  * divergent copies and vercel.json routes production to api/index.ts, so logic
@@ -77,10 +76,9 @@ async function countBankAnswersByUser(
 /**
  * Writes one year card per student who was active.
  *
- * Idempotent: the card id is the year label, so re-running overwrites with the
- * same values rather than accumulating. A student with no MCQ and no bank
- * activity gets no card at all, matching how seasonReset skips unranked
- * students rather than filing an empty placing.
+ * Idempotent: the card id is the year label and an existing card is immutable.
+ * This is important after the annual aggregate reset: if a later wipe step
+ * fails, retrying must not replace the real snapshot with zeroes.
  */
 export async function summariseYear(
   db: FirebaseFirestore.Firestore,
@@ -137,10 +135,12 @@ export async function summariseYear(
       accuracy: mcqSolved > 0 ? (mcqCorrect / mcqSolved) * 100 : 0,
     };
 
-    batch.set(
-      db.collection('users').doc(uid).collection('yearHistory').doc(yearLabel),
-      { ...summary, archivedAt: FieldValue.serverTimestamp() },
-    );
+    const historyRef = db.collection('users').doc(uid).collection('yearHistory').doc(yearLabel);
+    if ((await historyRef.get()).exists) {
+      skipped++;
+      continue;
+    }
+    batch.set(historyRef, { ...summary, archivedAt: FieldValue.serverTimestamp() });
     ops++;
     summarised++;
     await flush();
