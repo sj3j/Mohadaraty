@@ -6,7 +6,9 @@ import {
   getDocs,
   serverTimestamp,
   runTransaction,
-  deleteField
+  deleteField,
+  Firestore,
+  Transaction,
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { MCQAttempt, UserMCQStats, UserStageMCQStats, computeMcqRankScore } from '../types/mcq.types';
@@ -56,12 +58,19 @@ function addToOfflineQueue(type: 'first' | 'retake', payload: any) {
   localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(next));
 }
 
-function isRetryableNetworkError(error: any): boolean {
+function isRetryableNetworkError(error: any, online = navigator.onLine): boolean {
   const code = String(error?.code || '').toLowerCase();
-  return !navigator.onLine || [
+  return !online || [
     'unavailable', 'deadline-exceeded', 'network-request-failed',
     'firestore/unavailable', 'firestore/deadline-exceeded', 'auth/network-request-failed',
   ].includes(code);
+}
+
+export interface FinalizeFirstAttemptRuntime {
+  firestore?: Firestore;
+  isOnline?: () => boolean;
+  enqueue?: (type: 'first', payload: any) => void;
+  runTransaction?: (firestore: Firestore, update: (transaction: Transaction) => Promise<void>) => Promise<void>;
 }
 
 /**
@@ -165,10 +174,15 @@ export async function finalizeFirstAttempt(
   subjectId: string,
   answers: Record<string, { selected: string; isCorrect: boolean }>,
   totalQuestions: number = 20,
-  lectureStageId?: string
+  lectureStageId?: string,
+  runtime?: FinalizeFirstAttemptRuntime,
 ) {
   const userId = auth.currentUser?.uid || userIdParam;
-  const answersDocRef = doc(db, `userMCQAnswers/${userId}/lectures/${lectureId}`);
+  const targetDb = runtime?.firestore || db;
+  const online = runtime?.isOnline?.() ?? navigator.onLine;
+  const enqueue = runtime?.enqueue || addToOfflineQueue;
+  const transactionRunner = runtime?.runTransaction || runTransaction;
+  const answersDocRef = doc(targetDb, `userMCQAnswers/${userId}/lectures/${lectureId}`);
 
   let correctCount = 0;
   const processedAnswers: Record<string, any> = {};
@@ -185,8 +199,8 @@ export async function finalizeFirstAttempt(
 
   const scorePercentage = (correctCount / totalQuestions) * 100;
 
-  if (!navigator.onLine) {
-    addToOfflineQueue('first', {
+  if (!online) {
+    enqueue('first', {
       userId, lectureId, subjectId, answers, totalQuestions, lectureStageId,
     });
     return { success: true, score: scorePercentage, correct: correctCount, offline: true };
@@ -205,7 +219,7 @@ export async function finalizeFirstAttempt(
   try {
     let alreadyCompleted = false;
 
-    await runTransaction(db, async (transaction) => {
+    await transactionRunner(targetDb, async (transaction) => {
       const answersDoc = await transaction.get(answersDocRef);
       if (answersDoc.exists() && answersDoc.data()?.hasCompletedFirstAttempt) {
         alreadyCompleted = true;
@@ -216,15 +230,15 @@ export async function finalizeFirstAttempt(
       // write. Keep the read phase together; the previous implementation wrote
       // answersDocRef here and then read both stats documents, causing every
       // completed first attempt to be rejected by the Web SDK.
-      const userRef = doc(db, `users/${userId}`);
+      const userRef = doc(targetDb, `users/${userId}`);
       const userDoc = await transaction.get(userRef);
       const userStageId = userDoc.exists() ? userDoc.data().stageId : undefined;
       const targetStageId = lectureStageId || userStageId;
 
       const stageStatsRef = targetStageId
-        ? doc(db, `userStageMCQStats/${userId}_${targetStageId}`)
+        ? doc(targetDb, `userStageMCQStats/${userId}_${targetStageId}`)
         : null;
-      const statsRef = doc(db, `userMCQStats/${userId}`);
+      const statsRef = doc(targetDb, `userMCQStats/${userId}`);
       const stageStatsDoc = stageStatsRef ? await transaction.get(stageStatsRef) : null;
       const statsDoc = await transaction.get(statsRef);
 
@@ -357,8 +371,8 @@ export async function finalizeFirstAttempt(
     return { success: true, score: scorePercentage, correct: correctCount };
   } catch (error) {
     console.error("Submission failed: ", error);
-    if (isRetryableNetworkError(error)) {
-      addToOfflineQueue('first', {
+    if (isRetryableNetworkError(error, online)) {
+      enqueue('first', {
         userId, lectureId, subjectId, answers, totalQuestions, lectureStageId,
       });
       return { success: true, score: scorePercentage, correct: correctCount, offline: true };

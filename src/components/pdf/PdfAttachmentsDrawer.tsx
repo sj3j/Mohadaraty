@@ -23,6 +23,7 @@ import {
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import AttachmentViewerModal from '../lecture/AttachmentViewerModal';
 import UploadAttachmentModal from '../lecture/UploadAttachmentModal';
+import { canManageLectures } from '../../lib/permissions';
 
 interface Props {
   lecture: Lecture;
@@ -49,10 +50,7 @@ export default function PdfAttachmentsDrawer({
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [approvedUploadsCount, setApprovedUploadsCount] = useState<number>(0);
 
-  const isStaff =
-    user?.role === 'admin' ||
-    user?.role === 'moderator' ||
-    Boolean(user?.isMasterAdmin);
+  const isStaff = canManageLectures(user);
 
   const courseKey = lecture.subjectId || lecture.category;
   const isSubscribed = hasSubscriptionAccess(user);

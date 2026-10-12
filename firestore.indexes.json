@@ -269,6 +269,50 @@
       ]
     },
     {
+      "collectionGroup": "userStageMCQStats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isActiveInStage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "mcqLeaderboardScore",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "accuracy",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "userStageMCQStats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isActiveInStage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "mcqLeaderboardScore",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "subscriptions",
       "queryScope": "COLLECTION",
       "fields": [

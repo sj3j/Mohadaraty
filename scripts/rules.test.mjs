@@ -15,7 +15,7 @@ import {
   assertFails,
   assertSucceeds,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where } from 'firebase/firestore';
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where, writeBatch } from 'firebase/firestore';
 
 const PROJECT_ID = 'mylectures-rules-test';
 
@@ -60,7 +60,7 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   // A moderator appointed by that representative.
   await setDoc(doc(db, 'users/mod_uid'), {
     role: 'moderator', email: 'mod@x.com', managedStageId: 'stage_3',
-    permissions: { manageLectures: true },
+    permissions: { manageLectures: true, manageRecords: true, manageTimetable: true },
   });
   await setDoc(doc(db, 'allowed_admins/mod@x.com'), {
     email: 'mod@x.com', role: 'moderator', managedStageId: 'stage_3',
@@ -132,7 +132,8 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
       manageLectures: true, manageAnnouncements: true, manageRecords: true,
       manageHomeworks: true, manageStudents: true,
       manageGrades: true, manageAdmins: true, manageGroups: true,
-      manageStreakSystem: true, manageAntiCheat: true, manageMcqSystem: true,
+      manageTimetable: true, manageStreakSystem: true,
+      manageAntiCheat: true, manageMcqSystem: true,
     },
   });
   await setDoc(doc(db, 'allowed_admins/sup@x.com'), {
@@ -147,6 +148,24 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
     email: 'repnostage@x.com', role: 'admin', managedStageId: 'stage_3',
   });
 
+  await setDoc(doc(db, 'users/rep_disabled_uid'), {
+    role: 'admin', email: 'repdisabled@x.com', managedStageId: 'stage_3',
+    permissions: { manageLectures: false },
+  });
+  await setDoc(doc(db, 'allowed_admins/repdisabled@x.com'), {
+    email: 'repdisabled@x.com', role: 'admin', managedStageId: 'stage_3',
+  });
+
+  await setDoc(doc(db, 'users/live_role_uid'), {
+    role: 'admin', email: 'liverole@x.com', managedStageId: 'stage_3',
+  });
+  await setDoc(doc(db, 'allowed_admins/liverole@x.com'), {
+    email: 'liverole@x.com', role: 'admin', managedStageId: 'stage_3',
+  });
+  await setDoc(doc(db, 'users/appointment_uid'), {
+    role: 'student', email: 'appointment@x.com', stageId: 'stage_3',
+  });
+
   await setDoc(doc(db, 'pending_streak_resets/p_stu'), { userId: 'stu_uid', streak: 5 });
   await setDoc(doc(db, 'streak_history/sh_stu'), { userId: 'stu_uid', finalStreak: 10 });
   await setDoc(doc(db, 'streak_recoveries/sr1'), { reason: 'app_glitch' });
@@ -154,7 +173,7 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'antiCheatLogs/ac1'), { reason: 'tab_switch' });
   await setDoc(doc(db, 'mcqs/lec1'), { lectureId: 'lec1', questions: [] });
   await setDoc(doc(db, 'mcqRequests/mr1'), { lectureId: 'lec1' });
-  await setDoc(doc(db, 'signup_requests/sq@x.com'), { name: 'New' });
+  await setDoc(doc(db, 'signup_requests/sq@x.com'), { name: 'New', stageId: 'stage_3' });
   await setDoc(doc(db, 'content_reports/cr1'), { reporterId: 'stu_uid', messageId: 'm1', reason: 'spam' });
 
   // A support account with an EMPTY permissions map. Support resolves an absent
@@ -287,6 +306,8 @@ const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
+const repDisabled = ctxFor('rep_disabled_uid', 'repdisabled@x.com');
+const liveRole = ctxFor('live_role_uid', 'liverole@x.com');
 
 console.log('\nStage history is immutable and owner-readable');
 await check('student CAN read their own archived stage stats',
@@ -311,12 +332,16 @@ await check('moderator CANNOT read degreeBatches',
 console.log('\nModerator keeps content permissions');
 await check('moderator CAN create a lecture on their stage',
   assertSucceeds(setDoc(doc(mod, 'lectures/lec_mod'), { title: 'M', stageId: 'stage_3' })));
+await check('moderator CANNOT create announcements without an explicit grant',
+  assertFails(setDoc(doc(mod, 'announcements/ann_mod'), { content: 'M', stageId: 'stage_3' })));
+await check('representative explicitly denied manageLectures CANNOT write own-stage lectures',
+  assertFails(setDoc(doc(repDisabled, 'lectures/lec_disabled'), { title: 'D', stageId: 'stage_3' })));
 await check('moderator CAN read lectures on their stage',
   assertSucceeds(getDoc(doc(mod, 'lectures/lec1'))));
 await check('moderator CANNOT read lectures on another stage',
   assertFails(getDoc(doc(mod, 'lectures/lec_s4'))));
-await check('moderator CAN configure announcement reactions in settings',
-  assertSucceeds(setDoc(doc(mod, 'settings/announcements'), { allowedReactions: ['x', 'y'] }, { merge: true })));
+await check('moderator CANNOT configure global announcement reactions',
+  assertFails(setDoc(doc(mod, 'settings/announcements'), { allowedReactions: ['x', 'y'] }, { merge: true })));
 await check('moderator CAN create a record',
   assertSucceeds(setDoc(doc(mod, 'records/rec_mod'), { title: 'R', stageId: 'stage_3' })));
 await check('moderator CANNOT write a lecture on another stage',
@@ -343,8 +368,8 @@ await check('representative CAN create a moderator on their stage',
   assertSucceeds(setDoc(doc(rep, 'allowed_admins/new_mod@x.com'), {
     email: 'new_mod@x.com', role: 'moderator', managedStageId: 'stage_3',
   })));
-await check('representative with managedStageId in allowed_admins only CAN create a moderator on their stage',
-  assertSucceeds(setDoc(doc(repNoStage, 'allowed_admins/mod_from_fallback@x.com'), {
+await check('representative without a live managedStageId CANNOT create a moderator',
+  assertFails(setDoc(doc(repNoStage, 'allowed_admins/mod_from_fallback@x.com'), {
     email: 'mod_from_fallback@x.com', role: 'moderator', managedStageId: 'stage_3',
   })));
 await check('representative CANNOT create an admin',
@@ -409,16 +434,16 @@ console.log('\nLegacy allowed_admins entries (no role field) still work');
 // these five back to assertFails - that is the intended behaviour, and the
 // per-stage assertions further down already prove an ASSIGNED admin is confined
 // to their own stage.
-await check('unassigned admin can still read students (grace)',
-  assertSucceeds(getDoc(doc(legacy, 'students/stu@x.com'))));
-await check('unassigned admin can still write a lecture (grace)',
-  assertSucceeds(setDoc(doc(legacy, 'lectures/lec_legacy'), { title: 'L', stageId: 'stage_3' })));
-await check('unassigned admin can still write a record (grace)',
-  assertSucceeds(setDoc(doc(legacy, 'records/rec_legacy'), { title: 'R', stageId: 'stage_3' })));
-await check('unassigned admin can still write an announcement (grace)',
-  assertSucceeds(setDoc(doc(legacy, 'announcements/ann_legacy'), { content: 'A', stageId: 'stage_3' })));
-await check('unassigned admin can still write a homework (grace)',
-  assertSucceeds(setDoc(doc(legacy, 'homeworks/hw_legacy'), { subject: 'biochemistry', stageId: 'stage_3' })));
+await check('unassigned representative CANNOT read students',
+  assertFails(getDoc(doc(legacy, 'students/stu@x.com'))));
+await check('unassigned representative CANNOT write a lecture',
+  assertFails(setDoc(doc(legacy, 'lectures/lec_legacy'), { title: 'L', stageId: 'stage_3' })));
+await check('unassigned representative CANNOT write a record',
+  assertFails(setDoc(doc(legacy, 'records/rec_legacy'), { title: 'R', stageId: 'stage_3' })));
+await check('unassigned representative CANNOT write an announcement',
+  assertFails(setDoc(doc(legacy, 'announcements/ann_legacy'), { content: 'A', stageId: 'stage_3' })));
+await check('unassigned representative CANNOT write a homework',
+  assertFails(setDoc(doc(legacy, 'homeworks/hw_legacy'), { subject: 'biochemistry', stageId: 'stage_3' })));
 
 console.log('\nRecords, announcements and homework are stage-scoped');
 await check('representative CAN create a record on their stage',
@@ -575,8 +600,8 @@ await check('student CANNOT write the academic calendar',
   assertFails(setDoc(doc(student, 'app_settings/academicCalendar'), { yearLabel: 'hacked', terms: [] })));
 await check('student CAN read the academic calendar',
   assertSucceeds(getDoc(doc(student, 'app_settings/academicCalendar'))));
-await check('representative CAN still write other app_settings',
-  assertSucceeds(setDoc(doc(rep, 'app_settings/streak'), { gracePeriodHours: 3 }, { merge: true })));
+await check('representative CANNOT write system-wide streak settings',
+  assertFails(setDoc(doc(rep, 'app_settings/streak'), { gracePeriodHours: 3 }, { merge: true })));
 
 console.log('\nStage and progression are server-owned');
 // Progression is recorded by /api/progression/submit with the Admin SDK,
@@ -658,9 +683,9 @@ await check('nobody can create a signup request from the client',
 await check('not even an admin can write one directly',
   assertFails(setDoc(doc(rep, 'signup_requests/new@x.com'), { email: 'new@x.com', status: 'pending' })));
 await check('a student cannot read the queue (it holds emails and hashes)',
-  assertFails(getDoc(doc(student, 'signup_requests/new@x.com'))));
+  assertFails(getDoc(doc(student, 'signup_requests/sq@x.com'))));
 await check('a representative CAN read it to triage',
-  assertSucceeds(getDoc(doc(rep, 'signup_requests/new@x.com'))));
+  assertSucceeds(getDoc(doc(rep, 'signup_requests/sq@x.com'))));
 
 console.log('');
 console.log('A season reset must not lock a student out of their own settings:');
@@ -912,8 +937,8 @@ await check('a student CAN read their own pending streak reset',
   assertSucceeds(getDoc(doc(student, 'pending_streak_resets/stu_uid'))));
 await check('a student CANNOT read another student pending streak reset',
   assertFails(getDoc(doc(student2, 'pending_streak_resets/stu_uid'))));
-await check('a representative CAN read a pending streak reset',
-  assertSucceeds(getDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
+await check('a representative CANNOT read system streak state',
+  assertFails(getDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
 await check('nobody can clear a pending streak reset from the client',
   assertFails(deleteDoc(doc(rep, 'pending_streak_resets/stu_uid'))));
 
@@ -925,8 +950,8 @@ await check('a student CAN read their own streak log day',
   assertSucceeds(getDoc(doc(student, 'streakLog/stu_uid/days/2026-09-20'))));
 await check('a student CANNOT read another student streak log',
   assertFails(getDoc(doc(student2, 'streakLog/stu_uid/days/2026-09-20'))));
-await check('a representative CAN read a streak log day',
-  assertSucceeds(getDoc(doc(rep, 'streakLog/stu_uid/days/2026-09-20'))));
+await check('a representative CANNOT read system streak audit rows',
+  assertFails(getDoc(doc(rep, 'streakLog/stu_uid/days/2026-09-20'))));
 await check('nobody can forge a streak log entry from the client',
   assertFails(setDoc(doc(student, 'streakLog/stu_uid/days/2026-09-21'), { method: 'normal', streakAfter: 99 })));
 await check('not even an admin can rewrite the audit trail from the client',
@@ -962,6 +987,8 @@ await check('bare support CANNOT seat a representative',
   assertFails(setDoc(doc(supportBare, 'allowed_admins/new@x.com'), {
     email: 'new@x.com', role: 'admin', managedStageId: 'stage_3',
   })));
+await check('bare support CANNOT write cross-stage content',
+  assertFails(setDoc(doc(supportBare, 'lectures/lec_bare'), { title: 'No', stageId: 'stage_3' })));
 
 console.log('\nSupport cannot reach the master-only surfaces');
 await check('support CANNOT read adminLogs',
@@ -972,6 +999,10 @@ await check('support CAN create an adminLog (its own actions are recorded)',
   })));
 await check('support CANNOT write the academic calendar',
   assertFails(setDoc(doc(support, 'app_settings/academicCalendar'), { seasons: [] })));
+await check('support with manageStreakSystem CAN write streak settings',
+  assertSucceeds(setDoc(doc(support, 'app_settings/streak'), { gracePeriodHours: 3 }, { merge: true })));
+await check('support with manageAnnouncements CAN write announcement settings',
+  assertSucceeds(setDoc(doc(support, 'settings/announcements'), { allowedReactions: ['x', 'y'] }, { merge: true })));
 
 console.log('\nSupport cannot escalate');
 await check('support CANNOT create another support account',
@@ -993,6 +1024,36 @@ await check('support CANNOT promote a user doc to support',
 await check('support CAN appoint a moderator on a stage it does not manage',
   assertSucceeds(updateDoc(doc(support, 'users/stu2_uid'), {
     role: 'moderator', managedStageId: 'stage_3', permissions: { manageLectures: true },
+  })));
+
+console.log('\nAppointment projection and live-role enforcement');
+const appointmentBatch = writeBatch(support);
+appointmentBatch.set(doc(support, 'allowed_admins/appointment@x.com'), {
+  email: 'appointment@x.com', role: 'admin', managedStageId: 'stage_5',
+});
+appointmentBatch.update(doc(support, 'users/appointment_uid'), {
+  role: 'admin', managedStageId: 'stage_5', permissions: { manageLectures: true },
+});
+await check('support appointment commits registry and live projection atomically',
+  assertSucceeds(appointmentBatch.commit()));
+await check('live representative CAN write before revocation',
+  assertSucceeds(setDoc(doc(liveRole, 'lectures/lec_live_before'), { title: 'Before', stageId: 'stage_3' })));
+await testEnv.withSecurityRulesDisabled(async (ctx) => {
+  await updateDoc(doc(ctx.firestore(), 'users/live_role_uid'), {
+    role: 'student', managedStageId: null, permissions: {},
+  });
+});
+await check('same session loses write access immediately after live role revocation',
+  assertFails(setDoc(doc(liveRole, 'lectures/lec_live_after'), { title: 'After', stageId: 'stage_3' })));
+
+console.log('\nStage-owned lecture tabs');
+await check('representative CAN create a custom lecture tab for own stage',
+  assertSucceeds(setDoc(doc(rep, 'app_settings/lectureTabs/tabs/tab3'), {
+    name: 'Stage 3', lectureIds: [], stageId: 'stage_3',
+  })));
+await check('representative CANNOT create a custom lecture tab for another stage',
+  assertFails(setDoc(doc(rep, 'app_settings/lectureTabs/tabs/tab4'), {
+    name: 'Stage 4', lectureIds: [], stageId: 'stage_4',
   })));
 
 console.log('\nSupport capabilities match granted permissions');
@@ -1066,8 +1127,8 @@ await check('representative CANNOT delete another stage\'s degree',
 // Repairing a pre-rollout row is allowed; MINTING one is not. The two are
 // separated deliberately - if a create with no stageId were allowed, the whole
 // scoping could be bypassed by simply omitting the field.
-await check('a pre-rollout degree with no stageId can still be repaired',
-  assertSucceeds(setDoc(doc(rep, 'degrees/stu_uid/exams/exam_legacy'), {
+await check('only master tooling can repair a pre-rollout degree with no stageId',
+  assertFails(setDoc(doc(rep, 'degrees/stu_uid/exams/exam_legacy'), {
     examName: 'Old', degree: 56, batchId: 'b_old',
   }, { merge: true })));
 await check('a NEW degree cannot be minted without a stageId - no bypass',
@@ -1114,8 +1175,8 @@ await check('master admin can write any stage timetable',
   assertSucceeds(setDoc(doc(master, 'settings/weekly_schedule_stage_4'), { photoUrl: 'ok' })));
 // Narrowing settings/{document=**} must not catch the one live client write
 // that is not a timetable.
-await check('settings/announcements is still writable by a representative',
-  assertSucceeds(setDoc(doc(rep, 'settings/announcements'), { allowedReactions: ['y'] }, { merge: true })));
+await check('settings/announcements is not globally writable by a representative',
+  assertFails(setDoc(doc(rep, 'settings/announcements'), { allowedReactions: ['y'] }, { merge: true })));
 await check('a student still CANNOT write settings',
   assertFails(setDoc(doc(student, 'settings/weekly_schedule_stage_3'), { photoUrl: 'nope' })));
 
@@ -1167,8 +1228,12 @@ await check('support reaches every stage, the way the master admin does',
   }, { merge: true })));
 
 console.log('\nBank questions belong to a stage');
-await check('representative CAN add a question on their own stage',
-  assertSucceeds(setDoc(doc(rep, 'questionBank/q_new'), {
+await check('representative CANNOT administer the question bank',
+  assertFails(setDoc(doc(rep, 'questionBank/q_new'), {
+    scope: 'subject', subjectId: 'biochemistry_ii', stageId: 'stage_3', stem: 'Q',
+  })));
+await check('support with manageMcqSystem CAN administer the question bank',
+  assertSucceeds(setDoc(doc(support, 'questionBank/q_support'), {
     scope: 'subject', subjectId: 'biochemistry_ii', stageId: 'stage_3', stem: 'Q',
   })));
 await check('representative CANNOT add a question onto another stage',
@@ -1237,8 +1302,8 @@ await check('the master admin CAN',
     walletNumber: '07712345678', whatsapp: '9647712345678', telegram: '',
   })));
 // The narrowing is one document, not the whole settings/ wildcard.
-await check('a representative CAN still write another settings document',
-  assertSucceeds(setDoc(doc(rep, 'settings/misc'), { anything: false })));
+await check('a representative CANNOT write an unscoped settings document',
+  assertFails(setDoc(doc(rep, 'settings/misc'), { anything: false })));
 
 console.log('\nSecurity Hardening: email_verified & users doc self-edits');
 const unverifiedMaster = testEnv.authenticatedContext('unverified_master_uid', {

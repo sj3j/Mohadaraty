@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { db, storage } from '../lib/firebase';
 import {
   doc, setDoc, getDoc, getDocs, collection, query, orderBy, limit, where, getCountFromServer,
+  onSnapshot,
 } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { Language, UserProfile } from '../types';
@@ -123,48 +124,36 @@ export default function ProfileScreen({
    * MCQ leaderboard rank, by the same route LeaderboardTab uses for a student
    * outside the visible top ten: count how many beat their score, add one.
    *
-   * `mcqRankScore` is absent until a student has answered enough questions, and
-   * is deleted outright at season reset - so "unranked" is a normal state, not
-   * an error, and must not render as #1.
+   * The stage-scoped aggregate is the sole live authority. A listener keeps the
+   * profile tile in sync with first-attempt commits and annual resets.
    */
   useEffect(() => {
     if (!uid || !effectiveStageId) return;
-    let alive = true;
-    (async () => {
+    let generation = 0;
+    const unsubscribe = onSnapshot(doc(db, 'userStageMCQStats', `${uid}_${effectiveStageId}`), async mine => {
+      const currentGeneration = ++generation;
       try {
-        let mine = await getDoc(doc(db, 'userStageMCQStats', `${uid}_${effectiveStageId}`));
-        let data = mine.exists() ? (mine.data() as any) : null;
-        if (!data) {
-          mine = await getDoc(doc(db, 'userMCQStats', uid));
-          data = mine.exists() && (mine.data() as any).stageId === effectiveStageId ? (mine.data() as any) : null;
+        const data = mine.exists() ? (mine.data() as any) : null;
+        if (!data || (data.totalFirstAttemptAnswered || 0) <= 0) {
+          if (currentGeneration === generation) setMcqRank(null);
+          return;
         }
-        const score = data ? data.mcqRankScore : null;
-        if (score == null) { if (alive) setMcqRank(null); return; }
-
-        let count = 0;
-        try {
-          const counted = await getCountFromServer(query(
-            collection(db, 'userStageMCQStats'),
-            where('stageId', '==', effectiveStageId),
-            where('isActiveInStage', '==', true),
-            where('mcqRankScore', '>', score),
-          ));
-          count = counted.data().count;
-        } catch {
-          const counted = await getCountFromServer(query(
-            collection(db, 'userMCQStats'),
-            where('stageId', '==', effectiveStageId),
-            where('mcqRankScore', '>', score),
-          ));
-          count = counted.data().count;
-        }
-        if (alive) setMcqRank(count + 1);
+        const counted = await getCountFromServer(query(
+          collection(db, 'userStageMCQStats'),
+          where('stageId', '==', effectiveStageId),
+          where('isActiveInStage', '==', true),
+          where('mcqLeaderboardScore', '>', data.mcqLeaderboardScore || 0),
+        ));
+        if (currentGeneration === generation) setMcqRank(counted.data().count + 1);
       } catch (err) {
         console.warn('Could not read MCQ rank:', err);
-        if (alive) setMcqRank(null);
+        if (currentGeneration === generation) setMcqRank(null);
       }
-    })();
-    return () => { alive = false; };
+    }, err => {
+      console.warn('Could not listen to MCQ rank:', err);
+      setMcqRank(null);
+    });
+    return () => { generation++; unsubscribe(); };
   }, [uid, effectiveStageId]);
 
   if (!user) return null;

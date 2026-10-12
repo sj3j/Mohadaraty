@@ -10,6 +10,7 @@ import { lockSingleAnswer, getLockedAnswers } from '../../services/mcqAnswerServ
 import { enableAntiScreenshot, disableAntiScreenshot } from '../../services/antiCheatService';
 import { modifyQuestionWithAI } from '../../services/mcqGenerationService';
 import MCQManualEditModal from './MCQManualEditModal';
+import { canManageLectures } from '../../lib/permissions';
 
 interface Props {
   onQuestionsUpdated?: (questions: any[]) => void;
@@ -146,8 +147,7 @@ export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, u
   const [manualEditQuestion, setManualEditQuestion] = useState<MCQQuestion | null>(null);
   const [isManualEditing, setIsManualEditing] = useState(false);
 
-  // Derive admin
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = canManageLectures(user);
 
   const [localQuestions, setLocalQuestions] = useState(questions);
   useEffect(() => { setLocalQuestions(questions) }, [questions]);

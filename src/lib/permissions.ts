@@ -1,4 +1,13 @@
 import { UserProfile } from '../types';
+import {
+  CONTENT_CAPABILITIES,
+  REPRESENTATIVE_ONLY_CAPABILITIES,
+  SYSTEM_CAPABILITIES as SHARED_SYSTEM_CAPABILITIES,
+  MASTER_ONLY_CAPABILITIES as SHARED_MASTER_ONLY_CAPABILITIES,
+  SUPPORT_CAPABILITIES as SHARED_SUPPORT_CAPABILITIES,
+  StaffCapability,
+  hasStaffCapability,
+} from '../../shared/staffCapabilities';
 
 /**
  * Single source of truth for "who may do what".
@@ -21,21 +30,11 @@ import { UserProfile } from '../types';
 
 /** Permissions a moderator can be granted. Deliberately excludes anything that
  *  needs the `students` collection - see ADMIN_ONLY_CAPABILITIES. */
-export const MODERATOR_CAPABILITIES = [
-  'manageLectures',
-  'manageAnnouncements',
-  'manageRecords',
-  'manageHomeworks',
-  // Parsing, correcting and publishing the stage's weekly timetable. Per-stage
-  // content, so it belongs here and NOT in SYSTEM_CAPABILITIES: a timetable is
-  // one stage's business, and a representative should hold it by default the
-  // way they hold the other four.
-  'manageTimetable',
-] as const;
+export const MODERATOR_CAPABILITIES = CONTENT_CAPABILITIES;
 
 /** Never available to a moderator: both read the `students` whitelist, which
  *  holds emails, exam codes and password hashes. */
-export const ADMIN_ONLY_CAPABILITIES = ['manageStudents', 'manageGrades'] as const;
+export const ADMIN_ONLY_CAPABILITIES = REPRESENTATIVE_ONLY_CAPABILITIES;
 
 /**
  * Tools that act on every stage at once, so they are not one stage's business.
@@ -52,12 +51,7 @@ export const ADMIN_ONLY_CAPABILITIES = ['manageStudents', 'manageGrades'] as con
  * list, moving canManageStreakSystem off its isMasterAdmin alias would hand the
  * streak system to every representative in the college.
  */
-export const SYSTEM_CAPABILITIES = [
-  'manageStreakSystem',
-  'manageMcqSystem',
-  'manageAntiCheat',
-  'manageSubscriptions',
-] as const;
+export const SYSTEM_CAPABILITIES = SHARED_SYSTEM_CAPABILITIES;
 
 /**
  * Never held by anyone but the master admin, whatever is stored.
@@ -68,31 +62,12 @@ export const SYSTEM_CAPABILITIES = [
  *                          and drives the season reset and progression.
  *   manageSimosanBilling - real dollars and the monthly ceiling.
  */
-export const MASTER_ONLY_CAPABILITIES = [
-  'viewAdminLogs',
-  'manageCalendar',
-  'manageSimosanBilling',
-] as const;
+export const MASTER_ONLY_CAPABILITIES = SHARED_MASTER_ONLY_CAPABILITIES;
 
 /** Everything a support account may be ticked for. */
-export const SUPPORT_CAPABILITIES = [
-  ...MODERATOR_CAPABILITIES,
-  ...ADMIN_ONLY_CAPABILITIES,
-  ...SYSTEM_CAPABILITIES,
-  'manageAdmins',
-  'manageGroups',
-] as const;
+export const SUPPORT_CAPABILITIES = SHARED_SUPPORT_CAPABILITIES;
 
-export type Capability =
-  | typeof MODERATOR_CAPABILITIES[number]
-  | typeof ADMIN_ONLY_CAPABILITIES[number]
-  | typeof SYSTEM_CAPABILITIES[number]
-  | typeof MASTER_ONLY_CAPABILITIES[number]
-  | 'manageAdmins'
-  | 'manageGroups';
-
-const has = (list: readonly string[], capability: Capability): boolean =>
-  list.includes(capability);
+export type Capability = StaffCapability;
 
 export const isMasterAdmin = (user?: UserProfile | null): boolean =>
   !!user?.isMasterAdmin;
@@ -137,34 +112,7 @@ export const isCrossStage = (user?: UserProfile | null): boolean =>
  * capability its role is barred from regardless of what is stored on their doc.
  */
 export function canManage(user: UserProfile | null | undefined, capability: Capability): boolean {
-  if (!user) return false;
-  if (isMasterAdmin(user)) return true;
-  if (isObserver(user)) return true;
-
-  // Ahead of every role arm: nothing below the master admin reaches these, so
-  // no stored map and no role can turn one on.
-  if (has(MASTER_ONLY_CAPABILITIES, capability)) return false;
-
-  // Support is tested BEFORE representative on purpose. A promoted
-  // representative keeps its managedStageId, and isRepresentative would apply
-  // "allowed unless false" to a map that was deliberately built as "denied
-  // unless true" - silently granting everything the ticking left out.
-  if (isSupport(user)) {
-    return user.permissions?.[capability] === true;
-  }
-
-  if (isRepresentative(user)) {
-    if (has(SYSTEM_CAPABILITIES, capability)) return false;
-    return user.permissions?.[capability] !== false;
-  }
-
-  if (isModerator(user)) {
-    if (has(ADMIN_ONLY_CAPABILITIES, capability)) return false;
-    if (has(SYSTEM_CAPABILITIES, capability)) return false;
-    return user.permissions?.[capability] === true;
-  }
-
-  return false;
+  return hasStaffCapability(user, capability);
 }
 
 /** إدارة الطلاب and السعيّات والدرجات. */
@@ -173,6 +121,9 @@ export const canManageStudents = (user?: UserProfile | null): boolean =>
 
 export const canManageGrades = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageGrades');
+
+export const canManageLectures = (user?: UserProfile | null): boolean =>
+  canManage(user, 'manageLectures');
 
 /** Group/subgroup structure for a stage. */
 export const canManageGroups = (user?: UserProfile | null): boolean =>
@@ -217,6 +168,17 @@ export const canManageStreakSystem = (user?: UserProfile | null): boolean =>
 export const canManageMcqSystem = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageMcqSystem');
 
+export const canManageAntiCheat = (user?: UserProfile | null): boolean =>
+  canManage(user, 'manageAntiCheat');
+
+/** Read-only observers may inspect the inbox; other staff need a capability
+ * matching one of the alert-producing surfaces. */
+export const canViewStaffInbox = (user?: UserProfile | null): boolean =>
+  isObserver(user)
+  || canManage(user, 'manageLectures')
+  || canManage(user, 'manageStudents')
+  || canManage(user, 'manageMcqSystem');
+
 
 /** إدارة الاشتراكات. Master admin always; support when ticked. The screen is
  *  web-only either way - vite.config.ts stubs it for mode === 'native'. */
@@ -225,7 +187,7 @@ export const canManageSubscriptions = (user?: UserProfile | null): boolean =>
 
 /** Master-admin-exclusive. Deliberately left as aliases rather than routed
  *  through canManage, so there is no stored key that could ever turn them on. */
-export const canViewAdminLogs = (user?: UserProfile | null) => isMasterAdmin(user) || isObserver(user);
+export const canViewAdminLogs = (user?: UserProfile | null) => canManage(user, 'viewAdminLogs');
 export const canManageCalendar = isMasterAdmin;
 export const canManageSimosanBilling = isMasterAdmin;
 export const canManageTelegramMirror = isMasterAdmin;

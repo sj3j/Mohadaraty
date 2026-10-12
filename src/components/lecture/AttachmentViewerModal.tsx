@@ -18,7 +18,7 @@ import {
 import { AnimatePresence } from 'motion/react';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
 import { UserProfile, Language } from '../../types';
-import { canManage } from '../../lib/permissions';
+import { canManageLectures } from '../../lib/permissions';
 
 interface AttachmentViewerModalProps {
   isOpen: boolean;
@@ -299,11 +299,7 @@ export default function AttachmentViewerModal({
 
   if (!isOpen || !current) return null;
 
-  const isStaff =
-    user?.role === 'admin' ||
-    user?.role === 'moderator' ||
-    Boolean(user?.isMasterAdmin) ||
-    canManage(user, 'manageLectures');
+  const isStaff = canManageLectures(user);
 
   const canDeleteCurrent = Boolean(
     isStaff || (user && user.uid === current.uploadedBy)

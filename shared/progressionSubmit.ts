@@ -227,6 +227,7 @@ export async function submitProgression(
         totalFirstAttemptAnswered: stats.totalFirstAttemptAnswered || 0,
         lecturesAttempted: stats.lecturesAttempted || 0,
         mcqLeaderboardScore: stats.mcqLeaderboardScore || 0,
+        scoreModel: 'correct_x10_v1',
         mcqRankScore: stats.mcqRankScore ?? null,
         accuracy: stats.accuracy || 0,
         subjectStats: stats.subjectStats || {},

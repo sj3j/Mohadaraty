@@ -205,7 +205,7 @@ export default function AdminRecordUpload({ isOpen, onClose, lang, recordToEdit,
           size = parseFloat((currentFile.size / (1024 * 1024)).toFixed(2));
 
           const token = await auth.currentUser.getIdToken();
-          const response = await fetch(apiUrl(`/api/get-upload-url?filename=${encodeURIComponent(currentFile.name)}&contentType=${encodeURIComponent(currentFile.type)}`), {
+          const response = await fetch(apiUrl(`/api/get-upload-url?filename=${encodeURIComponent(currentFile.name)}&contentType=${encodeURIComponent(currentFile.type)}&stageId=${encodeURIComponent(effectiveStageId || '')}`), {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           
@@ -274,7 +274,7 @@ export default function AdminRecordUpload({ isOpen, onClose, lang, recordToEdit,
           const size = parseFloat((currentFile.size / (1024 * 1024)).toFixed(2));
 
           const token = await auth.currentUser.getIdToken();
-          const response = await fetch(apiUrl(`/api/get-upload-url?filename=${encodeURIComponent(currentFile.name)}&contentType=${encodeURIComponent(currentFile.type)}`), {
+          const response = await fetch(apiUrl(`/api/get-upload-url?filename=${encodeURIComponent(currentFile.name)}&contentType=${encodeURIComponent(currentFile.type)}&stageId=${encodeURIComponent(effectiveStageId || '')}`), {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           

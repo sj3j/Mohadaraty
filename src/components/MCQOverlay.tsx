@@ -14,6 +14,7 @@ import MCQResultScreen from './mcq/MCQResultScreen';
 import MCQReviewScreen from './mcq/MCQReviewScreen';
 import BankQuizSetupScreen from './questionBank/BankQuizSetupScreen';
 import BankQuizScreen from './questionBank/BankQuizScreen';
+import { canManageMcqSystem } from '../lib/permissions';
 
 export type MCQStackRoute = 'init_loading' | 'loading' | 'intro' | 'quiz' | 'result' | 'review' | 'banned' | 'bank_quiz_setup' | 'bank_quiz' | 'bank_result';
 
@@ -367,7 +368,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             onBack={() => setRoute('intro')}
             userId={user.uid}
             userName={user.name}
-            isAdmin={user.role === 'admin'}
+            isAdmin={canManageMcqSystem(user)}
             onQuestionsUpdated={(updated) => {
                setBankQuizQuestions(updated);
                setBankQuestions(prev => prev.map(q => {

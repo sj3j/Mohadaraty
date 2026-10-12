@@ -20,7 +20,13 @@ import {
   LoginError,
 } from "./shared/studentLookup.js";
 import { nameKeyFor } from "./shared/rosterIdentity.js";
-import { resetStudentPassword, StudentAdminError } from "./shared/studentAdmin.js";
+import {
+  resetStudentPassword,
+  assertStageAuthority,
+  assertStudentManagement,
+  hasGlobalStudentScope,
+  StudentAdminError,
+} from "./shared/studentAdmin.js";
 import {
   requestAccountDeletion,
   cancelAccountDeletion,
@@ -47,6 +53,7 @@ import { createIapHandlers } from "./shared/iapApi.js";
 import { createSupportHandlers } from "./shared/supportApi.js";
 import { createTranslateHandlers } from "./shared/translateApi.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
+import { hasStaffCapability } from "./shared/staffCapabilities.js";
 import { summariseYear } from "./shared/yearSummary.js";
 import { deleteWipedFiles } from "./shared/yearWipeFiles.js";
 import { handleAnnouncementReact } from "./shared/announcementReact.js";
@@ -209,11 +216,10 @@ type CallerStage = {
   permissions: Record<string, boolean>;
 };
 
-/** Support holds a capability only when it is explicitly true. */
 const staffCan = (staff: CallerStage, capability: string): boolean =>
-  staff.isMasterAdmin || (staff.isSupport && staff.permissions[capability] === true);
+  hasStaffCapability(staff, capability as any);
 
-const SUPPORT_NOT_GRANTED = 'Your support account is not granted this.';
+  const SUPPORT_NOT_GRANTED = 'Your account is not granted this capability.';
 
 const callerStage = (req: express.Request): CallerStage =>
   (req as any).staff
@@ -227,7 +233,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       const db = admin.firestore();
       const email = (user.email || '').toLowerCase();
       const isEmailVerified = user.email_verified === true;
-      const isMaster = isMasterAdminEmail(email) && isEmailVerified;
+      const isMaster = isEmailVerified
+        && (isMasterAdminEmail(email) || user.role === 'master_admin');
 
       const userDoc = await db.collection('users').doc(user.uid).get();
 
@@ -244,7 +251,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       }
 
       (req as any).staff = {
-        isMasterAdmin: isMaster || role === 'master_admin' || data.isMasterAdmin === true,
+        isMasterAdmin: isMaster,
         isSupport: role === 'support',
         role: role || 'admin',
         managedStageId: data.managedStageId || null,
@@ -312,27 +319,20 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         return res.status(400).json({ error: "Filename is required" });
       }
 
-      // Which stage this recording belongs to.
-      //
-      // The route used to mint a presigned PUT to a flat, stage-agnostic key without
-      // ever consulting the caller's stage, even though verifyAdmin has already
-      // resolved it onto req.staff. The bucket had no stage partition at all, so the
-      // only thing tying a recording to a stage was the Firestore document written
-      // afterwards.
-      //
-      // Neither caller sends stageId - AdminRecordUpload's single- and multi-file
-      // paths send filename and contentType only, and an installed APK never will -
-      // so a missing one is INFERRED rather than rejected. Only a volunteered
-      // mismatch is refused, the same stance POST /api/admin/students takes.
-      // Rejecting on `!managedStageId` instead would break record upload for every
-      // unassigned admin, who are still the common case while the rollout grace stands.
       const staff = callerStage(req);
-      const requestedStage = typeof req.query.stageId === 'string' ? req.query.stageId : '';
-      if (requestedStage && staff.managedStageId && !staff.isMasterAdmin && !staff.isSupport
-          && requestedStage !== staff.managedStageId) {
-        return res.status(403).json({ error: "You may only upload to your own stage." });
+      if (!staffCan(staff, 'manageRecords')) {
+        return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
       }
-      const uploadStage = requestedStage || staff.managedStageId || '';
+      const requestedStage = typeof req.query.stageId === 'string' ? req.query.stageId : '';
+      if (!requestedStage) {
+        return res.status(400).json({ error: "stageId is required." });
+      }
+      if (!staff.isMasterAdmin && !staff.isSupport) {
+        if (!staff.managedStageId || requestedStage !== staff.managedStageId) {
+          return res.status(403).json({ error: "You may only upload to your own stage." });
+        }
+      }
+      const uploadStage = requestedStage;
 
       const bucketName = process.env.R2_BUCKET_NAME || "lecture-audio";
       const publicUrlBase = process.env.R2_PUBLIC_URL || "";
@@ -766,7 +766,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       // promoted representative to the stage they used to represent, which is a
       // home stage and not a scope.
       if (!staffCan(staff, 'manageStudents')) {
-        if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+        return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+      }
+      if (!staff.isMasterAdmin && !staff.isSupport) {
         if (!staff.managedStageId) return res.json({ requests: [] });
         query = query.where('stageId', '==', staff.managedStageId);
       }
@@ -942,7 +944,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       // at login, granting them another stage's content.
       const staff = callerStage(req);
       let effectiveStage: string | null;
-      if (staffCan(staff, 'manageStudents')) {
+      if (!staffCan(staff, 'manageStudents')) {
+        return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+      }
+      if (staff.isMasterAdmin || staff.isSupport) {
         // Cross-stage, so the stage must be stated rather than inferred. A
         // support account's own managedStageId is a home stage and is NOT the
         // right default here - silently filing students under it would be the
@@ -951,8 +956,6 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         if (!effectiveStage) {
           return res.status(400).json({ error: "stageId is required." });
         }
-      } else if (staff.isSupport) {
-        return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
       } else {
         if (!staff.managedStageId) {
           return res.status(403).json({ error: "You are not assigned to a stage." });
@@ -1013,7 +1016,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       const db = admin.firestore();
       let studentsQuery: FirebaseFirestore.Query = db.collection('students');
       if (!staffCan(staff, 'manageStudents')) {
-        if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+        return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+      }
+      if (!staff.isMasterAdmin && !staff.isSupport) {
         if (!staff.managedStageId) return res.json({ students: [] });
         studentsQuery = studentsQuery.where('stageId', '==', staff.managedStageId);
       }
@@ -1049,14 +1054,19 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     try {
       const { email } = req.params;
       const { isActive } = req.body;
-      
+
       const db = admin.firestore();
-      await db.collection('students').doc(email).update({
-        isActive
-      });
+      const studentRef = db.collection('students').doc(decodeURIComponent(email).toLowerCase());
+      const studentDoc = await studentRef.get();
+      if (!studentDoc.exists) return res.status(404).json({ error: "Student not found" });
+      assertStageAuthority(callerStage(req), studentDoc.data()?.stageId);
+      await studentRef.update({ isActive });
 
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       console.error("Toggle student error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
@@ -1070,12 +1080,19 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
     try {
       const { email } = req.params;
-      
+
       const db = admin.firestore();
-      await db.collection('students').doc(email).delete();
+      const studentRef = db.collection('students').doc(decodeURIComponent(email).toLowerCase());
+      const studentDoc = await studentRef.get();
+      if (!studentDoc.exists) return res.status(404).json({ error: "Student not found" });
+      assertStageAuthority(callerStage(req), studentDoc.data()?.stageId);
+      await studentRef.delete();
 
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       console.error("Delete student error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
@@ -1092,12 +1109,12 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       // collection across all five stages on the strength of role == 'admin',
       // so one representative could wipe the whole university's whitelist.
       const staff = callerStage(req);
+      assertStudentManagement(staff);
       const db = admin.firestore();
       let victims: FirebaseFirestore.Query = db.collection('students');
       // Unscoped, this deletes every stage's whitelist. Support reaches that far
       // only when ticked for manageStudents - the capability is the whole guard.
-      if (!staffCan(staff, 'manageStudents')) {
-        if (staff.isSupport) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
+      if (!hasGlobalStudentScope(staff)) {
         if (!staff.managedStageId) {
           return res.status(403).json({ error: "You are not assigned to a stage." });
         }
@@ -1112,7 +1129,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       await batch.commit();
       res.json({ success: true, deleted: snapshot.size });
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       console.error("Delete all students error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
@@ -1138,6 +1158,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       if (!studentDoc.exists) {
         return res.status(404).json({ error: "Student not found" });
       }
+      assertStageAuthority(callerStage(req), studentDoc.data()?.stageId);
 
       const resolvedName = name || studentDoc.data()?.name;
       const updateData: any = {
@@ -1158,18 +1179,23 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
           return res.status(400).json({ error: "New email already exists" });
         }
         
-        updateData.email = newEmailLower;
-        updateData.isActive = studentDoc.data()?.isActive;
-        updateData.createdAt = studentDoc.data()?.createdAt;
-
-        await db.collection('students').doc(newEmailLower).set(updateData);
-        await studentRef.delete();
+        const batch = db.batch();
+        batch.set(db.collection('students').doc(newEmailLower), {
+          ...studentDoc.data(),
+          ...updateData,
+          email: newEmailLower,
+        });
+        batch.delete(studentRef);
+        await batch.commit();
       } else {
         await studentRef.update(updateData);
       }
 
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       console.error("Edit student error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
@@ -1297,23 +1323,6 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
             role: adminData?.role || 'admin' 
           } 
         });
-      }
-
-      // Check users collection for existing admin/moderator role
-      const usersSnapshot = await db.collection('users').where('email', '==', emailLower).get();
-      if (!usersSnapshot.empty) {
-        const userData = usersSnapshot.docs[0].data();
-        if (userData.role === 'admin' || userData.role === 'moderator') {
-          return res.json({ 
-            exists: true, 
-            data: { 
-              name: userData.name, 
-              email: emailLower, 
-              isActive: true, 
-              role: userData.role 
-            } 
-          });
-        }
       }
 
       // Check students collection
@@ -1883,10 +1892,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       // than through verifyAdmin so a student never trips its 403.
       const doc = await admin.firestore().collection('users').doc(user.uid).get();
       const data = doc.data() || {};
-      const isMaster = isMasterAdminEmail((user.email || '').toLowerCase())
-        || data.role === 'master_admin' || data.isMasterAdmin === true;
-      const granted = isMaster
-        || (data.role === 'support' && data.permissions?.manageSubscriptions === true);
+      const isMaster = user.email_verified === true
+        && (isMasterAdminEmail((user.email || '').toLowerCase()) || user.role === 'master_admin');
+      const granted = hasStaffCapability({ ...data, isMasterAdmin: isMaster }, 'manageSubscriptions');
       if (!granted) return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
     }
 

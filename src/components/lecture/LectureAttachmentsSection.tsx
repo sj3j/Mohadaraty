@@ -25,7 +25,7 @@ import {
   getStudentApprovedCourseAttachmentsCount,
 } from '../../services/lectureAttachmentService';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
-import { canManage } from '../../lib/permissions';
+import { canManageLectures } from '../../lib/permissions';
 import AttachmentViewerModal from './AttachmentViewerModal';
 import UploadAttachmentModal from './UploadAttachmentModal';
 
@@ -57,11 +57,7 @@ export default function LectureAttachmentsSection({
   const [rejectReason, setRejectReason] = useState('');
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
-  const isStaff =
-    user?.role === 'admin' ||
-    user?.role === 'moderator' ||
-    Boolean(user?.isMasterAdmin) ||
-    canManage(user, 'manageLectures');
+  const isStaff = canManageLectures(user);
 
   const courseKey = lecture.subjectId || lecture.category;
   const isSubscribed = hasSubscriptionAccess(user);

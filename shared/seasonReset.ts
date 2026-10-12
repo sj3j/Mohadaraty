@@ -19,7 +19,7 @@ export function computeMcqRankScore(correct: number, answered: number): number |
   return Math.round((correct * correct * 100) / answered);
 }
 
-/** Ranks entries within each stage, highest value first. Returns rank by key. */
+/** Competition ranking within each stage: 1, 2, 2, 4. */
 function rankWithinStages<T>(
   entries: T[],
   stageOf: (e: T) => string,
@@ -35,10 +35,17 @@ function rankWithinStages<T>(
 
   const ranks = new Map<string, { rank: number; stageId: string }>();
   for (const [stageId, group] of byStage) {
+    let previousValue: number | null = null;
+    let competitionRank = 0;
     group
       .slice()
-      .sort((a, b) => valueOf(b) - valueOf(a))
-      .forEach((e, i) => ranks.set(keyOf(e), { rank: i + 1, stageId }));
+      .sort((a, b) => valueOf(b) - valueOf(a) || keyOf(a).localeCompare(keyOf(b)))
+      .forEach((e, i) => {
+        const value = valueOf(e);
+        if (previousValue === null || value !== previousValue) competitionRank = i + 1;
+        previousValue = value;
+        ranks.set(keyOf(e), { rank: competitionRank, stageId });
+      });
   }
   return ranks;
 }
@@ -97,7 +104,11 @@ export async function startNewSeason(
   const rankedStats = stats
     .map(s => ({
       ...s,
-      _score: computeMcqRankScore(s.totalFirstAttemptCorrect || 0, s.totalFirstAttemptAnswered || 0) ?? 0,
+      _score: s.mcqLeaderboardScore ?? (s.totalFirstAttemptCorrect || 0) * 10,
+      _legacyAnalyticsScore: computeMcqRankScore(
+        s.totalFirstAttemptCorrect || 0,
+        s.totalFirstAttemptAnswered || 0,
+      ),
     }))
     .filter(s => (s.totalFirstAttemptAnswered || 0) > 0);
 
@@ -177,7 +188,9 @@ export async function startNewSeason(
       seasonName,
       stageId: placing?.stageId || 'unassigned',
       rank: placing?.rank ?? null,
-      score: Math.round(s._score / 100),
+      score: s._score,
+      scoreModel: 'correct_x10_v1',
+      mcqRankScore: s._legacyAnalyticsScore,
       totalCorrect: correct,
       totalAnswered: answered,
       accuracy: answered > 0 ? (correct / answered) * 100 : 0,
@@ -215,11 +228,14 @@ export async function startNewSeason(
     })),
     topMcqStudents: topByStage(rankedStats, mcqRanks, s => s.uid, (s, rank, stageId) => ({
       rank, stageId, userId: s.uid,
-      score: Math.round(s._score / 100),
+      score: s._score,
+      scoreModel: 'correct_x10_v1',
+      mcqRankScore: s._legacyAnalyticsScore,
       totalCorrect: s.totalFirstAttemptCorrect || 0,
       totalAnswered: s.totalFirstAttemptAnswered || 0,
     })),
     totalStudents: users.length,
+    mcqScoreModel: 'correct_x10_v1',
   });
 
   // Deliberately does NOT touch vacationMode. Whether the app is paused is the

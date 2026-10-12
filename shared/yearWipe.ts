@@ -112,6 +112,7 @@ export async function resetAnnualMcqStats(
           totalFirstAttemptAnswered: data.totalFirstAttemptAnswered || 0,
           lecturesAttempted: data.lecturesAttempted || 0,
           mcqLeaderboardScore: data.mcqLeaderboardScore || 0,
+          scoreModel: 'correct_x10_v1',
           mcqRankScore: data.mcqRankScore ?? null,
           accuracy: data.accuracy || 0,
           subjectStats: data.subjectStats || {},

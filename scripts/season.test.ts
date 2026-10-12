@@ -122,17 +122,18 @@ check('a student with no activity gets no history card', !idleStreak.exists);
 
 // ---- MCQ history has everything the profile needs -------------------------
 const midMcq = (await db.doc(`users/s3_mid/mcqHistory/${seasonId}`).get()).data();
-check('mcq history stores rank', midMcq?.rank === 2, String(midMcq?.rank));
-check('mcq history stores score', midMcq?.score === 182, String(midMcq?.score));
+check('mcq history stores rank', midMcq?.rank === 3, String(midMcq?.rank));
+check('mcq history stores correct-answer points', midMcq?.score === 2000, String(midMcq?.score));
+check('mcq history identifies the score model', midMcq?.scoreModel === 'correct_x10_v1', String(midMcq?.scoreModel));
 check('mcq history stores question counts', midMcq?.totalCorrect === 200 && midMcq?.totalAnswered === 220,
   `${midMcq?.totalCorrect}/${midMcq?.totalAnswered}`);
 check('mcq history stores accuracy', Math.round(midMcq?.accuracy) === 91, String(midMcq?.accuracy));
 
-// The blend must beat the old volume ordering: s3_low had MORE correct answers
-// than nobody, but its 61% accuracy should place it below s3_mid's 91%.
+// Accuracy remains descriptive analytics only: more first-attempt correct
+// answers always means more points, even at a lower accuracy.
 const lowMcq = (await db.doc(`users/s3_low/mcqHistory/${seasonId}`).get()).data();
-check('blended ranking places 91%/220 above 61%/340',
-  (midMcq?.rank as number) < (lowMcq?.rank as number), `mid=${midMcq?.rank} low=${lowMcq?.rank}`);
+check('correct-answer points rank 208 correct above 200 correct',
+  (lowMcq?.rank as number) < (midMcq?.rank as number), `mid=${midMcq?.rank} low=${lowMcq?.rank}`);
 
 // ---- streak resets; annual MCQ board remains live -------------------------
 const topUser = (await db.doc('users/s3_top').get()).data();
@@ -179,6 +180,7 @@ check('archive stores a per-stage streak top list',
   archive?.topStudents?.every((t: any) => !!t.stageId), JSON.stringify(archive?.topStudents?.[0]));
 check('archive stores an MCQ top list', (archive?.topMcqStudents?.length || 0) === 4,
   String(archive?.topMcqStudents?.length));
+check('archive declares the correct x10 score model', archive?.mcqScoreModel === 'correct_x10_v1');
 
 const settings = (await db.doc('app_settings/streak').get()).data();
 // The seed put the app in vacation. Archiving must leave that exactly as it

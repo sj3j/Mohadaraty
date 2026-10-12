@@ -25,6 +25,7 @@ import {
 } from './mcqGeneration.js';
 import { subjectSlugOf, denormalizedSubjectName } from './subjectSlug.js';
 import { MAX_PDF_BYTES } from './simosan.js';
+import { hasStaffCapability, hasStageCapability } from './staffCapabilities.js';
 
 export interface McqDeps {
   admin: any;
@@ -36,6 +37,8 @@ export function createMcqHandlers(deps: McqDeps) {
   const { admin } = deps;
   const apiKey = deps.apiKey || process.env.GEMINI_FREE_TIER_API_KEY;
   const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+
+  const staff = (req: any) => req.staff || {};
 
   async function raiseAlert(
     reason: McqFailureReason,
@@ -100,6 +103,9 @@ export function createMcqHandlers(deps: McqDeps) {
       const lectureSnap = await db.collection('lectures').doc(lectureId).get();
       if (!lectureSnap.exists) return res.status(404).json({ error: 'lecture_not_found' });
       const lecture = lectureSnap.data();
+      if (!hasStageCapability(staff(req), 'manageLectures', lecture?.stageId)) {
+        return res.status(403).json({ error: 'manageLectures is required for this stage' });
+      }
       if (!lecture?.pdfUrl) return res.status(400).json({ error: 'lecture_has_no_pdf' });
       if (lecture.version === 'translated') {
         // A translation is raw source material; generating exam questions from
@@ -330,16 +336,13 @@ export function createMcqHandlers(deps: McqDeps) {
       const label = [lecture?.stageId, subjectName, lecture?.title]
         .filter(Boolean).join(' — ');
       const staff = await db.collection('users')
-        .where('role', 'in', ['admin', 'moderator'])
+        .where('role', 'in', ['admin', 'moderator', 'support', 'master_admin'])
         .limit(50).get();
 
       const batch = db.batch();
       staff.docs.forEach((d: any) => {
         const s = d.data();
-        // Support and master admins only; a stage rep is notified for content
-        // on the stage they actually manage.
-        const scoped = s.isMasterAdmin || !s.managedStageId || s.managedStageId === lecture?.stageId;
-        if (!scoped) return;
+        if (!hasStageCapability(s, 'manageLectures', lecture?.stageId)) return;
         batch.set(db.collection('systemNotifications').doc(), {
           userId: d.id,
           title: 'طلب توليد أسئلة',
@@ -382,6 +385,9 @@ export function createMcqHandlers(deps: McqDeps) {
    * so there is nothing else it can reach.
    */
   async function extract(req: any, res: any) {
+    if (!hasStaffCapability(staff(req), 'manageMcqSystem')) {
+      return res.status(403).json({ error: 'manageMcqSystem is required' });
+    }
     const { storagePath } = req.body || {};
     if (!storagePath || typeof storagePath !== 'string') {
       return res.status(400).json({ error: 'storagePath is required' });
@@ -434,8 +440,8 @@ export function createMcqHandlers(deps: McqDeps) {
   async function modify(req: any, res: any) {
     const db = admin.firestore();
     const { question, prompt, lectureId } = req.body || {};
-    if (!question || typeof prompt !== 'string' || !prompt.trim()) {
-      return res.status(400).json({ error: 'question and prompt are required' });
+    if (!question || typeof prompt !== 'string' || !prompt.trim() || !lectureId) {
+      return res.status(400).json({ error: 'question, prompt and lectureId are required' });
     }
     if (!ai) return res.status(503).json({ error: 'not_configured' });
 
@@ -446,7 +452,11 @@ export function createMcqHandlers(deps: McqDeps) {
       // optional here: the caller decides whether the edit needs the lecture.
       if (lectureId) {
         const snap = await db.collection('lectures').doc(lectureId).get();
-        const url = snap.exists ? snap.data()?.pdfUrl : null;
+        if (!snap.exists) return res.status(404).json({ error: 'lecture_not_found' });
+        if (!hasStageCapability(staff(req), 'manageLectures', snap.data()?.stageId)) {
+          return res.status(403).json({ error: 'manageLectures is required for this stage' });
+        }
+        const url = snap.data()?.pdfUrl;
         if (url) {
           try {
             const r = await fetch(url);

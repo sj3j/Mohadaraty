@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { collection, query, orderBy, limit, getDocs, where, documentId, getCountFromServer, doc, getDoc } from 'firebase/firestore';
+import {
+  collection, query, orderBy, limit, getDocs, where, documentId,
+  getCountFromServer, doc, getDoc, onSnapshot, QueryDocumentSnapshot, DocumentData,
+} from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { UserProfile, Language } from '../types';
 import { Flame, Medal, Crown, Loader2, Target, RefreshCw, Palmtree, MoreVertical, Users, Sparkles } from 'lucide-react';
@@ -9,6 +12,7 @@ import { useStageContext } from '../contexts/StageContext';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
 import { hasLiveSubscription } from '../../shared/subscriptionAccess';
 import { BannerThemeId } from '../hooks/useSubscriptionBannerTheme';
+import { assignMcqCompetitionRanks } from '../lib/mcqLeaderboard';
 
 interface LeaderboardTabProps {
   user: UserProfile | null;
@@ -214,6 +218,7 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
   const [refreshing, setRefreshing] = useState(false);
   /** True when the signed-in user has not answered any MCQs yet. */
   const [mcqUnranked, setMcqUnranked] = useState(false);
+  const mcqApplyGenerationRef = useRef(0);
   const { effectiveStageId } = useStageContext();
 
   // Whether the season is over is derived from the academic calendar, so the
@@ -363,7 +368,9 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     // During a break, show the frozen term-close snapshot. The live MCQ totals
     // remain cumulative and resume unchanged when the next term opens.
     if (paused && lastArchiveId) {
+      const generation = ++mcqApplyGenerationRef.current;
       const { rows, profiles } = await fetchArchivedRows(lastArchiveId, 'topMcqStudents');
+      if (generation !== mcqApplyGenerationRef.current) return;
       setMcqUnranked(false);
       // Normalised into the live shape so the row mapper below stays single-path.
       setMcqLeaders(rows.map(s => {
@@ -374,102 +381,78 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
           totalFirstAttemptCorrect: correct,
           totalFirstAttemptAnswered: answered,
           accuracy: answered > 0 ? (correct / answered) * 100 : 0,
-          mcqRankScore: (s.score || 0) * 100,
+          mcqLeaderboardScore: s.scoreModel === 'correct_x10_v1'
+            ? (s.score || 0)
+            : correct * 10,
           profile: profiles.get(s.userId),
         } as any;
       }));
       return;
     }
 
-    // Ordered by mcqRankScore: accuracy first, volume as tie-break.
-    // Active stage filter ensures only students currently studying in this stage
-    // compete in the live race, while promoted students' scores remain archived in that stage.
-    let snap: any = null;
-    try {
-      snap = await getDocs(query(
-        collection(db, 'userStageMCQStats'),
-        where('stageId', '==', effectiveStageId),
-        where('isActiveInStage', '==', true),
-        orderBy('mcqRankScore', 'desc'),
-        limit(MCQ_LIMIT),
-      ));
-    } catch (err) {
-      console.warn('userStageMCQStats query failed, falling back to legacy userMCQStats:', err);
-    }
+    const snap = await getDocs(liveMcqQuery());
+    await applyLiveMcqDocs(snap.docs);
+  };
 
-    // Fallback to legacy userMCQStats if userStageMCQStats failed or returned no docs
-    if (!snap || snap.empty) {
-      try {
-        snap = await getDocs(query(
-          collection(db, 'userMCQStats'),
-          where('stageId', '==', effectiveStageId),
-          orderBy('mcqRankScore', 'desc'),
-          limit(MCQ_LIMIT),
-        ));
-      } catch (legacyErr) {
-        console.warn('userMCQStats fallback query failed:', legacyErr);
-      }
-    }
+  const liveMcqQuery = () => query(
+    collection(db, 'userStageMCQStats'),
+    where('stageId', '==', effectiveStageId),
+    where('isActiveInStage', '==', true),
+    orderBy('mcqLeaderboardScore', 'desc'),
+    orderBy('accuracy', 'desc'),
+    orderBy('userId', 'asc'),
+    limit(MCQ_LIMIT),
+  );
 
-    const leaders: any[] = (snap?.docs || []).map((d: any, i: number) => ({ id: d.id, ...d.data(), _rank: i + 1 }));
+  const applyLiveMcqDocs = async (docs: QueryDocumentSnapshot<DocumentData>[]) => {
+    const generation = ++mcqApplyGenerationRef.current;
+    const leaders: any[] = assignMcqCompetitionRanks(
+      docs.map(d => ({ id: d.id, ...d.data() }) as DocumentData & {
+        id: string;
+        mcqLeaderboardScore?: number;
+      }),
+    );
 
-    setMcqUnranked(false);
+    let unranked = false;
 
     if (user && !leaders.some(l => l.userId === user.uid)) {
       try {
-        // Check stage-scoped document first
-        let mine = await getDoc(doc(db, 'userStageMCQStats', `${user.uid}_${effectiveStageId}`));
-        let data = mine.exists() ? mine.data() : null;
+        const mine = await getDoc(doc(db, 'userStageMCQStats', `${user.uid}_${effectiveStageId}`));
+        const data = mine.exists() ? mine.data() : null;
 
-        // Fallback to legacy userMCQStats if stage-specific doc is absent
-        if (!data) {
-          try {
-            mine = await getDoc(doc(db, 'userMCQStats', user.uid));
-            data = mine.exists() && mine.data().stageId === effectiveStageId ? mine.data() : null;
-          } catch (e) {
-            console.warn('Could not read userMCQStats personal doc:', e);
-          }
-        }
-
-        if (data?.mcqRankScore != null) {
+        if (data && (data.totalFirstAttemptAnswered || 0) > 0) {
           let myRank: number | undefined;
           try {
             const countSnap = await getCountFromServer(query(
               collection(db, 'userStageMCQStats'),
               where('stageId', '==', effectiveStageId),
               where('isActiveInStage', '==', true),
-              where('mcqRankScore', '>', data.mcqRankScore),
+              where('mcqLeaderboardScore', '>', data.mcqLeaderboardScore || 0),
             ));
             myRank = countSnap.data().count + 1;
           } catch (err) {
-            // Fallback rank count on legacy if userStageMCQStats count fails
-            try {
-              const countSnap = await getCountFromServer(query(
-                collection(db, 'userMCQStats'),
-                where('stageId', '==', effectiveStageId),
-                where('mcqRankScore', '>', data.mcqRankScore),
-              ));
-              myRank = countSnap.data().count + 1;
-            } catch {
-              console.warn('Could not read MCQ rank:', err);
-            }
+            console.warn('Could not read MCQ rank:', err);
           }
           leaders.push({ id: mine.id, ...data, _rank: myRank, _detached: true });
         } else {
           // No answers yet in this stage - nothing to rank.
-          setMcqUnranked(true);
+          unranked = true;
         }
       } catch (err) {
         console.warn('Could not evaluate user detached MCQ rank:', err);
-        setMcqUnranked(true);
+        unranked = true;
       }
     }
 
     try {
       const profiles = await fetchProfiles(leaders.map(l => l.userId).filter(Boolean));
+      if (generation !== mcqApplyGenerationRef.current) return;
+      setMcqUnranked(unranked);
       setMcqLeaders(leaders.map(stat => ({ ...stat, profile: profiles.get(stat.userId) })));
     } catch (profErr) {
       console.warn('Could not fetch profiles for MCQ leaderboard:', profErr);
+      if (generation !== mcqApplyGenerationRef.current) return;
+      setMcqUnranked(unranked);
       setMcqLeaders(leaders.map(stat => ({ ...stat, profile: undefined })));
     }
   };
@@ -480,6 +463,7 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     // A master admin whose picker has not resolved yet lands here while
     // StageSettings shows stage 1 as selected, which reads as a broken board.
     if (!effectiveStageId) {
+      mcqApplyGenerationRef.current++;
       setStreakLeaders([]);
       setMcqLeaders([]);
       setLoading(false);
@@ -523,6 +507,35 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     fetchLeaderboard();
   }, [activeTab, effectiveStageId, isPaused]);
 
+  // userStageMCQStats is the sole authority for the active MCQ board. Re-run
+  // detached-rank calculation for the signed-in student on every aggregate
+  // change so a successful submission is visible without a manual refresh.
+  useEffect(() => {
+    if (activeTab !== 'mcq' || isPaused || !effectiveStageId) return;
+    setLoading(true);
+    const unsubscribe = onSnapshot(
+      liveMcqQuery(),
+      snap => {
+        void applyLiveMcqDocs(snap.docs)
+          .catch(err => {
+            console.error('Could not hydrate live MCQ leaderboard:', err);
+            setMcqLeaders([]);
+          })
+          .finally(() => {
+            setLoading(false);
+            setRefreshing(false);
+          });
+      },
+      err => {
+        console.error('Live MCQ leaderboard listener failed:', err);
+        setMcqLeaders([]);
+        setLoading(false);
+        setRefreshing(false);
+      },
+    );
+    return unsubscribe;
+  }, [activeTab, effectiveStageId, isPaused, user?.uid]);
+
   const handleRefresh = () => {
     setRefreshing(true);
     fetchLeaderboard();
@@ -557,15 +570,7 @@ export default function LeaderboardTab({ user, lang }: LeaderboardTabProps) {
     hideName: l.profile?.hideNameOnLeaderboard,
     hidePhoto: l.profile?.hidePhotoOnLeaderboard,
     detached: (l as any)._detached,
-    // Headline is the ranking score itself, so the list visibly descends by the
-    // number shown. Effort and precision are both spelled out underneath.
-    primary: (() => {
-      const rawScore = (l as any).mcqRankScore || 0;
-      const cleanScore = rawScore > 100000 && (l.totalFirstAttemptAnswered || 0) > 0
-        ? Math.round(((l.totalFirstAttemptCorrect || 0) * (l.totalFirstAttemptCorrect || 0)) / l.totalFirstAttemptAnswered)
-        : Math.round(rawScore / 100);
-      return <>{cleanScore}<span className="text-sm font-medium pe-1">{isRtl ? 'نقطة' : 'pts'}</span></>;
-    })(),
+    primary: <>{l.mcqLeaderboardScore || 0}<span className="text-sm font-medium pe-1">{isRtl ? 'نقطة' : 'pts'}</span></>,
     secondary: `${l.totalFirstAttemptCorrect}/${l.totalFirstAttemptAnswered} ${isRtl ? 'صحيحة' : 'correct'} • ${Math.round(l.accuracy)}% ${isRtl ? 'دقة' : 'accuracy'}`,
   }));
 

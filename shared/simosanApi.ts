@@ -115,7 +115,6 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     return {
       data,
       stageId: data?.stageId || '',
-      isAdmin: data?.role === 'admin' || !!data?.isMasterAdmin,
     };
   }
 

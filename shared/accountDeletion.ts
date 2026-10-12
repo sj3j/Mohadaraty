@@ -27,6 +27,8 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { hasStageCapability, hasStaffCapability } from './staffCapabilities.js';
+
 type Db = any;
 type Auth = any;
 type FieldValueLike = { serverTimestamp(): any; delete(): any };
@@ -294,7 +296,13 @@ export async function reviewDeletionRequest(
     uid: string;
     approve: boolean;
     reviewerUid: string;
-    staff: { isMasterAdmin: boolean; managedStageId?: string | null };
+    staff: {
+      isMasterAdmin: boolean;
+      isSupport?: boolean;
+      role?: string;
+      managedStageId?: string | null;
+      permissions?: Record<string, boolean>;
+    };
     reason?: string;
   },
 ): Promise<{ status: DeletionStatus; steps: string[] }> {
@@ -307,14 +315,16 @@ export async function reviewDeletionRequest(
     throw new DeletionError('That request has already been reviewed.', 409, 'ALREADY_REVIEWED');
   }
 
-  if (!opts.staff.isMasterAdmin) {
-    if (!opts.staff.managedStageId) {
-      throw new DeletionError('You are not assigned to a stage.', 403, 'NO_STAGE');
-    }
-    if (data.stageId !== opts.staff.managedStageId) {
-      throw new DeletionError(
-        'You may only review students in your own stage.', 403, 'WRONG_STAGE');
-    }
+  if (!hasStaffCapability(opts.staff, 'manageStudents')) {
+    throw new DeletionError(
+      'Your account is not granted student management.', 403, 'NOT_GRANTED');
+  }
+  if (!opts.staff.isMasterAdmin && opts.staff.role !== 'support' && !opts.staff.managedStageId) {
+    throw new DeletionError('You are not assigned to a stage.', 403, 'NO_STAGE');
+  }
+  if (!hasStageCapability(opts.staff, 'manageStudents', data.stageId)) {
+    throw new DeletionError(
+      'You may only review students in your own stage.', 403, 'WRONG_STAGE');
   }
 
   let steps: string[] = [];

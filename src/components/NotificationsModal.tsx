@@ -6,6 +6,7 @@ import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
 import { replyToQuestionReport } from '../services/questionBankService';
+import { canManageLectures, canViewStaffInbox } from '../lib/permissions';
 
 const formatTimeAgo = (timestamp: number, isRtl: boolean) => {
   const diffInSeconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -132,7 +133,7 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
             });
           });
 
-          if (user.role === 'admin' || user.isMasterAdmin) {
+          if (canViewStaffInbox(user)) {
              const adminSysQuery = query(collection(db, 'adminAlerts'), orderBy('createdAt', 'desc'), limit(20));
              const adminSysSnap = await getDocs(adminSysQuery);
              adminSysSnap.forEach(docSnap => {
@@ -352,7 +353,7 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
                           <span className="break-words">{item.extraData.fullMessage || item.extraData.message || item.extraData.reason}</span>
                         </div>
                         
-                        {item.type === 'report' && (user.role === 'admin' || user.isMasterAdmin) && (
+                        {item.type === 'report' && canManageLectures(user) && (
                           <div className="pt-2">
                             <button
                               type="button"
@@ -379,7 +380,7 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
                           </div>
                         )}
                         
-                        {(user.role === 'admin' || user.isMasterAdmin) && (
+                        {canManageLectures(user) && (
                           <div className="mt-4 pt-3 border-t border-slate-200 dark:border-zinc-700">
                             {item.extraData.replied ? (
                               <div className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 p-2 text-xs rounded-lg font-medium border border-emerald-100 dark:border-emerald-800/30">

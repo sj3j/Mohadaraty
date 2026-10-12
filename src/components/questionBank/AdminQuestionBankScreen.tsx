@@ -17,9 +17,10 @@ interface AdminQuestionBankScreenProps {
   lang: Language;
   targetQuestionId?: string | null;
   targetAlert?: any | null;
+  canOpenAntiCheat?: boolean;
 }
 
-export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQuestionId, targetAlert }: AdminQuestionBankScreenProps) {
+export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQuestionId, targetAlert, canOpenAntiCheat = false }: AdminQuestionBankScreenProps) {
   const { subjects } = useStageSubjects();
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [lectures, setLectures] = useState<any[]>([]);
@@ -143,12 +144,12 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
                   onChange={e => setSearchTerm(e.target.value)}
                 />
               </div>
-              <button 
+              {canOpenAntiCheat && <button
                 onClick={() => window.dispatchEvent(new CustomEvent('open-anti-cheat-board'))} 
                 className="bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-900/20 dark:hover:bg-red-900/40 dark:text-red-400 px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 border border-red-200 dark:border-red-800"
               >
                 <ShieldAlert className="w-5 h-5" /> مراقبة الغش (MCQ)
-              </button>
+              </button>}
               <button 
                 onClick={() => setIsAddOpen(true)} 
                 className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2"

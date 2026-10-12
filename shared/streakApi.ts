@@ -22,6 +22,8 @@ import {
   startsFreshSeason,
 } from './academicCalendar.js';
 import { resolveCurrentPhase } from './seasonRollover.js';
+import { isMasterAdminEmail } from './masterAdmins.js';
+import { hasStaffCapability } from './staffCapabilities.js';
 
 export interface StreakDeps {
   admin: any;
@@ -361,8 +363,10 @@ export function createStreakHandlers(deps: StreakDeps) {
 
       if (authUser.uid !== targetUid) {
         const userDoc = await db.collection('users').doc(authUser.uid).get();
-        const role = userDoc.data()?.role;
-        if (role !== 'admin' && role !== 'moderator') {
+        const data = userDoc.data() || {};
+        const isMasterAdmin = authUser.email_verified === true
+          && (isMasterAdminEmail(authUser.email || '') || authUser.role === 'master_admin');
+        if (!hasStaffCapability({ ...data, isMasterAdmin }, 'manageStreakSystem')) {
           return res.status(403).json({ error: 'Forbidden' });
         }
       }

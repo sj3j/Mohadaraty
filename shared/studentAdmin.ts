@@ -8,6 +8,7 @@
  */
 import bcrypt from 'bcryptjs';
 import { generatePassword } from './rosterIdentity.js';
+import { hasStageCapability, hasStaffCapability } from './staffCapabilities.js';
 
 export class StudentAdminError extends Error {
   constructor(message: string, readonly status = 400, readonly code?: string) {
@@ -23,6 +24,20 @@ export interface CallerStage {
   role?: string;
   managedStageId?: string | null;
   permissions?: Record<string, boolean>;
+}
+
+/** Whether a caller may manage students at all. Stage scope is separate. */
+export function assertStudentManagement(staff: CallerStage): void {
+  if (!hasStaffCapability(staff, 'manageStudents')) {
+    throw new StudentAdminError(
+      'Your account is not granted student management.', 403, 'NOT_GRANTED');
+  }
+}
+
+/** Master/support callers with the capability are intentionally cross-stage. */
+export function hasGlobalStudentScope(staff: CallerStage): boolean {
+  assertStudentManagement(staff);
+  return staff.isMasterAdmin === true || staff.role === 'master_admin' || staff.role === 'support';
 }
 
 /**
@@ -43,19 +58,13 @@ export interface CallerStage {
  * writes the students whitelist, which holds hashes.
  */
 export function assertStageAuthority(staff: CallerStage, targetStageId?: string | null): void {
-  if (staff.isMasterAdmin) return;
-  if (staff.isSupport) {
-    if (staff.permissions?.manageStudents === true) return;
-    throw new StudentAdminError(
-      'Your support account is not granted student management.', 403, 'NOT_GRANTED');
-  }
+  assertStudentManagement(staff);
+  if (hasStageCapability(staff, 'manageStudents', targetStageId)) return;
   if (!staff.managedStageId) {
     throw new StudentAdminError('You are not assigned to a stage.', 403, 'NO_STAGE');
   }
-  if (targetStageId !== staff.managedStageId) {
-    throw new StudentAdminError(
-      'You may only act on students in your own stage.', 403, 'WRONG_STAGE');
-  }
+  throw new StudentAdminError(
+    'You may only act on students in your own stage.', 403, 'WRONG_STAGE');
 }
 
 export interface ResetResult {

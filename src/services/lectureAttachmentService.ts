@@ -15,7 +15,7 @@ import { auth, db, storage } from '../lib/firebase';
 import { LectureAttachment } from '../types/lectureAttachment.types';
 import { UserProfile } from '../types';
 import { compressImage } from '../lib/imageCompressor';
-import { canManage } from '../lib/permissions';
+import { canManageLectures } from '../lib/permissions';
 
 export interface UploadAttachmentOptions {
   lectureId: string;
@@ -55,12 +55,7 @@ export async function getLectureAttachments(
   currentUser?: UserProfile | null
 ): Promise<LectureAttachment[]> {
   try {
-    const isStaff =
-      currentUser &&
-      (currentUser.role === 'admin' ||
-        currentUser.role === 'moderator' ||
-        Boolean(currentUser.isMasterAdmin) ||
-        canManage(currentUser, 'manageLectures'));
+    const isStaff = canManageLectures(currentUser);
 
     const resultsMap = new Map<string, LectureAttachment>();
 
@@ -211,11 +206,7 @@ export async function uploadAttachment({
   const url = await getDownloadURL(fileRef);
 
   // 4. Determine status: staff uploads are auto-approved; students are pending
-  const isStaff =
-    user.role === 'admin' ||
-    user.role === 'moderator' ||
-    Boolean(user.isMasterAdmin) ||
-    canManage(user, 'manageLectures');
+  const isStaff = canManageLectures(user);
   const status: 'approved' | 'pending' = isStaff ? 'approved' : 'pending';
 
   // 5. Save metadata to Firestore

@@ -35,7 +35,7 @@ import AdminLogsScreen from './components/AdminLogsScreen';
 import SimosanAdminScreen from './components/SimosanAdminScreen';
 import TelegramMirrorModal from './components/TelegramMirrorModal';
 import BottomNav, { Tab } from './components/BottomNav';
-import { canManage } from './lib/permissions';
+import { canManage, canManageAntiCheat, canManageMcqSystem, canViewStaffInbox } from './lib/permissions';
 import AnnouncementsScreen from './components/AnnouncementsScreen';
 import WeeklyListScreen from './components/WeeklyListScreen';
 import ProfileScreen from './components/ProfileScreen';
@@ -240,15 +240,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const handleOpenAntiCheat = () => setShowAntiCheat(true);
-    const handleOpenBank = () => setShowAdminBank(true);
+    const handleOpenAntiCheat = () => { if (canManageAntiCheat(user)) setShowAntiCheat(true); };
+    const handleOpenBank = () => { if (canManageMcqSystem(user)) setShowAdminBank(true); };
     window.addEventListener('open-anti-cheat-board', handleOpenAntiCheat);
     window.addEventListener('open-admin-bank', handleOpenBank);
     return () => {
       window.removeEventListener('open-anti-cheat-board', handleOpenAntiCheat);
       window.removeEventListener('open-admin-bank', handleOpenBank);
     };
-  }, []);
+  }, [user]);
   const [hasUnreadAnnouncements, setHasUnreadAnnouncements] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [mcqLecture, setMcqLecture] = useState<Lecture | null>(null);
@@ -514,7 +514,9 @@ export default function App() {
               uid: firebaseUser.uid,
               name: resolvedName,
               email: firebaseUser.email || userDoc.data().email || firebaseUser.uid || '',
-              role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (whitelistRole || userDoc.data().role || 'student'),
+              // allowed_admins is the appointment registry; users/{uid} is the
+              // live runtime projection and must win after an edit/revocation.
+              role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (userDoc.data().role || whitelistRole || 'student'),
               isMasterAdmin,
               photoUrl: userDoc.data().photoUrl || firebaseUser.photoURL || undefined,
               streakCount: userDoc.data().streakCount || 0,
@@ -778,7 +780,7 @@ export default function App() {
         }
 
         // Check latest admin alert
-        if (user.role === 'admin' || user.isMasterAdmin) {
+        if (canViewStaffInbox(user)) {
           const adQuery = query(collection(db, 'adminAlerts'), orderBy('createdAt', 'desc'), limit(1));
           const adSnap = await getDocs(adQuery);
           if (!adSnap.empty) {
@@ -1175,6 +1177,7 @@ export default function App() {
         lang={lang} 
         targetQuestionId={adminBankTargetQuestionId}
         targetAlert={adminBankTargetAlert}
+        canOpenAntiCheat={canManageAntiCheat(user)}
       />
       <AntiCheatDashboard isOpen={showAntiCheat} onClose={() => setShowAntiCheat(false)} lang={lang} />
       <AdminLogsScreen isOpen={showAdminLogs} onClose={() => setShowAdminLogs(false)} lang={lang} />

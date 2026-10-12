@@ -72,13 +72,11 @@ export interface UserMCQStats {
   totalFirstAttemptCorrect: number;
   totalFirstAttemptAnswered: number;
   lecturesAttempted: number;
-  /** Volume points (correct x 10). Displayed, but no longer what the board sorts on. */
+  /** Authoritative annual leaderboard points: first-attempt correct answers x 10. */
   mcqLeaderboardScore: number;
   accuracy: number;
   /**
-   * What the leaderboard actually orders by. Absent when the user has not
-   * answered enough questions to qualify - Firestore's orderBy skips documents
-   * missing the field, which is exactly the exclusion we want.
+   * Legacy accuracy-weighted analytics value. Never use for live ranking.
    */
   mcqRankScore?: number;
   lastUpdated: any; // Firestore Timestamp

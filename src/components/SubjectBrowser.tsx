@@ -10,6 +10,7 @@ import { useStageContext } from '../contexts/StageContext';
 import CourseTabs from './CourseTabs';
 import { COURSE_IDS, DEFAULT_COURSE_ID } from '../types';
 import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings } from 'lucide-react';
+import { canManageGroups } from '../lib/permissions';
 
 interface SubjectBrowserProps {
   lectures: Lecture[];
@@ -387,7 +388,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             {tab.name}
           </button>
         ))}
-        {user?.role === 'admin' && (
+        {canManageGroups(user) && (
           <button
             onClick={() => setShowTabsModal(true)}
             className={`px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors flex items-center gap-1 ${isRtl ? 'mr-auto' : 'ml-auto'} bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-zinc-700`}

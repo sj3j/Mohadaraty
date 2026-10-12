@@ -28,6 +28,7 @@ import {
   type TimetableFailureReason,
 } from './timetable.js';
 import { FALLBACK_GROUP_CONFIG, type GroupConfigLike } from './groups.js';
+import { hasStaffCapability, hasStageCapability } from './staffCapabilities.js';
 
 export interface TimetableDeps {
   admin: any;
@@ -103,14 +104,7 @@ async function generateWithRetry<T>(call: () => Promise<T>, deadlineAt: number):
  * precisely the role that should hold this capability by default.
  */
 function mayManageTimetable(staff: CallerStage): boolean {
-  if (staff.isMasterAdmin) return true;
-  // Support before representative: a support account promoted from a
-  // representative keeps its managedStageId, and its permissions map is built
-  // as "denied unless true".
-  if (staff.isSupport) return staff.permissions?.manageTimetable === true;
-  if (staff.role === 'admin') return staff.permissions?.manageTimetable !== false;
-  if (staff.role === 'moderator') return staff.permissions?.manageTimetable === true;
-  return false;
+  return hasStaffCapability(staff, 'manageTimetable');
 }
 
 export function createTimetableHandlers(deps: TimetableDeps) {
@@ -162,16 +156,14 @@ export function createTimetableHandlers(deps: TimetableDeps) {
       // support account never learns a student asked for questions - do not
       // copy that omission forward.
       const staff = await db.collection('users')
-        .where('role', 'in', ['admin', 'moderator', 'support'])
+        .where('role', 'in', ['admin', 'moderator', 'support', 'master_admin'])
         .limit(50).get();
 
       const batch = db.batch();
       let any = false;
       staff.docs.forEach((d: any) => {
         const s = d.data();
-        const scoped = s.isMasterAdmin || s.role === 'support'
-          || !s.managedStageId || s.managedStageId === stageId;
-        if (!scoped) return;
+        if (!hasStageCapability(s, 'manageTimetable', stageId)) return;
         any = true;
         batch.set(db.collection('systemNotifications').doc(), {
           userId: d.id,
@@ -203,22 +195,17 @@ export function createTimetableHandlers(deps: TimetableDeps) {
       });
     }
 
-    /*
-     * The stage is resolved HERE, never taken on trust. A representative or a
-     * moderator parses their own stage and nothing else, so their body
-     * `stageId` is ignored outright rather than validated.
-     *
-     * The `!staff.managedStageId` arm mirrors the `myManagedStage() == ''`
-     * grace in canWriteStage (firestore.rules) and is removed at the same time:
-     * production still has staff with no managedStageId, and without it they
-     * could not parse anything at all.
-     */
-    const unassigned = !staff.managedStageId;
-    const mayName = staff.isMasterAdmin || staff.isSupport || unassigned;
+    // Cross-stage roles name the target explicitly. Representatives/helpers
+    // are locked to a non-empty live managedStageId; there is no unassigned
+    // fallback because the browser's selected stage is not an authority source.
+    const mayName = staff.isMasterAdmin || staff.isSupport;
     const stageId = String(
       (mayName ? (req.body?.stageId || staff.managedStageId) : staff.managedStageId) || '',
     ).trim();
     if (!stageId) return res.status(400).json({ error: 'no_stage' });
+    if (!hasStageCapability(staff, 'manageTimetable', stageId)) {
+      return res.status(403).json({ error: 'wrong_stage' });
+    }
 
     if (!ai) {
       await raiseAlert('not_configured', { stageId });

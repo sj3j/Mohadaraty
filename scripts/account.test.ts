@@ -284,9 +284,9 @@ console.log('\nLink Google:');
 console.log('\nAdmin password reset:');
 {
   const MASTER = { isMasterAdmin: true };
-  const REP_4 = { isMasterAdmin: false, managedStageId: 'stage_4' };
-  const REP_3 = { isMasterAdmin: false, managedStageId: 'stage_3' };
-  const UNASSIGNED = { isMasterAdmin: false, managedStageId: null };
+  const REP_4 = { isMasterAdmin: false, role: 'admin', managedStageId: 'stage_4' };
+  const REP_3 = { isMasterAdmin: false, role: 'admin', managedStageId: 'stage_3' };
+  const UNASSIGNED = { isMasterAdmin: false, role: 'admin', managedStageId: null };
 
   // The Admin SDK bypasses firestore.rules, so this boundary is the only thing
   // standing between a representative and another cohort's credentials.
@@ -369,12 +369,12 @@ console.log('\nAccount deletion requests:');
   check('a rep on another stage cannot approve',
     (await caught(() => reviewDeletionRequest(db, fakeAuth, FieldValue, {
       uid: DEL_UID, approve: true, reviewerUid: 'rep',
-      staff: { isMasterAdmin: false, managedStageId: 'stage_3' },
+      staff: { isMasterAdmin: false, role: 'admin', managedStageId: 'stage_3' },
     })))?.code === 'WRONG_STAGE');
   check('an unassigned admin cannot approve',
     (await caught(() => reviewDeletionRequest(db, fakeAuth, FieldValue, {
       uid: DEL_UID, approve: true, reviewerUid: 'rep',
-      staff: { isMasterAdmin: false, managedStageId: null },
+      staff: { isMasterAdmin: false, role: 'admin', managedStageId: null },
     })))?.code === 'NO_STAGE');
   check('nothing was deleted by a refused review', fakeAuth.deleted.length === 0);
 
@@ -387,7 +387,7 @@ console.log('\nAccount deletion requests:');
 
   const result = await reviewDeletionRequest(db, fakeAuth, FieldValue, {
     uid: DEL_UID, approve: true, reviewerUid: 'rep_uid',
-    staff: { isMasterAdmin: false, managedStageId: 'stage_4' },
+    staff: { isMasterAdmin: false, role: 'admin', managedStageId: 'stage_4' },
   });
   check('the rep for that stage CAN approve', result.status === 'approved');
 

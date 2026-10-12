@@ -18,6 +18,7 @@ import { UserProfile, Language, Lecture } from '../../types';
 import { uploadAttachment } from '../../services/lectureAttachmentService';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
 import { legacyCategoryLabel } from '../../lib/subjectDisplay';
+import { canManageLectures } from '../../lib/permissions';
 
 interface UploadAttachmentModalProps {
   isOpen: boolean;
@@ -56,10 +57,7 @@ export default function UploadAttachmentModal({
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
-  const isStaff =
-    user.role === 'admin' ||
-    user.role === 'moderator' ||
-    Boolean(user.isMasterAdmin);
+  const isStaff = canManageLectures(user);
 
   // Clean up object URLs on unmount
   useEffect(() => {

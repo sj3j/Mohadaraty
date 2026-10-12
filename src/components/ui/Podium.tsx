@@ -69,17 +69,10 @@ export default function Podium({ topStudents, isRtl, type }: PodiumProps) {
     if (type === 'streak') {
       return `🔥 ${student.streakCount || 0} ${isRtl ? 'يوم' : 'days'}`;
     }
-    // The ranking score (correct x accuracy), matching the headline number on
-    // the board itself. mcqLeaderboardScore is the legacy volume metric and is
-    // absent from season archives, so it is only a fallback.
-    let score = student.mcqRankScore != null
-      ? student.mcqRankScore / 100
-      : (student.score ?? student.mcqLeaderboardScore ?? 0);
-    if (score > 1000 && (student.totalFirstAttemptAnswered || student.totalAnswered || 0) > 0) {
-      const correct = student.totalFirstAttemptCorrect ?? student.totalCorrect ?? 0;
-      const answered = student.totalFirstAttemptAnswered ?? student.totalAnswered ?? 1;
-      score = (correct * correct) / answered;
-    }
+    const correct = student.totalFirstAttemptCorrect ?? student.totalCorrect ?? 0;
+    const score = student.mcqLeaderboardScore
+      ?? (student.scoreModel === 'correct_x10_v1' ? student.score : correct * 10)
+      ?? 0;
     return `🎯 ${Math.round(score)} ${isRtl ? 'نقطة' : 'pts'}`;
   };
 
