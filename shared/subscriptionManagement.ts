@@ -101,7 +101,7 @@ export function validateRequestId(value: unknown): string {
   return value;
 }
 
-export function generateReferenceCode(prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY'): string {
+export function generateReferenceCode(prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY' | 'MOD' | 'TRM'): string {
   let suffix = '';
   for (let i = 0; i < 6; i++) {
     suffix += REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)];
@@ -217,7 +217,7 @@ function baghdadParts(now: Date): { year: number; month: number; day: number } {
 }
 
 export function baghdadRange(
-  period: 'today' | 'this_month' | 'last_month',
+  period: 'today' | 'this_month' | 'last_month' | 'this_year',
   now = new Date(),
 ): { start: Date; end: Date } {
   const { year, month, day } = baghdadParts(now);
@@ -229,7 +229,10 @@ export function baghdadRange(
   if (period === 'this_month') {
     return { start: atBaghdadMidnight(year, month, 1), end: atBaghdadMidnight(year, month + 1, 1) };
   }
-  return { start: atBaghdadMidnight(year, month - 1, 1), end: atBaghdadMidnight(year, month, 1) };
+  if (period === 'last_month') {
+    return { start: atBaghdadMidnight(year, month - 1, 1), end: atBaghdadMidnight(year, month, 1) };
+  }
+  return { start: atBaghdadMidnight(year, 0, 1), end: atBaghdadMidnight(year + 1, 0, 1) };
 }
 
 async function loadActor(admin: any, req: any): Promise<SubscriptionActor> {
@@ -294,9 +297,9 @@ function withBalanceDefaults(data: AnyMap | undefined): AnyMap {
 }
 
 export async function withUniqueReference<T>(
-  prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY',
+  prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY' | 'MOD' | 'TRM',
   work: (referenceCode: string) => Promise<T>,
-  generate: (prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY') => string = generateReferenceCode,
+  generate: (prefix: 'ACT' | 'RCT' | 'RST' | 'VOID' | 'PAY' | 'MOD' | 'TRM') => string = generateReferenceCode,
 ): Promise<T> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const referenceCode = generate(prefix);
@@ -894,39 +897,130 @@ async function getBalances(admin: any, actor: SubscriptionActor, queryInput: Any
   return { balances: rows };
 }
 
-async function getReports(admin: any, actor: SubscriptionActor, period: string): Promise<AnyMap> {
+export async function getReports(admin: any, actor: SubscriptionActor, period: string): Promise<AnyMap> {
   requireMaster(actor, 'canViewReports');
-  if (!['today', 'this_month', 'last_month'].includes(period)) {
+  if (!['today', 'this_month', 'last_month', 'this_year'].includes(period)) {
     throw new SubscriptionManagementError(400, 'INVALID_PERIOD', 'Invalid report period');
   }
   const db = admin.firestore();
   const range = baghdadRange(period as any);
   const start = admin.firestore.Timestamp.fromDate(range.start);
   const end = admin.firestore.Timestamp.fromDate(range.end);
-  const [privateSnap, legacySnap, balances] = await Promise.all([
+
+  const yearRange = baghdadRange('this_year');
+  const yearStart = admin.firestore.Timestamp.fromDate(yearRange.start);
+  const yearEnd = admin.firestore.Timestamp.fromDate(yearRange.end);
+
+  const queries: Promise<any>[] = [
     db.collection('subscriptionRecords').where('createdAt', '>=', start).where('createdAt', '<', end).get(),
     db.collection('subscriptions').where('createdAt', '>=', start).where('createdAt', '<', end).get(),
     getBalances(admin, actor, {}),
-  ]);
+  ];
+
+  const needSeparateYearQuery = period !== 'this_year';
+  if (needSeparateYearQuery) {
+    queries.push(
+      db.collection('subscriptionRecords').where('createdAt', '>=', yearStart).where('createdAt', '<', yearEnd).get(),
+      db.collection('subscriptions').where('createdAt', '>=', yearStart).where('createdAt', '<', yearEnd).get(),
+    );
+  }
+
+  const results = await Promise.all(queries);
+  const privateSnap = results[0];
+  const legacySnap = results[1];
+  const balances = results[2];
+  const yearPrivateSnap = needSeparateYearQuery ? results[3] : privateSnap;
+  const yearLegacySnap = needSeparateYearQuery ? results[4] : legacySnap;
+
+  const ALL_PLANS = ['monthly', 'seasonal', 'semi_annual', 'annual'] as const;
   const revenue: AnyMap = { total: 0, bySource: {}, byPlan: {} };
-  const add = (source: string, plan: string, amount: number) => {
+  const globalUniqueUsers = new Set<string>();
+  const planStats: Record<string, { count: number; revenue: number; uniqueUsers: Set<string> }> = {
+    monthly: { count: 0, revenue: 0, uniqueUsers: new Set() },
+    seasonal: { count: 0, revenue: 0, uniqueUsers: new Set() },
+    semi_annual: { count: 0, revenue: 0, uniqueUsers: new Set() },
+    annual: { count: 0, revenue: 0, uniqueUsers: new Set() },
+  };
+
+  const add = (source: string, plan: string, amount: number, studentId: string) => {
     if (!Number.isSafeInteger(amount) || amount < 0) return;
     revenue.total += amount;
     revenue.bySource[source] = (revenue.bySource[source] || 0) + amount;
     revenue.byPlan[plan] = (revenue.byPlan[plan] || 0) + amount;
+
+    const normalizedPlan = (plan || '').toLowerCase().trim();
+    if (planStats[normalizedPlan]) {
+      planStats[normalizedPlan].count += 1;
+      planStats[normalizedPlan].revenue += amount;
+      if (studentId) {
+        const normalizedId = studentId.toLowerCase().trim();
+        planStats[normalizedPlan].uniqueUsers.add(normalizedId);
+        globalUniqueUsers.add(normalizedId);
+      }
+    }
   };
+
   for (const doc of privateSnap.docs) {
     const data = doc.data();
-    if (!['activation', 'grant'].includes(data.type) || data.voidedBy) continue;
-    add(data.source === 'manual' ? 'manual' : 'grant', data.plan, data.amount || 0);
+    if (data.type !== 'activation' || data.source === 'grant' || data.voidedBy) continue;
+    add('manual', data.plan, data.amount || 0, data.studentEmail || data.studentId || '');
   }
   for (const doc of legacySnap.docs) {
     const data = doc.data();
-    if (data.auditedRecordId || !['active', 'inactive'].includes(data.status) || data.paymentMethod === 'apple_iap') continue;
+    if (
+      data.auditedRecordId ||
+      !['active', 'inactive'].includes(data.status) ||
+      data.paymentMethod === 'apple_iap' ||
+      data.paymentMethod === 'admin_grant' ||
+      (data.amount || 0) <= 0
+    ) continue;
     const source = ['zaincash', 'superkey'].includes(data.paymentMethod) ? 'gateway' : 'legacy';
-    add(source, data.plan, data.amount || 0);
+    add(source, data.plan, data.amount || 0, data.userEmail || data.userId || '');
   }
-  return { period, range: { start: range.start.toISOString(), end: range.end.toISOString() }, revenue, balances: balances.balances };
+
+  let yearlyTotal = 0;
+  if (period === 'this_year') {
+    yearlyTotal = revenue.total;
+  } else {
+    for (const doc of yearPrivateSnap.docs) {
+      const data = doc.data();
+      if (data.type !== 'activation' || data.source === 'grant' || data.voidedBy) continue;
+      const amt = data.amount || 0;
+      if (Number.isSafeInteger(amt) && amt > 0) yearlyTotal += amt;
+    }
+    for (const doc of yearLegacySnap.docs) {
+      const data = doc.data();
+      if (
+        data.auditedRecordId ||
+        !['active', 'inactive'].includes(data.status) ||
+        data.paymentMethod === 'apple_iap' ||
+        data.paymentMethod === 'admin_grant'
+      ) continue;
+      const amt = data.amount || 0;
+      if (Number.isSafeInteger(amt) && amt > 0) yearlyTotal += amt;
+    }
+  }
+
+  const planBreakdown: Record<string, { count: number; revenue: number; uniqueSubscribers: number }> = {};
+  for (const p of ALL_PLANS) {
+    planBreakdown[p] = {
+      count: planStats[p]?.count || 0,
+      revenue: planStats[p]?.revenue || 0,
+      uniqueSubscribers: planStats[p]?.uniqueUsers?.size || 0,
+    };
+  }
+
+  return {
+    period,
+    range: { start: range.start.toISOString(), end: range.end.toISOString() },
+    revenue: {
+      ...revenue,
+      planBreakdown,
+      totalUniqueSubscribers: globalUniqueUsers.size,
+    },
+    yearlyRevenue: yearlyTotal,
+    balances: balances.balances,
+  };
 }
 
 async function getExpiring(admin: any, actor: SubscriptionActor, cursorValue: unknown): Promise<AnyMap> {
@@ -1051,6 +1145,373 @@ async function removeSupport(admin: any, actor: SubscriptionActor, uid: string, 
   });
 }
 
+export async function resolveStudent(admin: any, value: string): Promise<{ ref: any; snap: any }> {
+  const db = admin.firestore();
+  const directRef = db.collection('users').doc(value);
+  const direct = await directRef.get();
+  if (direct.exists) return { ref: directRef, snap: direct };
+  const byEmail = await db.collection('users').where('email', '==', value.toLowerCase()).limit(1).get();
+  if (byEmail.empty) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
+  return { ref: byEmail.docs[0].ref, snap: byEmail.docs[0] };
+}
+
+export async function modifySubscriptionEnd(
+  admin: any,
+  actor: SubscriptionActor,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireMaster(actor, 'canGrant');
+  const requestId = validateRequestId(input.requestId);
+  const studentIdentifier = String(input.studentEmail || input.studentId || input.userId || '').trim();
+  if (!studentIdentifier) {
+    throw new SubscriptionManagementError(400, 'INVALID_STUDENT_ID', 'studentEmail or studentId is required');
+  }
+  const newEndDate = asDate(input.newEndDate);
+  if (!newEndDate) {
+    throw new SubscriptionManagementError(400, 'INVALID_END_DATE', 'A valid newEndDate is required');
+  }
+  const reason = normalizeLimitedText(input.reason ?? input.note ?? input.notes, 'reason');
+  const payloadHash = requestPayloadHash({
+    action: 'modify_expiry',
+    student: studentIdentifier.toLowerCase(),
+    newEndDate: newEndDate.toISOString(),
+    ...(reason ? { reason } : {}),
+  });
+
+  const db = admin.firestore();
+  const target = await resolveStudent(admin, studentIdentifier);
+  const targetUserRef = target.ref;
+  const targetUserId = target.snap.id;
+
+  return withUniqueReference('MOD', async (referenceCode) => {
+    return db.runTransaction(async (tx: any) => {
+      const recordRef = db.collection('subscriptionRecords').doc(requestId);
+      const referenceRef = db.collection('referenceCodes').doc(referenceCode);
+
+      const existing = await tx.get(recordRef);
+      if (existing.exists) return idempotencyResult(existing, payloadHash);
+      const referenceSnap = await tx.get(referenceRef);
+      if (referenceSnap.exists) collision();
+
+      const userSnap = await tx.get(targetUserRef);
+      if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
+
+      const userData = userSnap.data() || {};
+      const nowDate = new Date();
+      const now = admin.firestore.Timestamp.fromDate(nowDate);
+      const newExpiryTimestamp = admin.firestore.Timestamp.fromDate(newEndDate);
+      const isSubscribed = newEndDate.getTime() > nowDate.getTime();
+
+      const studentName = String(userData.name || userData.originalName || userData.email || targetUserId);
+      const studentEmail = String(userData.email || targetUserId);
+
+      // Find active subscriptions in subscriptions collection if any
+      const activeSubsSnap = await tx.get(
+        db.collection('subscriptions')
+          .where('userId', '==', targetUserId)
+          .where('status', '==', 'active')
+      );
+
+      for (const doc of activeSubsSnap.docs) {
+        tx.update(doc.ref, {
+          endDate: newExpiryTimestamp,
+          status: isSubscribed ? 'active' : 'expired',
+          updatedAt: now,
+          modifiedByRecord: requestId,
+        });
+      }
+
+      const resultValue = {
+        success: true,
+        recordId: requestId,
+        referenceCode,
+        studentId: targetUserId,
+        studentEmail,
+        newExpiry: newEndDate.toISOString(),
+        isSubscribed,
+      };
+
+      tx.update(targetUserRef, {
+        subscriptionEnd: newExpiryTimestamp,
+        isSubscribed,
+      });
+
+      tx.create(recordRef, {
+        requestId,
+        payloadHash,
+        referenceCode,
+        referenceCodeNormalized: referenceCode.toUpperCase(),
+        studentId: targetUserId,
+        studentEmail,
+        studentName,
+        type: 'modify_expiry',
+        source: 'master_admin',
+        actorUid: actor.uid,
+        actor: actorSnapshot(actor),
+        previousExpiry: userData.subscriptionEnd || null,
+        newExpiry: newExpiryTimestamp,
+        previousIsSubscribed: userData.isSubscribed === true,
+        newIsSubscribed: isSubscribed,
+        previousUserFields: previousFieldSnapshot(userData),
+        ...(reason ? { reason } : {}),
+        createdAt: now,
+        result: resultValue,
+      });
+
+      tx.create(referenceRef, {
+        referenceCode,
+        targetCollection: 'subscriptionRecords',
+        targetId: requestId,
+        createdAt: now,
+      });
+
+      return { ...resultValue, replayed: false };
+    });
+  });
+}
+
+export async function terminateSubscription(
+  admin: any,
+  actor: SubscriptionActor,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireMaster(actor, 'canGrant');
+  const requestId = validateRequestId(input.requestId);
+  const studentIdentifier = String(input.studentEmail || input.studentId || input.userId || '').trim();
+  if (!studentIdentifier) {
+    throw new SubscriptionManagementError(400, 'INVALID_STUDENT_ID', 'studentEmail or studentId is required');
+  }
+  const immediate = input.immediate !== false;
+  let effectiveEndDate: Date;
+  if (immediate) {
+    effectiveEndDate = new Date();
+  } else {
+    const parsed = asDate(input.endDate);
+    if (!parsed) {
+      throw new SubscriptionManagementError(400, 'INVALID_END_DATE', 'A valid endDate is required when not immediate');
+    }
+    effectiveEndDate = parsed;
+  }
+
+  const reason = normalizeLimitedText(input.reason ?? input.note ?? input.notes, 'reason');
+  const payloadHash = requestPayloadHash({
+    action: 'terminate',
+    student: studentIdentifier.toLowerCase(),
+    immediate,
+    endDate: effectiveEndDate.toISOString(),
+    ...(reason ? { reason } : {}),
+  });
+
+  const db = admin.firestore();
+  const target = await resolveStudent(admin, studentIdentifier);
+  const targetUserRef = target.ref;
+  const targetUserId = target.snap.id;
+
+  return withUniqueReference('TRM', async (referenceCode) => {
+    return db.runTransaction(async (tx: any) => {
+      const recordRef = db.collection('subscriptionRecords').doc(requestId);
+      const referenceRef = db.collection('referenceCodes').doc(referenceCode);
+
+      const existing = await tx.get(recordRef);
+      if (existing.exists) return idempotencyResult(existing, payloadHash);
+      const referenceSnap = await tx.get(referenceRef);
+      if (referenceSnap.exists) collision();
+
+      const userSnap = await tx.get(targetUserRef);
+      if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
+
+      const userData = userSnap.data() || {};
+      const nowDate = new Date();
+      const now = admin.firestore.Timestamp.fromDate(nowDate);
+      const effectiveTimestamp = admin.firestore.Timestamp.fromDate(effectiveEndDate);
+      const isSubscribed = immediate ? false : effectiveEndDate.getTime() > nowDate.getTime();
+
+      const studentName = String(userData.name || userData.originalName || userData.email || targetUserId);
+      const studentEmail = String(userData.email || targetUserId);
+
+      // Find active subscriptions in subscriptions collection if any
+      const activeSubsSnap = await tx.get(
+        db.collection('subscriptions')
+          .where('userId', '==', targetUserId)
+          .where('status', '==', 'active')
+      );
+
+      for (const doc of activeSubsSnap.docs) {
+        tx.update(doc.ref, {
+          endDate: effectiveTimestamp,
+          status: immediate ? 'cancelled' : (isSubscribed ? 'active' : 'expired'),
+          updatedAt: now,
+          terminatedByRecord: requestId,
+        });
+      }
+
+      const resultValue = {
+        success: true,
+        recordId: requestId,
+        referenceCode,
+        studentId: targetUserId,
+        studentEmail,
+        immediate,
+        terminationDate: effectiveEndDate.toISOString(),
+        isSubscribed,
+      };
+
+      tx.update(targetUserRef, {
+        subscriptionEnd: effectiveTimestamp,
+        isSubscribed,
+      });
+
+      tx.create(recordRef, {
+        requestId,
+        payloadHash,
+        referenceCode,
+        referenceCodeNormalized: referenceCode.toUpperCase(),
+        studentId: targetUserId,
+        studentEmail,
+        studentName,
+        type: 'termination',
+        source: 'master_admin',
+        immediate,
+        actorUid: actor.uid,
+        actor: actorSnapshot(actor),
+        previousExpiry: userData.subscriptionEnd || null,
+        terminationDate: effectiveTimestamp,
+        previousIsSubscribed: userData.isSubscribed === true,
+        newIsSubscribed: isSubscribed,
+        previousUserFields: previousFieldSnapshot(userData),
+        ...(reason ? { reason } : {}),
+        createdAt: now,
+        result: resultValue,
+      });
+
+      tx.create(referenceRef, {
+        referenceCode,
+        targetCollection: 'subscriptionRecords',
+        targetId: requestId,
+        createdAt: now,
+      });
+
+      return { ...resultValue, replayed: false };
+    });
+  });
+}
+
+const ACTIVE_PAGE_SIZE = 25;
+
+export async function getActiveSubscriptions(
+  admin: any,
+  actor: SubscriptionActor,
+  queryInput: AnyMap = {},
+): Promise<AnyMap> {
+  requireCapability(actor, 'canViewExpiring');
+  const db = admin.firestore();
+  const search = typeof queryInput.search === 'string' ? queryInput.search.trim().toLowerCase() : '';
+  const now = new Date();
+
+  if (search) {
+    const items: AnyMap[] = [];
+    const seenIds = new Set<string>();
+
+    const directSnap = await db.collection('users').doc(search).get();
+    if (directSnap.exists) {
+      const data = directSnap.data() || {};
+      seenIds.add(directSnap.id);
+      const expiryMillis = asMillis(data.subscriptionEnd);
+      items.push(serialize({
+        studentId: directSnap.id,
+        studentEmail: data.email || directSnap.id,
+        studentName: data.name || data.originalName || data.email || directSnap.id,
+        plan: data.subscriptionPlan || null,
+        expiry: data.subscriptionEnd || null,
+        isSubscribed: data.isSubscribed === true,
+        daysLeft: expiryMillis === null ? null : Math.max(0, Math.ceil((expiryMillis - now.getTime()) / 86_400_000)),
+      }));
+    }
+
+    if (!seenIds.has(search)) {
+      const emailSnap = await db.collection('users').where('email', '==', search).limit(5).get();
+      for (const doc of emailSnap.docs) {
+        if (!seenIds.has(doc.id)) {
+          seenIds.add(doc.id);
+          const data = doc.data() || {};
+          const expiryMillis = asMillis(data.subscriptionEnd);
+          items.push(serialize({
+            studentId: doc.id,
+            studentEmail: data.email || doc.id,
+            studentName: data.name || data.originalName || data.email || doc.id,
+            plan: data.subscriptionPlan || null,
+            expiry: data.subscriptionEnd || null,
+            isSubscribed: data.isSubscribed === true,
+            daysLeft: expiryMillis === null ? null : Math.max(0, Math.ceil((expiryMillis - now.getTime()) / 86_400_000)),
+          }));
+        }
+      }
+    }
+
+    const sampleSnap = await db.collection('users')
+      .where('isSubscribed', '==', true)
+      .orderBy('subscriptionEnd', 'desc')
+      .limit(100)
+      .get();
+
+    for (const doc of sampleSnap.docs) {
+      if (seenIds.has(doc.id)) continue;
+      const data = doc.data() || {};
+      const name = String(data.name || data.originalName || '').toLowerCase();
+      const email = String(data.email || doc.id).toLowerCase();
+      if (name.includes(search) || email.includes(search)) {
+        seenIds.add(doc.id);
+        const expiryMillis = asMillis(data.subscriptionEnd);
+        items.push(serialize({
+          studentId: doc.id,
+          studentEmail: data.email || doc.id,
+          studentName: data.name || data.originalName || data.email || doc.id,
+          plan: data.subscriptionPlan || null,
+          expiry: data.subscriptionEnd || null,
+          isSubscribed: data.isSubscribed === true,
+          daysLeft: expiryMillis === null ? null : Math.max(0, Math.ceil((expiryMillis - now.getTime()) / 86_400_000)),
+        }));
+      }
+    }
+
+    return { items, nextCursor: null };
+  }
+
+  const cursor = decodeCursor(queryInput.cursor);
+  let query: any = db.collection('users')
+    .where('isSubscribed', '==', true)
+    .orderBy('subscriptionEnd', 'asc')
+    .orderBy(admin.firestore.FieldPath.documentId(), 'asc');
+
+  if (cursor.subscriptionEnd && cursor.id) {
+    query = query.startAfter(admin.firestore.Timestamp.fromMillis(cursor.subscriptionEnd), cursor.id);
+  }
+
+  const snap = await query.limit(ACTIVE_PAGE_SIZE + 1).get();
+  const docs = snap.docs.slice(0, ACTIVE_PAGE_SIZE);
+  const items = docs.map((doc: any) => {
+    const data = doc.data() || {};
+    const expiryMillis = asMillis(data.subscriptionEnd);
+    return serialize({
+      studentId: doc.id,
+      studentEmail: data.email || doc.id,
+      studentName: data.name || data.originalName || data.email || doc.id,
+      plan: data.subscriptionPlan || null,
+      expiry: data.subscriptionEnd || null,
+      isSubscribed: data.isSubscribed === true,
+      daysLeft: expiryMillis === null ? null : Math.max(0, Math.ceil((expiryMillis - now.getTime()) / 86_400_000)),
+    });
+  });
+
+  const last = docs.at(-1);
+  return {
+    items,
+    nextCursor: snap.docs.length > ACTIVE_PAGE_SIZE && last
+      ? encodeCursor({ subscriptionEnd: asMillis(last.data().subscriptionEnd), id: last.id })
+      : null,
+  };
+}
+
 function asyncHandler(fn: (req: any, res: any) => Promise<any>) {
   return async (req: any, res: any) => {
     try {
@@ -1122,6 +1583,18 @@ export function createSubscriptionManagementHandlers({ admin }: SubscriptionMana
     expiring: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);
       res.json(await getExpiring(admin, actor, req.query.cursor));
+    }),
+    active: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await getActiveSubscriptions(admin, actor, req.query || {}));
+    }),
+    modifyEndDate: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await modifySubscriptionEnd(admin, actor, req.body || {}));
+    }),
+    terminate: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await terminateSubscription(admin, actor, req.body || {}));
     }),
     supportStatus: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);

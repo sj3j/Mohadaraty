@@ -1668,6 +1668,9 @@ app.get('/api/subscriptions/history', verifyAuth, subscriptionManagement.history
 app.get('/api/subscriptions/balances', verifyAuth, subscriptionManagement.balances);
 app.get('/api/subscriptions/reports', verifyAuth, subscriptionManagement.reports);
 app.get('/api/subscriptions/expiring', verifyAuth, subscriptionManagement.expiring);
+app.get('/api/subscriptions/active', verifyAuth, subscriptionManagement.active);
+app.post('/api/subscriptions/admin/modify-end-date', verifyAuth, subscriptionManagement.modifyEndDate);
+app.post('/api/subscriptions/admin/terminate', verifyAuth, subscriptionManagement.terminate);
 app.post('/api/admin/supports/:uid/status', verifyAuth, subscriptionManagement.supportStatus);
 app.delete('/api/admin/supports/:uid', verifyAuth, subscriptionManagement.removeSupport);
 

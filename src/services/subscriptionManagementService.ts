@@ -144,13 +144,67 @@ export const voidSubscriptionRecord = (recordId: string, requestId: string, reas
     method: 'POST', body: JSON.stringify({ requestId, reason }),
   });
 
-export const getSubscriptionReports = (period: 'today' | 'this_month' | 'last_month') =>
+export interface ActiveSubscriptionItem {
+  studentId: string;
+  studentEmail: string;
+  studentName: string;
+  plan: SubscriptionPlan | null;
+  expiry: string | null;
+  isSubscribed: boolean;
+  daysLeft: number | null;
+}
+
+export const getSubscriptionReports = (period: 'today' | 'this_month' | 'last_month' | 'this_year') =>
   api<any>(`/api/subscriptions/reports?period=${period}`);
 
 export const getExpiringSubscriptions = (cursor?: string | null) =>
   api<{ items: any[]; nextCursor: string | null }>(
     `/api/subscriptions/expiring${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
   );
+
+export const getActiveSubscriptions = (filters: {
+  search?: string;
+  cursor?: string | null;
+} = {}) => {
+  const params = new URLSearchParams();
+  if (filters.search) params.set('search', filters.search);
+  if (filters.cursor) params.set('cursor', filters.cursor);
+  return api<{ items: ActiveSubscriptionItem[]; nextCursor: string | null }>(
+    `/api/subscriptions/active?${params}`,
+  );
+};
+
+export const modifySubscriptionEndDate = (input: {
+  requestId?: string;
+  studentEmail: string;
+  newEndDate: string;
+  reason?: string;
+}) => api<any>('/api/subscriptions/admin/modify-end-date', {
+  method: 'POST',
+  body: JSON.stringify({
+    requestId: input.requestId || newRequestId(),
+    studentEmail: input.studentEmail,
+    newEndDate: input.newEndDate,
+    reason: input.reason,
+  }),
+});
+
+export const terminateSubscription = (input: {
+  requestId?: string;
+  studentEmail: string;
+  immediate: boolean;
+  endDate?: string;
+  reason?: string;
+}) => api<any>('/api/subscriptions/admin/terminate', {
+  method: 'POST',
+  body: JSON.stringify({
+    requestId: input.requestId || newRequestId(),
+    studentEmail: input.studentEmail,
+    immediate: input.immediate,
+    endDate: input.endDate,
+    reason: input.reason,
+  }),
+});
 
 export async function setSupportDisabled(uid: string, disabled: boolean) {
   const key = `support-status:${uid}:${disabled}`;

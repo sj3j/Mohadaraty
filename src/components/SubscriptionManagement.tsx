@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Loader2, Search, CheckCircle2, AlertTriangle, Gift, Wallet, History, CalendarClock, BarChart3 } from 'lucide-react';
+import { X, Loader2, Search, CheckCircle2, AlertTriangle, Gift, Wallet, History, CalendarClock, BarChart3, XCircle } from 'lucide-react';
 import type { Language, Subscription, SubscriptionPlan, UserProfile } from '../types';
 import { PLAN_CONFIG } from '../types';
 import {
@@ -20,6 +20,7 @@ import {
   savePaymentContact,
 } from '../services/subscriptionService';
 import {
+  getActiveSubscriptions,
   getExpiringSubscriptions,
   getSubscriptionHistory,
   getSubscriptionPreview,
@@ -27,9 +28,12 @@ import {
   getSupportBalances,
   grantAuditedSubscription,
   manualActivateSubscription,
+  modifySubscriptionEndDate,
   newRequestId,
   settleSupportBalance,
+  terminateSubscription,
   voidSubscriptionRecord,
+  type ActiveSubscriptionItem,
   type HistoryItem,
   type SubscriptionPreview,
   type SupportBalance,
@@ -39,7 +43,7 @@ import { EMPTY_PAYMENT_CONTACT, hasPaymentChannel, normalizePaymentContact, type
 import { needsManualApproval } from '../lib/subscriptionStats';
 
 interface Props { user: UserProfile; lang: Language; onClose: () => void }
-type Tab = 'history' | 'legacy' | 'balances' | 'reports' | 'expiring';
+type Tab = 'history' | 'active' | 'legacy' | 'balances' | 'reports' | 'expiring';
 
 const money = (value: number) => `${Math.abs(value || 0).toLocaleString()} IQD`;
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleString() : '—';
@@ -53,7 +57,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const canExpiring = canViewExpiringSubscriptions(user);
   const tabs = useMemo<Tab[]>(() => [
     ...(canHistory ? ['history' as const] : []),
-    ...(master ? ['legacy' as const, 'balances' as const, 'reports' as const] : []),
+    ...(master ? ['active' as const, 'legacy' as const, 'balances' as const, 'reports' as const] : []),
     ...(!master && canOwnBalance ? ['balances' as const] : []),
     ...(canExpiring ? ['expiring' as const] : []),
   ], [master, canHistory, canOwnBalance, canExpiring]);
@@ -90,9 +94,22 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const [ownBalance, setOwnBalance] = useState<SupportBalance | null>(null);
   const [ledger, setLedger] = useState<any[]>([]);
   const [reports, setReports] = useState<any>(null);
-  const [period, setPeriod] = useState<'today' | 'this_month' | 'last_month'>('today');
+  const [period, setPeriod] = useState<'today' | 'this_month' | 'last_month' | 'this_year'>('today');
   const [expiring, setExpiring] = useState<any[]>([]);
   const [expiringCursor, setExpiringCursor] = useState<string | null>(null);
+
+  const [activeRows, setActiveRows] = useState<ActiveSubscriptionItem[]>([]);
+  const [activeCursor, setActiveCursor] = useState<string | null>(null);
+  const [activeSearch, setActiveSearch] = useState('');
+
+  const [modifyingTarget, setModifyingTarget] = useState<{ studentId: string; studentEmail: string; studentName: string; currentExpiry?: string | null } | null>(null);
+  const [modifyNewDate, setModifyNewDate] = useState('');
+  const [modifyReason, setModifyReason] = useState('');
+
+  const [terminatingTarget, setTerminatingTarget] = useState<{ studentId: string; studentEmail: string; studentName: string; currentExpiry?: string | null } | null>(null);
+  const [terminateImmediate, setTerminateImmediate] = useState(true);
+  const [terminateCustomDate, setTerminateCustomDate] = useState('');
+  const [terminateReason, setTerminateReason] = useState('');
 
   const fail = (err: unknown) => {
     console.error(err);
@@ -141,10 +158,77 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
 
+  const loadActive = async (append = false) => {
+    if (!master) return;
+    setBusy('active'); setError('');
+    try {
+      const result = await getActiveSubscriptions({
+        search: activeSearch.trim() || undefined,
+        cursor: append ? activeCursor : null,
+      });
+      setActiveRows(current => append ? [...current, ...result.items] : result.items);
+      setActiveCursor(result.nextCursor);
+    } catch (err) { fail(err); } finally { setBusy(''); }
+  };
+
+  const handleModifyEndDate = async () => {
+    if (!modifyingTarget || !modifyNewDate) return;
+    setBusy('modify_date'); setError('');
+    try {
+      const dateObj = new Date(`${modifyNewDate}T23:59:59+03:00`);
+      if (isNaN(dateObj.getTime())) {
+        throw new Error(rtl ? 'تاريخ غير صالح' : 'Invalid date');
+      }
+      await modifySubscriptionEndDate({
+        studentEmail: modifyingTarget.studentEmail || modifyingTarget.studentId,
+        newEndDate: dateObj.toISOString(),
+        reason: modifyReason || undefined,
+      });
+      setModifyingTarget(null);
+      setModifyNewDate('');
+      setModifyReason('');
+      if (tab === 'active') await loadActive();
+      if (tab === 'expiring') await loadExpiring();
+      if (canHistory) await loadHistory();
+    } catch (err) { fail(err); } finally { setBusy(''); }
+  };
+
+  const handleTerminate = async () => {
+    if (!terminatingTarget) return;
+    setBusy('terminate'); setError('');
+    try {
+      let customIso: string | undefined;
+      if (!terminateImmediate) {
+        if (!terminateCustomDate) {
+          throw new Error(rtl ? 'يرجى تحديد تاريخ الانتهاء' : 'Please select an ending date');
+        }
+        const dateObj = new Date(`${terminateCustomDate}T23:59:59+03:00`);
+        if (isNaN(dateObj.getTime())) {
+          throw new Error(rtl ? 'تاريخ غير صالح' : 'Invalid date');
+        }
+        customIso = dateObj.toISOString();
+      }
+      await terminateSubscription({
+        studentEmail: terminatingTarget.studentEmail || terminatingTarget.studentId,
+        immediate: terminateImmediate,
+        endDate: customIso,
+        reason: terminateReason || undefined,
+      });
+      setTerminatingTarget(null);
+      setTerminateImmediate(true);
+      setTerminateCustomDate('');
+      setTerminateReason('');
+      if (tab === 'active') await loadActive();
+      if (tab === 'expiring') await loadExpiring();
+      if (canHistory) await loadHistory();
+    } catch (err) { fail(err); } finally { setBusy(''); }
+  };
+
   useEffect(() => { if (tab === 'history') loadHistory(); }, [tab]);
   useEffect(() => { if (tab === 'balances') loadBalances(); }, [tab]);
   useEffect(() => { if (tab === 'reports') loadReports(); }, [tab, period]);
   useEffect(() => { if (tab === 'expiring') loadExpiring(); }, [tab]);
+  useEffect(() => { if (tab === 'active') loadActive(); }, [tab]);
 
   useEffect(() => {
     if (!master) return;
@@ -266,11 +350,18 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   };
 
   const tabLabel: Record<Tab, string> = rtl ? {
-    history: 'السجل', legacy: 'طلبات الدفع', balances: 'حسابات الدعم', reports: 'التقارير', expiring: 'قريب الانتهاء',
-  } : { history: 'History', legacy: 'Payment queue', balances: 'Support accounting', reports: 'Reports', expiring: 'Expiring soon' };
+    history: 'السجل', active: 'الاشتراكات الفعالة', legacy: 'طلبات الدفع', balances: 'حسابات الدعم', reports: 'التقارير', expiring: 'قريب الانتهاء',
+  } : { history: 'History', active: 'Active subscriptions', legacy: 'Payment queue', balances: 'Support accounting', reports: 'Reports', expiring: 'Expiring soon' };
 
   const pending = legacy.filter(needsManualApproval);
   const normalizedContact = normalizePaymentContact(contact);
+
+  const reportPlans = [
+    { key: 'monthly', ar: 'الشهري (Monthly)', en: 'Monthly' },
+    { key: 'seasonal', ar: 'الفصلي (Seasonal)', en: 'Seasonal' },
+    { key: 'semi_annual', ar: 'النصف سنوي (Semi-annual)', en: 'Semi-annual' },
+    { key: 'annual', ar: 'السنوي (Yearly)', en: 'Yearly' },
+  ] as const;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-50 dark:bg-zinc-950" dir={rtl ? 'rtl' : 'ltr'}>
@@ -322,6 +413,108 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
           </section>
         )}
 
+        {tab === 'active' && master && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap gap-2 rounded-2xl bg-white p-4 shadow-sm dark:bg-zinc-900">
+              <input
+                value={activeSearch}
+                onChange={e => setActiveSearch(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') loadActive(); }}
+                placeholder={rtl ? 'بحث بالبريد أو الاسم...' : 'Search by email or name...'}
+                className="min-w-[240px] flex-1 rounded-xl border p-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+              />
+              <button
+                onClick={() => loadActive()}
+                disabled={busy === 'active'}
+                className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700 disabled:opacity-50"
+              >
+                <Search className="me-1 inline h-4 w-4" />{rtl ? 'بحث' : 'Search'}
+              </button>
+              {activeSearch && (
+                <button
+                  onClick={() => { setActiveSearch(''); }}
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-zinc-800 dark:text-slate-300"
+                >
+                  {rtl ? 'مسح' : 'Clear'}
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              {activeRows.map(item => (
+                <article key={item.studentId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-bold text-slate-900 dark:text-white">{item.studentName}</p>
+                      <p className="text-xs text-slate-500">{item.studentEmail}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                          {item.plan ? ((rtl ? PLAN_CONFIG[item.plan]?.labelAr : PLAN_CONFIG[item.plan]?.labelEn) || item.plan) : (rtl ? 'فعال' : 'Active')}
+                        </span>
+                        {item.daysLeft !== null && (
+                          <span className={`text-xs ${item.daysLeft <= 7 ? 'font-bold text-amber-600' : 'text-slate-500'}`}>
+                            {item.daysLeft} {rtl ? 'يوم متبقي' : item.daysLeft === 1 ? 'day left' : 'days left'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-end text-sm text-slate-600 dark:text-slate-300">
+                      <p className="text-xs text-slate-400">{rtl ? 'تاريخ الانتهاء' : 'Expiry'}</p>
+                      <p className="font-mono text-xs">{dateText(item.expiry)}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3 dark:border-zinc-800">
+                    <button
+                      onClick={() => {
+                        setModifyingTarget({
+                          studentId: item.studentId,
+                          studentEmail: item.studentEmail,
+                          studentName: item.studentName,
+                          currentExpiry: item.expiry,
+                        });
+                        setModifyNewDate(item.expiry ? new Date(item.expiry).toISOString().slice(0, 10) : '');
+                        setModifyReason('');
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 dark:bg-sky-950/40 dark:text-sky-300"
+                    >
+                      <CalendarClock className="h-3.5 w-3.5" />
+                      {rtl ? 'تعديل تاريخ الانتهاء' : 'Modify end date'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTerminatingTarget({
+                          studentId: item.studentId,
+                          studentEmail: item.studentEmail,
+                          studentName: item.studentName,
+                          currentExpiry: item.expiry,
+                        });
+                        setTerminateImmediate(true);
+                        setTerminateCustomDate(item.expiry ? new Date(item.expiry).toISOString().slice(0, 10) : '');
+                        setTerminateReason('');
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      {rtl ? 'إنهاء الاشتراك' : 'End subscription'}
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {activeRows.length === 0 && busy !== 'active' && (
+                <div className="rounded-2xl bg-white p-8 text-center text-sm text-slate-500 dark:bg-zinc-900">
+                  {rtl ? 'لا توجد اشتراكات فعالة مطابقة' : 'No active subscriptions found'}
+                </div>
+              )}
+            </div>
+            {busy === 'active' && <Loader2 className="mx-auto mt-4 h-5 w-5 animate-spin" />}
+            {activeCursor && (
+              <button onClick={() => loadActive(true)} className="mx-auto mt-4 block rounded-xl bg-white px-4 py-2 text-sm dark:bg-zinc-900">
+                {rtl ? 'المزيد' : 'Load more'}
+              </button>
+            )}
+          </section>
+        )}
+
         {tab === 'legacy' && master && <section className="space-y-4">
           <div className="rounded-2xl bg-white p-4 dark:bg-zinc-900">
             <h2 className="mb-3 font-bold">{rtl ? 'إعدادات تواصل الدفع' : 'Payment contact settings'}</h2>
@@ -355,12 +548,151 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
           {busy === 'balances' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
         </section>}
 
-        {tab === 'reports' && master && <section>
-          <select value={period} onChange={e => setPeriod(e.target.value as any)} className="mb-4 rounded-xl border bg-white p-2 dark:border-zinc-700 dark:bg-zinc-900"><option value="today">Today</option><option value="this_month">This month</option><option value="last_month">Last month</option></select>
-          {reports && <div className="grid gap-3 md:grid-cols-3"><ReportCard label={rtl ? 'الإيراد' : 'Revenue'} value={money(reports.revenue.total)} /><ReportCard label={rtl ? 'حسب المصدر' : 'By source'} value={Object.entries(reports.revenue.bySource).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} /><ReportCard label={rtl ? 'حسب الخطة' : 'By plan'} value={Object.entries(reports.revenue.byPlan).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} /></div>}
+        {tab === 'reports' && master && <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <select
+              value={period}
+              onChange={e => setPeriod(e.target.value as any)}
+              className="rounded-xl border bg-white p-2.5 text-sm font-semibold dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <option value="today">{rtl ? 'اليوم (Today)' : 'Today'}</option>
+              <option value="this_month">{rtl ? 'هذا الشهر (This month)' : 'This month'}</option>
+              <option value="last_month">{rtl ? 'الشهر الماضي (Last month)' : 'Last month'}</option>
+              <option value="this_year">{rtl ? 'السنة الحالية (This year)' : 'This year'}</option>
+            </select>
+          </div>
+
+          {reports && (
+            <div className="space-y-4">
+              <div className="rounded-2xl border-2 border-emerald-500/20 bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-transparent p-5 shadow-sm dark:bg-zinc-900">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <span className="inline-block rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                      {rtl ? 'إجمالي سنوي' : 'Yearly Total'}
+                    </span>
+                    <h3 className="mt-1 text-sm font-medium text-slate-600 dark:text-slate-400">
+                      {rtl ? 'إجمالي الإيرادات السنوية' : 'Total Yearly Revenue'}
+                    </h3>
+                  </div>
+                  <p className="text-3xl font-black text-emerald-600 dark:text-emerald-400">
+                    {money(reports.yearlyRevenue || 0)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+                <table className="w-full text-start text-sm">
+                  <thead className="border-b border-slate-100 bg-slate-50 text-xs font-bold text-slate-500 dark:border-zinc-800 dark:bg-zinc-800/50 dark:text-slate-400">
+                    <tr>
+                      <th className="p-3 text-start">{rtl ? 'الخطة' : 'Plan'}</th>
+                      <th className="p-3 text-start">{rtl ? 'عدد الاشتراكات' : 'Subscription count'}</th>
+                      <th className="p-3 text-start">{rtl ? 'قيمة الاشتراكات' : 'Total value'}</th>
+                      <th className="p-3 text-start">{rtl ? 'عدد المشتركين' : 'Unique subscribers'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
+                    {reportPlans.map(p => {
+                      const item = reports.revenue?.planBreakdown?.[p.key] || { count: 0, revenue: 0, uniqueSubscribers: 0 };
+                      return (
+                        <tr key={p.key} className="hover:bg-slate-50/50 dark:hover:bg-zinc-800/30">
+                          <td className="p-3 font-bold text-slate-800 dark:text-slate-200">
+                            {rtl ? p.ar : p.en}
+                          </td>
+                          <td className="p-3 text-slate-600 dark:text-slate-300">
+                            {item.count.toLocaleString()}
+                          </td>
+                          <td className="p-3 font-semibold text-emerald-600 dark:text-emerald-400">
+                            {money(item.revenue)}
+                          </td>
+                          <td className="p-3 text-slate-600 dark:text-slate-300">
+                            {item.uniqueSubscribers.toLocaleString()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="border-t-2 border-slate-200 bg-slate-50/80 font-bold dark:border-zinc-700 dark:bg-zinc-800/80">
+                    <tr>
+                      <td className="p-3 text-slate-900 dark:text-white">{rtl ? 'الإجمالي' : 'Total'}</td>
+                      <td className="p-3 text-slate-900 dark:text-white">
+                        {reportPlans.reduce((acc, p) => acc + (reports.revenue?.planBreakdown?.[p.key]?.count || 0), 0).toLocaleString()}
+                      </td>
+                      <td className="p-3 text-emerald-600 dark:text-emerald-400">
+                        {money(reportPlans.reduce((acc, p) => acc + (reports.revenue?.planBreakdown?.[p.key]?.revenue || 0), 0))}
+                      </td>
+                      <td className="p-3 text-slate-900 dark:text-white">
+                        {((reports.revenue as any)?.totalUniqueSubscribers ?? reportPlans.reduce((acc, p) => acc + (reports.revenue?.planBreakdown?.[p.key]?.uniqueSubscribers || 0), 0)).toLocaleString()}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <ReportCard label={rtl ? `إيراد الفترة المحدد (${period})` : `Selected period revenue (${period})`} value={money(reports.revenue.total)} />
+                <ReportCard label={rtl ? 'حسب المصدر' : 'By source'} value={Object.entries(reports.revenue.bySource).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} />
+                <ReportCard label={rtl ? 'حسب الخطة' : 'By plan'} value={Object.entries(reports.revenue.byPlan).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} />
+              </div>
+            </div>
+          )}
+          {busy === 'reports' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
         </section>}
 
-        {tab === 'expiring' && canExpiring && <section className="space-y-3">{expiring.map(item => <article key={item.studentId} className="rounded-2xl bg-white p-4 dark:bg-zinc-900"><div className="flex justify-between gap-3"><div><p className="font-bold">{item.studentName}</p><p className="text-xs text-slate-500">{item.studentEmail}</p></div><div className="text-end text-sm"><p>{dateText(item.expiry)} · {item.daysLeft} {rtl ? 'يوم' : item.daysLeft === 1 ? 'day' : 'days'}</p><p className="text-xs text-slate-500">{rtl ? 'الوسم' : 'Tag'}: {item.staffTag}</p></div></div></article>)}{expiringCursor && <button onClick={() => loadExpiring(true)} className="mx-auto block rounded-xl bg-white px-4 py-2 text-sm dark:bg-zinc-900">{rtl ? 'المزيد' : 'Load more'}</button>}</section>}
+        {tab === 'expiring' && canExpiring && <section className="space-y-3">
+          {expiring.map(item => (
+            <article key={item.studentId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex justify-between gap-3">
+                <div>
+                  <p className="font-bold text-slate-900 dark:text-white">{item.studentName}</p>
+                  <p className="text-xs text-slate-500">{item.studentEmail}</p>
+                </div>
+                <div className="text-end text-sm">
+                  <p>{dateText(item.expiry)} · {item.daysLeft} {rtl ? 'يوم' : item.daysLeft === 1 ? 'day' : 'days'}</p>
+                  <p className="text-xs text-slate-500">{rtl ? 'الوسم' : 'Tag'}: {item.staffTag}</p>
+                </div>
+              </div>
+              {master && (
+                <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3 dark:border-zinc-800">
+                  <button
+                    onClick={() => {
+                      setModifyingTarget({
+                        studentId: item.studentId,
+                        studentEmail: item.studentEmail,
+                        studentName: item.studentName,
+                        currentExpiry: item.expiry,
+                      });
+                      setModifyNewDate(item.expiry ? new Date(item.expiry).toISOString().slice(0, 10) : '');
+                      setModifyReason('');
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 dark:bg-sky-950/40 dark:text-sky-300"
+                  >
+                    <CalendarClock className="h-3.5 w-3.5" />
+                    {rtl ? 'تعديل تاريخ الانتهاء' : 'Modify end date'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTerminatingTarget({
+                        studentId: item.studentId,
+                        studentEmail: item.studentEmail,
+                        studentName: item.studentName,
+                        currentExpiry: item.expiry,
+                      });
+                      setTerminateImmediate(true);
+                      setTerminateCustomDate(item.expiry ? new Date(item.expiry).toISOString().slice(0, 10) : '');
+                      setTerminateReason('');
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300"
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                    {rtl ? 'إنهاء الاشتراك' : 'End subscription'}
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+          {expiringCursor && <button onClick={() => loadExpiring(true)} className="mx-auto block rounded-xl bg-white px-4 py-2 text-sm dark:bg-zinc-900">{rtl ? 'المزيد' : 'Load more'}</button>}
+          {busy === 'expiring' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
+        </section>}
       </main>
 
       {showActivation && <Modal title={rtl ? 'تفعيل اشتراك مدفوع' : 'Manual paid activation'} onClose={() => { setShowActivation(false); setActivationRequestId(''); }}>
@@ -379,6 +711,114 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
         <p className="text-xs text-slate-500">{rtl ? 'القيمة المسجلة: صفر. الخطة السنوية متاحة هنا فقط.' : 'Recorded amount: 0. Annual is available only in this grant flow.'}</p>
         <button onClick={grant} disabled={!grantRequestId || !grantEmail.trim() || busy === 'grant'} className="w-full rounded-xl bg-amber-500 p-3 font-bold text-white disabled:opacity-40">{busy === 'grant' ? '…' : (rtl ? 'تأكيد المنح' : 'Confirm grant')}</button>
       </Modal>}
+
+      {modifyingTarget && (
+        <Modal
+          title={rtl ? 'تعديل تاريخ انتهاء الاشتراك' : 'Modify subscription end date'}
+          onClose={() => setModifyingTarget(null)}
+        >
+          <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800">
+            <p className="font-bold text-slate-900 dark:text-white">{modifyingTarget.studentName}</p>
+            <p className="text-xs text-slate-500">{modifyingTarget.studentEmail}</p>
+            <p className="mt-1 text-xs">
+              {rtl ? 'تاريخ الانتهاء الحالي' : 'Current expiry'}: <span className="font-semibold">{dateText(modifyingTarget.currentExpiry)}</span>
+            </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-400">
+              {rtl ? 'تاريخ الانتهاء الجديد' : 'New ending date'}
+            </label>
+            <input
+              type="date"
+              value={modifyNewDate}
+              onChange={e => setModifyNewDate(e.target.value)}
+              className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </div>
+          <input
+            value={modifyReason}
+            maxLength={200}
+            onChange={e => setModifyReason(e.target.value)}
+            placeholder={rtl ? 'سبب التعديل (اختياري)' : 'Reason for change (optional)'}
+            className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <button
+            onClick={handleModifyEndDate}
+            disabled={!modifyNewDate || busy === 'modify_date'}
+            className="w-full rounded-xl bg-sky-600 p-3 font-bold text-white disabled:opacity-40"
+          >
+            {busy === 'modify_date' ? '…' : (rtl ? 'تأكيد تعديل التاريخ' : 'Confirm date change')}
+          </button>
+        </Modal>
+      )}
+
+      {terminatingTarget && (
+        <Modal
+          title={rtl ? 'إنهاء اشتراك الطالب' : 'End student subscription'}
+          onClose={() => setTerminatingTarget(null)}
+        >
+          <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800">
+            <p className="font-bold text-slate-900 dark:text-white">{terminatingTarget.studentName}</p>
+            <p className="text-xs text-slate-500">{terminatingTarget.studentEmail}</p>
+            <p className="mt-1 text-xs">
+              {rtl ? 'تاريخ الانتهاء الحالي' : 'Current expiry'}: <span className="font-semibold">{dateText(terminatingTarget.currentExpiry)}</span>
+            </p>
+          </div>
+          <div className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-zinc-800">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="term_mode"
+                checked={terminateImmediate}
+                onChange={() => setTerminateImmediate(true)}
+                className="h-4 w-4 text-rose-600"
+              />
+              <span className="text-sm font-bold text-rose-600 dark:text-rose-400">
+                {rtl ? 'إنهاء فوري الآن (تعطيل الوصول فوراً)' : 'End immediately now (revoke access now)'}
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="term_mode"
+                checked={!terminateImmediate}
+                onChange={() => setTerminateImmediate(false)}
+                className="h-4 w-4 text-amber-600"
+              />
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                {rtl ? 'تحديد تاريخ انتهاء مبكر' : 'Set custom ending date'}
+              </span>
+            </label>
+          </div>
+          {!terminateImmediate && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-400">
+                {rtl ? 'تاريخ الانتهاء المحدد' : 'Ending date'}
+              </label>
+              <input
+                type="date"
+                value={terminateCustomDate}
+                onChange={e => setTerminateCustomDate(e.target.value)}
+                className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+            </div>
+          )}
+          <input
+            value={terminateReason}
+            maxLength={200}
+            onChange={e => setTerminateReason(e.target.value)}
+            placeholder={rtl ? 'سبب الإنهاء (اختياري)' : 'Termination reason (optional)'}
+            className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <button
+            onClick={handleTerminate}
+            disabled={(!terminateImmediate && !terminateCustomDate) || busy === 'terminate'}
+            className="w-full rounded-xl bg-rose-600 p-3 font-bold text-white hover:bg-rose-700 disabled:opacity-40"
+          >
+            {busy === 'terminate' ? '…' : (rtl ? 'تأكيد إنهاء الاشتراك' : 'Confirm termination')}
+          </button>
+        </Modal>
+      )}
     </div>
   );
 }

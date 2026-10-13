@@ -19,6 +19,7 @@ import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks
 import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
+import { canAttemptStreakActivity, createSingleFlight } from './lib/streakActivity';
 import { resolveProgressionUiState, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
 import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
@@ -115,6 +116,8 @@ export default function App() {
     const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
     return wasSignedIn ? getCachedUserProfile() : null;
   });
+  const [authenticatedUid, setAuthenticatedUid] = useState<string | null>(null);
+  const streakActivitySingleFlight = useMemo(createSingleFlight, []);
 
   const isProgressionSnoozed = useMemo(() => {
     if (!user) return false;
@@ -298,6 +301,8 @@ export default function App() {
         sessionStorage.removeItem('googleLoginInProgress');
         sessionStorage.removeItem('googleLoginStartedAt');
       }
+
+      setAuthenticatedUid(firebaseUser?.uid ?? null);
 
       if (firebaseUser) {
         logSessionBootstrap(resolveAuthState({
@@ -701,33 +706,55 @@ export default function App() {
     }
   }, [user?.uid]);
 
-  // Streak Logic
   useEffect(() => {
-    // We will just call the API once per mount if user is present
-    if (user?.uid) {
-      const recordActivity = async () => {
+    const profileUid = user?.uid ?? null;
+
+    const recordActivity = () => {
+      const firebaseUser = auth.currentUser;
+      if (!canAttemptStreakActivity({
+        profileUid,
+        authenticatedUid,
+        isAuthReady,
+        isOnline: navigator.onLine,
+        isVisible: document.visibilityState !== 'hidden',
+      }) || !firebaseUser || firebaseUser.uid !== profileUid) {
+        return;
+      }
+
+      void streakActivitySingleFlight.run(async () => {
         try {
-           const token = await auth.currentUser?.getIdToken();
-           if (!token) return;
-           const res = await fetch(apiUrl("/api/record-activity"), {
-             method: "POST",
-             headers: {
-               "Content-Type": "application/json",
-               "Authorization": `Bearer ${token}`
-             }
-           });
-           const data = await res.json();
-           if (data.success && data.freezeUsed) {
-              console.log('Freeze token used!');
-           }
+          const token = await firebaseUser.getIdToken();
+          const response = await fetch(apiUrl('/api/record-activity'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.error || `Activity request failed with ${response.status}`);
+          }
+          if (data.freezeUsed) console.log('Freeze token used!');
         } catch (e) {
-          console.error("Failed to record activity", e);
+          console.error('Failed to record activity', e);
         }
-      };
-      
-      recordActivity();
-    }
-  }, [user?.uid]); // Only call when user uid is available on initial mount
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) recordActivity();
+    };
+
+    recordActivity();
+    window.addEventListener('online', recordActivity);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('online', recordActivity);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [authenticatedUid, isAuthReady, streakActivitySingleFlight, user?.uid]);
 
   useEffect(() => {
     if (!user) return;
