@@ -6,6 +6,7 @@ import {
 import { db } from '../lib/firebase';
 import { collection, getDocs, orderBy, query, setDoc, doc, updateDoc } from 'firebase/firestore';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
+import { hasActivePendingProgression } from '../../shared/progression';
 
 // Canonical stage list. Kept in sync with scripts/migrateToStages.js so that
 // seeding from either side produces identical documents.
@@ -251,13 +252,10 @@ export function StageProvider({ children }: { children: ReactNode }) {
     if (activeUser.role === 'admin' || activeUser.role === 'moderator') {
       return activeUser.managedStageId || null;
     }
-    const isCompletedProgression = Boolean(
-      activeUser.progressionState === 'completed' && activeUser.progressionYear === calendar.yearLabel
-    );
     // Students with pending progression default to next stage (pendingStageId),
     // but can toggle back to their current stage via selectedStudentStage.
     // Completed students never receive provisional access.
-    if (activeUser.role === 'student' && activeUser.pendingStageId && !isCompletedProgression) {
+    if (activeUser.role === 'student' && hasActivePendingProgression(activeUser, calendar.yearLabel)) {
       if (selectedStudentStage && (selectedStudentStage === activeUser.stageId || selectedStudentStage === activeUser.pendingStageId)) {
         return selectedStudentStage;
       }
@@ -269,8 +267,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
 
   const isPendingProgression = Boolean(
     activeUser?.role === 'student' &&
-    activeUser?.pendingStageId &&
-    !(activeUser?.progressionState === 'completed' && activeUser?.progressionYear === calendar.yearLabel)
+    hasActivePendingProgression(activeUser, calendar.yearLabel)
   );
 
   const provisionalStages = useMemo(() => {

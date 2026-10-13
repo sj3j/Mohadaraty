@@ -34,7 +34,11 @@ export interface ProgressionLifecycle {
 }
 
 export class ProgressionError extends Error {
-  constructor(message: string, readonly status = 400) {
+  constructor(
+    message: string,
+    readonly status = 400,
+    readonly code = 'PROGRESSION_ERROR',
+  ) {
     super(message);
   }
 }
@@ -67,8 +71,14 @@ export async function submitProgression(
     gate, yearLabel: calendar.yearLabel, user, stages: calendar.progressionStages,
   });
 
-  if (due === 'none') throw new ProgressionError('No progression question is open for you', 409);
-  if (due !== round) throw new ProgressionError(`Expected the "${due}" question, not "${round}"`, 409);
+  if (due === 'none') {
+    throw new ProgressionError(
+      'No progression question is open for you', 409, 'NO_OPEN_PROGRESSION');
+  }
+  if (due !== round) {
+    throw new ProgressionError(
+      `Expected the "${due}" question, not "${round}"`, 409, 'WRONG_PROGRESSION_ROUND');
+  }
 
   const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
   const stages: StageLike[] = stagesSnap.docs.map(d => d.data() as StageLike);
@@ -140,6 +150,12 @@ export async function submitProgression(
     pendingStageId: outcome.progressionState === 'awaiting_resit'
       ? (nextStage?.id || FieldValue.delete())
       : FieldValue.delete(),
+    pendingProgressionYear: outcome.progressionState === 'awaiting_resit'
+      ? calendar.yearLabel
+      : FieldValue.delete(),
+    pendingProgressionSetAt: outcome.progressionState === 'awaiting_resit'
+      ? FieldValue.serverTimestamp()
+      : FieldValue.delete(),
     tahmeelSubjects: outcome.tahmeelSubjects,
     progressionYear: calendar.yearLabel,
     progressionState: outcome.progressionState,
@@ -173,7 +189,10 @@ export async function submitProgression(
     userPatch.permissions = FieldValue.delete();
   }
 
-  batch.set(userRef, userPatch, { merge: true });
+  // Guard the eligibility snapshot. Without this precondition two near-simultaneous
+  // submissions can both pass nextProgressionStep() and commit contradictory
+  // outcomes. The loser becomes a harmless 409 that the client can refresh.
+  batch.update(userRef, userPatch, { lastUpdateTime: userSnap.updateTime! });
 
   // The whitelist copy. Without this syncUserStage undoes the promotion at the
   // student's next login - which is why the old client-only flow never worked.
@@ -261,7 +280,19 @@ export async function submitProgression(
     }, { merge: true });
   }
 
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (error: any) {
+    const code = String(error?.code ?? '').toLowerCase();
+    if (code === '9' || code === '10' || code === 'failed-precondition' || code === 'aborted') {
+      throw new ProgressionError(
+        'Your progression state changed. Refresh and try again.',
+        409,
+        'PROGRESSION_STATE_CHANGED',
+      );
+    }
+    throw error;
+  }
 
   let purged = false;
   if (outcome.graduated && lifecycle.purgeGraduatedStudent) {
@@ -332,6 +363,8 @@ export async function resetProgression(
     const userRef = db.collection('users').doc(uid);
     const userPatch: Record<string, any> = {
       pendingStageId: FieldValue.delete(),
+      pendingProgressionYear: FieldValue.delete(),
+      pendingProgressionSetAt: FieldValue.delete(),
       progressionYear: FieldValue.delete(),
       progressionState: FieldValue.delete(),
       hasCompletedProgression: FieldValue.delete(),
@@ -372,6 +405,9 @@ export async function resetProgression(
     const studentSnap = await studentRef.get();
     if (studentSnap.exists) {
       const studentPatch: Record<string, any> = {
+        pendingStageId: FieldValue.delete(),
+        pendingProgressionYear: FieldValue.delete(),
+        pendingProgressionSetAt: FieldValue.delete(),
         progressionYear: FieldValue.delete(),
         progressionState: FieldValue.delete(),
         hasCompletedProgression: FieldValue.delete(),
@@ -409,11 +445,16 @@ export async function setPendingProgression(
   if (!userSnap.exists) throw new ProgressionError('User not found', 404);
   const user = userSnap.data() as any;
 
-  if (user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel) {
-    throw new ProgressionError('لقد تم تأكيد نتيجتك بالفعل لهذه السنة الأكاديمية.', 400);
-  }
-  if (calendar.progressionStages && calendar.progressionStages.length > 0 && !calendar.progressionStages.includes(user.stageId)) {
-    throw new ProgressionError('مرحلتك الحالية غير مشمولة بالانتقال.', 400);
+  const gate = progressionGate(calendar, baghdadToday(calendar.timezone));
+  const due = nextProgressionStep({
+    gate,
+    yearLabel: calendar.yearLabel,
+    user,
+    stages: calendar.progressionStages,
+  });
+  if (due === 'none') {
+    throw new ProgressionError(
+      'No progression question is open for you', 409, 'NO_OPEN_PROGRESSION');
   }
 
   const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
@@ -424,9 +465,25 @@ export async function setPendingProgression(
     throw new ProgressionError('المرحلة الحالية هي المرحلة المنتهية، لا توجد مرحلة تالية.', 400);
   }
 
-  await userRef.set({
+  const batch = db.batch();
+  batch.update(userRef, {
     pendingStageId: nextStage.id,
-  }, { merge: true });
+    pendingProgressionYear: calendar.yearLabel,
+    pendingProgressionSetAt: FieldValue.serverTimestamp(),
+  }, { lastUpdateTime: userSnap.updateTime! });
+  try {
+    await batch.commit();
+  } catch (error: any) {
+    const code = String(error?.code ?? '').toLowerCase();
+    if (code === '9' || code === '10' || code === 'failed-precondition' || code === 'aborted') {
+      throw new ProgressionError(
+        'Your progression state changed. Refresh and try again.',
+        409,
+        'PROGRESSION_STATE_CHANGED',
+      );
+    }
+    throw error;
+  }
 
   return { success: true, pendingStageId: nextStage.id };
 }

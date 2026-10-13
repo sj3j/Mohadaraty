@@ -459,6 +459,7 @@ export async function wipeYear(
     for (const field of [
       'hasCompletedProgression', 'lastProgressionYear', 'progressionYear',
       'progressionState', 'progressionAnsweredAt', 'pendingStageId',
+      'pendingProgressionYear', 'pendingProgressionSetAt',
     ]) {
       if (field in d) patch[field] = FieldValue.delete();
     }
@@ -469,6 +470,28 @@ export async function wipeYear(
     batch.set(doc.ref, patch, { merge: true });
     ops++;
     usersCleaned++;
+    await flush();
+  }
+  await flush(true);
+
+  // Administrative transfers also stamp progression on the roster so a
+  // never-signed-in student's first login inherits the completed state. Clear
+  // the roster copy too, otherwise the next login can resurrect the year that
+  // was just closed. The roster itself and all identity fields remain intact.
+  const studentsSnap = await db.collection('students').get();
+  for (const doc of studentsSnap.docs) {
+    const d = doc.data() || {};
+    const patch: Record<string, any> = {};
+    for (const field of [
+      'hasCompletedProgression', 'lastProgressionYear', 'progressionYear',
+      'progressionState', 'progressionAnsweredAt', 'pendingStageId',
+      'pendingProgressionYear', 'pendingProgressionSetAt',
+    ]) {
+      if (field in d) patch[field] = FieldValue.delete();
+    }
+    if (Object.keys(patch).length === 0) continue;
+    batch.set(doc.ref, patch, { merge: true });
+    ops++;
     await flush();
   }
   await flush(true);

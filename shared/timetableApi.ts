@@ -37,6 +37,12 @@ export interface TimetableDeps {
    *  this" terms are as acceptable here as they are for lecture PDFs. Simosan
    *  stays on the paid key because student questions are NOT public. */
   apiKey?: string;
+  /** Paid key, server-only. Used as a single fallback trial if the free-tier
+   *  daily quota is exhausted. */
+  paidApiKey?: string;
+  /** Injectable GenAI instances (for testing). */
+  ai?: any;
+  paidAi?: any;
 }
 
 type Reason = McqFailureReason | TimetableFailureReason;
@@ -110,7 +116,9 @@ function mayManageTimetable(staff: CallerStage): boolean {
 export function createTimetableHandlers(deps: TimetableDeps) {
   const { admin } = deps;
   const apiKey = deps.apiKey || process.env.GEMINI_FREE_TIER_API_KEY;
-  const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+  const paidApiKey = deps.paidApiKey || process.env.GEMINI_API_KEY;
+  const ai = deps.ai !== undefined ? deps.ai : (apiKey ? new GoogleGenAI({ apiKey }) : null);
+  const paidAi = deps.paidAi !== undefined ? deps.paidAi : (paidApiKey ? new GoogleGenAI({ apiKey: paidApiKey }) : null);
 
   async function raiseAlert(reason: Reason, detail: { stageId: string; note?: string }) {
     const db = admin.firestore();
@@ -282,7 +290,10 @@ export function createTimetableHandlers(deps: TimetableDeps) {
         if (!buf.length) throw new Error('image_unreachable:empty');
         if (buf.length > MAX_INLINE_IMAGE_BYTES) throw new Error('image_too_large');
 
-        const response = await generateWithRetry(() => ai.models.generateContent({
+        let response: any;
+        let usedPaidFallback = false;
+
+        const generateArgs = {
           model: MCQ_MODEL,
           contents: [{
             role: 'user',
@@ -295,7 +306,26 @@ export function createTimetableHandlers(deps: TimetableDeps) {
             responseMimeType: 'application/json',
             responseSchema: TIMETABLE_RESPONSE_SCHEMA as any,
           },
-        }), deadlineAt);
+        };
+
+        try {
+          response = await generateWithRetry(
+            () => ai.models.generateContent(generateArgs),
+            deadlineAt,
+          );
+        } catch (genErr: any) {
+          const classified = classifyFailure(genErr);
+          if (classified === 'free_tier_limit' && paidAi) {
+            console.warn(
+              `[timetable] free tier quota exhausted for stage ${stageId}. Attempting fallback trial with GEMINI_API_KEY`,
+            );
+            // Fallback trial once with the paid key
+            response = await paidAi.models.generateContent(generateArgs);
+            usedPaidFallback = true;
+          } else {
+            throw genErr;
+          }
+        }
 
         // `text` is a getter on GenerateContentResponse, not a method.
         const parsed = JSON.parse(response.text || '{}');
@@ -321,7 +351,24 @@ export function createTimetableHandlers(deps: TimetableDeps) {
           failureCount: 0,
           failureReason: admin.firestore.FieldValue.delete(),
           failedPhotoUrl: admin.firestore.FieldValue.delete(),
+          fallbackUsed: usedPaidFallback,
         }, { merge: true });
+
+        if (usedPaidFallback) {
+          try {
+            await db.collection('adminAlerts').add({
+              type: 'ai_quota_exhausted',
+              reason: 'free_tier_limit',
+              source: 'timetable',
+              stageId,
+              note: 'Free tier quota exhausted; successfully parsed timetable using GEMINI_API_KEY fallback trial.',
+              resolved: true,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          } catch (e) {
+            console.warn('[timetable] could not write fallback adminAlert', e);
+          }
+        }
 
         await notifyStaff(stageId, `${stageId} — ${result.sessions.length} محاضرة بانتظار المراجعة`);
 
@@ -331,6 +378,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
           dropped: result.dropped,
           truncated: result.truncated,
           droppedLabels: result.droppedLabels,
+          fallbackUsed: usedPaidFallback,
         });
       } catch (e: any) {
         const msg = String(e?.message || '');

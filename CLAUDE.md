@@ -1085,12 +1085,12 @@ nests under `settings/`.
 
 ## Two Gemini keys, and which pipeline uses which
 
-| | Simosan | MCQ generation |
-| --- | --- | --- |
-| Key | `GEMINI_API_KEY` (paid) | `GEMINI_FREE_TIER_API_KEY` (free) |
-| Model | `gemini-3.1-flash-lite` (**paid-only**) | `gemini-3.5-flash` (**has a free tier**) |
-| PDF delivery | Files API, cached in `aiFiles` | inline base64, downloaded server-side |
-| Metering | energy bar + $50 monthly ceiling | none - it is free |
+| | Simosan | MCQ generation | Timetable OCR |
+| --- | --- | --- | --- |
+| Key | `GEMINI_API_KEY` (paid) | `GEMINI_FREE_TIER_API_KEY` (free) | `GEMINI_FREE_TIER_API_KEY` (primary free) with `GEMINI_API_KEY` fallback |
+| Model | `gemini-3.1-flash-lite` (**paid-only**) | `gemini-3.6-flash` (**has a free tier**) | `gemini-3.6-flash` |
+| Input delivery | Files API, cached in `aiFiles` | inline base64, downloaded server-side | inline base64 image, downloaded server-side |
+| Metering | energy bar + $50 monthly ceiling | none - it is free | free primary; single trial fallback stamps `fallbackUsed: true` |
 
 The models are not interchangeable: flash-lite has no free tier, so it cannot run
 on the free key, and that mismatch is what stops the two pipelines being silently
@@ -1098,9 +1098,12 @@ swapped.
 
 **The free tier means Google trains on what it is sent.** Its terms say unpaid
 content is used "to provide, improve, and develop Google products" and may be
-read by human reviewers. That was accepted deliberately: *these lectures are
+read by human reviewers. That was accepted deliberately: *these lectures and timetables are
 already public material*. Student questions are not, which is why Simosan stays
-on the paid key - do not "simplify" by pointing it at the free one.
+on the paid key - do not "simplify" by pointing it at the free one. Timetable OCR
+strictly requires `GEMINI_FREE_TIER_API_KEY` first; if and only if that call fails with
+a quota exceeded error (`free_tier_limit`), it performs a single fallback trial using
+the paid `GEMINI_API_KEY`, logs an informational admin alert, and stamps `fallbackUsed: true` on the draft.
 
 ### Why MCQ moved server-side
 

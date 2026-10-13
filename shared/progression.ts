@@ -37,9 +37,57 @@ export interface ProgressionUser {
   progressionYear?: string;
   progressionState?: ProgressionState;
   graduated?: boolean;
+  /** Stage temporarily exposed while official results are pending. */
+  pendingStageId?: string | null;
+  /** Calendar year that owns pendingStageId. Missing/old values are stale. */
+  pendingProgressionYear?: string | null;
   /** True only for the master admin, who is staff rather than a student and so
    *  never sits exams. Representatives and moderators ARE students. */
   isMasterAdmin?: boolean;
+}
+
+/**
+ * Whether provisional dual-stage access belongs to the active academic year.
+ *
+ * pendingStageId used to be trusted by itself. That let a leftover value from
+ * an earlier year open the progression UI, lock quizzes and grant access to a
+ * second stage even though the server correctly reported that no question was
+ * open. New and legacy clients must use this predicate instead.
+ */
+export function hasActivePendingProgression(
+  user: ProgressionUser,
+  yearLabel: string,
+): boolean {
+  if (!user.pendingStageId || user.pendingProgressionYear !== yearLabel) return false;
+  return !(user.progressionYear === yearLabel && user.progressionState === 'completed');
+}
+
+export interface ProgressionUiState {
+  /** The round that may be rendered. null means no question is open. */
+  openRound: ProgressionRound | null;
+  /** The server-backed provisional-access state, independent of question timing. */
+  hasActivePendingAccess: boolean;
+}
+
+/**
+ * Shared UI selector. App.tsx consumes this directly so it cannot drift from
+ * submitProgression(), which uses nextProgressionStep() with the same inputs.
+ * acceptedRound is the round held while submission is in flight or accepted;
+ * it keeps the screen mounted if the live snapshot changes to completed before
+ * the HTTP response renders the success state.
+ */
+export function resolveProgressionUiState(opts: {
+  gate: ProgressionGate;
+  yearLabel: string;
+  user: ProgressionUser;
+  stages?: string[] | null;
+  acceptedRound?: ProgressionRound | null;
+}): ProgressionUiState {
+  const due = nextProgressionStep(opts);
+  return {
+    openRound: opts.acceptedRound || (due === 'none' ? null : due),
+    hasActivePendingAccess: hasActivePendingProgression(opts.user, opts.yearLabel),
+  };
 }
 
 export interface StageLike {

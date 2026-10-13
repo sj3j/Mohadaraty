@@ -14,6 +14,7 @@ import {
 import ProfileStreakCalendar from './ProfileStreakCalendar';
 import SemesterHistoryList from './SemesterHistoryList';
 import { useAcademicPhase } from '../hooks/useAcademicPhase';
+import { ProgressionRound } from '../../shared/progression';
 import { useStageContext } from '../contexts/StageContext';
 import { STAT_ICONS } from '../lib/profileIcons';
 import { hasLiveSubscription } from '../../shared/subscriptionAccess';
@@ -42,7 +43,8 @@ interface ProfileScreenProps {
   onNavigate?: (tab: string) => void;
   onNavigateToSubscription?: () => void;
   onOpenProgression?: () => void;
-  hasPendingProgression?: boolean;
+  progressionRound?: ProgressionRound | null;
+  hasActivePendingProgression?: boolean;
 }
 
 const GROUP_OPTIONS = [
@@ -57,10 +59,10 @@ const Ltr = ({ children }: { children: React.ReactNode }) => (
 
 export default function ProfileScreen({
   user, lang, setShowStudentGrades, onOpenSettings, hasUnreadInbox, onNavigate, onNavigateToSubscription,
-  onOpenProgression, hasPendingProgression,
+  onOpenProgression, progressionRound, hasActivePendingProgression,
 }: ProfileScreenProps) {
   const isRtl = lang === 'ar';
-  const { phase, calendar } = useAcademicPhase();
+  const { phase } = useAcademicPhase();
   const { stages, effectiveStageId } = useStageContext();
 
   /** '2027-01-31' -> '2027/1/31'. */
@@ -361,7 +363,7 @@ export default function ProfileScreen({
       </div>
 
       <div className="px-4">
-        {hasPendingProgression && onOpenProgression && (
+        {progressionRound && onOpenProgression && (
           <div className="mt-4 p-4 rounded-2xl bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-sky-950/40 dark:to-indigo-950/40 border-2 border-sky-200 dark:border-sky-800/60 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 text-start">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
@@ -529,7 +531,7 @@ export default function ProfileScreen({
           />
         </div>
 
-        {!(user.progressionState === 'completed' && user.progressionYear === calendar.yearLabel) && (user.pendingStageId || hasPendingProgression) && onOpenProgression && (
+        {hasActivePendingProgression && !progressionRound && (
           <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/15 border-2 border-amber-300 dark:border-amber-700/60 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
@@ -540,16 +542,13 @@ export default function ProfileScreen({
                   {isRtl ? 'حالة الانتقال بين مرحلتين' : 'Stage progression pending'}
                 </p>
                 <p className="text-xs text-amber-800 dark:text-amber-300">
-                  {isRtl ? 'اضغط لتأكيد نتيجتك النهائية الرسمية وفك قفل الاختبارات' : 'Tap to confirm your official result and unlock quizzes'}
+                  {isRtl ? 'يمكنك تصفح المرحلتين مؤقتاً. سيظهر زر التأكيد عند فتح سؤال النتيجة.' : 'You can browse both stages temporarily. Confirmation will appear when the result question opens.'}
                 </p>
               </div>
             </div>
-            <button
-              onClick={onOpenProgression}
-              className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-sm transition-all shrink-0"
-            >
-              {isRtl ? 'تأكيد النتيجة' : 'Confirm'}
-            </button>
+            <span className="px-3.5 py-2 bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 text-xs font-bold rounded-xl shrink-0">
+              {isRtl ? 'بانتظار موعد النتيجة' : 'Waiting for results'}
+            </span>
           </div>
         )}
 

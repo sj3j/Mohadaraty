@@ -3,6 +3,7 @@ import {
   CONTENT_CAPABILITIES,
   REPRESENTATIVE_ONLY_CAPABILITIES,
   SYSTEM_CAPABILITIES as SHARED_SYSTEM_CAPABILITIES,
+  SUBSCRIPTION_SUPPORT_CAPABILITIES as SHARED_SUBSCRIPTION_SUPPORT_CAPABILITIES,
   MASTER_ONLY_CAPABILITIES as SHARED_MASTER_ONLY_CAPABILITIES,
   SUPPORT_CAPABILITIES as SHARED_SUPPORT_CAPABILITIES,
   StaffCapability,
@@ -52,6 +53,7 @@ export const ADMIN_ONLY_CAPABILITIES = REPRESENTATIVE_ONLY_CAPABILITIES;
  * streak system to every representative in the college.
  */
 export const SYSTEM_CAPABILITIES = SHARED_SYSTEM_CAPABILITIES;
+export const SUBSCRIPTION_SUPPORT_CAPABILITIES = SHARED_SUBSCRIPTION_SUPPORT_CAPABILITIES;
 
 /**
  * Never held by anyone but the master admin, whatever is stored.
@@ -93,14 +95,17 @@ export const isModerator = (user?: UserProfile | null): boolean =>
 export const isSupport = (user?: UserProfile | null): boolean =>
   user?.role === 'support';
 
+export const isEnabledSupport = (user?: UserProfile | null): boolean =>
+  isSupport(user) && user?.staffDisabled !== true;
+
 /** Anyone with a back-office role. Use for "show the admin surface at all". */
 export const isStaff = (user?: UserProfile | null): boolean =>
-  isRepresentative(user) || isModerator(user) || isSupport(user) || isObserver(user);
+  isRepresentative(user) || isModerator(user) || isEnabledSupport(user) || isObserver(user);
 
 /** Staff whose reach is not limited to a single stage, so the viewing-stage
  *  picker is theirs and effectiveStageId follows it. */
 export const isCrossStage = (user?: UserProfile | null): boolean =>
-  isMasterAdmin(user) || isSupport(user) || isObserver(user);
+  isMasterAdmin(user) || isEnabledSupport(user) || isObserver(user);
 
 /**
  * Can this user perform `capability`?
@@ -183,7 +188,32 @@ export const canViewStaffInbox = (user?: UserProfile | null): boolean =>
 /** إدارة الاشتراكات. Master admin always; support when ticked. The screen is
  *  web-only either way - vite.config.ts stubs it for mode === 'native'. */
 export const canManageSubscriptions = (user?: UserProfile | null): boolean =>
-  canManage(user, 'manageSubscriptions');
+  isMasterAdmin(user)
+  || canManage(user, 'canActivate')
+  || canManage(user, 'canViewHistory')
+  || canManage(user, 'canViewOwnBalance')
+  || canManage(user, 'canViewExpiring');
+
+export const canActivateSubscription = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canActivate');
+export const canViewSubscriptionHistory = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canViewHistory');
+export const canViewOwnSupportBalance = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canViewOwnBalance');
+export const canViewExpiringSubscriptions = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canViewExpiring');
+export const canGrantSubscription = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canGrant');
+export const canSettleSupportBalances = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canSettle');
+export const canVoidSubscription = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canVoid');
+export const canViewAllSupportBalances = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canViewAllBalances');
+export const canViewSubscriptionReports = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canViewReports');
+export const canManageSupportStatus = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canManageSupportStatus');
 
 /** Master-admin-exclusive. Deliberately left as aliases rather than routed
  *  through canManage, so there is no stored key that could ever turn them on. */

@@ -7,9 +7,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { logAdminAction } from '../services/adminLogService';
 import { useStageContext } from '../contexts/StageContext';
 import StudentPicker, { StudentCandidate } from './StudentPicker';
+import { removeSupport, setSupportDisabled } from '../services/subscriptionManagementService';
 import {
   MODERATOR_CAPABILITIES, SUPPORT_CAPABILITIES, MASTER_ONLY_CAPABILITIES,
-  SYSTEM_CAPABILITIES, appointableRoles, isMasterAdmin as isMaster,
+  SYSTEM_CAPABILITIES, SUBSCRIPTION_SUPPORT_CAPABILITIES,
+  appointableRoles, isMasterAdmin as isMaster,
 } from '../lib/permissions';
 
 interface AdminManagementProps {
@@ -27,6 +29,7 @@ interface AdminRole {
   role?: AssistantRole;
   managedStageId?: string;
   permissions?: Record<string, boolean | undefined>;
+  staffDisabled?: boolean;
 }
 
 const PERMISSION_LABELS = [
@@ -51,11 +54,17 @@ const PERMISSION_LABELS = [
   // aliases to an empty stub for mode === 'native'. So the word "اشتراك" never
   // enters the Android artefact and the checkbox drops out with it - which is
   // right, because the screen it grants is stubbed in that build too.
-  ...(TRANSLATIONS.ar.manageSubscriptions ? [{
-    id: 'manageSubscriptions',
-    labelEn: TRANSLATIONS.en.manageSubscriptions,
-    labelAr: TRANSLATIONS.ar.manageSubscriptions,
-  }] : []),
+  ...(TRANSLATIONS.ar.manageSubscriptions ? [
+    {
+      id: 'manageSubscriptions',
+      labelEn: TRANSLATIONS.en.manageSubscriptions,
+      labelAr: TRANSLATIONS.ar.manageSubscriptions,
+    },
+    { id: 'canActivate', labelEn: 'Manual activation', labelAr: 'تفعيل يدوي' },
+    { id: 'canViewHistory', labelEn: 'View history', labelAr: 'عرض السجل' },
+    { id: 'canViewOwnBalance', labelEn: 'View own balance', labelAr: 'عرض الرصيد الخاص' },
+    { id: 'canViewExpiring', labelEn: 'View expiring list', labelAr: 'عرض قائمة الانتهاء' },
+  ] : []),
 ];
 
 const ROLE_LABELS: Record<AssistantRole, { ar: string; en: string }> = {
@@ -79,6 +88,7 @@ const permissionsForRole = (role: AssistantRole) => {
         : PERMISSION_LABELS
           .map(p => p.id)
           .filter(id => !(SYSTEM_CAPABILITIES as readonly string[]).includes(id)
+            && !(SUBSCRIPTION_SUPPORT_CAPABILITIES as readonly string[]).includes(id)
             && id !== 'manageAdmins' && id !== 'manageGroups');
   return PERMISSION_LABELS.filter(p => allowed.includes(p.id));
 };
@@ -102,6 +112,7 @@ const sanitizePermissions = (role: AssistantRole, perms: Record<string, boolean>
 
   // Representative. Hard-denied the system capabilities, so never store one.
   for (const cap of SYSTEM_CAPABILITIES) delete clean[cap];
+  for (const cap of SUBSCRIPTION_SUPPORT_CAPABILITIES) delete clean[cap];
   return clean;
 };
 
@@ -136,6 +147,10 @@ const defaultPermissionsFor = (role: AssistantRole): Record<string, boolean> =>
       manageMcqSystem: false,
       manageAntiCheat: false,
       manageSubscriptions: false,
+      canActivate: false,
+      canViewHistory: false,
+      canViewOwnBalance: false,
+      canViewExpiring: false,
     }
     : { ...ALL_CONTENT_TRUE };
 
@@ -194,7 +209,8 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
         // Docs created before assistants existed have no role field; they are admins.
         role: (doc.data().role as AssistantRole) || 'admin',
         managedStageId: doc.data().managedStageId,
-        permissions: doc.data().permissions || { ...ALL_CONTENT_TRUE }
+        permissions: doc.data().permissions || { ...ALL_CONTENT_TRUE },
+        staffDisabled: doc.data().staffDisabled === true,
       }));
 
       if (!viewerIsMaster) {
@@ -369,6 +385,13 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
       const stageToSave = editStageId || existing?.managedStageId || '';
       const permsToSave = sanitizePermissions(roleToSave, editPermissions);
 
+      // A Support role transition must pass the same live balance check as a
+      // removal. The endpoint clears the Support projection first; the batch
+      // below then installs the newly selected staff role.
+      if (previousRole === 'support' && roleToSave !== 'support') {
+        await removeSupport(id);
+      }
+
       if (roleToSave !== previousRole) {
         await logAdminAction(
           'UPDATE_ADMIN_ROLE',
@@ -430,13 +453,30 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
 
   const handleDeleteAdmin = async (id: string) => {
     try {
-      await revokeStaffRole(id);
+      const target = admins.find(item => item.id === id);
+      if (target?.role === 'support') await removeSupport(id);
+      else await revokeStaffRole(id);
       await logAdminAction('DELETE_ADMIN', `Removed admin role for: ${id}`, id);
 
       setDeletingId(null);
       fetchAdmins();
     } catch (err) {
       console.error('Error deleting admin:', err);
+    }
+  };
+
+  const handleSupportStatus = async (adminRole: AdminRole) => {
+    try {
+      await setSupportDisabled(adminRole.id, adminRole.staffDisabled !== true);
+      await logAdminAction(
+        adminRole.staffDisabled ? 'ENABLE_SUPPORT' : 'DISABLE_SUPPORT',
+        `${adminRole.staffDisabled ? 'Enabled' : 'Disabled'} support: ${adminRole.email}`,
+        adminRole.id,
+      );
+      fetchAdmins();
+    } catch (err) {
+      console.error('Error changing support status:', err);
+      setError(err instanceof Error ? err.message : 'Failed to change support status');
     }
   };
 
@@ -702,6 +742,11 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                                       {admin.role === 'support' && (isRtl ? ' (أساسية)' : ' (home)')}
                                     </span>
                                   )}
+                                  {admin.role === 'support' && admin.staffDisabled && (
+                                    <span className="ms-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                                      {isRtl ? 'معطّل' : 'Disabled'}
+                                    </span>
+                                  )}
                                 </span>
                               </div>
                             </div>
@@ -722,6 +767,21 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                               </div>
                             ) : (
                               <div className="flex items-center gap-1">
+                                {viewerIsMaster && admin.role === 'support' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSupportStatus(admin)}
+                                    className={`px-2 py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                                      admin.staffDisabled
+                                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                    }`}
+                                  >
+                                    {admin.staffDisabled
+                                      ? (isRtl ? 'إعادة التفعيل' : 'Enable')
+                                      : (isRtl ? 'تعطيل' : 'Disable')}
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => {
                                     const role = admin.role || 'admin';

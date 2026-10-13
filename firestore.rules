@@ -20,7 +20,40 @@ rules_version = '2';
 // Fields:
 //   - name: string (required)
 //   - email: string (required, email format)
-//   - role: string (required, enum: admin, moderator, student)
+//   - role: string (required, enum: admin, moderator, support, student, master_admin)
+//   - staffDisabled: boolean (optional, server-managed; disables every Support capability)
+//   - permissions: map (optional, server-managed for staff)
+//
+// Collection: subscriptions
+// Document ID: {subscriptionId}
+// Fields:
+//   - operational entitlement fields written by trusted server code
+//   - pending Super Qi requests may be created by their authenticated owner
+//
+// Collection: subscriptionRecords
+// Document ID: {requestId}
+// Fields:
+//   - immutable private activation/grant/void audit snapshot (server-owned)
+//
+// Collection: supportBalances
+// Document ID: {supportUid}
+// Fields:
+//   - outstanding and lifetime accounting totals (server-owned)
+//
+// Collection: supportLedger
+// Document ID: {requestId}
+// Fields:
+//   - immutable accounting entry with supportUid and signed balanceDelta (server-owned)
+//
+// Collection: referenceCodes
+// Document ID: {uniqueCode}
+// Fields:
+//   - unique reference reservation and target pointer (server-owned, private)
+//
+// Collection: subscriptionRequests
+// Document ID: {requestId}
+// Fields:
+//   - server-owned idempotency record for Support status/removal actions
 //
 // ===============================================================
 
@@ -136,7 +169,10 @@ service cloud.firestore {
     //     users/{uid} is already read by userRole() for isAdmin(), so reading
     //     only that costs nothing extra.
     function isSupport() {
-      return isAuthenticated() && userRole() == 'support';
+      return isAuthenticated() &&
+        userRole() == 'support' &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid))
+          .data.get('staffDisabled', false) != true;
     }
 
     // What the caller was ticked for in إدارة المساعدين, off users/{uid}.
@@ -150,12 +186,85 @@ service cloud.firestore {
           .data.get('permissions', {}).get(capability, false) == true;
     }
 
+    // KEEP IN SYNC WITH SUBSCRIPTION_SUPPORT_CAPABILITIES and
+    // SUBSCRIPTION_MASTER_CAPABILITIES in shared/staffCapabilities.ts.
+    // Rules cannot import TypeScript; scripts/subscriptionPermissionsParity.test.ts
+    // fails if either side changes independently.
+    function supportSubscriptionCan(capability) {
+      return capability in [
+          'canActivate', 'canViewHistory', 'canViewOwnBalance', 'canViewExpiring'
+        ] && supportCan(capability);
+    }
+
+    function isMasterSubscriptionCapability(capability) {
+      return capability in [
+          'canGrant', 'canSettle', 'canVoid', 'canViewAllBalances',
+          'canViewReports', 'canManageSupportStatus'
+        ] && isMasterAdmin();
+    }
+
+    function canUseSubscriptionCapability(capability) {
+      return isMasterSubscriptionCapability(capability) ||
+        isMasterAdmin() || supportSubscriptionCan(capability);
+    }
+
+    function supportBalanceIsZero(supportUid) {
+      return !exists(/databases/$(database)/documents/supportBalances/$(supportUid)) ||
+        get(/databases/$(database)/documents/supportBalances/$(supportUid))
+          .data.get('outstanding', 0) == 0;
+    }
+
+    // A master may continue editing an active Support projection, including
+    // disabling it. Direct demotion is accepted only after its live balance is
+    // settled; server routes independently enforce the same invariant.
+    function isSettledSupportRoleTransition(supportUid) {
+      return resource.data.get('role', '') != 'support' ||
+        request.resource.data.get('role', '') == 'support' ||
+        supportBalanceIsZero(supportUid);
+    }
+
+    function isValidPendingSuperQiSubscription(data) {
+      return data.keys().hasAll([
+          'userId', 'userEmail', 'userName', 'plan', 'status', 'startDate',
+          'endDate', 'paymentMethod', 'amount', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'userEmail', 'userName', 'plan', 'status', 'startDate',
+          'endDate', 'paymentMethod', 'amount', 'createdAt', 'transactionId',
+          'receiptUrl', 'receiptPath'
+        ]) &&
+        data.userId is string && data.userId == request.auth.uid &&
+        data.userEmail is string && data.userEmail.size() > 2 && data.userEmail.size() <= 254 &&
+        'email' in request.auth.token && request.auth.token.email != null &&
+        data.userEmail.lower() == request.auth.token.email.lower() &&
+        data.userName is string && data.userName.size() > 0 && data.userName.size() <= 200 &&
+        data.plan in ['monthly', 'seasonal', 'semi_annual'] &&
+        data.status == 'pending' &&
+        data.startDate == null && data.endDate == null &&
+        data.paymentMethod == 'superkey' &&
+        data.amount is int &&
+        ((data.plan == 'monthly' && data.amount == 2000) ||
+         (data.plan == 'seasonal' && data.amount == 5000) ||
+         (data.plan == 'semi_annual' && data.amount == 9000)) &&
+        data.createdAt is timestamp && data.createdAt == request.time &&
+        (!('transactionId' in data) ||
+          (data.transactionId is string && data.transactionId.size() > 0 && data.transactionId.size() <= 100)) &&
+        (!('receiptUrl' in data) ||
+          (data.receiptUrl is string && data.receiptUrl.size() > 0 && data.receiptUrl.size() <= 2048 &&
+           data.receiptUrl.matches('https://.*'))) &&
+        (!('receiptPath' in data) ||
+          (data.receiptPath is string && data.receiptPath.size() > 0 && data.receiptPath.size() <= 512 &&
+           data.receiptPath.matches('payment_receipts/' + request.auth.uid + '.*'))) &&
+        ('transactionId' in data || 'receiptUrl' in data);
+    }
+
     function representativeCan(capability) {
       return isAuthenticated() && userRole() == 'admin' &&
         !(capability in [
           'manageStreakSystem', 'manageMcqSystem', 'manageAntiCheat',
           'manageSubscriptions', 'viewAdminLogs', 'manageCalendar',
-          'manageSimosanBilling'
+          'manageSimosanBilling', 'canActivate', 'canViewHistory',
+          'canViewOwnBalance', 'canViewExpiring'
         ]) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid))
           .data.get('permissions', {}).get(capability, true) != false;
@@ -182,7 +291,7 @@ service cloud.firestore {
     }
 
     function isStaff() {
-      return isMasterAdmin() || userRole() in ['admin', 'moderator', 'support'];
+      return isMasterAdmin() || userRole() in ['admin', 'moderator'] || isSupport();
     }
 
     // Master acts everywhere; support acts everywhere only with an explicit
@@ -307,10 +416,14 @@ service cloud.firestore {
              (!('examCodePromptSnoozedUntil' in data) || data.examCodePromptSnoozedUntil is string) &&
              (!('blockedUsers' in data) || data.blockedUsers is list) &&
              (!('permissions' in data) || data.permissions is map) &&
+             (!('staffDisabled' in data) || data.staffDisabled is bool) &&
              (!('isSubscribed' in data) || data.isSubscribed is bool) &&
              (!('subscriptionEnd' in data) || data.subscriptionEnd == null || data.subscriptionEnd is timestamp) &&
              (!('subscriptionPlan' in data) || data.subscriptionPlan == null || data.subscriptionPlan in ['monthly', 'seasonal', 'semi_annual', 'annual']) &&
              (!('pendingStageId' in data) || data.pendingStageId == null || data.pendingStageId is string) &&
+             (!('pendingProgressionYear' in data) || data.pendingProgressionYear == null ||
+               (data.pendingProgressionYear is string && data.pendingProgressionYear.size() <= 32)) &&
+             (!('pendingProgressionSetAt' in data) || data.pendingProgressionSetAt == null || data.pendingProgressionSetAt is timestamp) &&
              (!('subscriptionBannerTheme' in data) || data.subscriptionBannerTheme in ['gold', 'pink', 'black', 'white']);
     }
 
@@ -324,7 +437,8 @@ service cloud.firestore {
     // isStaff() is here so that all staff accounts (representatives,
     // moderators, support) have baseline access even if they have no students/{email} doc.
     function hasAccess() {
-      return userRole() in ['student', 'admin', 'moderator', 'support', 'observer'] ||
+      return userRole() in ['student', 'admin', 'moderator', 'observer'] ||
+             isSupport() ||
              isAdmin() || isWhitelisted();
     }
 
@@ -335,17 +449,27 @@ service cloud.firestore {
       return canWriteStage(stageId, 'manageGroups');
     }
 
+    function hasCurrentPendingProgression(user) {
+      let calendarPath = /databases/$(database)/documents/app_settings/academicCalendar;
+      return user.get('pendingStageId', '') != '' &&
+             user.get('pendingProgressionYear', '') != '' &&
+             exists(calendarPath) &&
+             user.get('pendingProgressionYear', '') == get(calendarPath).data.get('yearLabel', '') &&
+             !(user.get('progressionYear', '') == get(calendarPath).data.get('yearLabel', '') &&
+               user.get('progressionState', '') == 'completed');
+    }
+
     function isPendingProgression() {
       let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
       let user = userDoc != null ? userDoc.data : {};
-      return user.get('pendingStageId', '') != '';
+      return hasCurrentPendingProgression(user);
     }
 
     function hasStageAccess(stageId, subjectId) {
       let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
       let user = userDoc != null ? userDoc.data : {};
       return user.get('stageId', '') == stageId ||
-             user.get('pendingStageId', '') == stageId ||
+             (hasCurrentPendingProgression(user) && user.get('pendingStageId', '') == stageId) ||
              (subjectId != '' && subjectId in user.get('tahmeelSubjects', []));
     }
 
@@ -508,7 +632,10 @@ service cloud.firestore {
       // account able to mint a second one could hand them out by proxy. The UI
       // half is appointableRoles() in src/lib/permissions.ts; this is the half
       // that actually holds.
-      allow create, update: if isMasterAdmin() || (
+      // Support appointments are changed through the API. Blocking a direct
+      // role change/delete here avoids bypassing the live-balance check; this
+      // registry is keyed by email and cannot safely resolve a Google-auth UID.
+      allow create: if isMasterAdmin() || (
         supportCan('manageAdmins') &&
         request.resource.data.get('role', '') in ['admin', 'moderator']
       ) || (
@@ -517,7 +644,20 @@ service cloud.firestore {
         request.resource.data.get('managedStageId', '') == myManagedStage() &&
         myManagedStage() != ''
       );
-      allow delete: if isMasterAdmin() || (
+      allow update: if (isMasterAdmin() &&
+        (resource.data.get('role', '') != 'support' ||
+         request.resource.data.get('role', '') == 'support')) || (
+        supportCan('manageAdmins') &&
+        resource.data.get('role', '') != 'support' &&
+        request.resource.data.get('role', '') in ['admin', 'moderator']
+      ) || (
+        representativeCan('manageAdmins') &&
+        resource.data.get('role', 'admin') == 'moderator' &&
+        request.resource.data.get('role', '') == 'moderator' &&
+        request.resource.data.get('managedStageId', '') == myManagedStage() &&
+        myManagedStage() != ''
+      );
+      allow delete: if (isMasterAdmin() && resource.data.get('role', '') != 'support') || (
         supportCan('manageAdmins') &&
         resource.data.get('role', '') in ['admin', 'moderator']
       ) || (
@@ -562,13 +702,14 @@ service cloud.firestore {
                     (request.resource.data.role == 'student' || 
                      (request.resource.data.role == assistantRole() && assistantRole() != '') ||
                      (request.resource.data.role in ['admin'] && isMasterAdmin()));
-      allow update: if isMasterAdmin() || 
+      allow update: if (isMasterAdmin() && isSettledSupportRoleTransition(userId)) ||
                       (supportCan('manageStudents') && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stageId', 'updatedAt'])) ||
                       (canManageStudentsOn(resource.data.get('stageId', '')) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['examCode', 'name', 'originalName'])) ||
                       // Appointing a moderator writes these three fields onto their
                       // user doc. Restricted to role == 'moderator' so a representative
                       // cannot mint another admin.
                       (representativeCan('manageAdmins') &&
+                       resource.data.get('role', '') != 'support' &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'managedStageId', 'permissions']) &&
                        request.resource.data.get('role', '') == 'moderator' &&
                        request.resource.data.get('managedStageId', '') == myManagedStage()) ||
@@ -582,6 +723,7 @@ service cloud.firestore {
                       // 'master_admin' are absent on purpose - see
                       // allowed_admins above.
                       (supportCan('manageAdmins') &&
+                       resource.data.get('role', '') != 'support' &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'managedStageId', 'permissions']) &&
                        request.resource.data.get('role', '') in ['admin', 'moderator', 'student']) ||
                       (isOwner(userId) && isValidUser(request.resource.data) && (
@@ -1052,22 +1194,61 @@ service cloud.firestore {
     // it when ticked for manageSubscriptions, which is what lets the statistics
     // reduce over the whole collection.
     match /subscriptions/{subId} {
-      allow read: if isMasterAdmin() || isObserver() || supportCan('manageSubscriptions') ||
-                     (isAuthenticated() && resource.data.userId == request.auth.uid);
+      // Students use GET /api/subscriptions/mine, which returns a sanitized
+      // projection. The raw operational row can contain payment evidence and
+      // gateway details, so it is never owner-readable from Firestore.
+      allow read: if isMasterAdmin() || isObserver() ||
+                     supportSubscriptionCan('canViewHistory');
       // Students create their own pending row for the manual (Super Qi) flow.
       // Every other creator - the grant route, ZainCash init - is the Admin SDK,
       // which bypasses these rules.
-      allow create: if isMasterAdmin() || (
-        isAuthenticated() && 
-        request.resource.data.userId == request.auth.uid && 
-        request.resource.data.status == 'pending'
-      );
+      allow create: if isMasterAdmin() ||
+        (isAuthenticated() && isValidPendingSuperQiSubscription(request.resource.data));
       // No client writes one: approve/reject/extend/cancel and every ZainCash
       // settlement go through the Admin SDK. Left at isMasterAdmin() rather than
       // false only so a stuck row can be repaired by hand.
       allow update: if isMasterAdmin();
       // No deletes
       allow delete: if false;
+    }
+
+    // Private audit trail. The Admin SDK is the only writer. Support history is
+    // an explicit, default-denied capability and disabled Support is rejected
+    // inside isSupport()/supportCan().
+    match /subscriptionRecords/{recordId} {
+      allow read: if canUseSubscriptionCapability('canViewHistory');
+      allow write: if false;
+    }
+
+    // Master sees every balance. Support can see only its own document and
+    // only with the independent own-balance capability.
+    match /supportBalances/{supportUid} {
+      allow read: if isMasterAdmin() ||
+        (request.auth.uid == supportUid &&
+         supportSubscriptionCan('canViewOwnBalance'));
+      allow write: if false;
+    }
+
+    // Ledger queries made by Support must include supportUid == auth.uid;
+    // document reads enforce the same ownership from the stored row.
+    match /supportLedger/{entryId} {
+      allow read: if isMasterAdmin() ||
+        (supportSubscriptionCan('canViewOwnBalance') &&
+         resource.data.get('supportUid', '') == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Reservation rows are an internal uniqueness primitive. Even their ids
+    // disclose transaction reference codes, so all clients are denied.
+    match /referenceCodes/{code} {
+      allow read, write: if false;
+    }
+
+    // Idempotency rows for Support disable/re-enable and removal. They include
+    // payload hashes, actor snapshots, and replay results; only the Admin SDK
+    // may create or inspect them.
+    match /subscriptionRequests/{requestId} {
+      allow read, write: if false;
     }
 
     // Apple IAP, server-only on both counts.

@@ -1,3 +1,5 @@
+import type { LegacyPaymentMethod } from '../shared/subscriptionTypes';
+
 export type Category = 'pharmacology' | 'pharmacognosy' | 'organic_chemistry' | 'biochemistry' | 'cosmetics';
 export type LectureType = 'theoretical' | 'practical';
 
@@ -66,7 +68,7 @@ export type SubscriptionStatus = 'active' | 'inactive' | 'pending' | 'cancelled'
 /** `apple_iap` rows are written ONLY by the server, from RevenueCat
  *  (shared/iap.ts). They carry amount 0 - Apple settles in the buyer's own
  *  currency net of commission, and this ledger's revenue is IQD. */
-export type PaymentMethod = 'zaincash' | 'superkey' | 'admin_grant' | 'apple_iap';
+export type PaymentMethod = LegacyPaymentMethod;
 
 export interface Subscription {
   id: string;
@@ -94,6 +96,9 @@ export interface Subscription {
   contactWhatsapp?: string;
   contactTelegram?: string;
   amount: number; // in IQD
+  /** Present on operational projections created by the audited manual/grant
+   * flow. These rows may only be reversed through the matching void record. */
+  auditedRecordId?: string;
   createdAt: any;
   updatedAt?: any;
   approvedBy?: string;
@@ -216,6 +221,9 @@ export interface UserProfile {
    */
   role: 'admin' | 'moderator' | 'support' | 'student' | 'observer';
   isMasterAdmin?: boolean;
+  /** Immediately disables every Support capability without discarding the
+   * role, permissions, balances, or historical attribution. */
+  staffDisabled?: boolean;
   photoUrl?: string;
   completedWeeklyTasks?: string[];
   favorites?: string[];
@@ -276,6 +284,16 @@ export interface UserProfile {
     /** إدارة الاشتراكات. The ledger is account-keyed, not stage-keyed, which is
      *  why it sits with the system-wide three rather than the per-stage ones. */
     manageSubscriptions?: boolean;
+    canActivate?: boolean;
+    canViewHistory?: boolean;
+    canViewOwnBalance?: boolean;
+    canViewExpiring?: boolean;
+    canGrant?: boolean;
+    canSettle?: boolean;
+    canVoid?: boolean;
+    canViewAllBalances?: boolean;
+    canViewReports?: boolean;
+    canManageSupportStatus?: boolean;
     // Master-admin-only surfaces. Present so Capability is indexable against
     // this map; they are stripped on save and hard-denied on read, so a stored
     // `true` grants nothing.
@@ -297,6 +315,9 @@ export interface UserProfile {
   // Multi-Stage & Progression fields
   stageId?: string;
   pendingStageId?: string | null;
+  /** Academic calendar year that owns pendingStageId. */
+  pendingProgressionYear?: string | null;
+  pendingProgressionSetAt?: any; // Firestore Timestamp
   tahmeelSubjects?: string[];
   managedStageId?: string;
   hasCompletedProgression?: boolean;

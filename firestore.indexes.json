@@ -325,6 +325,152 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "isSubscribed",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subscriptionEnd",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "actorUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "actorUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "referenceCodeNormalized", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "referenceCodeNormalized", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "actorUid", "order": "ASCENDING" },
+        { "fieldPath": "referenceCodeNormalized", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "subscriptionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "actorUid", "order": "ASCENDING" },
+        { "fieldPath": "referenceCodeNormalized", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "supportLedger",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "supportUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

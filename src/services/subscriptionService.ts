@@ -25,28 +25,33 @@ export function onUserSubscriptions(
   userId: string,
   callback: (subs: Subscription[]) => void
 ): () => void {
-  const q = query(
-    collection(db, SUBSCRIPTIONS_COL),
-    where('userId', '==', userId),
-    orderBy('createdAt', 'desc')
-  );
-  return onSnapshot(q, (snap) => {
-    const subs: Subscription[] = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Subscription));
-    callback(subs);
-  });
+  let cancelled = false;
+  auth.currentUser?.getIdToken().then(token => fetch(apiUrl('/api/subscriptions/mine'), {
+    headers: { Authorization: `Bearer ${token}` },
+  })).then(async response => {
+    if (!response.ok) throw new Error('Failed to load subscriptions');
+    const data = await response.json();
+    if (!cancelled) callback((data.subscriptions || []).map((sub: any, index: number) => ({
+      ...sub,
+      // The own-subscriptions API intentionally does not expose entitlement
+      // document ids. This key is display-only and never sent back to the API.
+      id: `own-${sub.createdAt || sub.startDate || index}`,
+    })) as Subscription[]);
+  }).catch(error => console.error('Own subscriptions API failed:', error));
+  return () => { cancelled = true; };
 }
 
 /** Get the currently active subscription for a user (if any) */
 export async function getActiveSubscription(userId: string): Promise<Subscription | null> {
-  const q = query(
-    collection(db, SUBSCRIPTIONS_COL),
-    where('userId', '==', userId),
-    where('status', '==', 'active')
-  );
-  const snap = await getDocs(q);
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return { id: doc.id, ...doc.data() } as Subscription;
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) return null;
+  const response = await fetch(apiUrl('/api/subscriptions/mine'), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Failed to load subscriptions');
+  const data = await response.json();
+  const found = (data.subscriptions || []).find((sub: Subscription) => sub.status === 'active');
+  return found ? { ...found, id: `own-${found.createdAt || found.startDate || 'active'}` } : null;
 }
 
 /**
@@ -280,7 +285,12 @@ export async function grantSubscription(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({ userId, plan, notes }),
+    body: JSON.stringify({
+      requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      studentEmail: userId,
+      plan,
+      reason: notes,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Grant failed' }));

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw, Image as ImageIcon } from 'lucide-react';
+import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw, ArrowRightLeft, Image as ImageIcon } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
 import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { Language, TRANSLATIONS, Student, UserProfile } from '../types';
@@ -11,11 +11,13 @@ import StageSettingsModal from './StageSettingsModal';
 import SignupRequestsQueue from './SignupRequestsQueue';
 import DeletionRequestsQueue from './DeletionRequestsQueue';
 import PendingAttachmentsQueue from './admin/PendingAttachmentsQueue';
-import { canManageGroups } from '../lib/permissions';
+import { canManageGroups, canManageStudents } from '../lib/permissions';
 import { apiUrl } from '../lib/apiBase';
 import RosterImport from './RosterImport';
 import { nameKeyFor, normalizeName } from '../../shared/rosterIdentity';
 import { isMasterAdminEmail } from '../../shared/masterAdmins';
+import { subgroupOptions as getSubgroupOptions, FALLBACK_GROUP_CONFIG } from '../../shared/groups';
+import type { StageTransferType, TahmeelHandling } from '../../shared/studentAdmin';
 
 interface StudentManagementProps {
   isOpen: boolean;
@@ -37,7 +39,10 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const isMasterAdmin = isMasterAdminEmail(user?.email) || user?.isMasterAdmin;
-  const { effectiveStageId, groupConfig } = useStageContext();
+  const hasGlobalScope = Boolean(
+    (isMasterAdmin || user?.role === 'support') && canManageStudents(user),
+  );
+  const { effectiveStageId, stages, groupConfig, isLoadingStages, stagesError } = useStageContext();
   const [showGroupSettings, setShowGroupSettings] = useState(false);
 
   // Group/subgroup options come from the stage config, not a hardcoded A-D list.
@@ -94,6 +99,88 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'attachments' | 'codes'>('roster');
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
   const [isFetchingProfile, setIsFetchingProfile] = useState(false);
+
+  // --- Individual Student Stage Transfer State ---
+  const [transferStudent, setTransferStudent] = useState<Student | null>(null);
+  const [transferTargetStageId, setTransferTargetStageId] = useState<string>('');
+  const [transferTargetSubgroup, setTransferTargetSubgroup] = useState<string>('');
+  const [transferType, setTransferType] = useState<StageTransferType>('correction');
+  const [transferTahmeelHandling, setTransferTahmeelHandling] = useState<TahmeelHandling>('clear');
+  const [transferReason, setTransferReason] = useState<string>('');
+  const [isTransferring, setIsTransferring] = useState<boolean>(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const sourceTransferStage = stages.find(s => s.id === transferStudent?.stageId);
+  const destinationTransferStage = stages.find(s => s.id === transferTargetStageId);
+  const canPreserveTahmeel = transferType === 'manual_promotion'
+    && !!sourceTransferStage && !!destinationTransferStage
+    && destinationTransferStage.order > sourceTransferStage.order;
+  const hasRealStageList = !isLoadingStages && stagesError === null && stages.length > 0;
+
+  useEffect(() => {
+    if (!canPreserveTahmeel && transferTahmeelHandling === 'preserve') {
+      setTransferTahmeelHandling('clear');
+    }
+  }, [canPreserveTahmeel, transferTahmeelHandling]);
+
+  const handleOpenTransferModal = (student: Student) => {
+    setTransferStudent(student);
+    setTransferTargetStageId('');
+    setTransferTargetSubgroup('');
+    setTransferType('correction');
+    setTransferTahmeelHandling('clear');
+    setTransferReason('');
+    setTransferError(null);
+  };
+
+  const handleExecuteTransfer = async () => {
+    if (!transferStudent || !transferStudent.stageId || !sourceTransferStage
+        || !transferTargetStageId || !hasRealStageList) return;
+    setIsTransferring(true);
+    setTransferError(null);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error(isRtl ? 'مطلوب تسجيل الدخول' : 'Authentication required');
+
+      const studentEmail = transferStudent.baseStudentId || transferStudent.email || transferStudent.id;
+      const res = await fetch(apiUrl(`/api/admin/students/${encodeURIComponent(studentEmail)}/transfer-stage`), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          targetStageId: transferTargetStageId,
+          expectedCurrentStageId: transferStudent.stageId || undefined,
+          targetSubgroup: transferTargetSubgroup || undefined,
+          transferType,
+          tahmeelHandling: transferTahmeelHandling,
+          reason: transferReason || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        const apiError = new Error(data.error || (isRtl ? 'فشل نقل الطالب' : 'Failed to transfer student'));
+        (apiError as any).code = data.code;
+        throw apiError;
+      }
+
+      setSuccess(
+        isRtl
+          ? `تم نقل الطالب ${transferStudent.name} بنجاح`
+          : `Student ${transferStudent.name} successfully transferred`
+      );
+      setTransferStudent(null);
+      fetchStudents();
+    } catch (err: any) {
+      console.error('Stage transfer error:', err);
+      setTransferError(err.code === 'STAGE_CONFLICT'
+        ? (isRtl ? 'تغيّرت مرحلة الطالب. حدّث القائمة ثم حاول مرة أخرى.' : 'The student stage changed. Refresh the roster and try again.')
+        : (err.message || 'Error executing transfer'));
+    } finally {
+      setIsTransferring(false);
+    }
+  };
   
 
 
@@ -609,6 +696,15 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                           title={isRtl ? 'دمج الحسابات' : 'Merge Accounts'}
                         >
                           <GitMerge className="w-4 h-4" />
+                        </button>
+                      )}
+                      {hasGlobalScope && !student.isAuthAccountOnly && (
+                        <button
+                          onClick={() => handleOpenTransferModal(student)}
+                          className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
+                          title={isRtl ? 'نقل إلى مرحلة أخرى' : 'Transfer Stage'}
+                        >
+                          <ArrowRightLeft className="w-4 h-4" />
                         </button>
                       )}
                       {!student.isAuthAccountOnly && (
@@ -2101,9 +2197,272 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                       {isResettingProgression ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
                       {isRtl ? 'إعادة تعيين الترفيع السنوي (Reset Progression)' : 'Reset Academic Progression'}
                     </button>
+                    {hasGlobalScope && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const s = students.find(x => x.id === viewingProfile.email || x.email === viewingProfile.email || (viewingProfile.uid && x.userUid === viewingProfile.uid));
+                          if (s) {
+                            setViewingProfile(null);
+                            handleOpenTransferModal(s);
+                          }
+                        }}
+                        className="mt-2 w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-sm"
+                      >
+                        <ArrowRightLeft className="w-4 h-4" />
+                        {isRtl ? 'نقل الطالب إلى مرحلة أخرى' : 'Transfer Student Stage'}
+                      </button>
+                    )}
+
+
                   </div>
                 </div>
               </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Individual Student Stage Transfer Modal */}
+      {transferStudent && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          dir={isRtl ? 'rtl' : 'ltr'}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="w-full max-w-lg bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden flex flex-col max-h-[90vh]"
+          >
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-zinc-800">
+              <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                  <ArrowRightLeft className="w-5 h-5" />
+                </div>
+                {isRtl ? 'نقل الطالب إلى مرحلة أخرى' : 'Transfer Student Stage'}
+              </h2>
+              <button
+                disabled={isTransferring}
+                onClick={() => setTransferStudent(null)}
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5">
+              {/* Student Overview Card */}
+              <div className="bg-slate-50 dark:bg-zinc-800/50 p-4 rounded-2xl border border-slate-200/80 dark:border-zinc-700/60 flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-slate-900 dark:text-stone-100 text-base">{transferStudent.name}</h3>
+                  <p className="text-xs text-slate-500 font-mono mt-0.5" dir="ltr">
+                    {transferStudent.baseStudentId || transferStudent.email || transferStudent.id}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <span className="inline-block px-3 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                    {(() => {
+                      const current = stages.find(s => s.id === transferStudent.stageId);
+                      return (isRtl ? current?.nameAr : current?.nameEn) || transferStudent.stageId;
+                    })()}
+                    {transferStudent.subgroup ? ` (${transferStudent.subgroup})` : ''}
+                  </span>
+                </div>
+              </div>
+
+              {!hasRealStageList && (
+                <div className="p-3 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-xs font-bold text-red-700 dark:text-red-300">
+                  {isRtl
+                    ? 'تعذّر تحميل قائمة المراحل الرسمية. أعد المحاولة بعد اكتمال الاتصال.'
+                    : 'The official stage list is unavailable. Retry after the connection is restored.'}
+                </div>
+              )}
+
+              {/* Target Stage */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {isRtl ? 'المرحلة الدراسية الجديدة *' : 'Target Stage *'}
+                </label>
+                <select
+                  value={transferTargetStageId}
+                  onChange={(e) => {
+                    setTransferTargetStageId(e.target.value);
+                    setTransferTargetSubgroup('');
+                  }}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white font-medium text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="">{isRtl ? '-- اختر المرحلة المستهدفة --' : '-- Select target stage --'}</option>
+                  {stages
+                    .filter(s => s.id !== transferStudent.stageId)
+                    .map(s => (
+                      <option key={s.id} value={s.id}>
+                        {isRtl ? (s.nameAr || s.id) : (s.nameEn || s.id)}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Target Subgroup */}
+              {transferTargetStageId && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                    {isRtl ? 'المجموعة في المرحلة الجديدة' : 'Target Subgroup'}
+                  </label>
+                  <select
+                    value={transferTargetSubgroup}
+                    onChange={(e) => setTransferTargetSubgroup(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white font-medium text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  >
+                    <option value="">{isRtl ? 'تحديد لاحقاً (يختاره الطالب عند الدخول)' : 'Select later (student selects upon login)'}</option>
+                    {(() => {
+                      const tgt = stages.find(s => s.id === transferTargetStageId);
+                      const cfg = tgt?.groupConfig || FALLBACK_GROUP_CONFIG;
+                      return getSubgroupOptions(cfg).map(sg => (
+                        <option key={sg} value={sg}>{sg}</option>
+                      ));
+                    })()}
+                  </select>
+                </div>
+              )}
+
+              {/* Transfer Type */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {isRtl ? 'نوع النقل / السبب *' : 'Transfer Type *'}
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setTransferType('correction'); setTransferTahmeelHandling('clear'); }}
+                    className={`p-3 rounded-xl border text-xs font-bold text-center transition-all ${
+                      transferType === 'correction'
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 ring-2 ring-emerald-500/30'
+                        : 'border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    {isRtl ? 'تصحيح إداري' : 'Correction'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTransferType('manual_promotion')}
+                    className={`p-3 rounded-xl border text-xs font-bold text-center transition-all ${
+                      transferType === 'manual_promotion'
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 ring-2 ring-emerald-500/30'
+                        : 'border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    {isRtl ? 'ترقية أكاديمية' : 'Promotion'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setTransferType('retention'); setTransferTahmeelHandling('clear'); }}
+                    className={`p-3 rounded-xl border text-xs font-bold text-center transition-all ${
+                      transferType === 'retention'
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 ring-2 ring-emerald-500/30'
+                        : 'border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    {isRtl ? 'إعادة / استبقاء' : 'Retention'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Tahmeel Handling */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {isRtl ? 'معالجة المواد المحمّلة (التحميل)' : 'Carried Subjects (Tahmeel)'}
+                </label>
+                <div className="flex gap-4 text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="tahmeel"
+                      checked={transferTahmeelHandling === 'clear'}
+                      onChange={() => setTransferTahmeelHandling('clear')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    {isRtl ? 'تصفير المواد المحمّلة' : 'Clear carried subjects'}
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="tahmeel"
+                      checked={transferTahmeelHandling === 'preserve'}
+                      onChange={() => setTransferTahmeelHandling('preserve')}
+                      disabled={!canPreserveTahmeel}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span className={!canPreserveTahmeel ? 'opacity-50' : ''}>
+                      {isRtl ? 'الاحتفاظ بالمواد الحالية (للترقية إلى مرحلة أعلى فقط)' : 'Preserve current subjects (upward promotion only)'}
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Reason (optional) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {isRtl ? 'ملاحظة إدارية / سبب النقل (اختياري)' : 'Admin Note / Reason (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={transferReason}
+                  onChange={(e) => setTransferReason(e.target.value)}
+                  maxLength={500}
+                  placeholder={isRtl ? 'مثال: خطأ في إدخال بيانات القبول' : 'e.g., Admission data entry correction'}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Informational Warning */}
+              <div className="p-3.5 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800/40 text-xs text-amber-800 dark:text-amber-300 space-y-1">
+                <p className="font-bold flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  {isRtl ? 'تنبيه أمان وسلامة البيانات الأكاديمية:' : 'Data Integrity & Security Notice:'}
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                  <li>{isRtl ? 'سيتم نقل سجل الطالب في القائمة الرسمية وتحديث كافة حسابات الدخول فورياً.' : 'Student roster record and all user logins will be updated atomically.'}</li>
+                  <li>{isRtl ? 'يتم تجميد سجل لوحة الشرف في المرحلة السابقة لضمان عدالة التنافس.' : 'Past stage leaderboard record is frozen to preserve historical ranking integrity.'}</li>
+                  <li>{isRtl ? 'في حال كان الطالب ممثلاً أو مساعداً لمرحلته السابقة، سيتم إخلاء المقعد تلقائياً.' : 'If the student held a stage representative or moderator seat, it is vacated.'}</li>
+                </ul>
+              </div>
+
+              {transferError && (
+                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-xs font-bold text-red-600 dark:text-red-400">
+                  {transferError}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-6 border-t border-slate-200 dark:border-zinc-800 flex items-center justify-end gap-3 bg-slate-50/50 dark:bg-zinc-950/30">
+              <button
+                type="button"
+                disabled={isTransferring}
+                onClick={() => setTransferStudent(null)}
+                className="px-5 py-2.5 rounded-xl text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-zinc-800 transition-colors"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isTransferring || !transferTargetStageId || !hasRealStageList || !sourceTransferStage}
+                onClick={handleExecuteTransfer}
+                className="px-6 py-2.5 rounded-xl text-sm font-black bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center gap-2"
+              >
+                {isTransferring ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {isRtl ? 'جاري النقل والمعالجة...' : 'Transferring...'}
+                  </>
+                ) : (
+                  <>
+                    <ArrowRightLeft className="w-4 h-4" />
+                    {isRtl ? 'تأكيد نقل الطالب' : 'Confirm Transfer'}
+                  </>
+                )}
+              </button>
             </div>
           </motion.div>
         </div>

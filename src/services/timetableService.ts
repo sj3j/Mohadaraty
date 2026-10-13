@@ -173,6 +173,7 @@ export interface ParseResult {
   dropped: number;
   truncated: number;
   droppedLabels: string[];
+  fallbackUsed?: boolean;
 }
 
 /**

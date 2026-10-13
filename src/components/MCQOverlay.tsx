@@ -15,6 +15,7 @@ import MCQReviewScreen from './mcq/MCQReviewScreen';
 import BankQuizSetupScreen from './questionBank/BankQuizSetupScreen';
 import BankQuizScreen from './questionBank/BankQuizScreen';
 import { canManageMcqSystem } from '../lib/permissions';
+import { useStageContext } from '../contexts/StageContext';
 
 export type MCQStackRoute = 'init_loading' | 'loading' | 'intro' | 'quiz' | 'result' | 'review' | 'banned' | 'bank_quiz_setup' | 'bank_quiz' | 'bank_result';
 
@@ -27,6 +28,7 @@ interface MCQOverlayProps {
 
 export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayProps) {
   const isRtl = lang === 'ar';
+  const { isPendingProgression } = useStageContext();
   const [route, setRoute] = useState<MCQStackRoute>('init_loading');
   
   // High-level state to pass to screens
@@ -180,7 +182,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   };
 
   const handleStartQuiz = async () => {
-    if (user.pendingStageId) return;
+    if (isPendingProgression) return;
     // A translated lecture is raw source material and never gets AI questions.
     // The intro screen hides the AI card for them, so this is unreachable
     // through the UI - it exists so the rule cannot be lost to a later UI edit.
@@ -215,14 +217,14 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
 
   useEffect(() => {
     const handleQuizSetup = (e: any) => {
-      if (user.pendingStageId) return;
+      if (isPendingProgression) return;
       setRoute('bank_quiz_setup');
     };
     window.addEventListener('open-bank-quiz', handleQuizSetup);
     return () => {
       window.removeEventListener('open-bank-quiz', handleQuizSetup);
     }
-  }, [user.pendingStageId]);
+  }, [isPendingProgression]);
 
   return (
     <div className="fixed inset-0 h-[100dvh] z-[100] bg-white dark:bg-zinc-900 flex flex-col overflow-hidden" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -308,7 +310,7 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             onClose={onClose}
             user={user}
             userId={user.uid}
-            isQuizLocked={Boolean(user.pendingStageId)}
+            isQuizLocked={isPendingProgression}
           />
         )}
 
@@ -351,9 +353,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
         {route === 'bank_quiz_setup' && (
           <BankQuizSetupScreen 
             bankQuestions={bankQuestions}
-            isQuizLocked={Boolean(user.pendingStageId)}
+            isQuizLocked={isPendingProgression}
             onStartQuiz={(filtered) => {
-               if (user.pendingStageId) return;
+               if (isPendingProgression) return;
                setBankQuizQuestions(filtered);
                setRoute('bank_quiz');
             }}

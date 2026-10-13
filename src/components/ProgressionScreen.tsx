@@ -13,6 +13,10 @@ interface ProgressionScreenProps {
   user: UserProfile;
   lang: Language;
   round: ProgressionRound;
+  hasActivePendingAccess: boolean;
+  onSubmissionStarted: (round: ProgressionRound) => void;
+  onSubmissionRejected: () => void;
+  onUnavailable: () => void;
   /** Refetches the user doc so the app can move past this screen. */
   onDone: () => void;
 }
@@ -29,7 +33,16 @@ type Choice = 'passed' | 'resit' | 'tahmeel' | 'failed' | 'mokamel';
  * do, and which syncUserStage would otherwise use to undo the whole thing at
  * their next login.
  */
-export default function ProgressionScreen({ user, lang, round, onDone }: ProgressionScreenProps) {
+export default function ProgressionScreen({
+  user,
+  lang,
+  round,
+  hasActivePendingAccess,
+  onSubmissionStarted,
+  onSubmissionRejected,
+  onUnavailable,
+  onDone,
+}: ProgressionScreenProps) {
   const isRtl = lang === 'ar';
   const { stages } = useStageContext();
 
@@ -97,6 +110,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
     if (!canSubmit || !choice) return;
     setIsSaving(true);
     setError(null);
+    onSubmissionStarted(round);
     try {
       const token = await auth.currentUser?.getIdToken();
       if (!token) throw new Error('No auth token');
@@ -115,6 +129,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
       if (!res.ok || !data.success) {
         const apiErr = new Error(data.error || 'API error');
         (apiErr as any).isApiError = true;
+        (apiErr as any).code = data.code;
         throw apiErr;
       }
 
@@ -131,6 +146,11 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
       }
     } catch (err: any) {
       console.error('Progression submit failed:', err);
+      if (err?.code === 'NO_OPEN_PROGRESSION' || err?.code === 'PROGRESSION_STATE_CHANGED') {
+        onUnavailable();
+        return;
+      }
+      onSubmissionRejected();
       // Only the server's own error (e.g. "no progression question is open
       // yet") is specific enough to show as-is; a missing token or a real
       // network failure gets the generic connectivity message instead.
@@ -182,18 +202,31 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
 
   // ---- the question --------------------------------------------------------
   const handlePendingResults = async () => {
-    if (!isFinalStage && nextStage && !user.pendingStageId) {
+    if (!isFinalStage && nextStage && !hasActivePendingAccess) {
       setIsSettingPending(true);
       try {
         const token = await auth.currentUser?.getIdToken();
-        if (token) {
-          await fetch(apiUrl('/api/progression/set-pending'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          });
+        if (!token) throw new Error('No auth token');
+        const res = await fetch(apiUrl('/api/progression/set-pending'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          const apiErr = new Error(data.error || 'API error');
+          (apiErr as any).code = data.code;
+          throw apiErr;
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error('Failed to set pending stage:', e);
+        if (e?.code === 'NO_OPEN_PROGRESSION' || e?.code === 'PROGRESSION_STATE_CHANGED') {
+          onUnavailable();
+          return;
+        }
+        setError(isRtl
+          ? 'تعذّر تفعيل الاطلاع المؤقت. تحقّق من الاتصال وحاول مرة أخرى.'
+          : 'Could not enable provisional access. Check your connection and try again.');
+        return;
       } finally {
         setIsSettingPending(false);
       }
@@ -296,7 +329,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
           </p>
         </div>
 
-        {user.pendingStageId && (
+        {hasActivePendingAccess && (
           <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl flex items-center gap-3 text-start">
             <Clock className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
             <div className="text-xs text-amber-800 dark:text-amber-300">
@@ -453,7 +486,7 @@ export default function ProgressionScreen({ user, lang, round, onDone }: Progres
           className="w-full mt-3 py-3 rounded-2xl border border-slate-300 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-slate-300 font-semibold text-xs transition-colors flex items-center justify-center gap-2"
         >
           {isSettingPending ? <Loader2 className="w-4 h-4 animate-spin text-slate-400" /> : <Clock className="w-4 h-4 text-slate-400" />}
-          {user.pendingStageId
+          {hasActivePendingAccess
             ? (isRtl ? 'الاستمرار في الاطلاع المؤقت (تأجيل 24 ساعة)' : 'Stay in provisional mode (postpone 24h)')
             : (isRtl ? 'نتيجتي لم تصدر بعد / الاطلاع المؤقت (24 ساعة)' : 'Results not out yet / Provisional mode (24h)')
           }

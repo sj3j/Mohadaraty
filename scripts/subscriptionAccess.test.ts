@@ -90,7 +90,10 @@ const appSrc = read('src/App.tsx');
  * matching rather than a line range so it survives edits above it.
  */
 const listenerAt = appSrc.indexOf("onSnapshot(doc(db, 'users'");
-const openAt = appSrc.indexOf('setUser({', listenerAt);
+let openAt = appSrc.indexOf('setUser({', listenerAt);
+// App now builds a typed profile once, then feeds the same object to React and
+// the offline cache. Accept that safer shape as well as the older inline call.
+if (openAt === -1) openAt = appSrc.indexOf('const profile: UserProfile = {', listenerAt);
 let projection = '';
 if (listenerAt !== -1 && openAt !== -1) {
   const start = appSrc.indexOf('{', openAt);

@@ -90,7 +90,12 @@ await db.collection('questionBank').doc('q1').set({
   scope: 'lecture', lectureId: 'lec1', subjectId: 'biochemistry_ii', stem: 'ministry question', isActive: true,
 });
 await db.collection('questionBank').doc('q2').set({ scope: 'global', stem: 'global question', isActive: true });
-await db.collection('students').doc('stu@x.com').set({ email: 'stu@x.com', stageId: 'stage_3', password: 'HASH' });
+await db.collection('students').doc('stu@x.com').set({
+  email: 'stu@x.com', stageId: 'stage_3', password: 'HASH',
+  progressionYear: YEAR, progressionState: 'completed', hasCompletedProgression: true,
+  pendingStageId: 'stage_4', pendingProgressionYear: YEAR,
+  pendingProgressionSetAt: FieldValue.serverTimestamp(),
+});
 await db.collection('stages').doc('stage_3').set({ id: 'stage_3', order: 3 });
 await db.collection('subjects').doc('stage_3__biochemistry_ii').set({ id: 'biochemistry_ii', stageId: 'stage_3' });
 await db.collection('allowed_admins').doc('rep@x.com').set({ email: 'rep@x.com', role: 'admin' });
@@ -213,6 +218,14 @@ check('favorites emptied', Array.isArray(u1.favorites) && u1.favorites.length ==
 check('the account itself is intact', u1.email === 'stu@x.com' && u1.stageId === 'stage_3');
 check('progression completion is cleared for the next academic year',
   u1.progressionYear === undefined && u1.progressionState === undefined && u1.hasCompletedProgression === undefined);
+const rosterAfterWipe = (await db.doc('students/stu@x.com').get()).data() || {};
+check('year wipe clears progression and pending state from the roster copy',
+  rosterAfterWipe.progressionYear === undefined
+    && rosterAfterWipe.progressionState === undefined
+    && rosterAfterWipe.hasCompletedProgression === undefined
+    && rosterAfterWipe.pendingStageId === undefined
+    && rosterAfterWipe.pendingProgressionYear === undefined
+    && rosterAfterWipe.pendingProgressionSetAt === undefined);
 const resetStats = (await db.doc('userStageMCQStats/u1_stage_3').get()).data() || {};
 check('active stage MCQ totals reset only at year wipe',
   resetStats.totalFirstAttemptCorrect === 0 && resetStats.totalFirstAttemptAnswered === 0);

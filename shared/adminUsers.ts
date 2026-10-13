@@ -18,8 +18,23 @@ import { ROSTER_EMAIL_DOMAIN } from './rosterIdentity.js';
 type Db = any;
 type Auth = any;
 
+export class AdminUserError extends Error {
+  constructor(public status: number, public code: string, message: string) {
+    super(message);
+    this.name = 'AdminUserError';
+  }
+}
+
 /** Deletes the Firestore user doc and the Auth account behind it. */
 export async function deleteUserAccount(db: Db, auth: Auth, uid: string): Promise<void> {
+  const balance = await db.collection('supportBalances').doc(uid).get();
+  if (balance.exists && balance.data()?.outstanding !== 0) {
+    throw new AdminUserError(
+      409,
+      'NON_ZERO_SUPPORT_BALANCE',
+      'Settle the Support balance before permanently deleting this account',
+    );
+  }
   await db.collection('users').doc(uid).delete();
   await auth.deleteUser(uid);
 }

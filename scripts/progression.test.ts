@@ -13,7 +13,11 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
 import { AcademicCalendar, progressionGate } from '../shared/academicCalendar';
-import { nextProgressionStep, nextStageOf } from '../shared/progression';
+import {
+  nextProgressionStep,
+  nextStageOf,
+  resolveProgressionUiState,
+} from '../shared/progression';
 import { submitProgression, resetProgression, setPendingProgression, ProgressionError } from '../shared/progressionSubmit';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -101,6 +105,48 @@ console.log('\nWho gets asked what:');
 const step = (gate: any, user: any) => nextProgressionStep({ gate, yearLabel: '2026-2027', user });
 check('a fresh student is asked the first question', step('first_round', { role: 'student', stageId: 'stage_3' }) === 'first');
 check('nobody is asked while the gate is closed', step('closed', { role: 'student', stageId: 'stage_3' }) === 'none');
+const stalePendingUi = resolveProgressionUiState({
+  gate: 'closed',
+  yearLabel: '2026-2027',
+  user: {
+    role: 'student',
+    stageId: 'stage_3',
+    pendingStageId: 'stage_4',
+    pendingProgressionYear: '2025-2026',
+  },
+});
+check('a stale pending stage cannot fabricate an open progression question',
+  stalePendingUi.openRound === null && stalePendingUi.hasActivePendingAccess === false,
+  JSON.stringify(stalePendingUi));
+const awaitingResitUi = resolveProgressionUiState({
+  gate: 'first_round',
+  yearLabel: '2026-2027',
+  user: {
+    role: 'student',
+    stageId: 'stage_3',
+    progressionYear: '2026-2027',
+    progressionState: 'awaiting_resit',
+    pendingStageId: 'stage_4',
+    pendingProgressionYear: '2026-2027',
+  },
+});
+check('awaiting resit shows current-year provisional status without opening a form',
+  awaitingResitUi.openRound === null && awaitingResitUi.hasActivePendingAccess === true,
+  JSON.stringify(awaitingResitUi));
+const acceptedUi = resolveProgressionUiState({
+  gate: 'resit_round',
+  yearLabel: '2026-2027',
+  acceptedRound: 'resit',
+  user: {
+    role: 'student',
+    stageId: 'stage_4',
+    progressionYear: '2026-2027',
+    progressionState: 'completed',
+  },
+});
+check('an accepted submission keeps its result screen mounted after completion',
+  acceptedUi.openRound === 'resit' && acceptedUi.hasActivePendingAccess === false,
+  JSON.stringify(acceptedUi));
 // A representative and their moderators are students who hold extra permissions:
 // they sit the same exams and climb the same ladder, so they ARE asked. Only the
 // master admin is staff rather than a student. Excluding every non-student role
@@ -301,6 +347,27 @@ try {
 check('a completed student cannot answer again', twice);
 check('so they cannot climb two stages in one year',
   (await db.doc('users/u_pass').get()).data()?.stageId === 'stage_4');
+
+await seedStudent('u_race', 'race@x.com');
+const racingSubmissions = await Promise.allSettled([
+  submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_race', round: 'first', answer: 'passed',
+  }),
+  submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_race', round: 'first', answer: 'passed',
+  }),
+]);
+const raceSuccesses = racingSubmissions.filter(result => result.status === 'fulfilled');
+const raceFailure = racingSubmissions.find(result => result.status === 'rejected') as PromiseRejectedResult | undefined;
+check('only one racing progression submission is accepted', raceSuccesses.length === 1,
+  JSON.stringify(racingSubmissions.map(result => result.status)));
+check('the losing racing submission returns a stable conflict code',
+  raceFailure?.reason instanceof ProgressionError
+    && raceFailure.reason.status === 409
+    && raceFailure.reason.code === 'PROGRESSION_STATE_CHANGED',
+  String(raceFailure?.reason?.code));
+check('racing submissions cannot promote the student twice',
+  (await db.doc('users/u_race').get()).data()?.stageId === 'stage_4');
 
 let ghostRejected = false;
 try {
@@ -505,10 +572,21 @@ check('student can answer again now', step('first_round', resetUser) === 'first'
 
 console.log('\nPending Stage & Provisional Access:');
 await seedStudent('u_pending', 'pending@x.com', 'stage_3');
-const pendingRes = await setPendingProgression(db, FieldValue as any, base, { uid: 'u_pending' });
+let closedPendingCode = '';
+try {
+  await setPendingProgression(db, FieldValue as any, closed, { uid: 'u_pending' });
+} catch (e) {
+  if (e instanceof ProgressionError) closedPendingCode = e.code;
+}
+check('setPendingProgression rejects a closed gate with a stable code',
+  closedPendingCode === 'NO_OPEN_PROGRESSION', closedPendingCode);
+const pendingRes = await setPendingProgression(db, FieldValue as any, firstOpen, { uid: 'u_pending' });
 check('setPendingProgression sets stage_4 as pendingStageId', pendingRes.pendingStageId === 'stage_4');
 const userPendingData = (await db.doc('users/u_pending').get()).data();
 check('pendingStageId stored on users doc', userPendingData?.pendingStageId === 'stage_4');
+check('pending access is bound to the current academic year',
+  userPendingData?.pendingProgressionYear === '2026-2027');
+check('pending access records when it was granted', !!userPendingData?.pendingProgressionSetAt);
 
 // Final stage cannot set pending stage
 let finalPendingFailed = false;
@@ -525,13 +603,31 @@ await submitProgression(db, FieldValue as any, firstOpen, {
 });
 const userPromotedData = (await db.doc('users/u_pending').get()).data();
 check('submitting progression cleared pendingStageId', userPromotedData?.pendingStageId === undefined);
+check('submitting progression cleared the pending year and timestamp',
+  userPromotedData?.pendingProgressionYear === undefined && userPromotedData?.pendingProgressionSetAt === undefined);
 check('user was officially promoted to stage_4', userPromotedData?.stageId === 'stage_4');
 
 // When progression is reset, pendingStageId is cleared
-await db.doc('users/u_pending').set({ pendingStageId: 'stage_5' }, { merge: true });
+await db.doc('users/u_pending').set({
+  pendingStageId: 'stage_5',
+  pendingProgressionYear: '2026-2027',
+  pendingProgressionSetAt: FieldValue.serverTimestamp(),
+}, { merge: true });
+await db.doc('students/pending@x.com').set({
+  pendingStageId: 'stage_5',
+  pendingProgressionYear: '2026-2027',
+  pendingProgressionSetAt: FieldValue.serverTimestamp(),
+}, { merge: true });
 await resetProgression(db, FieldValue as any, { uid: 'u_pending' });
 const userResetData = (await db.doc('users/u_pending').get()).data();
+const studentResetData = (await db.doc('students/pending@x.com').get()).data();
 check('resetProgression cleared pendingStageId', userResetData?.pendingStageId === undefined);
+check('resetProgression cleared the pending year and timestamp',
+  userResetData?.pendingProgressionYear === undefined && userResetData?.pendingProgressionSetAt === undefined);
+check('resetProgression clears all pending fields from the roster copy too',
+  studentResetData?.pendingStageId === undefined
+    && studentResetData?.pendingProgressionYear === undefined
+    && studentResetData?.pendingProgressionSetAt === undefined);
 
 // Completed student cannot set pending stage
 await seedStudent('u_completed', 'completed@x.com', 'stage_4');
@@ -542,7 +638,7 @@ await db.doc('users/u_completed').set({
 }, { merge: true });
 let completedPendingFailed = false;
 try {
-  await setPendingProgression(db, FieldValue as any, base, { uid: 'u_completed' });
+  await setPendingProgression(db, FieldValue as any, firstOpen, { uid: 'u_completed' });
 } catch (e) {
   completedPendingFailed = e instanceof ProgressionError;
 }
@@ -554,7 +650,7 @@ let ineligibleStagePendingFailed = false;
 try {
   // u_pending was reset to stage_3 or let's test stage_4 student
   await seedStudent('u_stage4_student', 's4@x.com', 'stage_4');
-  await setPendingProgression(db, FieldValue as any, restrictedCal, { uid: 'u_stage4_student' });
+  await setPendingProgression(db, FieldValue as any, { ...restrictedCal, resultsDate: day(-1) }, { uid: 'u_stage4_student' });
 } catch (e) {
   ineligibleStagePendingFailed = e instanceof ProgressionError;
 }

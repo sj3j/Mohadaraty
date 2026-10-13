@@ -128,9 +128,13 @@ export default function HomeScreen({
                   </span>
                 </p>
                 <p className="text-xs sm:text-sm text-amber-800 dark:text-amber-300/90 mt-0.5">
-                  {isRtl
-                    ? 'يمكنك تصفح مواد ومحاضرات المرحلتين بحرية. هل صدرت نتيجتك النهائية؟ اضغط هنا للتأكيد.'
-                    : 'Browse lectures from both stages freely. Did your official results come out? Tap to confirm.'}
+                  {onOpenProgression
+                    ? (isRtl
+                        ? 'يمكنك تصفح مواد ومحاضرات المرحلتين بحرية. صدرت النتائج ويمكنك تأكيد نتيجتك الآن.'
+                        : 'Browse lectures from both stages freely. Results are available and you can confirm now.')
+                    : (isRtl
+                        ? 'يمكنك تصفح مواد ومحاضرات المرحلتين مؤقتاً. سيظهر زر التأكيد عند فتح سؤال النتيجة.'
+                        : 'Browse both stages temporarily. Confirmation will appear when the result question opens.')}
                 </p>
               </div>
             </div>

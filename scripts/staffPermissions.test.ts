@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { MASTER_ADMIN_EMAILS } from '../shared/masterAdmins';
 import { hasStaffCapability, hasStageCapability } from '../shared/staffCapabilities';
 import { repairStaffConsistency } from './repairStaffConsistency';
 
@@ -39,7 +40,7 @@ await db.doc('users/orphan_uid').set({
   email: 'orphan@example.com', role: 'support', permissions: { manageLectures: true },
 });
 await db.doc('users/master_uid').set({
-  email: 'jempe.kn@gmail.com', role: 'admin', isMasterAdmin: true,
+  email: MASTER_ADMIN_EMAILS[0], role: 'admin', isMasterAdmin: true,
 });
 const dry = await repairStaffConsistency(db, { commit: false });
 check('staff audit finds mismatch and non-master orphan', dry.mismatchedUsers === 1 && dry.orphanStaff === 1 && dry.exemptMasters === 1);

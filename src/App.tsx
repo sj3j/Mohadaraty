@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit, updateDoc, deleteField } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit } from 'firebase/firestore';
 import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType } from './types';
 import { useStageContext } from './contexts/StageContext';
 import LectureCard from './components/LectureCard';
@@ -19,7 +19,7 @@ import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks
 import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
-import { nextProgressionStep, ProgressionRound } from '../shared/progression';
+import { resolveProgressionUiState, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
 import { hasSubscriptionAccess } from '../shared/subscriptionAccess';
 import { IAP_ENABLED, identifyIap, signOutIap } from './lib/iap';
@@ -104,13 +104,12 @@ export default function App() {
     calendar: academicCalendar,
   } = useAcademicPhase();
 
-  /**
-   * The question currently on screen. Latched rather than derived, because the
-   * user doc is live: the moment the answer is written the step becomes 'none',
-   * which would rip the congratulations screen away before it is read.
-   */
-  const [progressionRound, setProgressionRound] = useState<ProgressionRound | null>(null);
+  // Eligibility itself is always derived from the shared selector. The round
+  // is held only while a submission is in flight/accepted, so a live completed
+  // snapshot cannot tear down the congratulations screen before it renders.
+  const [heldProgressionRound, setHeldProgressionRound] = useState<ProgressionRound | null>(null);
   const [forceShowProgression, setForceShowProgression] = useState(false);
+  const [progressionNotice, setProgressionNotice] = useState<string | null>(null);
 
   const [user, setUser] = useState<UserProfile | null>(() => {
     const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
@@ -123,33 +122,24 @@ export default function App() {
     if (!raw) return false;
     const until = parseInt(raw, 10);
     return !isNaN(until) && Date.now() < until;
-  }, [user, progressionRound, forceShowProgression]);
+  }, [user, heldProgressionRound, forceShowProgression]);
 
-  useEffect(() => {
-    if (!user) { setProgressionRound(null); return; }
-    // Completed students must never have a progression modal latched
-    const isCompleted = user.progressionState === 'completed' && user.progressionYear === academicYearLabel;
-    if (isCompleted) {
-      if (progressionRound !== null) setProgressionRound(null);
-      return;
-    }
-    const step = nextProgressionStep({
+  const progressionUiState = useMemo(() => {
+    if (!user) return { openRound: null, hasActivePendingAccess: false };
+    return resolveProgressionUiState({
       gate: progressionGateNow,
       yearLabel: academicYearLabel,
       stages: academicCalendar.progressionStages,
-      user: {
-        role: user.role,
-        stageId: user.stageId,
-        progressionYear: user.progressionYear,
-        progressionState: user.progressionState,
-        graduated: user.graduated,
-        isMasterAdmin: user.isMasterAdmin,
-      },
+      acceptedRound: heldProgressionRound,
+      user,
     });
-    // Only ever latches ON here; it is cleared when the student dismisses the
-    // screen, so answering does not yank the congratulations away.
-    if (step !== 'none') setProgressionRound(step);
-  }, [user, progressionGateNow, academicYearLabel, academicCalendar]);
+  }, [user, progressionGateNow, academicYearLabel, academicCalendar.progressionStages, heldProgressionRound]);
+
+  useEffect(() => {
+    if (!progressionNotice) return;
+    const timeout = window.setTimeout(() => setProgressionNotice(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [progressionNotice]);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const safeIsAuthReady = useAuthWatchdog(isAuthReady);
   const [lectures, setLectures] = useState<Lecture[]>([]);
@@ -518,6 +508,7 @@ export default function App() {
               // live runtime projection and must win after an edit/revocation.
               role: isMasterAdmin ? 'admin' : isObserver ? 'observer' : (userDoc.data().role || whitelistRole || 'student'),
               isMasterAdmin,
+              staffDisabled: userDoc.data().staffDisabled === true,
               photoUrl: userDoc.data().photoUrl || firebaseUser.photoURL || undefined,
               streakCount: userDoc.data().streakCount || 0,
               // streakCount used to be the ONLY streak field hydrated here, so the
@@ -545,21 +536,9 @@ export default function App() {
               memberSince: studentData?.createdAt || userDoc.data().createdAt,
               permissions: masterAdminPermissions || userDoc.data().permissions || studentData?.permissions,
               stageId: userDoc.data().stageId || studentData?.stageId || undefined,
-              pendingStageId: (() => {
-                const docData = userDoc.data();
-                const hasCompleted = docData.progressionState === 'completed'
-                  && docData.progressionYear === academicYearLabel;
-                if (hasCompleted) {
-                  // Asynchronously self-heal stale pendingStageId in Firestore
-                  if (docData.pendingStageId) {
-                    updateDoc(doc(db, 'users', firebaseUser.uid), { pendingStageId: deleteField() }).catch(err => {
-                      console.error('Failed to self-heal stale pendingStageId:', err);
-                    });
-                  }
-                  return undefined;
-                }
-                return docData.pendingStageId || undefined;
-              })(),
+              pendingStageId: userDoc.data().pendingStageId || undefined,
+              pendingProgressionYear: userDoc.data().pendingProgressionYear || undefined,
+              pendingProgressionSetAt: userDoc.data().pendingProgressionSetAt || undefined,
               managedStageId: userDoc.data().managedStageId || studentData?.managedStageId || undefined,
               tahmeelSubjects: userDoc.data().tahmeelSubjects || undefined,
               hasCompletedProgression: userDoc.data().hasCompletedProgression === true,
@@ -971,8 +950,7 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
-  const isCompletedStudent = Boolean(user?.progressionState === 'completed' && user?.progressionYear === academicYearLabel);
-  const effectiveProgressionRound = progressionRound || (!isCompletedStudent && user?.pendingStageId ? (progressionGateNow === 'resit_round' ? 'resit' : 'first') : null);
+  const effectiveProgressionRound = progressionUiState.openRound;
 
   if (effectiveProgressionRound && (!isProgressionSnoozed || forceShowProgression)) {
     return (
@@ -980,8 +958,18 @@ export default function App() {
         user={user}
         lang={lang}
         round={effectiveProgressionRound}
+        hasActivePendingAccess={progressionUiState.hasActivePendingAccess}
+        onSubmissionStarted={() => setHeldProgressionRound(effectiveProgressionRound)}
+        onSubmissionRejected={() => setHeldProgressionRound(null)}
+        onUnavailable={() => {
+          setHeldProgressionRound(null);
+          setForceShowProgression(false);
+          setProgressionNotice(isRtl
+            ? 'لا يوجد سؤال انتقال متاح لك حالياً. تم تحديث حالتك.'
+            : 'No progression question is currently available. Your status was refreshed.');
+        }}
         onDone={() => {
-          setProgressionRound(null);
+          setHeldProgressionRound(null);
           setForceShowProgression(false);
         }}
       />
@@ -1032,6 +1020,12 @@ export default function App() {
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
       dir={isRtl ? 'rtl' : 'ltr'}
     >
+
+      {progressionNotice && (
+        <div className="fixed top-[calc(12px+env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-[200] w-[min(92vw,520px)] rounded-2xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-4 py-3 text-sm font-bold text-amber-900 dark:text-amber-100 shadow-xl">
+          {progressionNotice}
+        </div>
+      )}
 
       {user && permission === 'default' && !hideNotificationBanner && (
         <div className="bg-sky-600 text-white px-4 py-3 sm:px-6 lg:px-8 flex items-start sm:items-center justify-between gap-4">
@@ -1084,7 +1078,7 @@ export default function App() {
           setShowStreakManage={setShowStreakManage} 
           setShowAdminManage={setShowAdminManage} 
           initialTab={currentTab === 'home' ? 'lectures' : currentTab as any} 
-          onOpenProgression={() => setForceShowProgression(true)}
+          onOpenProgression={effectiveProgressionRound ? () => setForceShowProgression(true) : undefined}
           onNavigateToSubscription={() => setCurrentTab('subscription')}
           onShowPaywall={() => setShowPaywall(true)}
         />
@@ -1107,8 +1101,9 @@ export default function App() {
           hasUnreadInbox={hasUnreadInbox}
           onNavigate={(tab: string) => setCurrentTab(tab as Tab)}
           onNavigateToSubscription={() => setCurrentTab('subscription')}
-          onOpenProgression={() => setForceShowProgression(true)}
-          hasPendingProgression={!isCompletedStudent && !!progressionRound}
+          onOpenProgression={effectiveProgressionRound ? () => setForceShowProgression(true) : undefined}
+          progressionRound={effectiveProgressionRound}
+          hasActivePendingProgression={progressionUiState.hasActivePendingAccess}
         />
       )}
       {/* A real page, not an overlay: the profile unmounts behind it and the nav

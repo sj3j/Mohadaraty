@@ -22,12 +22,11 @@ interface Props {
   /** Staff generate directly. The server is the real gate - see canGenerate. */
   onGenerate: () => void;
   generateError: string | null;
-  isQuizLocked?: boolean;
+  isQuizLocked: boolean;
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked: propIsQuizLocked }: Props) {
+export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked }: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
-  const isQuizLocked = propIsQuizLocked ?? Boolean(user?.pendingStageId);
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
   const [retryCountdown, setRetryCountdown] = useState(0);

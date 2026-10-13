@@ -91,6 +91,8 @@ export interface StageTimetableDoc {
    *  one resets the retry cap, which is what its own error message promises. */
   failedPhotoUrl?: string;
   model?: string;
+  /** Whether the fallback GEMINI_API_KEY was used due to free-tier quota exhaustion. */
+  fallbackUsed?: boolean;
   /** Group labels the model read that this stage's groupConfig does not
    *  contain. Surfaced in the editor so a representative can tell a misread
    *  label from a real group missing out of their config. */

@@ -15,7 +15,7 @@ import {
   assertFails,
   assertSucceeds,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
 
 const PROJECT_ID = 'mylectures-rules-test';
 
@@ -48,6 +48,10 @@ const testEnv = await initializeTestEnvironment({
 // ---------------------------------------------------------------------------
 await testEnv.withSecurityRulesDisabled(async (ctx) => {
   const db = ctx.firestore();
+
+  await setDoc(doc(db, 'app_settings/academicCalendar'), {
+    yearLabel: '2026-2027', timezone: 'Asia/Baghdad', terms: [],
+  });
 
   // A stage representative for stage_3.
   await setDoc(doc(db, 'users/rep_uid'), {
@@ -208,10 +212,24 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
 
   // Student in provisional access mode (awaiting confirmation)
   await setDoc(doc(db, 'users/stu_pending_uid'), {
-    role: 'student', email: 'stupending@x.com', stageId: 'stage_3', pendingStageId: 'stage_4',
+    role: 'student', email: 'stupending@x.com', stageId: 'stage_3',
+    pendingStageId: 'stage_4', pendingProgressionYear: '2026-2027',
   });
   await setDoc(doc(db, 'students/stupending@x.com'), {
     email: 'stupending@x.com', name: 'Student Pending', isActive: true, stageId: 'stage_3', password: 'HASH',
+  });
+  await setDoc(doc(db, 'users/stu_stale_pending_uid'), {
+    role: 'student', email: 'stustale@x.com', stageId: 'stage_3',
+    pendingStageId: 'stage_4', pendingProgressionYear: '2025-2026',
+  });
+  await setDoc(doc(db, 'students/stustale@x.com'), {
+    email: 'stustale@x.com', name: 'Stale Pending', isActive: true, stageId: 'stage_3', password: 'HASH',
+  });
+  await setDoc(doc(db, 'users/stu_legacy_pending_uid'), {
+    role: 'student', email: 'stulegacypending@x.com', stageId: 'stage_3', pendingStageId: 'stage_4',
+  });
+  await setDoc(doc(db, 'students/stulegacypending@x.com'), {
+    email: 'stulegacypending@x.com', name: 'Legacy Pending', isActive: true, stageId: 'stage_3', password: 'HASH',
   });
   await setDoc(doc(db, 'degreeBatches/b1'), { examName: 'Mid', stageId: 'stage_3' });
   await setDoc(doc(db, 'degreeBatches/b4'), { examName: 'Mid4', stageId: 'stage_4' });
@@ -260,10 +278,59 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   // assert the capability and not merely the role.
   await setDoc(doc(db, 'users/supsubs_uid'), {
     role: 'support', email: 'supsubs@x.com', managedStageId: 'stage_4',
-    permissions: { manageSubscriptions: true },
+    permissions: {
+      manageSubscriptions: true,
+      canViewHistory: true,
+      canViewOwnBalance: true,
+    },
   });
   await setDoc(doc(db, 'allowed_admins/supsubs@x.com'), {
     email: 'supsubs@x.com', role: 'support', managedStageId: 'stage_4',
+  });
+
+  // Legacy-only subscription permission. It remains stored but confers none of
+  // the new audit/accounting capabilities.
+  await setDoc(doc(db, 'users/suplegacy_uid'), {
+    role: 'support', email: 'suplegacy@x.com',
+    permissions: { manageSubscriptions: true },
+  });
+  await setDoc(doc(db, 'allowed_admins/suplegacy@x.com'), {
+    email: 'suplegacy@x.com', role: 'support',
+  });
+
+  // Disabled Support carries deliberately broad stored permissions. Every
+  // assertion must still fail immediately through the live user projection.
+  await setDoc(doc(db, 'users/supdisabled_uid'), {
+    role: 'support', email: 'supdisabled@x.com', staffDisabled: true,
+    permissions: {
+      manageLectures: true, manageSubscriptions: true,
+      canActivate: true, canViewHistory: true, canViewOwnBalance: true,
+      canViewExpiring: true, canGrant: true, canSettle: true,
+    },
+  });
+  await setDoc(doc(db, 'allowed_admins/supdisabled@x.com'), {
+    email: 'supdisabled@x.com', role: 'support',
+  });
+
+  // Server-owned subscription audit/accounting fixtures.
+  await setDoc(doc(db, 'subscriptionRecords/record_1'), {
+    studentId: 'stu_uid', actorUid: 'supsubs_uid', referenceCode: 'ACT234567',
+  });
+  await setDoc(doc(db, 'supportBalances/supsubs_uid'), { outstanding: 1000 });
+  await setDoc(doc(db, 'supportBalances/sup_uid'), { outstanding: 700 });
+  await setDoc(doc(db, 'supportBalances/supdisabled_uid'), { outstanding: 500 });
+  await setDoc(doc(db, 'supportLedger/ledger_own'), {
+    supportUid: 'supsubs_uid', amount: 1000, balanceDelta: 1000,
+  });
+  await setDoc(doc(db, 'supportLedger/ledger_other'), {
+    supportUid: 'sup_uid', amount: 700, balanceDelta: 700,
+  });
+  await setDoc(doc(db, 'referenceCodes/ACT234567'), {
+    targetCollection: 'subscriptionRecords', targetId: 'record_1',
+  });
+  await setDoc(doc(db, 'subscriptionRequests/status_request_1'), {
+    requestId: 'status_request_1', payloadHash: 'hash',
+    action: 'support_status', targetUid: 'sup_uid',
   });
 
   // An observer (read-only master admin)
@@ -306,6 +373,8 @@ const master2 = ctxFor('master2_uid', 'dra016go@gmail.com');
 const support = ctxFor('sup_uid', 'sup@x.com');
 const supportBare = ctxFor('supbare_uid', 'supbare@x.com');
 const supportSubs = ctxFor('supsubs_uid', 'supsubs@x.com');
+const supportLegacy = ctxFor('suplegacy_uid', 'suplegacy@x.com');
+const supportDisabled = ctxFor('supdisabled_uid', 'supdisabled@x.com');
 const repDisabled = ctxFor('rep_disabled_uid', 'repdisabled@x.com');
 const liveRole = ctxFor('live_role_uid', 'liverole@x.com');
 
@@ -1246,8 +1315,8 @@ await check('a student can still READ the bank across stages',
   assertSucceeds(getDoc(doc(student, 'questionBank/q_stage4'))));
 
 console.log('\nSubscriptions are account-scoped, not stage-scoped');
-await check('a student CAN read their own subscription',
-  assertSucceeds(getDoc(doc(student, 'subscriptions/sub_stu'))));
+await check('a student CANNOT read even their own raw subscription',
+  assertFails(getDoc(doc(student, 'subscriptions/sub_stu'))));
 await check('a student CANNOT read another student\'s subscription',
   assertFails(getDoc(doc(student, 'subscriptions/sub_stu2'))));
 // This was `allow read: if isAdmin()`, which handed every stage representative
@@ -1261,36 +1330,132 @@ await check('a moderator CANNOT read a subscription',
 await check('the master admin CAN read the ledger',
   assertSucceeds(getDocs(collection(master, 'subscriptions'))));
 
-console.log('\nإدارة الاشتراكات is a ticked capability, not the support role');
-await check('support WITHOUT manageSubscriptions cannot read the ledger',
+console.log('\nSubscription history is independently permissioned');
+await check('support WITHOUT canViewHistory cannot read the operational ledger',
   assertFails(getDocs(collection(support, 'subscriptions'))));
-await check('support WITH manageSubscriptions can - the statistics reduce over it',
+await check('legacy manageSubscriptions alone grants no subscription access',
+  assertFails(getDocs(collection(supportLegacy, 'subscriptions'))));
+await check('support WITH canViewHistory can read legacy operational history',
   assertSucceeds(getDocs(collection(supportSubs, 'subscriptions'))));
-// Support is granted the statistics and منح اشتراك; approving, rejecting,
-// extending and cancelling stay master-admin only, on this path as on the API.
-await check('support WITH manageSubscriptions still cannot approve a row',
+await check('support WITH canViewHistory still cannot approve a row',
   assertFails(updateDoc(doc(supportSubs, 'subscriptions/sub_stu2'), { status: 'active' })));
 
 console.log('\nA student cannot forge their own access');
 await check('a student CAN file their own pending request',
   assertSucceeds(setDoc(doc(student, 'subscriptions/new_pending'), {
-    userId: 'stu_uid', plan: 'monthly', status: 'pending',
-    paymentMethod: 'superkey', amount: 1000,
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'monthly', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12345',
   })));
 await check('a student CANNOT create an already-active subscription',
   assertFails(setDoc(doc(student, 'subscriptions/forged'), {
-    userId: 'stu_uid', plan: 'monthly', status: 'active',
-    paymentMethod: 'superkey', amount: 1000,
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'monthly', status: 'active', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12346',
   })));
 await check('a student CANNOT file a request in somebody else\'s name',
   assertFails(setDoc(doc(student, 'subscriptions/impostor'), {
-    userId: 'stu2_uid', plan: 'monthly', status: 'pending',
-    paymentMethod: 'superkey', amount: 1000,
+    userId: 'stu2_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'monthly', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12347',
+  })));
+await check('a student CANNOT file an annual paid request',
+  assertFails(setDoc(doc(student, 'subscriptions/annual_paid'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'annual', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 12000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12348',
+  })));
+await check('a student CANNOT omit payment proof',
+  assertFails(setDoc(doc(student, 'subscriptions/no_proof'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'monthly', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+  })));
+await check('a student CANNOT pollute the pending-request schema',
+  assertFails(setDoc(doc(student, 'subscriptions/extra_field'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'monthly', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12349', role: 'master_admin',
   })));
 await check('a student CANNOT rewrite their own pending request',
   assertFails(updateDoc(doc(student, 'subscriptions/sub_stu'), { status: 'active' })));
 await check('not even the master admin can delete a subscription',
   assertFails(deleteDoc(doc(master, 'subscriptions/sub_stu'))));
+
+console.log('\nPrivate subscription audit and accounting are server-written');
+await check('Master CAN read private subscription history',
+  assertSucceeds(getDoc(doc(master, 'subscriptionRecords/record_1'))));
+await check('Support WITH canViewHistory CAN read private subscription history',
+  assertSucceeds(getDoc(doc(supportSubs, 'subscriptionRecords/record_1'))));
+await check('legacy manageSubscriptions CANNOT read private subscription history',
+  assertFails(getDoc(doc(supportLegacy, 'subscriptionRecords/record_1'))));
+await check('student CANNOT read private subscription history',
+  assertFails(getDoc(doc(student, 'subscriptionRecords/record_1'))));
+await check('no client can create a private subscription record',
+  assertFails(setDoc(doc(master, 'subscriptionRecords/forged'), { studentId: 'stu_uid' })));
+
+await check('Master CAN read every Support balance',
+  assertSucceeds(getDoc(doc(master, 'supportBalances/sup_uid'))));
+await check('Support WITH canViewOwnBalance CAN read its own balance',
+  assertSucceeds(getDoc(doc(supportSubs, 'supportBalances/supsubs_uid'))));
+await check('Support CANNOT read another Support balance',
+  assertFails(getDoc(doc(supportSubs, 'supportBalances/sup_uid'))));
+await check('Support WITHOUT canViewOwnBalance CANNOT read its balance',
+  assertFails(getDoc(doc(support, 'supportBalances/sup_uid'))));
+await check('Support WITH canViewOwnBalance CAN query only its ledger',
+  assertSucceeds(getDocs(query(
+    collection(supportSubs, 'supportLedger'),
+    where('supportUid', '==', 'supsubs_uid'),
+  ))));
+await check('Support CANNOT list a mixed ledger',
+  assertFails(getDocs(collection(supportSubs, 'supportLedger'))));
+await check('no client can write a Support balance',
+  assertFails(updateDoc(doc(master, 'supportBalances/sup_uid'), { outstanding: 0 })));
+await check('no client can append a Support ledger entry',
+  assertFails(setDoc(doc(master, 'supportLedger/forged'), { supportUid: 'sup_uid' })));
+await check('reference reservations are private even to Master',
+  assertFails(getDoc(doc(master, 'referenceCodes/ACT234567'))));
+await check('Support-management idempotency rows are private even to Master',
+  assertFails(getDoc(doc(master, 'subscriptionRequests/status_request_1'))));
+await check('no client can create a Support-management idempotency row',
+  assertFails(setDoc(doc(master, 'subscriptionRequests/forged_request'), {
+    requestId: 'forged_request', action: 'remove_support',
+  })));
+
+console.log('\nDisabled Support loses legacy and new capabilities immediately');
+await check('disabled Support CANNOT use a legacy content capability',
+  assertFails(setDoc(doc(supportDisabled, 'lectures/disabled_write'), {
+    title: 'Denied', stageId: 'stage_3',
+  })));
+await check('disabled Support CANNOT read operational subscription history',
+  assertFails(getDocs(collection(supportDisabled, 'subscriptions'))));
+await check('disabled Support CANNOT read private subscription history',
+  assertFails(getDoc(doc(supportDisabled, 'subscriptionRecords/record_1'))));
+await check('disabled Support CANNOT read its own balance',
+  assertFails(getDoc(doc(supportDisabled, 'supportBalances/supdisabled_uid'))));
+
+console.log('\nSupport demotion/removal cannot bypass live balance checks');
+await check('Master CANNOT directly demote Support with a non-zero balance',
+  assertFails(updateDoc(doc(master, 'users/sup_uid'), { role: 'student' })));
+await check('Master CANNOT directly remove a Support registry row',
+  assertFails(deleteDoc(doc(master, 'allowed_admins/sup@x.com'))));
+await check('representative CANNOT demote a Support user projection',
+  assertFails(updateDoc(doc(rep, 'users/supsubs_uid'), {
+    role: 'moderator', managedStageId: 'stage_3', permissions: {},
+  })));
+await check('Support with manageAdmins CANNOT demote another Support projection',
+  assertFails(updateDoc(doc(support, 'users/supsubs_uid'), {
+    role: 'student', managedStageId: 'stage_3', permissions: {},
+  })));
+await check('Support with manageAdmins CANNOT demote another Support registry row',
+  assertFails(updateDoc(doc(support, 'allowed_admins/supsubs@x.com'), {
+    role: 'admin', managedStageId: 'stage_3',
+  })));
 
 console.log('\nThe number students pay into is master-admin only');
 await check('a representative CANNOT rewrite settings/payment_contact',
@@ -1321,6 +1486,8 @@ await check('a student CAN update allowed profile fields (e.g. name)',
 
 console.log('\nProvisional dual-stage access and quiz lockdown');
 const stuPending = testEnv.authenticatedContext('stu_pending_uid', { email: 'stupending@x.com' }).firestore();
+const stuStalePending = testEnv.authenticatedContext('stu_stale_pending_uid', { email: 'stustale@x.com' }).firestore();
+const stuLegacyPending = testEnv.authenticatedContext('stu_legacy_pending_uid', { email: 'stulegacypending@x.com' }).firestore();
 await check('pending student CAN read lectures of current stage',
   assertSucceeds(getDoc(doc(stuPending, 'lectures/lec1'))));
 await check('pending student CAN read lectures of pending next stage',
@@ -1334,6 +1501,18 @@ await check('pending student CANNOT write to userMCQStats during pending phase',
   assertFails(setDoc(doc(stuPending, 'userMCQStats/stu_pending_uid'), { score: 100, stageId: 'stage_3' })));
 await check('pending student CANNOT write to userBankAnswers during pending phase',
   assertFails(setDoc(doc(stuPending, 'userBankAnswers/stu_pending_uid/questions/q1'), { selected: 'A' })));
+await check('a previous-year pending stage grants no extra stage access',
+  assertFails(getDoc(doc(stuStalePending, 'lectures/lec_s4'))));
+await check('a previous-year pending stage no longer locks quiz writes',
+  assertSucceeds(setDoc(doc(stuStalePending, 'userMCQAnswers/stu_stale_pending_uid/lectures/lec1'), { answers: {} })));
+await check('an unversioned legacy pending stage grants no extra stage access',
+  assertFails(getDoc(doc(stuLegacyPending, 'lectures/lec_s4'))));
+await check('an unversioned legacy pending stage no longer locks quiz writes',
+  assertSucceeds(setDoc(doc(stuLegacyPending, 'userMCQAnswers/stu_legacy_pending_uid/lectures/lec1'), { answers: {} })));
+await check('a student CANNOT manufacture current-year pending access',
+  assertFails(updateDoc(doc(stuStalePending, 'users/stu_stale_pending_uid'), {
+    pendingProgressionYear: '2026-2027',
+  })));
 
 await check('ordinary student CAN write to userMCQAnswers',
   assertSucceeds(setDoc(doc(student, 'userMCQAnswers/stu_uid/lectures/lec1'), { answers: {} })));

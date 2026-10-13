@@ -22,6 +22,7 @@ import {
 import { nameKeyFor } from "./shared/rosterIdentity.js";
 import {
   resetStudentPassword,
+  transferStudentStage,
   assertStageAuthority,
   assertStudentManagement,
   hasGlobalStudentScope,
@@ -43,7 +44,7 @@ import {
   SelfServiceError,
 } from "./shared/accountSelfService.js";
 import { createSignupRequest, reviewSignupRequest, SignupError } from "./shared/signupRequest.js";
-import { deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
+import { AdminUserError, deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { createStreakHandlers } from "./shared/streakApi.js";
@@ -52,6 +53,7 @@ import { createTimetableHandlers } from "./shared/timetableApi.js";
 import { createIapHandlers } from "./shared/iapApi.js";
 import { createSupportHandlers } from "./shared/supportApi.js";
 import { createTranslateHandlers } from "./shared/translateApi.js";
+import { createSubscriptionManagementHandlers } from "./shared/subscriptionManagement.js";
 import { MASTER_ADMIN_EMAILS, isMasterAdminEmail } from "./shared/masterAdmins.js";
 import { hasStaffCapability } from "./shared/staffCapabilities.js";
 import { summariseYear } from "./shared/yearSummary.js";
@@ -214,6 +216,7 @@ type CallerStage = {
   /** What they were ticked for in إدارة المساعدين. Absent means DENIED for a
    *  support caller, matching canManage() in src/lib/permissions.ts. */
   permissions: Record<string, boolean>;
+  staffDisabled: boolean;
 };
 
 const staffCan = (staff: CallerStage, capability: string): boolean =>
@@ -223,7 +226,7 @@ const staffCan = (staff: CallerStage, capability: string): boolean =>
 
 const callerStage = (req: express.Request): CallerStage =>
   (req as any).staff
-  || { isMasterAdmin: false, isSupport: false, role: '', managedStageId: null, permissions: {} };
+  || { isMasterAdmin: false, isSupport: false, role: '', managedStageId: null, permissions: {}, staffDisabled: false };
 
 const verifyAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const user = (req as any).user;
@@ -249,6 +252,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
           && role !== 'support' && role !== 'master_admin') {
         return res.status(403).json({ error: 'Forbidden: Requires admin privileges' });
       }
+      if (!isMaster && role === 'support' && data.staffDisabled === true) {
+        return res.status(403).json({ error: 'Support account is disabled', code: 'STAFF_DISABLED' });
+      }
 
       (req as any).staff = {
         isMasterAdmin: isMaster,
@@ -256,6 +262,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
         role: role || 'admin',
         managedStageId: data.managedStageId || null,
         permissions: (data.permissions || {}) as Record<string, boolean>,
+        staffDisabled: data.staffDisabled === true,
       } satisfies CallerStage;
 
       next();
@@ -1222,6 +1229,50 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
   });
 
+  // Concurrency-safe, transactional individual student stage transfer.
+  app.post("/api/admin/students/:email/transfer-stage", verifyAuth, verifyAdmin, async (req, res) => {
+    if (!admin.apps.length) {
+      return res.status(500).json({ error: "Firebase Admin is not configured." });
+    }
+    try {
+      const email = decodeURIComponent(req.params.email);
+      const {
+        targetStageId,
+        expectedCurrentStageId,
+        targetSubgroup,
+        transferType = 'correction',
+        tahmeelHandling = 'clear',
+        reason = '',
+      } = req.body || {};
+
+      const db = admin.firestore();
+      const verifiedUser = (req as any).user || {};
+      const result = await transferStudentStage(db, admin.firestore.FieldValue as any, {
+        studentEmail: email,
+        targetStageId,
+        expectedCurrentStageId,
+        targetSubgroup,
+        transferType,
+        tahmeelHandling,
+        staff: callerStage(req),
+        actor: {
+          uid: String(verifiedUser.uid || ''),
+          email: String(verifiedUser.email || ''),
+          name: String(verifiedUser.name || verifiedUser.email || ''),
+        },
+        reason,
+      });
+
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      console.error("Transfer student stage error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // REMOVED: POST /api/admin/announcements, DELETE /api/admin/announcements/:id
   // and DELETE /api/admin/records/:id. See the matching note in api/index.ts -
   // all three were unauthenticated, trusted the body for authorship, and never
@@ -1246,6 +1297,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof AdminUserError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       console.error("Delete user account error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
@@ -1478,8 +1532,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       return res.json({ success: true, ...result });
     } catch (error: any) {
-      if (error instanceof ProgressionError) {
-        return res.status(error.status).json({ error: error.message });
+    if (error instanceof ProgressionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
       }
       console.error("Progression submit error:", error);
       return res.status(500).json({ error: "Internal server error" });
@@ -1498,8 +1552,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       return res.json(result);
     } catch (error: any) {
-      if (error instanceof ProgressionError) {
-        return res.status(error.status).json({ error: error.message });
+    if (error instanceof ProgressionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
       }
       console.error("Progression set-pending error:", error);
       return res.status(500).json({ error: "Internal server error" });
@@ -1521,8 +1575,8 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       });
       return res.json(result);
     } catch (error: any) {
-      if (error instanceof ProgressionError) {
-        return res.status(error.status).json({ error: error.message });
+    if (error instanceof ProgressionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
       }
       console.error("Progression reset error:", error);
       return res.status(500).json({ error: error.message || "Internal server error" });
@@ -1663,6 +1717,24 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     Timestamp: admin.firestore.Timestamp,
     notify: notifySubscription,
   });
+
+  // Audited subscription/accounting routes live in one shared factory so the
+  // local Express server and Vercel API cannot drift.
+  const subscriptionManagement = createSubscriptionManagementHandlers({ admin });
+  app.get('/api/subscriptions/mine', verifyAuth, subscriptionManagement.mine);
+  app.get('/api/subscriptions/preview', verifyAuth, subscriptionManagement.preview);
+  app.post('/api/subscriptions/manual-activate', verifyAuth, subscriptionManagement.manualActivate);
+  app.post('/api/subscriptions/grant', verifyAuth, subscriptionManagement.grant);
+  app.post('/api/subscriptions/supports/:supportUid/receive', verifyAuth, subscriptionManagement.receive);
+  app.post('/api/subscriptions/supports/:supportUid/reset', verifyAuth, subscriptionManagement.reset);
+  app.post('/api/subscriptions/supports/:supportUid/payout', verifyAuth, subscriptionManagement.payout);
+  app.post('/api/subscriptions/records/:recordId/void', verifyAuth, subscriptionManagement.void);
+  app.get('/api/subscriptions/history', verifyAuth, subscriptionManagement.history);
+  app.get('/api/subscriptions/balances', verifyAuth, subscriptionManagement.balances);
+  app.get('/api/subscriptions/reports', verifyAuth, subscriptionManagement.reports);
+  app.get('/api/subscriptions/expiring', verifyAuth, subscriptionManagement.expiring);
+  app.post('/api/admin/supports/:uid/status', verifyAuth, subscriptionManagement.supportStatus);
+  app.delete('/api/admin/supports/:uid', verifyAuth, subscriptionManagement.removeSupport);
 
   // --- ZainCash v2: Initiate Payment ---
   app.post('/api/zaincash/init', verifyAuth, async (req, res) => {
@@ -1923,13 +1995,6 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
    * free subscription. These two guards close that, and are what lets a ticked
    * support account in through the front door instead.
    */
-  const requireSubscriptionAccess = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (!staffCan(callerStage(req), 'manageSubscriptions')) {
-      return res.status(403).json({ error: SUPPORT_NOT_GRANTED });
-    }
-    next();
-  };
-
   /** Approving, rejecting, extending or cancelling somebody's subscription stays
    *  master-admin only. Support is granted the statistics and منح اشتراك - the
    *  same split the screen itself renders. Identified by address, like every
@@ -1940,46 +2005,6 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
     next();
   };
-
-  // --- Admin: Grant free subscription ---
-  app.post('/api/subscriptions/grant', verifyAuth, verifyAdmin, requireSubscriptionAccess, async (req, res) => {
-    try {
-      const { userId, plan, notes } = req.body;
-      const adminUser = (req as any).user;
-      const config = PLAN_CONFIG[plan];
-
-      if (!userId || !config) {
-        return res.status(400).json({ error: 'Invalid userId or plan' });
-      }
-
-      const db = admin.firestore();
-
-      const userDoc = await db.collection('users').doc(userId).get();
-      if (!userDoc.exists) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      const userData = userDoc.data()!;
-      const subRef = await db.collection('subscriptions').add({
-        userId,
-        userEmail: userData.email || '',
-        userName: userData.name || '',
-        plan,
-        status: 'pending', // activated immediately below
-        paymentMethod: 'admin_grant',
-        amount: 0,
-        notes: notes || 'Admin grant',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      await activateSubscription(subCtx(), subRef.id, userId, plan, adminUser.uid);
-
-      res.json({ success: true, subscriptionId: subRef.id });
-    } catch (error) {
-      console.error('Grant subscription error:', error);
-      res.status(500).json({ error: 'Failed to grant subscription' });
-    }
-  });
 
   // --- Admin: Approve pending SuperKey subscription ---
   app.post('/api/subscriptions/:id/approve', verifyAuth, verifyAdmin, requireSubscriptionMaster, async (req, res) => {
@@ -2070,6 +2095,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       if (!subDoc.exists) return res.status(404).json({ error: 'Subscription not found' });
 
       const subData = subDoc.data()!;
+      if (subData.auditedRecordId) {
+        return res.status(409).json({ error: 'Audited subscriptions must be reversed with void', code: 'VOID_REQUIRED' });
+      }
       if (subData.status !== 'active') {
         return res.status(400).json({ error: 'Can only extend active subscriptions' });
       }
@@ -2107,6 +2135,9 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
       if (!subDoc.exists) return res.status(404).json({ error: 'Subscription not found' });
 
       const subData = subDoc.data()!;
+      if (subData.auditedRecordId) {
+        return res.status(409).json({ error: 'Audited subscriptions must be reversed with void', code: 'VOID_REQUIRED' });
+      }
 
       await db.collection('subscriptions').doc(id).update({
         status: 'cancelled',
