@@ -109,7 +109,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const [transferReason, setTransferReason] = useState<string>('');
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
   const [transferError, setTransferError] = useState<string | null>(null);
-  const sourceTransferStage = stages.find(s => s.id === transferStudent?.stageId);
+  const sourceTransferStage = stages.find(s => s.id === transferStudent?.stageId)
+    || (effectiveStageId ? stages.find(s => s.id === effectiveStageId) : undefined);
   const destinationTransferStage = stages.find(s => s.id === transferTargetStageId);
   const canPreserveTahmeel = transferType === 'manual_promotion'
     && !!sourceTransferStage && !!destinationTransferStage
@@ -123,7 +124,11 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   }, [canPreserveTahmeel, transferTahmeelHandling]);
 
   const handleOpenTransferModal = (student: Student) => {
-    setTransferStudent(student);
+    const resolvedStageId = student.stageId || effectiveStageId || stages[0]?.id || '';
+    setTransferStudent({
+      ...student,
+      stageId: resolvedStageId,
+    });
     setTransferTargetStageId('');
     setTransferTargetSubgroup('');
     setTransferType('correction');
@@ -133,7 +138,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   };
 
   const handleExecuteTransfer = async () => {
-    if (!transferStudent || !transferStudent.stageId || !sourceTransferStage
+    const currentStageId = transferStudent?.stageId || sourceTransferStage?.id;
+    if (!transferStudent || !currentStageId || !sourceTransferStage
         || !transferTargetStageId || !hasRealStageList) return;
     setIsTransferring(true);
     setTransferError(null);
@@ -150,7 +156,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
         },
         body: JSON.stringify({
           targetStageId: transferTargetStageId,
-          expectedCurrentStageId: transferStudent.stageId || undefined,
+          expectedCurrentStageId: currentStageId,
           targetSubgroup: transferTargetSubgroup || undefined,
           transferType,
           tahmeelHandling: transferTahmeelHandling,
@@ -415,7 +421,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
             freezeTokens: userData.freezeTokens || 0,
             userUid: doc.id,
             createdAt: userData.createdAt || null,
-            role: userData.role || 'student'
+            role: userData.role || 'student',
+            stageId: userData.stageId || effectiveStageId || undefined,
           });
         }
       });
@@ -502,7 +509,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
             streakCount: 0,
             longestStreak: 0,
             freezeTokens: 0,
-            isAuthAccountOnly: false
+            isAuthAccountOnly: false,
+            stageId: data.stageId || effectiveStageId || undefined,
           });
         } else {
           userProfiles.forEach((profile: any, index: number) => {
@@ -525,7 +533,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
               freezeTokens: profile.freezeTokens || 0,
               isAuthAccountOnly: index > 0,
               hasMultiple: userProfiles.length > 1,
-              role: profile.role
+              role: profile.role,
+              stageId: data.stageId || profile.stageId || effectiveStageId || undefined,
             });
           });
         }
@@ -550,7 +559,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                 freezeTokens: profile.freezeTokens || 0,
                 isAuthAccountOnly: true,
                 hasMultiple: profiles.length > 1,
-                role: profile.role
+                role: profile.role,
+                stageId: profile.stageId || effectiveStageId || undefined,
              });
           });
         }
@@ -2204,7 +2214,24 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                           const s = students.find(x => x.id === viewingProfile.email || x.email === viewingProfile.email || (viewingProfile.uid && x.userUid === viewingProfile.uid));
                           if (s) {
                             setViewingProfile(null);
-                            handleOpenTransferModal(s);
+                            handleOpenTransferModal({
+                              ...s,
+                              stageId: s.stageId || viewingProfile.stageId || effectiveStageId || '',
+                            });
+                          } else if (viewingProfile.email) {
+                            setViewingProfile(null);
+                            handleOpenTransferModal({
+                              id: viewingProfile.email,
+                              baseStudentId: viewingProfile.email,
+                              name: viewingProfile.name || viewingProfile.email,
+                              email: viewingProfile.email,
+                              examCode: viewingProfile.examCode || '',
+                              isActive: true,
+                              createdAt: (viewingProfile as any).createdAt || null,
+                              userUid: viewingProfile.uid,
+                              stageId: viewingProfile.stageId || effectiveStageId || '',
+                              subgroup: viewingProfile.subgroup || '',
+                            });
                           }
                         }}
                         className="mt-2 w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-sm"
@@ -2263,8 +2290,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                 <div className="text-right">
                   <span className="inline-block px-3 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
                     {(() => {
-                      const current = stages.find(s => s.id === transferStudent.stageId);
-                      return (isRtl ? current?.nameAr : current?.nameEn) || transferStudent.stageId;
+                      const current = sourceTransferStage || stages.find(s => s.id === transferStudent.stageId);
+                      return (isRtl ? current?.nameAr : current?.nameEn) || transferStudent.stageId || effectiveStageId;
                     })()}
                     {transferStudent.subgroup ? ` (${transferStudent.subgroup})` : ''}
                   </span>
@@ -2294,7 +2321,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                 >
                   <option value="">{isRtl ? '-- اختر المرحلة المستهدفة --' : '-- Select target stage --'}</option>
                   {stages
-                    .filter(s => s.id !== transferStudent.stageId)
+                    .filter(s => s.id !== (transferStudent.stageId || sourceTransferStage?.id))
                     .map(s => (
                       <option key={s.id} value={s.id}>
                         {isRtl ? (s.nameAr || s.id) : (s.nameEn || s.id)}
@@ -2447,7 +2474,13 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
               </button>
               <button
                 type="button"
-                disabled={isTransferring || !transferTargetStageId || !hasRealStageList || !sourceTransferStage}
+                disabled={
+                  isTransferring ||
+                  !transferTargetStageId ||
+                  !hasRealStageList ||
+                  !sourceTransferStage ||
+                  transferTargetStageId === (transferStudent.stageId || sourceTransferStage.id)
+                }
                 onClick={handleExecuteTransfer}
                 className="px-6 py-2.5 rounded-xl text-sm font-black bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center gap-2"
               >
