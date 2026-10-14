@@ -36,8 +36,8 @@ const manifest = join(
   'android', 'app', 'build', 'intermediates', 'merged_manifests', 'release',
   'processReleaseManifest', 'AndroidManifest.xml',
 );
-if (!existsSync(manifest) || !readFileSync(manifest, 'utf8').includes('android:versionCode="15"')) {
-  throw new Error('Release manifest is missing or does not contain versionCode 15.');
+if (!existsSync(manifest) || !readFileSync(manifest, 'utf8').includes('android:versionCode="16"')) {
+  throw new Error('Release manifest is missing or does not contain versionCode 16.');
 }
 
 const binaryProfile = join(

@@ -19,8 +19,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than anything already
-        // uploaded; code 14 is in production, so this release is code 15.
-        versionCode 15
+        // uploaded; code 15 has been built, so this release is code 16.
+        versionCode 16
         versionName "1.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
