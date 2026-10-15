@@ -136,6 +136,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - Revenue in a second currency does not belong in a single-currency total;
   store 0 and show the count alone rather than a converted figure nobody can
   reconcile against the provider's own report.
+- Subscription reports (`getReports`) must cross-reference public `subscriptions` status/terminatedByRecord as well as private `subscriptionRecords.cancelledBy` → checking only the private record leaves legacy or pre-restart cancelled subscriptions counted in report revenue and totals.
 - A denormalized counter/aggregate written by two different code paths
   (season-end archives, streak resets, etc.) will diverge unless *both*
   writes come from one in-memory pass — if they can't, add an audit script,
@@ -236,6 +237,8 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   showed "59 parsed" above an empty list. If a server call reports storing N
   rows and the listener has delivered none seconds later, say so and offer a
   reload — "nothing happened" is the least actionable failure there is.
+
+- `AdminUpload`'s file processor must preserve and propagate `subjectId`/`courseFilter` across file selection, and validate presence before write → dropping/selecting a file wiped `subjectId` into an empty string, creating an orphaned lecture that sent Cloud Functions notifications but matched no subject in `SubjectBrowser`.
 
 ## Billing & metering (any metered AI feature)
 - Any refund/credit path triggered by output the model produces (e.g. an

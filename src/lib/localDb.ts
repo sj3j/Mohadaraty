@@ -20,8 +20,10 @@
  * and the main bundle is already large enough to warn.
  */
 
+import type { LocalAttendanceReceipt } from '../../shared/attendance';
+
 const DB_NAME = 'mylecture-local';
-const DB_VERSION = 4;
+const DB_VERSION = 6;
 
 export const STORE_ANNOTATIONS = 'pdfAnnotations';
 export const STORE_BLOBS = 'pdfBlobs';
@@ -45,6 +47,11 @@ export const STORE_USER_BLOBS = 'userFileBlobs';
 /** v4 Stores for timetable schedule image and stage homeworks */
 export const STORE_SCHEDULE_IMAGES = 'scheduleImages';
 export const STORE_OFFLINE_HOMEWORKS = 'offlineHomeworks';
+/** v5. Immutable attendance evidence and last canonical student snapshot. */
+export const STORE_ATTENDANCE_OUTBOX = 'attendanceOutbox';
+export const STORE_ATTENDANCE_STATE = 'attendanceState';
+export const STORE_ATTENDANCE_LOCKS = 'attendanceSessionLocks';
+export const STORE_ATTENDANCE_COMMANDS = 'attendanceDoctorCommands';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -111,6 +118,25 @@ export function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_OFFLINE_HOMEWORKS)) {
         db.createObjectStore(STORE_OFFLINE_HOMEWORKS, { keyPath: 'stageId' });
       }
+      if (!db.objectStoreNames.contains(STORE_ATTENDANCE_OUTBOX)) {
+        const attendance = db.createObjectStore(STORE_ATTENDANCE_OUTBOX, { keyPath: 'requestId' });
+        attendance.createIndex('by_owner', 'ownerUid', { unique: false });
+        attendance.createIndex('by_owner_session', ['ownerUid', 'sessionId'], { unique: false });
+        attendance.createIndex('by_owner_occurrence', ['ownerUid', 'occurrenceId'], { unique: false });
+        attendance.createIndex('by_owner_status', ['ownerUid', 'status'], { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_ATTENDANCE_STATE)) {
+        db.createObjectStore(STORE_ATTENDANCE_STATE, { keyPath: 'ownerUid' });
+      }
+      const attendanceOutbox = req.transaction!.objectStore(STORE_ATTENDANCE_OUTBOX);
+      if (!attendanceOutbox.indexNames.contains('by_session')) attendanceOutbox.createIndex('by_session', 'sessionId');
+      if (!db.objectStoreNames.contains(STORE_ATTENDANCE_LOCKS)) {
+        db.createObjectStore(STORE_ATTENDANCE_LOCKS, { keyPath: 'sessionId' });
+      }
+      if (!db.objectStoreNames.contains(STORE_ATTENDANCE_COMMANDS)) {
+        const commands = db.createObjectStore(STORE_ATTENDANCE_COMMANDS, { keyPath: 'requestId' });
+        commands.createIndex('by_owner', 'ownerUid');
+      }
     };
 
     req.onsuccess = () => {
@@ -161,6 +187,115 @@ export const dbCountByIndex = (store: string, index: string, query: IDBValidKey 
  */
 export const dbGetAll = <T>(store: string) =>
   run<T[]>(store, 'readonly', s => s.getAll());
+
+/** Attendance writes resolve only after the full transaction commits. The
+ * generic helpers above intentionally retain their old behavior for callers
+ * that may depend on request-level completion. */
+function attendanceTransaction(db: IDBDatabase, store: string | string[]): IDBTransaction {
+  try {
+    return db.transaction(store, 'readwrite', { durability: 'strict' });
+  } catch {
+    return db.transaction(store, 'readwrite');
+  }
+}
+
+export function attendanceDurablePut<T>(store: string, value: T): Promise<IDBValidKey> {
+  return openDb().then(db => new Promise<IDBValidKey>((resolve, reject) => {
+    const tx = attendanceTransaction(db, store);
+    const request = tx.objectStore(store).put(value as any);
+    let key: IDBValidKey | undefined;
+    request.onsuccess = () => { key = request.result; };
+    request.onerror = () => reject(request.error || new Error('Attendance evidence write failed'));
+    tx.oncomplete = () => key === undefined
+      ? reject(new Error('Attendance evidence committed without a key'))
+      : resolve(key);
+    tx.onabort = () => reject(tx.error || new Error('Attendance evidence transaction aborted'));
+    tx.onerror = () => reject(tx.error || new Error('Attendance evidence transaction failed'));
+  }));
+}
+
+export const listAttendanceReceipts = <T>(ownerUid: string) =>
+  dbGetAllByIndex<T>(STORE_ATTENDANCE_OUTBOX, 'by_owner', IDBKeyRange.only(ownerUid));
+
+export const getAttendanceReceipt = <T>(requestId: string) =>
+  dbGet<T>(STORE_ATTENDANCE_OUTBOX, requestId);
+
+export const saveAttendanceReceipt = <T>(receipt: T) =>
+  attendanceDurablePut(STORE_ATTENDANCE_OUTBOX, receipt);
+
+export const getAttendanceState = <T>(ownerUid: string) =>
+  dbGet<T>(STORE_ATTENDANCE_STATE, ownerUid);
+
+export const saveAttendanceState = <T>(state: T) =>
+  attendanceDurablePut(STORE_ATTENDANCE_STATE, state);
+
+export async function commitAttendanceCapture(receipt: LocalAttendanceReceipt, conflictSignature?: string): Promise<{ receipt: LocalAttendanceReceipt; alreadySaved: boolean }> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = attendanceTransaction(db, [STORE_ATTENDANCE_OUTBOX, STORE_ATTENDANCE_LOCKS]);
+    const outbox = tx.objectStore(STORE_ATTENDANCE_OUTBOX);
+    const locks = tx.objectStore(STORE_ATTENDANCE_LOCKS);
+    let result: { receipt: LocalAttendanceReceipt; alreadySaved: boolean };
+    const existing = outbox.index('by_session').getAll(receipt.sessionId);
+    existing.onsuccess = () => {
+      const saved = existing.result as LocalAttendanceReceipt[];
+      const duplicate = saved.find(item => item.ownerUid === receipt.ownerUid && item.status !== 'invalid');
+      if (duplicate) {
+        result = { receipt: duplicate, alreadySaved: true };
+        return;
+      }
+      const lock = locks.get(receipt.sessionId);
+      lock.onsuccess = () => {
+        const ownerUid = lock.result?.ownerUid || saved.find(item => !item.localDeviceConflict && item.status !== 'invalid')?.ownerUid || receipt.ownerUid;
+        const localDeviceConflict = ownerUid !== receipt.ownerUid;
+        const committed = { ...receipt, localDeviceConflict, deviceSignature: localDeviceConflict ? conflictSignature : receipt.deviceSignature };
+        locks.put({ sessionId: receipt.sessionId, ownerUid });
+        outbox.put(committed);
+        result = { receipt: committed, alreadySaved: false };
+      };
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(tx.error || new Error('attendance_not_saved'));
+    tx.onerror = () => reject(tx.error || new Error('attendance_not_saved'));
+  });
+}
+
+export interface AttendanceInstallation {
+  key: 'attendance_installation_id';
+  value: string;
+  privateKey: CryptoKey;
+  publicKey: JsonWebKey;
+}
+
+export async function getOrCreateAttendanceInstallation(candidate: AttendanceInstallation): Promise<AttendanceInstallation> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = attendanceTransaction(db, STORE_META);
+    const store = tx.objectStore(STORE_META);
+    const request = store.get(candidate.key);
+    let result: AttendanceInstallation;
+    request.onsuccess = () => {
+      result = request.result?.privateKey ? request.result : { ...candidate, value: request.result?.value || candidate.value };
+      if (!request.result?.privateKey) store.put(result);
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(tx.error || new Error('attendance_not_saved'));
+    tx.onerror = () => reject(tx.error || new Error('attendance_not_saved'));
+  });
+}
+
+export async function changeAttendanceReceipt(requestId: string, update: (current: LocalAttendanceReceipt) => LocalAttendanceReceipt): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = attendanceTransaction(db, STORE_ATTENDANCE_OUTBOX);
+    const store = tx.objectStore(STORE_ATTENDANCE_OUTBOX);
+    const request = store.get(requestId);
+    request.onsuccess = () => { if (request.result) store.put(update(request.result)); };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error || new Error('attendance_not_saved'));
+    tx.onerror = () => reject(tx.error || new Error('attendance_not_saved'));
+  });
+}
 
 /**
  * The snapshot of a lecture taken when its PDF was downloaded.

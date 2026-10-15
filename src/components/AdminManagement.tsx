@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UserPlus, Trash2, Shield, Loader2, AlertCircle } from 'lucide-react';
 import { db, auth } from '../lib/firebase';
-import { collection, getDocs, doc, query, where, serverTimestamp, deleteField, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, query, where, serverTimestamp, deleteField, writeBatch } from 'firebase/firestore';
 import { Language, TRANSLATIONS, UserProfile } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { logAdminAction } from '../services/adminLogService';
@@ -38,6 +38,7 @@ const PERMISSION_LABELS = [
   { id: 'manageRecords', labelEn: 'Manage Records', labelAr: 'إدارة التسجيلات' },
   { id: 'manageHomeworks', labelEn: 'Manage Homeworks', labelAr: 'إدارة الواجبات' },
   { id: 'manageTimetable', labelEn: 'Manage Timetable', labelAr: 'إدارة الجدول الأسبوعي' },
+  { id: 'manageAttendance', labelEn: 'Manage Attendance', labelAr: 'إدارة الحضور' },
   { id: 'manageStudents', labelEn: 'Manage Students', labelAr: 'إدارة الطلاب' },
   { id: 'manageGrades', labelEn: 'Manage Grades', labelAr: 'إدارة السعي والدرجات' },
   // Offered to support only. A representative is hard-denied the system
@@ -121,6 +122,8 @@ const ALL_CONTENT_TRUE = {
   manageAnnouncements: true,
   manageRecords: true,
   manageHomeworks: true,
+  manageTimetable: true,
+  manageAttendance: true,
   manageStudents: true,
   manageGrades: true,
 };

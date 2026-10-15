@@ -8,6 +8,7 @@
  * server-written collections.
  */
 import crypto from 'crypto';
+import { normalizeName, looksLikeLoginCode, loginCodeKeyFor } from './rosterIdentity.js';
 import { isMasterAdminEmail } from './masterAdmins.js';
 import { hasStaffCapability, type StaffCapability } from './staffCapabilities.js';
 import {
@@ -17,6 +18,7 @@ import {
   type ManualPaymentMethod,
 } from './subscriptionTypes.js';
 import { PLAN_CONFIG } from './subscriptions.js';
+import { serverCache } from './serverCache.js';
 
 const REF_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const NOTE_LIMIT = 200;
@@ -239,9 +241,11 @@ async function loadActor(admin: any, req: any): Promise<SubscriptionActor> {
   const token = req.user;
   if (!token) throw new SubscriptionManagementError(401, 'UNAUTHENTICATED', 'Authentication required');
   const email = String(token.email || '').trim().toLowerCase();
-  const isMaster = token.email_verified === true
-    && (isMasterAdminEmail(email) || token.role === 'master_admin');
-  const snap = await admin.firestore().collection('users').doc(token.uid).get();
+  const isMaster = isMasterAdminEmail(email) || token.role === 'master_admin';
+  let snap = await admin.firestore().collection('users').doc(token.uid).get();
+  if (!snap.exists && email) {
+    snap = await admin.firestore().collection('users').doc(email).get();
+  }
   const data = snap.data() || {};
   return {
     uid: token.uid,
@@ -345,17 +349,17 @@ async function sendActivationNotification(admin: any, userId: string, plan: stri
 }
 
 export async function previewManagedSubscription(admin: any, email: string, plan: string): Promise<AnyMap> {
-  if (!(PAID_MANUAL_PLANS as readonly string[]).includes(plan)) {
-    throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Manual activation supports monthly, seasonal, or semi-annual plans');
+  if (!(PAID_MANUAL_PLANS as readonly string[]).includes(plan) && !(GRANT_PLANS as readonly string[]).includes(plan as any)) {
+    throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Invalid subscription plan');
   }
-  const snap = await admin.firestore().collection('users').doc(email).get();
-  if (!snap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
+  const target = await resolveStudent(admin, email);
+  const snap = target.snap;
   const data = snap.data() || {};
   const now = new Date();
   const expiry = computeSubscriptionExpiry(now, asDate(data.subscriptionEnd), data.isSubscribed === true, plan);
   return {
     studentId: snap.id,
-    studentEmail: email,
+    studentEmail: data.email || snap.id,
     studentName: data.name || data.originalName || email,
     status: data.isSubscribed === true ? 'active' : 'inactive',
     isSubscribed: data.isSubscribed === true,
@@ -411,16 +415,20 @@ export async function commitManagedActivation(
   const payloadHash = requestPayloadHash(normalizedPayload);
   const prefix = 'ACT' as const;
 
+  const target = await resolveStudent(admin, studentEmail);
+  const targetUserRef = target.ref;
+  const targetUserId = target.snap.id;
+
   const result = await withUniqueReference(prefix, async (referenceCode) => {
     return db.runTransaction(async (tx: any) => {
       const recordRef = db.collection('subscriptionRecords').doc(requestId);
       const entitlementRef = db.collection('subscriptions').doc(requestId);
-      const userRef = db.collection('users').doc(studentEmail);
+      const userRef = targetUserRef;
       const referenceRef = db.collection('referenceCodes').doc(referenceCode);
       const balanceRef = db.collection('supportBalances').doc(actor.uid);
       const ledgerRef = db.collection('supportLedger').doc(requestId);
       const activeQuery = db.collection('subscriptions')
-        .where('userId', '==', studentEmail)
+        .where('userId', '==', targetUserId)
         .where('status', '==', 'active');
 
       const existing = await tx.get(recordRef);
@@ -433,6 +441,7 @@ export async function commitManagedActivation(
       if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
 
       const userData = userSnap.data() || {};
+      const resolvedStudentEmail = userData.email || studentEmail;
       const currentStateToken = subscriptionStateToken(userData);
       if (input.previewStateToken && input.previewStateToken !== currentStateToken) {
         throw new SubscriptionManagementError(409, 'PREVIEW_STALE', 'Subscription state changed; refresh the preview');
@@ -464,14 +473,14 @@ export async function commitManagedActivation(
         });
       }
 
-      const studentName = String(userData.name || userData.originalName || studentEmail);
+      const studentName = String(userData.name || userData.originalName || resolvedStudentEmail);
       tx.create(recordRef, {
         requestId,
         payloadHash,
         referenceCode,
         referenceCodeNormalized: referenceCode.toUpperCase(),
-        studentId: studentEmail,
-        studentEmail,
+        studentId: targetUserId,
+        studentEmail: resolvedStudentEmail,
         studentName,
         type: mode === 'grant' ? 'grant' : 'activation',
         source: mode === 'grant' ? 'grant' : 'manual',
@@ -490,8 +499,8 @@ export async function commitManagedActivation(
         result: resultValue,
       });
       tx.create(entitlementRef, {
-        userId: studentEmail,
-        userEmail: studentEmail,
+        userId: targetUserId,
+        userEmail: resolvedStudentEmail,
         userName: studentName,
         plan,
         status: 'active',
@@ -540,9 +549,65 @@ export async function commitManagedActivation(
   });
 
   if (!result.replayed) {
-    await sendActivationNotification(admin, studentEmail, plan, result.newExpiry);
+    const resolvedStudentEmail = target.snap.data()?.email || studentEmail;
+    await sendActivationNotification(admin, resolvedStudentEmail, plan, result.newExpiry);
   }
   return result;
+}
+
+export async function requestSupportGrant(
+  admin: any,
+  actor: SubscriptionActor,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireCapability(actor, 'canActivate');
+  const db = admin.firestore();
+  const requestId = validateRequestId(input.requestId);
+  const studentEmail = normalizeStudentEmail(input.studentEmail || input.userId);
+  const plan = String(input.plan || '');
+  const reason = normalizeLimitedText(input.reason ?? input.note ?? input.notes, 'note');
+
+  if (!(GRANT_PLANS as readonly string[]).includes(plan as any)) {
+    throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Invalid grant plan');
+  }
+
+  const target = await resolveStudent(admin, studentEmail);
+  const userSnap = target.snap;
+  const userData = userSnap.data() || {};
+  const resolvedStudentEmail = userData.email || studentEmail;
+  const resolvedStudentId = userSnap.id;
+  const studentName = userData.name || userData.originalName || resolvedStudentEmail;
+
+  const existingSub = await db.collection('subscriptions').doc(requestId).get();
+  if (existingSub.exists) {
+    return { success: true, id: requestId, replayed: true };
+  }
+
+  const now = admin.firestore.FieldValue?.serverTimestamp
+    ? admin.firestore.FieldValue.serverTimestamp()
+    : new Date();
+  const subscriptionDoc = {
+    userId: resolvedStudentId,
+    userEmail: resolvedStudentEmail,
+    userName: studentName,
+    plan,
+    amount: 0,
+    status: 'pending',
+    paymentMethod: 'grant',
+    ...(reason ? { notes: reason } : {}),
+    requestedBy: {
+      uid: actor.uid,
+      email: actor.email,
+      name: actor.name,
+      role: actor.role,
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await db.collection('subscriptions').doc(requestId).set(subscriptionDoc);
+
+  return { success: true, id: requestId, replayed: false };
 }
 
 export async function settleManagedBalance(
@@ -960,9 +1025,25 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
     }
   };
 
+  const cancelledIds = new Set<string>();
+  for (const doc of legacySnap.docs) {
+    const d = doc.data();
+    if (d.status === 'cancelled' || d.terminatedByRecord) {
+      if (doc.id) cancelledIds.add(String(doc.id));
+      if (d.auditedRecordId) cancelledIds.add(String(d.auditedRecordId));
+    }
+  }
+
   for (const doc of privateSnap.docs) {
     const data = doc.data();
-    if (data.type !== 'activation' || data.source === 'grant' || data.voidedBy) continue;
+    if (
+      data.type !== 'activation' ||
+      data.source === 'grant' ||
+      data.voidedBy ||
+      data.cancelledBy ||
+      (doc.id && cancelledIds.has(String(doc.id))) ||
+      (data.entitlementId && cancelledIds.has(String(data.entitlementId)))
+    ) continue;
     add('manual', data.plan, data.amount || 0, data.studentEmail || data.studentId || '');
   }
   for (const doc of legacySnap.docs) {
@@ -982,9 +1063,24 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
   if (period === 'this_year') {
     yearlyTotal = revenue.total;
   } else {
+    const yearCancelledIds = new Set<string>();
+    for (const doc of yearLegacySnap.docs) {
+      const d = doc.data();
+      if (d.status === 'cancelled' || d.terminatedByRecord) {
+        if (doc.id) yearCancelledIds.add(String(doc.id));
+        if (d.auditedRecordId) yearCancelledIds.add(String(d.auditedRecordId));
+      }
+    }
     for (const doc of yearPrivateSnap.docs) {
       const data = doc.data();
-      if (data.type !== 'activation' || data.source === 'grant' || data.voidedBy) continue;
+      if (
+        data.type !== 'activation' ||
+        data.source === 'grant' ||
+        data.voidedBy ||
+        data.cancelledBy ||
+        (doc.id && yearCancelledIds.has(String(doc.id))) ||
+        (data.entitlementId && yearCancelledIds.has(String(data.entitlementId)))
+      ) continue;
       const amt = data.amount || 0;
       if (Number.isSafeInteger(amt) && amt > 0) yearlyTotal += amt;
     }
@@ -1150,9 +1246,74 @@ export async function resolveStudent(admin: any, value: string): Promise<{ ref: 
   const directRef = db.collection('users').doc(value);
   const direct = await directRef.get();
   if (direct.exists) return { ref: directRef, snap: direct };
-  const byEmail = await db.collection('users').where('email', '==', value.toLowerCase()).limit(1).get();
-  if (byEmail.empty) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
-  return { ref: byEmail.docs[0].ref, snap: byEmail.docs[0] };
+
+  try {
+    const usersColl = db.collection('users');
+    if (typeof usersColl.where === 'function') {
+      const byEmail = await usersColl.where('email', '==', value.toLowerCase()).limit(1).get();
+      if (byEmail && !byEmail.empty && byEmail.docs && byEmail.docs.length > 0) {
+        return { ref: byEmail.docs[0].ref || db.collection('users').doc(byEmail.docs[0].id), snap: byEmail.docs[0] };
+      }
+    }
+  } catch {}
+
+  // Check students collection (for roster students who haven't logged in yet)
+  try {
+    const studentsColl = db.collection('students');
+    if (studentsColl && typeof studentsColl.doc === 'function') {
+      const studentDoc = await studentsColl.doc(value.toLowerCase()).get();
+      if (studentDoc && studentDoc.exists) {
+        const sData = studentDoc.data() || {};
+        if (sData.googleEmail) {
+          try {
+            const usersColl = db.collection('users');
+            if (typeof usersColl.where === 'function') {
+              const byGoogle = await usersColl.where('email', '==', sData.googleEmail.toLowerCase()).limit(1).get();
+              if (byGoogle && !byGoogle.empty && byGoogle.docs && byGoogle.docs.length > 0) {
+                return { ref: byGoogle.docs[0].ref || db.collection('users').doc(byGoogle.docs[0].id), snap: byGoogle.docs[0] };
+              }
+            }
+          } catch {}
+        }
+        const initialName = sData.name || sData.originalName || value;
+        const nowTimestamp = admin.firestore.FieldValue?.serverTimestamp
+          ? admin.firestore.FieldValue.serverTimestamp()
+          : new Date();
+        const userSeed = {
+          name: initialName,
+          originalName: initialName,
+          email: value.toLowerCase(),
+          role: 'student',
+          ...(sData.stageId ? { stageId: sData.stageId } : {}),
+          ...(sData.subgroup ? { group: sData.subgroup } : {}),
+          isSubscribed: false,
+          createdAt: nowTimestamp,
+        };
+        if (typeof directRef.set === 'function') {
+          await directRef.set(userSeed, { merge: true });
+          const freshUserSnap = await directRef.get();
+          return { ref: directRef, snap: freshUserSnap };
+        }
+        return {
+          ref: directRef,
+          snap: {
+            exists: true,
+            id: value.toLowerCase(),
+            data: () => userSeed,
+          },
+        };
+      }
+    }
+
+    if (studentsColl && typeof studentsColl.where === 'function') {
+      const studentByGoogle = await studentsColl.where('googleEmail', '==', value.toLowerCase()).limit(1).get();
+      if (studentByGoogle && !studentByGoogle.empty && studentByGoogle.docs && studentByGoogle.docs.length > 0) {
+        return resolveStudent(admin, studentByGoogle.docs[0].id);
+      }
+    }
+  } catch {}
+
+  throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
 }
 
 export async function modifySubscriptionEnd(
@@ -1336,6 +1497,41 @@ export async function terminateSubscription(
           .where('status', '==', 'active')
       );
 
+      // Read audited activation records and support balances before performing any writes
+      const auditedUpdates: Array<{
+        ref: any;
+        id: string;
+        data: AnyMap;
+        balanceRef?: any;
+        balanceSnap?: any;
+      }> = [];
+
+      if (immediate) {
+        for (const doc of activeSubsSnap.docs) {
+          const auditedId = doc.data()?.auditedRecordId;
+          if (auditedId && typeof auditedId === 'string') {
+            const origRecordRef = db.collection('subscriptionRecords').doc(auditedId);
+            const origRecordSnap = await tx.get(origRecordRef);
+            if (origRecordSnap.exists) {
+              const origData = origRecordSnap.data() || {};
+              let balanceRef: any;
+              let balanceSnap: any;
+              if (origData.amount > 0 && origData.source === 'manual' && origData.actorUid) {
+                balanceRef = db.collection('supportBalances').doc(origData.actorUid);
+                balanceSnap = await tx.get(balanceRef);
+              }
+              auditedUpdates.push({
+                ref: origRecordRef,
+                id: auditedId,
+                data: origData,
+                balanceRef,
+                balanceSnap,
+              });
+            }
+          }
+        }
+      }
+
       for (const doc of activeSubsSnap.docs) {
         tx.update(doc.ref, {
           endDate: effectiveTimestamp,
@@ -1355,6 +1551,51 @@ export async function terminateSubscription(
         terminationDate: effectiveEndDate.toISOString(),
         isSubscribed,
       };
+
+      for (let idx = 0; idx < auditedUpdates.length; idx++) {
+        const item = auditedUpdates[idx];
+        tx.update(item.ref, {
+          cancelledBy: {
+            recordId: requestId,
+            referenceCode,
+            actor: actorSnapshot(actor),
+            createdAt: now,
+          },
+          updatedAt: now,
+        });
+
+        if (item.balanceRef && item.balanceSnap && item.balanceSnap.exists) {
+          const balance = withBalanceDefaults(item.balanceSnap.data());
+          const amount = item.data.amount || 0;
+          if (amount > 0) {
+            const balanceAfter = balance.outstanding - amount;
+            tx.set(item.balanceRef, {
+              ...balance,
+              outstanding: balanceAfter,
+              totalReversed: (balance.totalReversed || 0) + amount,
+              updatedAt: now,
+            }, { merge: true });
+
+            const ledgerId = auditedUpdates.length === 1 ? requestId : `${requestId}_${idx}`;
+            const ledgerRef = db.collection('supportLedger').doc(ledgerId);
+            tx.create(ledgerRef, {
+              requestId: ledgerId,
+              payloadHash,
+              referenceCode,
+              type: 'void_reversal',
+              amount,
+              balanceDelta: -amount,
+              balanceAfter,
+              supportUid: item.data.actorUid,
+              actor: actorSnapshot(actor),
+              recordId: item.id,
+              commissionRate: balance.commissionRate,
+              createdAt: now,
+              result: resultValue,
+            });
+          }
+        }
+      }
 
       tx.update(targetUserRef, {
         subscriptionEnd: effectiveTimestamp,
@@ -1512,6 +1753,340 @@ export async function getActiveSubscriptions(
   };
 }
 
+export interface SubscriptionStudentSearchResult {
+  id: string;
+  email: string;
+  name: string;
+  isSubscribed: boolean;
+  currentPlan?: string | null;
+  currentExpiry?: string | null;
+  stageId?: string | null;
+}
+
+export async function searchStudentsForSubscription(
+  admin: any,
+  actor: SubscriptionActor,
+  rawQuery: string,
+): Promise<{ students: SubscriptionStudentSearchResult[] }> {
+  const query = (rawQuery || '').trim();
+  if (!query || query.length < 2) {
+    return { students: [] };
+  }
+
+  const db = admin.firestore();
+  const lowerQuery = query.toLowerCase();
+  const normalizedQuery = normalizeName(query);
+  const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 0);
+  const resultsMap = new Map<string, SubscriptionStudentSearchResult>();
+
+  // 1. Direct user / student lookup if query contains @ or looks like an email/id
+  if (lowerQuery.includes('@')) {
+    try {
+      const directUserSnap = await db.collection('users').doc(lowerQuery).get();
+      if (directUserSnap.exists) {
+        const data = directUserSnap.data() || {};
+        const email = (data.email || directUserSnap.id).toLowerCase();
+        resultsMap.set(email, {
+          id: directUserSnap.id,
+          email: data.email || directUserSnap.id,
+          name: data.name || data.originalName || email,
+          isSubscribed: data.isSubscribed === true,
+          currentPlan: data.subscriptionPlan || null,
+          currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
+          stageId: data.stageId || null,
+        });
+      }
+    } catch {}
+
+    try {
+      const directStudentSnap = await db.collection('students').doc(lowerQuery).get();
+      if (directStudentSnap.exists) {
+        const data = directStudentSnap.data() || {};
+        const email = (data.email || directStudentSnap.id).toLowerCase();
+        if (!resultsMap.has(email)) {
+          resultsMap.set(email, {
+            id: directStudentSnap.id,
+            email: data.email || directStudentSnap.id,
+            name: data.name || email,
+            isSubscribed: false,
+            currentPlan: null,
+            currentExpiry: null,
+            stageId: data.stageId || null,
+          });
+        }
+      }
+    } catch {}
+
+    try {
+      const googleStudentSnap = await db.collection('students')
+        .where('googleEmail', '==', lowerQuery)
+        .limit(5)
+        .get();
+      for (const doc of googleStudentSnap.docs) {
+        const data = doc.data() || {};
+        const email = (data.email || doc.id).toLowerCase();
+        if (!resultsMap.has(email)) {
+          resultsMap.set(email, {
+            id: doc.id,
+            email: data.email || doc.id,
+            name: data.name || email,
+            isSubscribed: false,
+            currentPlan: null,
+            currentExpiry: null,
+            stageId: data.stageId || null,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Login Code search if query matches code format
+  if (looksLikeLoginCode(query)) {
+    const codeKey = loginCodeKeyFor(query);
+    try {
+      const byCode = await db.collection('students')
+        .where('loginCodeKey', '==', codeKey)
+        .limit(5)
+        .get();
+      for (const doc of byCode.docs) {
+        const data = doc.data() || {};
+        const email = (data.email || doc.id).toLowerCase();
+        if (!resultsMap.has(email)) {
+          resultsMap.set(email, {
+            id: doc.id,
+            email: data.email || doc.id,
+            name: data.name || email,
+            isSubscribed: false,
+            currentPlan: null,
+            currentExpiry: null,
+            stageId: data.stageId || null,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  // 3. Cached Roster in-memory multi-word / substring search:
+  // Caches lightweight roster index for 3 minutes via serverCache.
+  // Supports matching any part of student names (father name, surname, multi-word).
+  try {
+    let roster: any[] | null = null;
+    try {
+      roster = serverCache.get<any[]>('roster:search_index');
+    } catch {}
+    if (!roster) {
+      const rosterSnap = await db.collection('students').get();
+      roster = rosterSnap.docs.map((doc: any) => {
+        const d = doc.data() || {};
+        const name = d.name || d.originalName || doc.id;
+        const norm = normalizeName(name);
+        return {
+          id: doc.id,
+          email: (d.email || doc.id).toLowerCase(),
+          name,
+          normalizedName: norm,
+          nameKey: d.nameKey || norm,
+          loginCodeKey: d.loginCodeKey || (d.loginCode ? loginCodeKeyFor(d.loginCode) : ''),
+          googleEmail: (d.googleEmail || '').toLowerCase(),
+          stageId: d.stageId || null,
+        };
+      });
+      try {
+        serverCache.set('roster:search_index', roster, 3 * 60 * 1000);
+      } catch {}
+    }
+
+    if (roster && roster.length > 0) {
+      const matchedRoster = roster.filter((item: any) => {
+        if (item.email.includes(lowerQuery) || (item.googleEmail && item.googleEmail.includes(lowerQuery))) {
+          return true;
+        }
+        if (item.loginCodeKey && item.loginCodeKey.includes(lowerQuery)) {
+          return true;
+        }
+        if (normalizedQuery && item.normalizedName.includes(normalizedQuery)) {
+          return true;
+        }
+        if (queryWords.length > 1 && queryWords.every((w: string) => item.normalizedName.includes(w))) {
+          return true;
+        }
+        return false;
+      });
+
+      for (const item of matchedRoster.slice(0, 20)) {
+        if (!resultsMap.has(item.email)) {
+          resultsMap.set(item.email, {
+            id: item.id,
+            email: item.email,
+            name: item.name,
+            isSubscribed: false,
+            currentPlan: null,
+            currentExpiry: null,
+            stageId: item.stageId,
+          });
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Query students collection by nameKey and name prefix (Firestore fallback)
+  if (normalizedQuery) {
+    try {
+      const studentNameSnap = await db.collection('students')
+        .where('nameKey', '>=', normalizedQuery)
+        .where('nameKey', '<=', normalizedQuery + '\uf8ff')
+        .limit(15)
+        .get();
+
+      for (const doc of studentNameSnap.docs) {
+        const data = doc.data() || {};
+        const email = (data.email || doc.id).toLowerCase();
+        if (!resultsMap.has(email)) {
+          resultsMap.set(email, {
+            id: doc.id,
+            email: data.email || doc.id,
+            name: data.name || email,
+            isSubscribed: false,
+            currentPlan: null,
+            currentExpiry: null,
+            stageId: data.stageId || null,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  // Also query students collection by raw name prefix
+  try {
+    const studentRawNameSnap = await db.collection('students')
+      .where('name', '>=', query)
+      .where('name', '<=', query + '\uf8ff')
+      .limit(15)
+      .get();
+
+    for (const doc of studentRawNameSnap.docs) {
+      const data = doc.data() || {};
+      const email = (data.email || doc.id).toLowerCase();
+      if (!resultsMap.has(email)) {
+        resultsMap.set(email, {
+          id: doc.id,
+          email: data.email || doc.id,
+          name: data.name || email,
+          isSubscribed: false,
+          currentPlan: null,
+          currentExpiry: null,
+          stageId: data.stageId || null,
+        });
+      }
+    }
+  } catch {}
+
+  // 5. Query users collection by email, name, displayName, and originalName prefixes
+  try {
+    const userEmailSnap = await db.collection('users')
+      .where('email', '>=', lowerQuery)
+      .where('email', '<=', lowerQuery + '\uf8ff')
+      .limit(10)
+      .get();
+
+    for (const doc of userEmailSnap.docs) {
+      const data = doc.data() || {};
+      const email = (data.email || doc.id).toLowerCase();
+      if (!resultsMap.has(email)) {
+        resultsMap.set(email, {
+          id: doc.id,
+          email: data.email || doc.id,
+          name: data.name || data.originalName || data.email || doc.id,
+          isSubscribed: data.isSubscribed === true,
+          currentPlan: data.subscriptionPlan || null,
+          currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
+          stageId: data.stageId || null,
+        });
+      }
+    }
+  } catch {}
+
+  const userQueryFields = ['name', 'displayName', 'originalName'];
+  for (const field of userQueryFields) {
+    try {
+      const userSnap = await db.collection('users')
+        .where(field, '>=', query)
+        .where(field, '<=', query + '\uf8ff')
+        .limit(15)
+        .get();
+
+      for (const doc of userSnap.docs) {
+        const data = doc.data() || {};
+        const email = (data.email || doc.id).toLowerCase();
+        if (!resultsMap.has(email)) {
+          resultsMap.set(email, {
+            id: doc.id,
+            email: data.email || doc.id,
+            name: data.name || data.displayName || data.originalName || data.email || doc.id,
+            isSubscribed: data.isSubscribed === true,
+            currentPlan: data.subscriptionPlan || null,
+            currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
+            stageId: data.stageId || null,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  // 6. Enrich any student records without subscription info from users collection
+  const needsEnrichment = Array.from(resultsMap.values()).filter(r => !r.isSubscribed);
+  if (needsEnrichment.length > 0) {
+    await Promise.all(needsEnrichment.slice(0, 15).map(async (item) => {
+      try {
+        const uSnap = await db.collection('users').doc(item.email).get();
+        if (uSnap.exists) {
+          const uData = uSnap.data() || {};
+          item.isSubscribed = uData.isSubscribed === true;
+          item.currentPlan = uData.subscriptionPlan || null;
+          item.currentExpiry = asDate(uData.subscriptionEnd)?.toISOString() || null;
+          if (uData.name) item.name = uData.name;
+        } else {
+          const uByEmail = await db.collection('users').where('email', '==', item.email).limit(1).get();
+          if (!uByEmail.empty) {
+            const uData = uByEmail.docs[0].data() || {};
+            item.isSubscribed = uData.isSubscribed === true;
+            item.currentPlan = uData.subscriptionPlan || null;
+            item.currentExpiry = asDate(uData.subscriptionEnd)?.toISOString() || null;
+            if (uData.name) item.name = uData.name;
+          }
+        }
+      } catch {}
+    }));
+  }
+
+  // 7. Sort by relevance:
+  // 1) Exact match on normalizedName, loginCodeKey, or email
+  // 2) Starts with normalizedQuery
+  // 3) Active subscribers first
+  // 4) Name alphabetical
+  const list = Array.from(resultsMap.values());
+  list.sort((a, b) => {
+    const aNorm = normalizeName(a.name);
+    const bNorm = normalizeName(b.name);
+    const aExact = aNorm === normalizedQuery || a.email.toLowerCase() === lowerQuery;
+    const bExact = bNorm === normalizedQuery || b.email.toLowerCase() === lowerQuery;
+    if (aExact && !bExact) return -1;
+    if (!aExact && bExact) return 1;
+
+    const aStarts = aNorm.startsWith(normalizedQuery);
+    const bStarts = bNorm.startsWith(normalizedQuery);
+    if (aStarts && !bStarts) return -1;
+    if (!aStarts && bStarts) return 1;
+
+    if (a.isSubscribed && !b.isSubscribed) return -1;
+    if (!a.isSubscribed && b.isSubscribed) return 1;
+
+    return a.name.localeCompare(b.name);
+  });
+
+  return { students: list.slice(0, 15) };
+}
+
 function asyncHandler(fn: (req: any, res: any) => Promise<any>) {
   return async (req: any, res: any) => {
     try {
@@ -1539,6 +2114,13 @@ export function createSubscriptionManagementHandlers({ admin }: SubscriptionMana
         return serialize({ plan: data.plan, status: data.status, amount: data.amount, startDate: data.startDate, endDate: data.endDate, createdAt: data.createdAt });
       }) });
     }),
+    searchStudents: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      if (!actor.isMasterAdmin && !hasStaffCapability(actor, 'canActivate') && !hasStaffCapability(actor, 'canGrant')) {
+        throw new SubscriptionManagementError(403, 'PERMISSION_DENIED', 'Missing subscription search permission');
+      }
+      res.json(await searchStudentsForSubscription(admin, actor, String(req.query.q || '')));
+    }),
     preview: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);
       requireCapability(actor, 'canActivate');
@@ -1551,6 +2133,10 @@ export function createSubscriptionManagementHandlers({ admin }: SubscriptionMana
     grant: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);
       res.json(await commitManagedActivation(admin, actor, req.body || {}, 'grant'));
+    }),
+    requestGrant: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await requestSupportGrant(admin, actor, req.body || {}));
     }),
     receive: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);

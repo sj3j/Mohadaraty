@@ -28,6 +28,7 @@ import {
   getSupportBalances,
   grantAuditedSubscription,
   manualActivateSubscription,
+  requestSupportGrant,
   modifySubscriptionEndDate,
   newRequestId,
   settleSupportBalance,
@@ -37,7 +38,9 @@ import {
   type HistoryItem,
   type SubscriptionPreview,
   type SupportBalance,
+  type SubscriptionStudentSearchResult,
 } from '../services/subscriptionManagementService';
+import StudentSearchDropdown from './subscription/StudentSearchDropdown';
 import type { ManualPaymentMethod } from '../../shared/subscriptionTypes';
 import { EMPTY_PAYMENT_CONTACT, hasPaymentChannel, normalizePaymentContact, type PaymentContact } from '../lib/paymentContact';
 import { needsManualApproval } from '../lib/subscriptionStats';
@@ -65,9 +68,11 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
+  const [notice, setNotice] = useState('');
   const [showActivation, setShowActivation] = useState(false);
   const [activationEmail, setActivationEmail] = useState('');
-  const [activationPlan, setActivationPlan] = useState<Exclude<SubscriptionPlan, 'annual'>>('monthly');
+  const [selectedActivationStudent, setSelectedActivationStudent] = useState<SubscriptionStudentSearchResult | null>(null);
+  const [activationPlan, setActivationPlan] = useState<SubscriptionPlan>('monthly');
   const [paymentMethod, setPaymentMethod] = useState<ManualPaymentMethod>('cash');
   const [activationNote, setActivationNote] = useState('');
   const [preview, setPreview] = useState<SubscriptionPreview | null>(null);
@@ -77,6 +82,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
   const [showGrant, setShowGrant] = useState(false);
   const [grantEmail, setGrantEmail] = useState('');
+  const [selectedGrantStudent, setSelectedGrantStudent] = useState<SubscriptionStudentSearchResult | null>(null);
   const [grantPlan, setGrantPlan] = useState<SubscriptionPlan>('monthly');
   const [grantReason, setGrantReason] = useState('');
   const [grantRequestId, setGrantRequestId] = useState('');
@@ -195,32 +201,22 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
   const handleTerminate = async () => {
     if (!terminatingTarget) return;
-    setBusy('terminate'); setError('');
+    setBusy('terminate'); setError(''); setNotice('');
     try {
-      let customIso: string | undefined;
-      if (!terminateImmediate) {
-        if (!terminateCustomDate) {
-          throw new Error(rtl ? 'يرجى تحديد تاريخ الانتهاء' : 'Please select an ending date');
-        }
-        const dateObj = new Date(`${terminateCustomDate}T23:59:59+03:00`);
-        if (isNaN(dateObj.getTime())) {
-          throw new Error(rtl ? 'تاريخ غير صالح' : 'Invalid date');
-        }
-        customIso = dateObj.toISOString();
-      }
       await terminateSubscription({
         studentEmail: terminatingTarget.studentEmail || terminatingTarget.studentId,
-        immediate: terminateImmediate,
-        endDate: customIso,
+        immediate: true,
         reason: terminateReason || undefined,
       });
       setTerminatingTarget(null);
       setTerminateImmediate(true);
       setTerminateCustomDate('');
       setTerminateReason('');
+      setNotice(rtl ? 'تم إلغاء الاشتراك بنجاح وخصم قيمته من التقارير' : 'Subscription cancelled and value deducted from reports');
       if (tab === 'active') await loadActive();
       if (tab === 'expiring') await loadExpiring();
       if (canHistory) await loadHistory();
+      if (master) await loadReports();
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
 
@@ -265,17 +261,27 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
   const activate = async () => {
     if (!preview) return;
-    setBusy('activate'); setError('');
+    setBusy('activate'); setError(''); setNotice('');
     try {
-      await manualActivateSubscription({
-        requestId: activationRequestId,
-        studentEmail: preview.studentEmail,
-        plan: activationPlan,
-        paymentMethod,
-        note: activationNote || undefined,
-        previewStateToken: preview.stateToken,
-      });
-      setShowActivation(false); setActivationEmail(''); setPreview(null); setActivationRequestId('');
+      if (paymentMethod === 'grant') {
+        await requestSupportGrant({
+          requestId: activationRequestId,
+          studentEmail: preview.studentEmail,
+          plan: activationPlan,
+          reason: activationNote || undefined,
+        });
+        setNotice(rtl ? 'تم إرسال طلب المنحة بنجاح وهو بانتظار موافقة الماستر أدمن.' : 'Grant request submitted successfully and is pending Master Admin approval.');
+      } else {
+        await manualActivateSubscription({
+          requestId: activationRequestId,
+          studentEmail: preview.studentEmail,
+          plan: activationPlan as Exclude<SubscriptionPlan, 'annual'>,
+          paymentMethod,
+          note: activationNote || undefined,
+          previewStateToken: preview.stateToken,
+        });
+      }
+      setShowActivation(false); setActivationEmail(''); setSelectedActivationStudent(null); setPreview(null); setActivationRequestId('');
       if (canHistory) { setTab('history'); await loadHistory(); }
     } catch (err: any) {
       fail(err);
@@ -291,7 +297,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
         requestId: grantRequestId, studentEmail: grantEmail.trim().toLowerCase(), plan: grantPlan,
         reason: grantReason || undefined,
       });
-      setShowGrant(false); setGrantEmail(''); setGrantReason(''); setGrantRequestId('');
+      setShowGrant(false); setGrantEmail(''); setSelectedGrantStudent(null); setGrantReason(''); setGrantRequestId('');
       if (canHistory) { setTab('history'); await loadHistory(); }
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
@@ -349,11 +355,26 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
 
-  const tabLabel: Record<Tab, string> = rtl ? {
-    history: 'السجل', active: 'الاشتراكات الفعالة', legacy: 'طلبات الدفع', balances: 'حسابات الدعم', reports: 'التقارير', expiring: 'قريب الانتهاء',
-  } : { history: 'History', active: 'Active subscriptions', legacy: 'Payment queue', balances: 'Support accounting', reports: 'Reports', expiring: 'Expiring soon' };
+  const pendingGrants = legacy.filter(s => s.status === 'pending' && s.paymentMethod === 'grant');
+  const pendingSuperKey = legacy.filter(s => s.status === 'pending' && s.paymentMethod !== 'grant' && needsManualApproval(s));
+  const pendingTotal = pendingGrants.length + pendingSuperKey.length;
 
-  const pending = legacy.filter(needsManualApproval);
+  const tabLabel: Record<Tab, string> = rtl ? {
+    history: 'السجل',
+    active: 'الاشتراكات الفعالة',
+    legacy: pendingTotal > 0 ? `طلبات الدفع (${pendingTotal})` : 'طلبات الدفع',
+    balances: 'حسابات الدعم',
+    reports: 'التقارير',
+    expiring: 'قريب الانتهاء',
+  } : {
+    history: 'History',
+    active: 'Active subscriptions',
+    legacy: pendingTotal > 0 ? `Payment queue (${pendingTotal})` : 'Payment queue',
+    balances: 'Support accounting',
+    reports: 'Reports',
+    expiring: 'Expiring soon',
+  };
+
   const normalizedContact = normalizePaymentContact(contact);
 
   const reportPlans = [
@@ -372,14 +393,21 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
             {user.role === 'support' && user.staffDisabled && <p className="text-xs text-red-500">{rtl ? 'حساب الدعم معطّل' : 'Support account disabled'}</p>}
           </div>
           <div className="flex gap-2">
-            {canActivate && <button onClick={() => { setActivationRequestId(newRequestId()); setShowActivation(true); }} className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-bold text-white">{rtl ? 'تفعيل يدوي' : 'Manual activation'}</button>}
-            {master && <button onClick={() => { setGrantRequestId(newRequestId()); setShowGrant(true); }} className="rounded-xl bg-amber-500 px-3 py-2 text-sm font-bold text-white"><Gift className="me-1 inline h-4 w-4" />{rtl ? 'منح' : 'Grant'}</button>}
+            {canActivate && <button onClick={() => { setActivationRequestId(newRequestId()); setActivationEmail(''); setSelectedActivationStudent(null); setShowActivation(true); }} className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-bold text-white">{rtl ? 'تفعيل يدوي' : 'Manual activation'}</button>}
+            {master && <button onClick={() => { setGrantRequestId(newRequestId()); setGrantEmail(''); setSelectedGrantStudent(null); setShowGrant(true); }} className="rounded-xl bg-amber-500 px-3 py-2 text-sm font-bold text-white"><Gift className="me-1 inline h-4 w-4" />{rtl ? 'منح' : 'Grant'}</button>}
             <button onClick={onClose} className="rounded-xl bg-slate-100 p-2 text-slate-600 dark:bg-zinc-800 dark:text-slate-300"><X className="h-5 w-5" /></button>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl p-4">
+        {notice && <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+            <span>{notice}</span>
+          </div>
+          <button onClick={() => setNotice('')} className="text-emerald-700 hover:text-emerald-900 dark:text-emerald-300"><X className="h-4 w-4" /></button>
+        </div>}
         {error && <div className="mb-4 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"><AlertTriangle className="h-4 w-4" />{error}</div>}
         <nav className="mb-5 flex gap-2 overflow-x-auto">
           {tabs.map(value => <button key={value} onClick={() => setTab(value)} className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-bold ${tab === value ? 'bg-slate-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-white text-slate-600 dark:bg-zinc-900 dark:text-slate-300'}`}>{tabLabel[value]}</button>)}
@@ -397,7 +425,11 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
               {historyRows.map(row => <article key={`${row.source}-${row.id}`} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div><p className="font-bold text-slate-900 dark:text-white">{row.studentName || row.studentEmail || row.studentId}</p><p className="text-xs text-slate-500">{row.studentEmail || row.studentId}</p></div>
-                  <div className="flex gap-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs dark:bg-zinc-800">{row.type}</span>{row.voidedBy && <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">VOID</span>}</div>
+                  <div className="flex gap-2">
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs dark:bg-zinc-800">{row.type}</span>
+                    {row.voidedBy && <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">VOID</span>}
+                    {row.cancelledBy && <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-bold text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{rtl ? 'ملغي' : 'CANCELLED'}</span>}
+                  </div>
                 </div>
                 <div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2 lg:grid-cols-4">
                   <span>{rtl ? 'الخطة' : 'Plan'}: {row.plan || '—'}</span><span>{rtl ? 'المبلغ' : 'Amount'}: {money(row.amount || 0)}</span>
@@ -405,7 +437,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
                   <span>{rtl ? 'الموظف' : 'Staff'}: {row.actor?.name || row.actor?.email || '—'}</span><span>{rtl ? 'السبب' : 'Reason'}: {row.reason || '—'}</span>
                   <span>{rtl ? 'التاريخ' : 'Date'}: {dateText(row.createdAt)}</span><span>{rtl ? 'الانتهاء' : 'Expiry'}: {dateText(row.endDate)}</span>
                 </div>
-                {master && row.source === 'private' && ['activation', 'grant'].includes(row.type) && !row.voidedBy && <button onClick={() => voidRow(row)} disabled={!!busy} className="mt-3 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 disabled:opacity-50 dark:bg-red-950/30 dark:text-red-300">{busy === row.id ? '…' : (rtl ? 'إبطال' : 'Void')}</button>}
+                {master && row.source === 'private' && ['activation', 'grant'].includes(row.type) && !row.voidedBy && !row.cancelledBy && <button onClick={() => voidRow(row)} disabled={!!busy} className="mt-3 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 disabled:opacity-50 dark:bg-red-950/30 dark:text-red-300">{busy === row.id ? '…' : (rtl ? 'إبطال' : 'Void')}</button>}
               </article>)}
             </div>
             {busy === 'history' && <Loader2 className="mx-auto mt-4 h-5 w-5 animate-spin" />}
@@ -495,7 +527,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
                       className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300"
                     >
                       <XCircle className="h-3.5 w-3.5" />
-                      {rtl ? 'إنهاء الاشتراك' : 'End subscription'}
+                      {rtl ? 'إلغاء الاشتراك' : 'Cancel subscription'}
                     </button>
                   </div>
                 </article>
@@ -525,12 +557,153 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
               <button disabled={!hasPaymentChannel(normalizedContact)} onClick={() => savePaymentContact(contact).catch(fail)} className="rounded-xl bg-sky-600 p-2 font-bold text-white disabled:opacity-50">{rtl ? 'حفظ' : 'Save'}</button>
             </div>
           </div>
-          <h2 className="font-bold">{rtl ? 'طلبات Super Qi المعلّقة' : 'Pending Super Qi requests'} ({pending.length})</h2>
-          {pending.map(sub => <article key={sub.id} className="rounded-2xl bg-white p-4 dark:bg-zinc-900">
-            <p className="font-bold">{sub.userName || sub.userEmail}</p><p className="text-xs text-slate-500">{sub.userEmail} · {sub.plan} · {money(sub.amount)}</p>
-            {sub.receiptUrl && <a href={sub.receiptUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm text-sky-600 underline">{rtl ? 'عرض الإيصال' : 'View receipt'}</a>}
-            <div className="mt-3 flex gap-2"><button onClick={() => approveSubscription(sub.id).catch(fail)} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white">{rtl ? 'موافقة' : 'Approve'}</button><button onClick={() => rejectSubscription(sub.id).catch(fail)} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">{rtl ? 'رفض' : 'Reject'}</button></div>
-          </article>)}
+          {/* Support Grant Requests */}
+          <div className="rounded-2xl border border-amber-200/70 bg-gradient-to-br from-amber-50/50 via-white to-amber-50/20 p-4 shadow-sm dark:border-amber-900/40 dark:from-amber-950/20 dark:via-zinc-900 dark:to-amber-950/10">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Gift className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                <h2 className="font-bold text-slate-800 dark:text-zinc-100">
+                  {rtl ? 'طلبات المنح المعلّقة من الدعم' : 'Pending Support Grant Requests'}
+                </h2>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                  {pendingGrants.length}
+                </span>
+              </div>
+            </div>
+
+            {pendingGrants.length === 0 ? (
+              <p className="py-2 text-center text-xs text-slate-400 dark:text-zinc-500">
+                {rtl ? 'لا توجد طلبات منح معلّقة حالياً' : 'No pending grant requests'}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {pendingGrants.map(sub => (
+                  <article key={sub.id} className="rounded-xl border border-amber-100 bg-white p-4 shadow-xs dark:border-zinc-800 dark:bg-zinc-800/90">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-bold text-slate-900 dark:text-zinc-100">{sub.userName || sub.userEmail}</p>
+                        <p className="text-xs text-slate-500 dark:text-zinc-400">{sub.userEmail}</p>
+                      </div>
+                      <span className="inline-flex items-center rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                        {PLAN_CONFIG[sub.plan as SubscriptionPlan]?.[rtl ? 'labelAr' : 'labelEn'] || sub.plan}
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 space-y-1.5 border-t border-slate-100 pt-2 text-xs dark:border-zinc-700/60">
+                      <div className="flex items-center gap-1.5 text-slate-600 dark:text-zinc-300">
+                        <span className="text-slate-400 dark:text-zinc-500">{rtl ? 'مقدم الطلب (الدعم):' : 'Requested by:'}</span>
+                        <span className="font-semibold">
+                          {(sub as any).requestedBy?.name || (sub as any).requestedBy?.email || (rtl ? 'موظف دعم' : 'Support')}
+                        </span>
+                        {(sub as any).requestedBy?.email && (sub as any).requestedBy?.name && (
+                          <span className="text-slate-400">({(sub as any).requestedBy?.email})</span>
+                        )}
+                      </div>
+                      {sub.notes && (
+                        <div className="rounded-lg bg-amber-50/70 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                          <span className="font-semibold">{rtl ? 'السبب / الملاحظة: ' : 'Reason: '}</span>
+                          {sub.notes}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        disabled={busy === sub.id}
+                        onClick={async () => {
+                          setBusy(sub.id); setError(''); setNotice('');
+                          try {
+                            await approveSubscription(sub.id);
+                            setNotice(rtl ? 'تمت الموافقة على طلب المنحة وتفعيل الاشتراك' : 'Grant request approved and activated');
+                          } catch (err) { fail(err); } finally { setBusy(''); }
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        {rtl ? 'موافقة وتفعيل' : 'Approve & Activate'}
+                      </button>
+                      <button
+                        disabled={busy === sub.id}
+                        onClick={async () => {
+                          if (!window.confirm(rtl ? 'هل أنت متأكد من رفض طلب المنحة؟' : 'Are you sure you want to reject this grant request?')) return;
+                          setBusy(sub.id); setError(''); setNotice('');
+                          try {
+                            await rejectSubscription(sub.id);
+                            setNotice(rtl ? 'تم رفض طلب المنحة' : 'Grant request rejected');
+                          } catch (err) { fail(err); } finally { setBusy(''); }
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50 dark:border-rose-900/40 dark:bg-rose-950/40 dark:text-rose-300"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        {rtl ? 'رفض' : 'Reject'}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Super Qi Requests */}
+          <div className="rounded-2xl bg-white p-4 dark:bg-zinc-900">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-5 w-5 text-sky-500" />
+                <h2 className="font-bold">{rtl ? 'طلبات Super Qi المعلّقة' : 'Pending Super Qi requests'}</h2>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700 dark:bg-zinc-800 dark:text-zinc-300">
+                  {pendingSuperKey.length}
+                </span>
+              </div>
+            </div>
+
+            {pendingSuperKey.length === 0 ? (
+              <p className="py-2 text-center text-xs text-slate-400 dark:text-zinc-500">
+                {rtl ? 'لا توجد طلبات Super Qi معلّقة حالياً' : 'No pending Super Qi requests'}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {pendingSuperKey.map(sub => (
+                  <article key={sub.id} className="rounded-xl border border-slate-100 p-4 dark:border-zinc-800">
+                    <p className="font-bold">{sub.userName || sub.userEmail}</p>
+                    <p className="text-xs text-slate-500">{sub.userEmail} · {sub.plan} · {money(sub.amount)}</p>
+                    {sub.receiptUrl && (
+                      <a href={sub.receiptUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm text-sky-600 underline">
+                        {rtl ? 'عرض الإيصال' : 'View receipt'}
+                      </a>
+                    )}
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        disabled={busy === sub.id}
+                        onClick={async () => {
+                          setBusy(sub.id); setError(''); setNotice('');
+                          try {
+                            await approveSubscription(sub.id);
+                            setNotice(rtl ? 'تمت الموافقة على الدفع وتفعيل الاشتراك' : 'Payment approved and activated');
+                          } catch (err) { fail(err); } finally { setBusy(''); }
+                        }}
+                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {rtl ? 'موافقة' : 'Approve'}
+                      </button>
+                      <button
+                        disabled={busy === sub.id}
+                        onClick={async () => {
+                          setBusy(sub.id); setError(''); setNotice('');
+                          try {
+                            await rejectSubscription(sub.id);
+                            setNotice(rtl ? 'تم رفض الطلب' : 'Request rejected');
+                          } catch (err) { fail(err); } finally { setBusy(''); }
+                        }}
+                        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {rtl ? 'رفض' : 'Reject'}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
           <details className="rounded-2xl bg-white p-4 dark:bg-zinc-900"><summary className="cursor-pointer font-bold">{rtl ? 'إجراءات السجل القديمة' : 'Legacy entitlement actions'}</summary>
             <div className="mt-3 space-y-2">{legacy.filter(item => !needsManualApproval(item)).slice(0, 50).map(sub => <div key={sub.id} className="flex flex-wrap items-center justify-between gap-2 border-t py-2 text-sm dark:border-zinc-800"><span>{sub.userEmail} · {sub.plan} · {sub.status}</span><span className="flex gap-2">{sub.auditedRecordId ? <span className="text-xs text-slate-500">{rtl ? 'استخدم السجل ← إبطال' : 'Use History → Void'}</span> : sub.status === 'active' && <><button onClick={() => { const days = Number(window.prompt('Days', '30')); if (days) extendSubscription(sub.id, days).catch(fail); }} className="text-sky-600">{rtl ? 'تمديد' : 'Extend'}</button><button onClick={() => cancelSubscription(sub.id).catch(fail)} className="text-red-600">{rtl ? 'إلغاء' : 'Cancel'}</button></>}</span></div>)}</div>
           </details>
@@ -684,7 +857,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300"
                   >
                     <XCircle className="h-3.5 w-3.5" />
-                    {rtl ? 'إنهاء الاشتراك' : 'End subscription'}
+                    {rtl ? 'إلغاء الاشتراك' : 'Cancel subscription'}
                   </button>
                 </div>
               )}
@@ -695,20 +868,78 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
         </section>}
       </main>
 
-      {showActivation && <Modal title={rtl ? 'تفعيل اشتراك مدفوع' : 'Manual paid activation'} onClose={() => { setShowActivation(false); setActivationRequestId(''); }}>
-        <input value={activationEmail} onChange={e => setActivationEmail(e.target.value)} placeholder={rtl ? 'بريد الطالب' : 'Student email'} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800" />
-        <div className="grid grid-cols-2 gap-2"><select value={activationPlan} onChange={e => setActivationPlan(e.target.value as any)} className="rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"><option value="monthly">Monthly</option><option value="seasonal">Seasonal</option><option value="semi_annual">Semi-annual</option></select><select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as ManualPaymentMethod)} className="rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"><option value="cash">Cash</option><option value="zaincash">ZainCash</option><option value="superkey">Super Qi</option><option value="other">Other</option></select></div>
-        <input value={activationNote} maxLength={200} onChange={e => setActivationNote(e.target.value)} placeholder={rtl ? 'ملاحظة اختيارية' : 'Optional note'} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800" />
+      {showActivation && <Modal title={rtl ? 'تفعيل اشتراك مدفوع' : 'Manual paid activation'} onClose={() => { setShowActivation(false); setActivationRequestId(''); setSelectedActivationStudent(null); }}>
+        <StudentSearchDropdown
+          value={activationEmail}
+          selectedStudent={selectedActivationStudent}
+          onSelect={(student, rawEmail) => {
+            setSelectedActivationStudent(student);
+            setActivationEmail(rawEmail ?? student?.email ?? '');
+          }}
+          rtl={rtl}
+          placeholder={rtl ? 'ابحث باسم الطالب أو البريد...' : 'Search by student name or email...'}
+          disabled={busy === 'activate'}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <select value={activationPlan} onChange={e => setActivationPlan(e.target.value as any)} className="rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800">
+            {paymentMethod === 'grant' && <option value="ten_days">{rtl ? '10 أيام (10 Days)' : '10 Days'}</option>}
+            <option value="monthly">{rtl ? 'شهري (Monthly)' : 'Monthly'}</option>
+            <option value="seasonal">{rtl ? 'فصلي (Seasonal)' : 'Seasonal'}</option>
+            <option value="semi_annual">{rtl ? 'نصف سنوي (Semi-annual)' : 'Semi-annual'}</option>
+            {paymentMethod === 'grant' && <option value="annual">{rtl ? 'سنوي (Annual)' : 'Annual'}</option>}
+          </select>
+          <select value={paymentMethod} onChange={e => {
+            const nextMethod = e.target.value as ManualPaymentMethod;
+            setPaymentMethod(nextMethod);
+            if (nextMethod === 'grant') {
+              setActivationPlan('ten_days');
+            } else if (activationPlan === 'ten_days' || activationPlan === 'annual') {
+              setActivationPlan('monthly');
+            }
+          }} className="rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800">
+            <option value="cash">{rtl ? 'نقداً (Cash)' : 'Cash'}</option>
+            <option value="zaincash">ZainCash</option>
+            <option value="superkey">Super Qi</option>
+            <option value="grant">{rtl ? 'منحة (بانتظار الموافقة)' : 'Grant (Pending Approval)'}</option>
+            <option value="other">{rtl ? 'أخرى (Other)' : 'Other'}</option>
+          </select>
+        </div>
+        {paymentMethod === 'grant' && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+            <div className="flex items-center gap-1.5 font-bold mb-1">
+              <Gift className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span>{rtl ? 'طلب منحة عبر الدعم' : 'Support Grant Request'}</span>
+            </div>
+            <p>{rtl ? 'سيتم إرسال هذا الطلب إلى الماستر أدمن للموافقة عليه قبل التفعيل (القيمة: صفر).' : 'This request will be submitted to the Master Admin for review & approval before activation (Amount: 0).'}</p>
+          </div>
+        )}
+        <input value={activationNote} maxLength={200} onChange={e => setActivationNote(e.target.value)} placeholder={paymentMethod === 'grant' ? (rtl ? 'سبب طلب المنحة (اختياري)' : 'Grant reason (optional)') : (rtl ? 'ملاحظة اختيارية' : 'Optional note')} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800" />
         {previewing && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
-        {preview && <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800"><p className="font-bold">{preview.studentName}</p><p>{rtl ? 'الحالة الحالية' : 'Current'}: {preview.isSubscribed ? `${preview.currentPlan} · ${dateText(preview.currentExpiry)}` : (rtl ? 'غير مشترك' : 'Not subscribed')}</p><p>{rtl ? 'السعر' : 'Price'}: {money(preview.price)}</p><p>{rtl ? 'الانتهاء الجديد' : 'New expiry'}: {dateText(preview.newExpiry)}</p>{preview.activeWarning && <p className="mt-1 font-bold text-amber-600">{rtl ? 'سيتم تمديد الوقت فوق الاشتراك الفعال.' : 'Time will stack onto the active entitlement.'}</p>}</div>}
-        <button onClick={activate} disabled={!activationRequestId || !preview || preview.studentEmail !== activationEmail.trim().toLowerCase() || busy === 'activate'} className="w-full rounded-xl bg-sky-600 p-3 font-bold text-white disabled:opacity-40">{busy === 'activate' ? '…' : (rtl ? 'تأكيد التفعيل' : 'Confirm activation')}</button>
+        {preview && <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800"><p className="font-bold">{preview.studentName}</p><p>{rtl ? 'الحالة الحالية' : 'Current'}: {preview.isSubscribed ? `${preview.currentPlan} · ${dateText(preview.currentExpiry)}` : (rtl ? 'غير مشترك' : 'Not subscribed')}</p><p>{rtl ? 'السعر' : 'Price'}: {paymentMethod === 'grant' ? (rtl ? '0 د.ع (منحة)' : '0 IQD (Grant)') : money(preview.price)}</p><p>{rtl ? 'الانتهاء الجديد' : 'New expiry'}: {dateText(preview.newExpiry)}</p>{preview.activeWarning && <p className="mt-1 font-bold text-amber-600">{rtl ? 'سيتم تمديد الوقت فوق الاشتراك الفعال.' : 'Time will stack onto the active entitlement.'}</p>}</div>}
+        <button onClick={activate} disabled={!activationRequestId || !preview || preview.studentEmail !== activationEmail.trim().toLowerCase() || busy === 'activate'} className={`w-full rounded-xl p-3 font-bold text-white disabled:opacity-40 transition-colors ${paymentMethod === 'grant' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-sky-600 hover:bg-sky-700'}`}>{busy === 'activate' ? '…' : (paymentMethod === 'grant' ? (rtl ? 'إرسال طلب المنحة' : 'Submit grant request') : (rtl ? 'تأكيد التفعيل' : 'Confirm activation'))}</button>
       </Modal>}
 
-      {showGrant && <Modal title={rtl ? 'منح اشتراك مجاني' : 'Grant complimentary subscription'} onClose={() => { setShowGrant(false); setGrantRequestId(''); }}>
-        <input value={grantEmail} onChange={e => setGrantEmail(e.target.value)} placeholder={rtl ? 'بريد الطالب' : 'Student email'} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800" />
-        <select value={grantPlan} onChange={e => setGrantPlan(e.target.value as SubscriptionPlan)} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"><option value="monthly">Monthly</option><option value="seasonal">Seasonal</option><option value="semi_annual">Semi-annual</option><option value="annual">Annual (grant only)</option></select>
+      {showGrant && <Modal title={rtl ? 'منح اشتراك مجاني' : 'Grant complimentary subscription'} onClose={() => { setShowGrant(false); setGrantRequestId(''); setSelectedGrantStudent(null); }}>
+        <StudentSearchDropdown
+          value={grantEmail}
+          selectedStudent={selectedGrantStudent}
+          onSelect={(student, rawEmail) => {
+            setSelectedGrantStudent(student);
+            setGrantEmail(rawEmail ?? student?.email ?? '');
+          }}
+          rtl={rtl}
+          placeholder={rtl ? 'ابحث باسم الطالب أو البريد...' : 'Search by student name or email...'}
+          disabled={busy === 'grant'}
+        />
+        <select value={grantPlan} onChange={e => setGrantPlan(e.target.value as SubscriptionPlan)} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800">
+          <option value="ten_days">{rtl ? '10 أيام (10 Days)' : '10 Days'}</option>
+          <option value="monthly">Monthly</option>
+          <option value="seasonal">Seasonal</option>
+          <option value="semi_annual">Semi-annual</option>
+          <option value="annual">Annual (grant only)</option>
+        </select>
         <input value={grantReason} maxLength={200} onChange={e => setGrantReason(e.target.value)} placeholder={rtl ? 'السبب (اختياري)' : 'Reason (optional)'} className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800" />
-        <p className="text-xs text-slate-500">{rtl ? 'القيمة المسجلة: صفر. الخطة السنوية متاحة هنا فقط.' : 'Recorded amount: 0. Annual is available only in this grant flow.'}</p>
+        <p className="text-xs text-slate-500">{rtl ? 'القيمة المسجلة: صفر. الخطة السنوية و10 أيام متاحة في المنح.' : 'Recorded amount: 0. Annual and 10 days are available in grant flows.'}</p>
         <button onClick={grant} disabled={!grantRequestId || !grantEmail.trim() || busy === 'grant'} className="w-full rounded-xl bg-amber-500 p-3 font-bold text-white disabled:opacity-40">{busy === 'grant' ? '…' : (rtl ? 'تأكيد المنح' : 'Confirm grant')}</button>
       </Modal>}
 
@@ -754,7 +985,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
       {terminatingTarget && (
         <Modal
-          title={rtl ? 'إنهاء اشتراك الطالب' : 'End student subscription'}
+          title={rtl ? 'إلغاء اشتراك الطالب' : 'Cancel student subscription'}
           onClose={() => setTerminatingTarget(null)}
         >
           <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800">
@@ -764,58 +995,24 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
               {rtl ? 'تاريخ الانتهاء الحالي' : 'Current expiry'}: <span className="font-semibold">{dateText(terminatingTarget.currentExpiry)}</span>
             </p>
           </div>
-          <div className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-zinc-800">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="term_mode"
-                checked={terminateImmediate}
-                onChange={() => setTerminateImmediate(true)}
-                className="h-4 w-4 text-rose-600"
-              />
-              <span className="text-sm font-bold text-rose-600 dark:text-rose-400">
-                {rtl ? 'إنهاء فوري الآن (تعطيل الوصول فوراً)' : 'End immediately now (revoke access now)'}
-              </span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="term_mode"
-                checked={!terminateImmediate}
-                onChange={() => setTerminateImmediate(false)}
-                className="h-4 w-4 text-amber-600"
-              />
-              <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                {rtl ? 'تحديد تاريخ انتهاء مبكر' : 'Set custom ending date'}
-              </span>
-            </label>
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-relaxed text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300">
+            {rtl
+              ? 'سيتم إلغاء الاشتراك فوراً، وتعطيل وصول الطالب، وخصم قيمة الاشتراك من التقارير المالية (الاشتراكات الممنوحة مجاناً لا تتضمن أي خصم لأن قيمتها 0).'
+              : 'The subscription will be cancelled immediately, student access revoked, and its value deducted from financial reports (complimentary grants incur 0 deduction).'}
           </div>
-          {!terminateImmediate && (
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-400">
-                {rtl ? 'تاريخ الانتهاء المحدد' : 'Ending date'}
-              </label>
-              <input
-                type="date"
-                value={terminateCustomDate}
-                onChange={e => setTerminateCustomDate(e.target.value)}
-                className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
-              />
-            </div>
-          )}
           <input
             value={terminateReason}
             maxLength={200}
             onChange={e => setTerminateReason(e.target.value)}
-            placeholder={rtl ? 'سبب الإنهاء (اختياري)' : 'Termination reason (optional)'}
-            className="w-full rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+            placeholder={rtl ? 'سبب الإلغاء (اختياري)' : 'Cancellation reason (optional)'}
+            className="w-full rounded-xl border p-3 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           />
           <button
             onClick={handleTerminate}
-            disabled={(!terminateImmediate && !terminateCustomDate) || busy === 'terminate'}
+            disabled={busy === 'terminate'}
             className="w-full rounded-xl bg-rose-600 p-3 font-bold text-white hover:bg-rose-700 disabled:opacity-40"
           >
-            {busy === 'terminate' ? '…' : (rtl ? 'تأكيد إنهاء الاشتراك' : 'Confirm termination')}
+            {busy === 'terminate' ? '…' : (rtl ? 'تأكيد إلغاء الاشتراك' : 'Confirm cancellation')}
           </button>
         </Modal>
       )}

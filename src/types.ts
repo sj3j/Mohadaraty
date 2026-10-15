@@ -63,7 +63,7 @@ export interface Subject {
 }
 
 // Subscription types
-export type SubscriptionPlan = 'monthly' | 'seasonal' | 'semi_annual' | 'annual';
+export type SubscriptionPlan = 'ten_days' | 'monthly' | 'seasonal' | 'semi_annual' | 'annual';
 export type SubscriptionStatus = 'active' | 'inactive' | 'pending' | 'cancelled';
 /** `apple_iap` rows are written ONLY by the server, from RevenueCat
  *  (shared/iap.ts). They carry amount 0 - Apple settles in the buyer's own
@@ -109,6 +109,7 @@ export interface Subscription {
  *  together: the server one is what the gateway amount is validated against, so
  *  changing only this makes every purchase fail as an amount_mismatch. */
 export const PLAN_CONFIG: Record<SubscriptionPlan, { days: number; price: number; labelAr: string; labelEn: string }> = {
+  ten_days: { days: 10, price: 0, labelAr: '10 أيام', labelEn: '10 Days' },
   monthly: { days: 30, price: 2000, labelAr: 'شهري', labelEn: 'Monthly' },
   seasonal: { days: 90, price: 5000, labelAr: 'فصلي', labelEn: 'Seasonal' },
   semi_annual: { days: 180, price: 9000, labelAr: 'نصف سنوي', labelEn: 'Semi-Annual' },
@@ -271,6 +272,8 @@ export interface UserProfile {
     /** Parsing and publishing the stage's weekly timetable. Per-stage content,
      *  so a representative holds it by default like the four above. */
     manageTimetable?: boolean;
+    /** Creating and reconciling attendance sessions for the managed stage. */
+    manageAttendance?: boolean;
     manageStudents: boolean;
     manageGrades?: boolean;
     manageAdmins?: boolean;

@@ -32,6 +32,7 @@ import type * as admin from 'firebase-admin';
  * hint, both of which read as arithmetic noise rather than a discount.
  */
 export const PLAN_CONFIG: Record<string, { days: number; price: number }> = {
+  ten_days: { days: 10, price: 0 },
   monthly: { days: 30, price: 2000 },
   seasonal: { days: 90, price: 5000 },
   semi_annual: { days: 180, price: 9000 },

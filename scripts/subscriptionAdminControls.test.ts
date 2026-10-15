@@ -143,20 +143,52 @@ const mockAdmin = {
   }),
 };
 
+const activeSubs: any[] = [
+  {
+    ref: { _col: 'subscriptions', _id: 'sub_active_1' },
+    id: 'sub_active_1',
+    data: () => ({
+      userId: 'student@test.dev',
+      status: 'active',
+      auditedRecordId: 'act_req_999',
+      plan: 'monthly',
+      amount: 15000,
+    }),
+  },
+];
+
+writtenRecords['act_req_999'] = {
+  type: 'activation',
+  source: 'manual',
+  plan: 'monthly',
+  amount: 15000,
+  actorUid: 'support_staff_1',
+};
+
+const supportBalances: Record<string, any> = {
+  support_staff_1: {
+    outstanding: 15000,
+    totalCredited: 15000,
+    totalReversed: 0,
+    commissionRate: 0,
+  },
+};
+const supportLedger: Record<string, any> = {};
+
 const firestoreFn = () => ({
   collection: (col: string) => ({
     doc: (id: string) => ({
       _col: col,
       _id: id,
       get: async () => ({
-        exists: col === 'users' && id === 'student@test.dev',
+        exists: (col === 'users' && id === 'student@test.dev') || (col === 'supportBalances' && !!supportBalances[id]),
         id,
-        data: () => col === 'users' ? mockUserDoc : undefined,
+        data: () => col === 'users' ? mockUserDoc : col === 'supportBalances' ? supportBalances[id] : undefined,
       }),
     }),
     where: () => ({
       limit: () => ({ get: async () => ({ empty: true, docs: [] }) }),
-      where: () => ({ _col: 'subscriptions', get: async () => ({ docs: [] }) }),
+      where: () => ({ _col: 'subscriptions', get: async () => ({ docs: activeSubs }) }),
     }),
   }),
   runTransaction: async (updateFn: any) => {
@@ -165,15 +197,25 @@ const firestoreFn = () => ({
         if (ref._col === 'subscriptionRecords') return { exists: !!writtenRecords[ref._id], data: () => writtenRecords[ref._id] };
         if (ref._col === 'referenceCodes') return { exists: !!refCodes[ref._id] };
         if (ref._col === 'users') return { exists: true, id: ref._id, data: () => mockUserDoc };
-        if (ref._col === 'subscriptions') return { docs: [] };
+        if (ref._col === 'subscriptions') return { docs: activeSubs };
+        if (ref._col === 'supportBalances') return { exists: !!supportBalances[ref._id], data: () => supportBalances[ref._id] };
         return { exists: false };
       },
       create: (ref: any, data: any) => {
         if (ref._col === 'subscriptionRecords') writtenRecords[ref._id] = data;
         if (ref._col === 'referenceCodes') refCodes[ref._id] = data;
+        if (ref._col === 'supportLedger') supportLedger[ref._id] = data;
       },
       update: (ref: any, data: any) => {
         if (ref._col === 'users') Object.assign(userUpdates, data);
+        if (ref._col === 'subscriptionRecords' && writtenRecords[ref._id]) Object.assign(writtenRecords[ref._id], data);
+        if (ref._col === 'subscriptions') {
+          const sub = activeSubs.find(s => s.id === ref._id);
+          if (sub) Object.assign(sub.data(), data);
+        }
+      },
+      set: (ref: any, data: any) => {
+        if (ref._col === 'supportBalances') supportBalances[ref._id] = { ...(supportBalances[ref._id] || {}), ...data };
       },
     };
     return updateFn(tx);
@@ -212,8 +254,12 @@ check('terminateSubscription returns referenceCode', /^TRM-[A-Z0-9]{6}$/.test(te
 check('terminateSubscription sets isSubscribed to false', userUpdates.isSubscribed === false);
 check('terminateSubscription records audit log', writtenRecords['trm_req_12345678']?.type === 'termination');
 check('terminateSubscription records immediate flag', writtenRecords['trm_req_12345678']?.immediate === true);
+check('terminateSubscription marks auditedRecord with cancelledBy', !!writtenRecords['act_req_999']?.cancelledBy);
+check('terminateSubscription reverses Support balance', supportBalances['support_staff_1']?.outstanding === 0);
+check('terminateSubscription updates Support totalReversed', supportBalances['support_staff_1']?.totalReversed === 15000);
+check('terminateSubscription creates supportLedger reversal', supportLedger['trm_req_12345678']?.type === 'void_reversal');
 
-console.log('\n--- 5. getReports excludes grant subscriptions ---');
+console.log('\n--- 5. getReports excludes grant and cancelled subscriptions ---');
 const reportsFirestoreFn = () => ({
   collection: (col: string) => ({
     where: () => ({
@@ -225,19 +271,29 @@ const reportsFirestoreFn = () => ({
               docs: [
                 // Paid monthly activation
                 { data: () => ({ type: 'activation', source: 'manual', plan: 'monthly', amount: 1000, studentEmail: 'paid1@test.dev' }) },
+                // Cancelled paid monthly activation (should be deducted/excluded)
+                { data: () => ({ type: 'activation', source: 'manual', plan: 'monthly', amount: 2500, studentEmail: 'cancelled_paid@test.dev', cancelledBy: { recordId: 'trm_req_99' } }) },
+                // Cancelled paid monthly activation without cancelledBy on record, but operational sub has status: 'cancelled'
+                { data: () => ({ type: 'activation', source: 'manual', plan: 'monthly', amount: 3000, studentEmail: 'unmarked_cancelled@test.dev', entitlementId: 'op_cancelled_sub' }) },
                 // Complimentary grants (should be excluded)
                 { data: () => ({ type: 'grant', source: 'grant', plan: 'annual', amount: 0, studentEmail: 'grant1@test.dev' }) },
                 { data: () => ({ type: 'grant', source: 'grant', plan: 'monthly', amount: 0, studentEmail: 'grant2@test.dev' }) },
+                // Cancelled grant (0 amount, should not cause negative deduction)
+                { data: () => ({ type: 'grant', source: 'grant', plan: 'monthly', amount: 0, studentEmail: 'grant_cancelled@test.dev', cancelledBy: { recordId: 'trm_req_100' } }) },
               ],
             };
           }
           if (col === 'subscriptions') {
             return {
               docs: [
+                // Operational subscription that was cancelled
+                { id: 'op_cancelled_sub', data: () => ({ status: 'cancelled', auditedRecordId: 'op_cancelled_sub', plan: 'monthly', amount: 3000, userEmail: 'unmarked_cancelled@test.dev' }) },
                 // Legacy admin grant (should be excluded)
                 { data: () => ({ status: 'active', paymentMethod: 'admin_grant', plan: 'monthly', amount: 0, userEmail: 'grant3@test.dev' }) },
                 // Legacy paid annual subscription
                 { data: () => ({ status: 'active', paymentMethod: 'zaincash', plan: 'annual', amount: 12000, userEmail: 'paid2@test.dev' }) },
+                // Legacy cancelled subscription (should be excluded)
+                { data: () => ({ status: 'cancelled', paymentMethod: 'zaincash', plan: 'annual', amount: 12000, userEmail: 'cancelled_legacy@test.dev' }) },
               ],
             };
           }
@@ -255,12 +311,13 @@ const reportsAdmin = {
 };
 
 const reportsResult = await getReports(reportsAdmin as any, masterActor, 'this_year');
-check('Total revenue is 13,000 (1000 + 12000)', reportsResult.revenue.total === 13000);
-check('Monthly paid count is 1 (grants excluded)', reportsResult.revenue.planBreakdown.monthly.count === 1);
-check('Monthly paid revenue is 1,000', reportsResult.revenue.planBreakdown.monthly.revenue === 1000);
-check('Monthly unique subscribers is 1 (grants excluded)', reportsResult.revenue.planBreakdown.monthly.uniqueSubscribers === 1);
-check('Annual paid count is 1 (grant excluded)', reportsResult.revenue.planBreakdown.annual.count === 1);
-check('Annual paid revenue is 12,000', reportsResult.revenue.planBreakdown.annual.revenue === 12000);
+console.log('DEBUG reportsResult:', JSON.stringify(reportsResult.revenue));
+check('Total revenue is 13,000 (1000 + 12000; cancelled 2500 and 3000 deducted)', reportsResult.revenue.total === 13000);
+check('Monthly paid count is 1 (grants and cancelled activations excluded)', reportsResult.revenue.planBreakdown.monthly.count === 1);
+check('Monthly paid revenue is 1,000 (cancelled 2500 and 3000 deducted)', reportsResult.revenue.planBreakdown.monthly.revenue === 1000);
+check('Monthly unique subscribers is 1 (grants and cancelled excluded)', reportsResult.revenue.planBreakdown.monthly.uniqueSubscribers === 1);
+check('Annual paid count is 1 (grant and cancelled legacy excluded)', reportsResult.revenue.planBreakdown.annual.count === 1);
+check('Annual paid revenue is 12,000 (cancelled legacy excluded)', reportsResult.revenue.planBreakdown.annual.revenue === 12000);
 check('Annual unique subscribers is 1', reportsResult.revenue.planBreakdown.annual.uniqueSubscribers === 1);
 check('Yearly revenue is 13,000', reportsResult.yearlyRevenue === 13000);
 

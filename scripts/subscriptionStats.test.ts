@@ -191,8 +191,8 @@ check('every longer plan beats the monthly rate',
 
 // bestValue is pinned to annual in both purchase surfaces; this is that claim.
 const perMonthOf = (p: SubscriptionPlan) => PLAN_CONFIG[p].price / (PLAN_CONFIG[p].days / 30);
-check('annual is the cheapest per month',
-  PLANS.every(p => perMonthOf('annual') <= perMonthOf(p)));
+check('annual is the cheapest per month among paid plans',
+  PLANS.filter(p => PLAN_CONFIG[p].price > 0).every(p => perMonthOf('annual') <= perMonthOf(p)));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

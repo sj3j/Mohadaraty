@@ -101,6 +101,10 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
       setLectureNumber(lectureToEdit.number ? String(lectureToEdit.number) : '');
       setCategory(lectureToEdit.category);
       setType(lectureToEdit.type);
+      setSubjectId(lectureToEdit.subjectId || '');
+      if (lectureToEdit.courseId) {
+        setCourseFilter(lectureToEdit.courseId);
+      }
       setDescription(lectureToEdit.description || '');
       setYoutubeUrl(lectureToEdit.youtubeUrl || '');
       setVersion(lectureToEdit.version || 'original');
@@ -148,6 +152,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
     setTitle(c.title);
     setLectureNumber(c.lectureNumber);
     setCategory(c.category);
+    if (c.courseFilter) setCourseFilter(c.courseFilter);
     setSubjectId(c.subjectId || '');
     setType(c.type);
     setDescription(c.description);
@@ -164,6 +169,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
       title,
       lectureNumber,
       category,
+      courseFilter,
       subjectId,
       type,
       description,
@@ -205,25 +211,29 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
         const cleanTitle = nameWithoutExt.replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim();
         return {
           title: cleanTitle,
-          lectureNumber: '',
+          lectureNumber: lectureNumber || '',
           category: category,
+          courseFilter: courseFilter,
+          subjectId: subjectId,
           type: type,
-          description: '',
-          youtubeUrl: '',
-          version: 'original',
-          isWeekly: false
+          description: description || '',
+          youtubeUrl: youtubeUrl || '',
+          version: version,
+          translationOf: translationOf || '',
+          isWeekly: isWeekly
         };
       });
       
-      const updatedConfigs = [...currentConfigs, ...newConfigs];
+      const isBatchMode = !lectureToEdit && selectedFiles.length > 1;
+      const updatedFiles = (files.length > 0 && isBatchMode) ? [...files, ...validFiles] : validFiles;
+      const updatedConfigs = (files.length > 0 && isBatchMode) ? [...currentConfigs, ...newConfigs] : newConfigs;
       
-      setFiles(prev => [...prev, ...validFiles]);
+      setFiles(updatedFiles);
       setFileConfigs(updatedConfigs);
+      setCurrentFileIndex(0);
       setError(null);
 
-      if (files.length === 0) {
-         loadConfig(0, updatedConfigs);
-      }
+      loadConfig(0, updatedConfigs);
     }
   };
 
@@ -261,12 +271,40 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
     setUploadProgress(null);
     setShowSuccess(false);
     setError(null);
+    setSubjectId('');
+    setCourseFilter(activeCourseId);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!auth.currentUser) return;
-    if (!lectureToEdit && files.length === 0 && !youtubeUrl) return;
+    if (!lectureToEdit && files.length === 0 && !youtubeUrl) {
+      setError(isRtl ? 'يرجى اختيار ملف PDF أو رابط يوتيوب' : 'Please select a PDF file or YouTube URL');
+      return;
+    }
+
+    if (!title.trim() && (lectureToEdit || files.length <= 1)) {
+      setError(isRtl ? 'يرجى إدخال عنوان المحاضرة' : 'Please enter the lecture title');
+      return;
+    }
+
+    if (hasCurriculum) {
+      if (lectureToEdit || files.length <= 1) {
+        if (!subjectId) {
+          setError(isRtl ? 'يرجى اختيار المادة' : 'Please select a subject');
+          return;
+        }
+      } else {
+        const activeConfigs = saveCurrentConfig(fileConfigs);
+        const missingSubIdx = activeConfigs.findIndex((c: any) => !c.subjectId);
+        if (missingSubIdx !== -1) {
+          setCurrentFileIndex(missingSubIdx);
+          loadConfig(missingSubIdx, activeConfigs);
+          setError(isRtl ? `يرجى اختيار المادة للملف ${missingSubIdx + 1}` : `Please select a subject for file ${missingSubIdx + 1}`);
+          return;
+        }
+      }
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -605,8 +643,13 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
                       <select
                         required
                         value={subjectId}
-                        onChange={(e) => setSubjectId(e.target.value)}
-                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-stone-100 rounded-xl focus:ring-2 focus:ring-sky-500 dark:focus:ring-sky-500 outline-none transition-all"
+                        onChange={(e) => {
+                          setSubjectId(e.target.value);
+                          if (error) setError(null);
+                        }}
+                        className={`w-full px-4 py-2.5 bg-slate-50 dark:bg-zinc-800 border ${
+                          error && !subjectId ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-zinc-700'
+                        } text-slate-900 dark:text-stone-100 rounded-xl focus:ring-2 focus:ring-sky-500 dark:focus:ring-sky-500 outline-none transition-all`}
                       >
                         <option value="">{isRtl ? 'اختر المادة' : 'Select subject'}</option>
                         {courseSubjects.map(sub => (
@@ -807,9 +850,8 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
                     type="button"
                     onClick={(e) => {
                        // Force saving the current config state before submission
-                       if (files.length > 1) {
-                         setFileConfigs(saveCurrentConfig(fileConfigs));
-                       }
+                       const updated = saveCurrentConfig(fileConfigs);
+                       setFileConfigs(updated);
                        handleSubmit(e);
                     }}
                     className="w-full py-3.5 bg-sky-600 dark:bg-sky-500 text-white dark:text-zinc-900 rounded-xl font-bold hover:bg-sky-700 dark:hover:bg-sky-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-sky-200 dark:shadow-none"

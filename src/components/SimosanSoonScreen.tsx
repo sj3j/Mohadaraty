@@ -47,7 +47,7 @@ export default function SimosanSoonScreen({ lang, onSelectService }: SimosanSoon
   }, []);
 
   const handleCardClick = (service: ServiceCardConfig) => {
-    if (onSelectService) {
+    if (service.id === 'attendance' && onSelectService) {
       onSelectService(service.id);
       return;
     }
@@ -100,7 +100,7 @@ export default function SimosanSoonScreen({ lang, onSelectService }: SimosanSoon
       subtitle: isRtl
         ? 'سجل الحضور والغياب والإحصاءات'
         : 'Attendance logs & check-in analytics',
-      tag: isRtl ? 'قريباً' : 'Soon',
+      tag: isRtl ? 'متاح' : 'Available',
       tileBg: 'bg-emerald-100 dark:bg-emerald-900/30',
       tagColor: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-100 dark:border-emerald-900/40',
       renderIcon: () => (

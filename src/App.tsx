@@ -42,6 +42,7 @@ import WeeklyListScreen from './components/WeeklyListScreen';
 import ProfileScreen from './components/ProfileScreen';
 import RecordsScreen from './components/RecordsScreen';
 import SimosanSoonScreen from './components/SimosanSoonScreen';
+import SimosanPage from './components/simosan/SimosanPage';
 import SubjectBrowser from './components/SubjectBrowser';
 import HomeScreen from './components/HomeScreen';
 import LoginScreen from './components/LoginScreen';
@@ -66,6 +67,7 @@ import { usePushNotifications } from './hooks/usePushNotifications';
 import { type UserFile, getUserFileBlob } from './lib/localDb';
 import { syncPendingSubmissions } from './services/mcqAnswerService';
 import { apiUrl } from './lib/apiBase';
+import { startAttendanceSync } from './services/attendanceService';
 
 type SortField = 'title' | 'date' | 'number';
 type SortOrder = 'asc' | 'desc';
@@ -152,6 +154,16 @@ export default function App() {
   const [sortBy, setSortBy] = useState<SortField>('number');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
   const [currentTab, setCurrentTab] = useState<Tab>('home');
+  const [activeSimosanService, setActiveSimosanService] = useState<'hub' | 'attendance'>('hub');
+
+  useEffect(() => {
+    if (currentTab !== 'simosan') setActiveSimosanService('hub');
+  }, [currentTab]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    return startAttendanceSync(user.uid);
+  }, [user?.uid]);
   const [showUpload, setShowUpload] = useState(false);
   const [lectureToEdit, setLectureToEdit] = useState<Lecture | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1114,7 +1126,11 @@ export default function App() {
         <AnnouncementsScreen user={user} lang={lang} lectures={lectures} onOpenMCQ={handleOpenMCQ} onOpenReader={handleOpenReader} onBack={() => setCurrentTab('home')} />
       )}
       {currentTab === 'simosan' && (
-        <SimosanSoonScreen lang={lang} />
+        activeSimosanService === 'attendance'
+          ? <SimosanPage user={user} lang={lang} stageId={effectiveStageId || user.stageId || ''} onBack={() => setActiveSimosanService('hub')} />
+          : <SimosanSoonScreen lang={lang} onSelectService={service => {
+              if (service === 'attendance') setActiveSimosanService('attendance');
+            }} />
       )}
       {currentTab === 'subscription' && (
         <SubscriptionScreen user={user} lang={lang} />

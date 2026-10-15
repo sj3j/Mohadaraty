@@ -35,9 +35,10 @@ for (const capability of SUBSCRIPTION_MASTER_CAPABILITIES) {
 check('legacy manageSubscriptions grants no activation', !hasStaffCapability({ role: 'support', permissions: { manageSubscriptions: true } }, 'canActivate'));
 
 console.log('\n--- enums and plans ---');
-check('manual methods exact', canonicalJson(MANUAL_PAYMENT_METHODS) === canonicalJson(['cash', 'zaincash', 'superkey', 'other']));
+check('manual methods exact', canonicalJson(MANUAL_PAYMENT_METHODS) === canonicalJson(['cash', 'zaincash', 'superkey', 'grant', 'other']));
 check('annual excluded from paid manual', !PAID_MANUAL_PLANS.includes('annual' as any));
 check('annual included in grants', GRANT_PLANS.includes('annual'));
+check('ten_days included in grants', GRANT_PLANS.includes('ten_days'));
 
 console.log('\n--- expiry and Baghdad ranges ---');
 const now = new Date('2026-10-12T09:00:00.000Z');

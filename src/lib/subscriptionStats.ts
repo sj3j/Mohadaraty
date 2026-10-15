@@ -64,8 +64,8 @@ const millis = (value: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const PLANS: readonly SubscriptionPlan[] = ['monthly', 'seasonal', 'semi_annual', 'annual'];
-const METHODS: readonly PaymentMethod[] = ['zaincash', 'superkey', 'admin_grant', 'apple_iap'];
+const PLANS: readonly SubscriptionPlan[] = ['ten_days', 'monthly', 'seasonal', 'semi_annual', 'annual'];
+const METHODS: readonly PaymentMethod[] = ['zaincash', 'superkey', 'admin_grant', 'grant', 'cash', 'other', 'apple_iap'];
 
 export interface SubscriptionStats {
   /** Distinct students who ever reached a real subscription - paid or granted. */

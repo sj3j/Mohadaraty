@@ -47,6 +47,7 @@ import { createSignupRequest, reviewSignupRequest, SignupError } from "./shared/
 import { AdminUserError, deleteUserAccount, mergeUserAccounts } from "./shared/adminUsers.js";
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
+import { createAttendanceHandlers } from "./shared/attendanceApi.js";
 import { createStreakHandlers } from "./shared/streakApi.js";
 import { createMcqHandlers } from "./shared/mcqApi.js";
 import { createTimetableHandlers } from "./shared/timetableApi.js";
@@ -1723,8 +1724,10 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   const subscriptionManagement = createSubscriptionManagementHandlers({ admin });
   app.get('/api/subscriptions/mine', verifyAuth, subscriptionManagement.mine);
   app.get('/api/subscriptions/preview', verifyAuth, subscriptionManagement.preview);
+  app.get('/api/subscriptions/search-students', verifyAuth, subscriptionManagement.searchStudents);
   app.post('/api/subscriptions/manual-activate', verifyAuth, subscriptionManagement.manualActivate);
   app.post('/api/subscriptions/grant', verifyAuth, subscriptionManagement.grant);
+  app.post('/api/subscriptions/request-grant', verifyAuth, subscriptionManagement.requestGrant);
   app.post('/api/subscriptions/supports/:supportUid/receive', verifyAuth, subscriptionManagement.receive);
   app.post('/api/subscriptions/supports/:supportUid/reset', verifyAuth, subscriptionManagement.reset);
   app.post('/api/subscriptions/supports/:supportUid/payout', verifyAuth, subscriptionManagement.payout);
@@ -2172,6 +2175,20 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.get("/api/ai/history", verifyAuth, simosan.history);
   app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
   app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
+
+  /* Simosan attendance. Firebase authenticates the caller; the shared gateway
+   * is the only process granted Supabase attendance privileges. */
+  const attendance = createAttendanceHandlers({ admin });
+  app.get('/api/attendance/bootstrap', verifyAuth, attendance.bootstrap);
+  app.get('/api/attendance/mine', verifyAuth, attendance.mine);
+  app.post('/api/attendance/receipts/sync', verifyAuth, attendance.syncReceipts);
+  app.post('/api/attendance/sessions', verifyAuth, verifyAdmin, attendance.createSession);
+  app.get('/api/attendance/sessions/:sessionId', verifyAuth, verifyAdmin, attendance.sessionSnapshot);
+  app.patch('/api/attendance/sessions/:sessionId', verifyAuth, verifyAdmin, attendance.updateSession);
+  app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, verifyAdmin, attendance.manualRecord);
+  app.post('/api/attendance/records/:recordId/void', verifyAuth, verifyAdmin, attendance.voidRecord);
+  app.post('/api/attendance/records/:recordId/restore', verifyAuth, verifyAdmin, attendance.restoreRecord);
+  app.post('/api/attendance/reviews/:receiptId/resolve', verifyAuth, verifyAdmin, attendance.resolveReview);
 
   /* MCQ generation. Staff-only, on the free-tier key - see
    * shared/mcqGeneration.ts for why it is a second key. Mirrored in api/index.ts. */

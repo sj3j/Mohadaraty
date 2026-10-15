@@ -1,0 +1,214 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import QRCode from 'qrcode';
+import { AlertTriangle, CheckCircle2, Expand, Loader2, Printer, QrCode, RefreshCw, Search, Square, UserPlus, XCircle } from 'lucide-react';
+import type { AttendanceBootstrap, AttendanceSessionSnapshot } from '../../../shared/attendance';
+import type { Language } from '../../types';
+import {
+  createAttendanceSession,
+  getAttendanceBootstrap,
+  getAttendanceSessionSnapshot,
+  markAttendanceManually,
+  resolveAttendanceReview,
+  setAttendanceRecordStatus,
+  updateAttendanceSession,
+} from '../../services/attendanceService';
+
+interface ProfessorSimosanViewProps {
+  lang: Language;
+  stageId: string;
+}
+
+const newId = () => crypto.randomUUID();
+
+export default function ProfessorSimosanView({ lang, stageId }: ProfessorSimosanViewProps) {
+  const isRtl = lang === 'ar';
+  const [bootstrap, setBootstrap] = useState<AttendanceBootstrap | null>(null);
+  const [occurrenceId, setOccurrenceId] = useState('');
+  const [headcount, setHeadcount] = useState(60);
+  const [notes, setNotes] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [qrToken, setQrToken] = useState('');
+  const [qrImage, setQrImage] = useState('');
+  const [snapshot, setSnapshot] = useState<AttendanceSessionSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const requestIdRef = useRef(newId());
+  const projectorRef = useRef<HTMLDivElement>(null);
+  const lastSessionRef = useRef('');
+
+  const refreshSnapshot = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const next = await getAttendanceSessionSnapshot(sessionId);
+      setSnapshot(next);
+      if (lastSessionRef.current !== next.session.id) {
+        lastSessionRef.current = next.session.id;
+        setNotes(next.session.notes);
+        setHeadcount(next.session.expectedHeadcount);
+      }
+      setError('');
+    } catch {
+      setError(isRtl ? 'تعذر تحديث قائمة الحضور. ستتم المحاولة تلقائياً.' : 'Could not refresh attendance. Retrying automatically.');
+    }
+  }, [isRtl, sessionId]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    getAttendanceBootstrap(stageId).then(data => {
+      if (!live) return;
+      setBootstrap(data);
+      const today = new Date(data.serverNow).toLocaleDateString('en-CA', { timeZone: data.timezone });
+      const preferred = data.occurrences.find(item => item.lectureDate === today) || data.occurrences.at(-1);
+      setOccurrenceId(preferred?.id || '');
+    }).catch(() => setError(isRtl ? 'تعذر تحميل جدول الحضور.' : 'Could not load attendance timetable.')).finally(() => live && setLoading(false));
+    return () => { live = false; };
+  }, [isRtl, stageId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void refreshSnapshot();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshSnapshot();
+    }, 3000);
+    const visible = () => { if (document.visibilityState === 'visible') void refreshSnapshot(); };
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [refreshSnapshot, sessionId]);
+
+  useEffect(() => {
+    if (!qrToken) return setQrImage('');
+    QRCode.toDataURL(qrToken, { width: 700, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } })
+      .then(setQrImage)
+      .catch(() => setError(isRtl ? 'تعذر رسم رمز الحضور.' : 'Could not render attendance QR.'));
+  }, [isRtl, qrToken]);
+
+  useEffect(() => {
+    if (!snapshot || notes === snapshot.session.notes || notes.length > 2000) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        await updateAttendanceSession(snapshot.session.id, {
+          requestId: newId(), expectedRevision: snapshot.session.revision, notes, reason: '',
+        });
+        await refreshSnapshot();
+      } catch (saveError: any) {
+        if (saveError?.message === 'revision_conflict') await refreshSnapshot();
+        else setError(isRtl ? 'لم تُحفظ الملاحظات بعد. ستبقى ظاهرة لإعادة المحاولة.' : 'Notes are not saved yet. They remain visible for retry.');
+      }
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [isRtl, notes, refreshSnapshot, snapshot]);
+
+  const startSession = async () => {
+    if (!occurrenceId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const created = await createAttendanceSession({
+        stageId, occurrenceId, expectedHeadcount: headcount, notes, requestId: requestIdRef.current,
+      });
+      setSessionId(created.sessionId);
+      setQrToken(created.qrToken);
+    } catch (startError: any) {
+      setError(startError?.message === 'attendance_not_configured'
+        ? (isRtl ? 'خدمة الحضور غير مهيأة على الخادم.' : 'Attendance backend is not configured.')
+        : (isRtl ? 'تعذر بدء الجلسة. أعد المحاولة دون تغيير المحاضرة.' : 'Could not start the session. Retry without changing the lecture.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveHeadcount = async () => {
+    if (!snapshot || headcount === snapshot.session.expectedHeadcount) return;
+    try {
+      await updateAttendanceSession(snapshot.session.id, {
+        requestId: newId(), expectedRevision: snapshot.session.revision, expectedHeadcount: headcount, reason: '',
+      });
+      await refreshSnapshot();
+    } catch {
+      await refreshSnapshot();
+      setError(isRtl ? 'تعذر حفظ العدد؛ تم استرجاع آخر قيمة مؤكدة.' : 'Headcount was not saved; the last confirmed value was restored.');
+    }
+  };
+
+  const mutate = async (operation: () => Promise<any>) => {
+    if (!snapshot) return;
+    setBusy(true);
+    try {
+      await operation();
+      await refreshSnapshot();
+    } catch (mutationError: any) {
+      if (mutationError?.message === 'revision_conflict') await refreshSnapshot();
+      setError(isRtl ? 'تغيرت القائمة على جهاز آخر. تم تحديثها؛ أعد الإجراء.' : 'The roster changed elsewhere. It was refreshed; retry the action.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const filteredRoster = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query || !snapshot) return [];
+    const recorded = new Set(snapshot.records.filter(item => item.status === 'confirmed').map(item => item.rosterStudentId));
+    return snapshot.roster.filter(student => !recorded.has(student.studentId)
+      && (student.officialName.toLocaleLowerCase().includes(query) || student.rosterIdentifier.toLocaleLowerCase().includes(query))).slice(0, 8);
+  }, [search, snapshot]);
+
+  if (loading) return <div className="flex justify-center py-16"><Loader2 className="h-7 w-7 animate-spin text-sky-600" /></div>;
+
+  return (
+    <div className="space-y-4" dir={isRtl ? 'rtl' : 'ltr'}>
+      {!sessionId && <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
+        <h2 className="text-lg font-black">{isRtl ? 'بدء جلسة حضور' : 'Start attendance session'}</h2>
+        <div className="mt-4 space-y-3">
+          <label className="block text-sm font-bold text-slate-600 dark:text-slate-300">{isRtl ? 'المحاضرة المؤرخة' : 'Dated lecture occurrence'}</label>
+          <select value={occurrenceId} onChange={event => { setOccurrenceId(event.target.value); requestIdRef.current = newId(); }} className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+            {(bootstrap?.occurrences || []).map(item => <option key={item.id} value={item.id}>{item.lectureDate} · {item.startTime} · {item.title}</option>)}
+          </select>
+          <label className="block text-sm font-bold text-slate-600 dark:text-slate-300">{isRtl ? 'عدد الموجودين المتوقع' : 'Expected hall headcount'}</label>
+          <input type="number" min={1} max={10000} value={headcount} onChange={event => setHeadcount(Number(event.target.value))} className="w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900" />
+          <label className="block text-sm font-bold text-slate-600 dark:text-slate-300">{isRtl ? 'ملاحظات' : 'Notes'}</label>
+          <textarea value={notes} onChange={event => setNotes(event.target.value)} maxLength={2000} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900" />
+          <button onClick={startSession} disabled={busy || !occurrenceId || headcount < 1} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3 font-black text-white disabled:opacity-50"><QrCode className="h-5 w-5" />{busy ? (isRtl ? 'جارٍ البدء...' : 'Starting...') : (isRtl ? 'إنشاء رمز الحضور' : 'Create attendance QR')}</button>
+        </div>
+      </section>}
+
+      {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">{error}</div>}
+
+      {sessionId && <>
+        <section ref={projectorRef} className="rounded-3xl border border-slate-200 bg-white p-5 text-center shadow-sm fullscreen:flex fullscreen:flex-col fullscreen:items-center fullscreen:justify-center dark:border-zinc-700 dark:bg-zinc-800">
+          <div className="mb-3 flex items-center justify-between text-start">
+            <div><h2 className="font-black">{snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')}</h2><p className="text-xs text-slate-500">{snapshot?.session.occurrence.lectureDate} · {snapshot?.session.occurrence.startTime}</p></div>
+            <button onClick={() => projectorRef.current?.requestFullscreen()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'ملء الشاشة' : 'Fullscreen'}><Expand className="h-5 w-5" /></button>
+          </div>
+          {qrImage ? <img src={qrImage} alt="Attendance QR" className="mx-auto aspect-square w-full max-w-sm rounded-2xl bg-white p-3" /> : <Loader2 className="mx-auto my-20 h-8 w-8 animate-spin" />}
+          <p className="mt-3 text-xs font-bold text-slate-500">{isRtl ? 'لا يعتمد الرمز على ساعة جهاز الطالب.' : 'This code does not depend on the student device clock.'}</p>
+        </section>
+
+        {snapshot && <>
+          {snapshot.counts.discrepancy > 0 && <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-4 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200"><div className="flex items-center gap-2 font-black"><AlertTriangle className="h-5 w-5" />{isRtl ? `تنبيه فرق العدد: ${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}` : `Headcount discrepancy: ${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}`}</div><p className="mt-1 text-xs">{isRtl ? 'هذا تنبيه على مستوى الجلسة، ولا يلغي حضور أي طالب تلقائياً.' : 'This is a session-level warning and never voids a student automatically.'}</p></div>}
+
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">{isRtl ? 'القائمة المباشرة' : 'Live roster'}</h2><p className="text-sm text-slate-500">{snapshot.counts.confirmed} / {snapshot.session.expectedHeadcount} · {isRtl ? 'آخر تحديث' : 'Updated'} {new Date(snapshot.serverNow).toLocaleTimeString(lang === 'ar' ? 'ar-IQ' : 'en-GB')}</p></div><div className="flex gap-1"><button onClick={() => window.print()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'طباعة قائمة احتياطية' : 'Print contingency roster'}><Printer className="h-5 w-5" /></button><button onClick={() => void refreshSnapshot()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700"><RefreshCw className="h-5 w-5" /></button></div></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div><label className="text-xs font-bold text-slate-500">{isRtl ? 'عدد القاعة' : 'Hall count'}</label><input type="number" min={1} value={headcount} onChange={event => setHeadcount(Number(event.target.value))} onBlur={saveHeadcount} className="mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900" /></div>
+              <div><label className="text-xs font-bold text-slate-500">{isRtl ? 'ملاحظات — تحفظ تلقائياً' : 'Notes — auto-saved'}</label><input value={notes} onChange={event => setNotes(event.target.value)} maxLength={2000} className="mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900" /></div>
+            </div>
+            <div className="relative mt-4"><Search className="absolute start-3 top-3 h-4 w-4 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={isRtl ? 'بحث بالاسم الرسمي أو الرمز' : 'Search official name or roster ID'} className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pe-3 ps-10 dark:border-zinc-700 dark:bg-zinc-900" /></div>
+            {filteredRoster.length > 0 && <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 dark:border-zinc-700">{filteredRoster.map(student => <button key={student.studentId} onClick={() => mutate(() => markAttendanceManually(sessionId, { requestId: newId(), studentId: student.studentId, reason: isRtl ? 'إثبات يدوي من الأستاذ' : 'Professor manual confirmation', expectedRevision: snapshot.session.revision }))} className="flex w-full items-center justify-between border-b border-slate-100 p-3 text-start last:border-0 hover:bg-slate-50 dark:border-zinc-700 dark:hover:bg-zinc-700"><span><b>{student.officialName}</b><small className="ms-2 text-slate-400">{student.rosterIdentifier}</small></span><UserPlus className="h-4 w-4 text-sky-600" /></button>)}</div>}
+
+            <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[560px] text-sm"><thead><tr className="border-b border-slate-200 text-start text-xs text-slate-500 dark:border-zinc-700"><th className="p-2 text-start">{isRtl ? 'الاسم الرسمي' : 'Official name'}</th><th className="p-2 text-start">{isRtl ? 'الاستلام' : 'Received'}</th><th className="p-2 text-start">{isRtl ? 'الطريقة' : 'Method'}</th><th className="p-2 text-start">{isRtl ? 'الحالة' : 'Status'}</th><th className="p-2" /></tr></thead><tbody>{snapshot.records.map(record => <tr key={record.id} className="border-b border-slate-100 dark:border-zinc-700/70"><td className="p-2 font-bold">{record.officialName}{record.reviewFlags.length > 0 && <AlertTriangle className="ms-1 inline h-4 w-4 text-amber-500" />}</td><td className="p-2">{new Date(record.receivedAt).toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-GB')}</td><td className="p-2">{record.entryMethod === 'manual' ? (isRtl ? 'يدوي' : 'Manual') : 'QR'}</td><td className="p-2">{record.status === 'confirmed' ? <span className="text-emerald-600">{isRtl ? 'مؤكد' : 'Confirmed'}</span> : <span className="text-red-600">{isRtl ? 'ملغى' : 'Voided'}</span>}</td><td className="p-2"><button disabled={busy} onClick={() => { const reason = prompt(isRtl ? 'سبب الإجراء (مطلوب)' : 'Reason (required)'); if (reason) void mutate(() => setAttendanceRecordStatus(record.id, record.status === 'confirmed' ? 'void' : 'restore', { requestId: newId(), expectedRevision: snapshot.session.revision, reason })); }} className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-bold dark:border-zinc-700">{record.status === 'confirmed' ? (isRtl ? 'إلغاء' : 'Void') : (isRtl ? 'استعادة' : 'Restore')}</button></td></tr>)}</tbody></table></div>
+          </section>
+
+          {snapshot.reviewReceipts.length > 0 && <section className="rounded-3xl border border-amber-300 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-950/20"><h2 className="font-black">{isRtl ? 'إيصالات تحتاج مراجعة' : 'Receipts needing review'}</h2>{snapshot.reviewReceipts.map(receipt => { const student = snapshot.roster.find(item => item.studentId === receipt.rosterStudentId); return <div key={receipt.requestId} className="mt-3 rounded-xl bg-white p-3 dark:bg-zinc-900"><div className="font-bold">{student?.officialName || receipt.rosterStudentId || (isRtl ? 'هوية غير مطابقة' : 'Unmatched identity')}</div><div className="mt-1 text-xs text-slate-500">{receipt.reason} · {new Date(receipt.receivedAt).toLocaleString()}</div><div className="mt-3 flex gap-2"><button onClick={() => { const reason = prompt(isRtl ? 'سبب التأكيد' : 'Confirmation reason'); if (reason) void mutate(() => resolveAttendanceReview(receipt.requestId, { requestId: newId(), decision: 'confirm', reason, expectedRevision: snapshot.session.revision })); }} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-black text-white"><CheckCircle2 className="h-4 w-4" />{isRtl ? 'تأكيد' : 'Confirm'}</button><button onClick={() => { const reason = prompt(isRtl ? 'سبب الرفض' : 'Rejection reason'); if (reason) void mutate(() => resolveAttendanceReview(receipt.requestId, { requestId: newId(), decision: 'reject', reason, expectedRevision: snapshot.session.revision })); }} className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white"><XCircle className="h-4 w-4" />{isRtl ? 'رفض' : 'Reject'}</button></div></div>; })}</section>}
+
+          {snapshot.session.status === 'active' && <button onClick={() => mutate(() => updateAttendanceSession(sessionId, { requestId: newId(), expectedRevision: snapshot.session.revision, status: 'ended', reason: isRtl ? 'أنهى الأستاذ عرض الجلسة' : 'Professor ended collection display' }))} className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-4 py-3 font-black text-slate-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-slate-200"><Square className="h-4 w-4" />{isRtl ? 'إنهاء عرض الجمع' : 'End collection display'}</button>}
+        </>}
+      </>}
+    </div>
+  );
+}

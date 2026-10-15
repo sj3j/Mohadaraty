@@ -56,21 +56,43 @@ export default function StudentPicker({
         // appointment sits in allowed_admins doing nothing visible.
         const withAccounts = new Set<string>();
         userSnap.docs.forEach(d => {
-          const email = (d.data().email || d.id || '').toLowerCase().trim();
+          const uData = d.data();
+          const email = (uData.email || d.id || '').toLowerCase().trim();
           if (email) withAccounts.add(email);
+          withAccounts.add(d.id.toLowerCase().trim());
         });
 
-        setCandidates(studentSnap.docs.map(d => {
+        const studentCandidatesMap = new Map<string, StudentCandidate>();
+        studentSnap.docs.forEach(d => {
           const data = d.data();
-          return {
+          studentCandidatesMap.set(d.id.toLowerCase(), {
             id: d.id,
             name: data.name || d.id,
             subgroup: data.subgroup || '',
             loginCode: data.loginCode || '',
             placeholderEmail: data.placeholderEmail === true,
             hasAccount: withAccounts.has(d.id.toLowerCase()),
-          };
-        }));
+          });
+        });
+
+        // Also add users who exist in this stage but don't have a record in students collection
+        userSnap.docs.forEach(d => {
+          const uData = d.data();
+          const email = (uData.email || d.id || '').toLowerCase().trim();
+          const idLower = d.id.toLowerCase().trim();
+          if (!studentCandidatesMap.has(idLower) && (!email || !studentCandidatesMap.has(email))) {
+            studentCandidatesMap.set(idLower, {
+              id: d.id,
+              name: uData.name || d.id,
+              subgroup: uData.group || uData.subgroup || '',
+              loginCode: uData.loginCode || '',
+              placeholderEmail: false,
+              hasAccount: true,
+            });
+          }
+        });
+
+        setCandidates(Array.from(studentCandidatesMap.values()));
       } catch (err) {
         console.error('Failed to load the stage roster:', err);
         if (!cancelled) setCandidates([]);
@@ -84,10 +106,14 @@ export default function StudentPicker({
 
   const matches = useMemo(() => {
     const needle = normalizeName(term);
-    if (!needle) return [];
+    const termClean = term.trim().toLowerCase();
+    if (!termClean) return [];
     return candidates
-      .filter(c => normalizeName(c.name).includes(needle)
-        || c.loginCode.toLowerCase().includes(term.trim().toLowerCase()))
+      .filter(c =>
+        (needle && normalizeName(c.name).includes(needle))
+        || c.id.toLowerCase().includes(termClean)
+        || c.loginCode.toLowerCase().includes(termClean)
+      )
       .slice(0, 8);
   }, [term, candidates]);
 
@@ -135,7 +161,7 @@ export default function StudentPicker({
           type="text"
           value={term}
           onChange={e => setTerm(e.target.value)}
-          placeholder={isRtl ? 'ابحث باسم الطالب…' : 'Search by student name…'}
+          placeholder={isRtl ? 'ابحث باسم الطالب أو البريد…' : 'Search by student name or email…'}
           className="w-full ps-10 pe-4 py-2.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-stone-100 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none transition-all"
         />
       </div>

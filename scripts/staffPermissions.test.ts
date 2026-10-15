@@ -25,6 +25,10 @@ check('representative is denied cross-stage', !hasStageCapability(representative
 check('representative is denied system capability', !hasStaffCapability(representative, 'manageMcqSystem'));
 check('helper gets only explicit own-stage content', hasStageCapability(helper, 'manageLectures', 'stage_3'));
 check('helper is denied unstated content', !hasStaffCapability(helper, 'manageRecords'));
+check('attendance follows explicit stage-scoped grants',
+  hasStageCapability(representative, 'manageAttendance', 'stage_3')
+  && !hasStageCapability(helper, 'manageAttendance', 'stage_3')
+  && hasStageCapability({ ...helper, permissions: { manageAttendance: true } }, 'manageAttendance', 'stage_3'));
 check('helper is denied roster and system capabilities', !hasStaffCapability(helper, 'manageStudents') && !hasStaffCapability(helper, 'manageAntiCheat'));
 check('support explicit grant reaches every stage', hasStageCapability(support, 'manageLectures', 'stage_5'));
 check('support unstated/false capability is denied', !hasStaffCapability(support, 'manageAntiCheat'));

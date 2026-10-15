@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, BookOpen, User, Trophy, Sparkles } from 'lucide-react';
+import { Bell, BookOpen, User, Trophy, LayoutGrid } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../types';
 import { motion } from 'motion/react';
 
@@ -21,7 +21,7 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
 
   const tabs = [
     { id: 'home', icon: BookOpen, label: isRtl ? 'قسم الدراسة' : 'Study' },
-    { id: 'simosan', icon: Sparkles, label: isRtl ? 'سيموسان' : 'Simosan' },
+    { id: 'simosan', icon: LayoutGrid, label: isRtl ? 'الخدمات' : 'Services' },
     { id: 'leaderboard', icon: Trophy, label: isRtl ? 'المتصدرين' : 'Leaderboard', isFab: true },
     { id: 'announcements', icon: Bell, label: isRtl ? 'التبليغات' : 'Alerts' },
     { id: 'profile', icon: User, label: isRtl ? 'الملف الشخصي' : 'Profile' },

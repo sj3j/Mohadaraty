@@ -27,6 +27,10 @@ async function api<T>(path: string, init: RequestInit = {}, signal?: AbortSignal
       ...(init.headers || {}),
     },
   });
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Server returned an unexpected non-JSON response. Please ensure backend server is running and restarted.');
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error || 'Request failed') as Error & { code?: string; status?: number };
@@ -71,6 +75,7 @@ export interface HistoryItem {
   status?: string;
   voidedBy?: unknown;
   voidsRecordId?: string;
+  cancelledBy?: unknown;
 }
 
 export interface SupportBalance {
@@ -87,6 +92,25 @@ export interface SupportBalance {
   totalPaidOut: number;
   commissionRate: number;
 }
+
+export interface SubscriptionStudentSearchResult {
+  id: string;
+  email: string;
+  name: string;
+  isSubscribed: boolean;
+  currentPlan?: string | null;
+  currentExpiry?: string | null;
+  stageId?: string | null;
+}
+
+export const searchSubscriptionStudents = (
+  query: string,
+  signal?: AbortSignal,
+) => api<{ students: SubscriptionStudentSearchResult[] }>(
+  `/api/subscriptions/search-students?q=${encodeURIComponent(query)}`,
+  {},
+  signal,
+);
 
 export const getSubscriptionPreview = (
   studentEmail: string,
@@ -113,6 +137,13 @@ export const grantAuditedSubscription = (input: {
   plan: SubscriptionPlan;
   reason?: string;
 }) => api<any>('/api/subscriptions/grant', { method: 'POST', body: JSON.stringify(input) });
+
+export const requestSupportGrant = (input: {
+  requestId: string;
+  studentEmail: string;
+  plan: SubscriptionPlan;
+  reason?: string;
+}) => api<any>('/api/subscriptions/request-grant', { method: 'POST', body: JSON.stringify(input) });
 
 export const getSubscriptionHistory = (filters: {
   student?: string;

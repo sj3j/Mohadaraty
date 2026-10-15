@@ -141,6 +141,9 @@ export const canManageGroups = (user?: UserProfile | null): boolean =>
 export const canManageTimetable = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageTimetable');
 
+export const canManageAttendance = (user?: UserProfile | null): boolean =>
+  canManage(user, 'manageAttendance');
+
 /** إدارة المساعدين. Master admin manages everyone; a representative may only
  *  appoint moderators inside their own stage; support may seat representatives
  *  and moderators but never another support account - see appointableRoles. */

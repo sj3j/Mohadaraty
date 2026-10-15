@@ -4,6 +4,7 @@ export const CONTENT_CAPABILITIES = [
   'manageRecords',
   'manageHomeworks',
   'manageTimetable',
+  'manageAttendance',
 ] as const;
 
 export const REPRESENTATIVE_ONLY_CAPABILITIES = [
