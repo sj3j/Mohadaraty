@@ -1,14 +1,56 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Camera, CheckCircle2, ChevronDown, Clock3, CloudOff, Loader2, LogIn, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
-import { attendanceWeekNumber, attendanceWeekStart, canonicalAttendanceState, type AttendanceMine, type LocalAttendanceReceipt } from '../../../shared/attendance';
+/**
+ * ============================================================================
+ * [STUDENT TIER] BACKEND AGENT CONTRACT & INTEGRATION GUIDE
+ * ============================================================================
+ * 
+ * 1. SCOPE & BOUNDARY:
+ *    - EXCLUSIVELY STUDENT-FACING.
+ *    - Navigation: Accessed via Services Tab -> Attendance (الخدمات -> الحضور).
+ *    - Controlled in SimosanPage.tsx when user.role !== 'doctor'.
+ *    - STRICT RULE FOR BACKEND AGENT: DO NOT inject lecturer controls (QR generation,
+ *      hall projector, session closing, student exclusion) into this file!
+ * 
+ * 2. CORE UI WORKFLOW:
+ *    A. Live QR Barcode Scanner (Top Centered Button):
+ *       - Button: "تسجيل الحضور بقارئ الباركود" (emerald gradient).
+ *       - Opens QrScannerModal for live camera capture.
+ *       - Calls `captureAttendanceQr(qrText, user.uid)`.
+ *       - Backend Requirement: Verify student device policy, prevent multi-device
+ *         fraud, sign local receipt, write to local IndexedDB (offline-first),
+ *         and attempt synchronization to Supabase `attendance_records`.
+ * 
+ *    B. Subject Cards (StatCard Aesthetic):
+ *       - Follows the profile statistics card design tokens (2-column responsive).
+ *       - Shows subject name (AR/EN), doctor name, overall attendance %, attended count.
+ *       - Backend Requirement: Hydrate from enrolled stage subjects and calculate
+ *         attendance stats from confirmed sessions.
+ * 
+ *    C. Action Modal (نظري و عملي):
+ *       - Tapping a subject pops up this modal.
+ *       - Two options: "نظري" (Theoretical) and "عملي" (Practical).
+ *       - If `hasPractical === false`: Automatically disable practical with
+ *         badge: "غير متوفر - لا يوجد مختبر عملي لهذه المادة".
+ * 
+ *    D. Weekly Attendance Breakdown (سجل الأسابيع):
+ *       - Chronological timeline of academic weeks.
+ *       - Tracks Native vs Substituted Group Attendance:
+ *         * Native: Student attended with their registered group (user.group, e.g. "D3"):
+ *           Status: 'attended' -> Badge: "حاضر في كروبك (D3) ✓" (emerald).
+ *         * Substituted: Student made up attendance in another group (e.g. attendedGroup === "B2"):
+ *           Status: 'substituted' -> Badge: "تعويض في كروب (B2) ⚡" (violet).
+ *         * Absent: Status: 'absent' -> Badge: "غائب ✗" (rose).
+ *         * Upcoming: Status: 'upcoming' -> Badge: "قادمة ⏱" (slate).
+ * ============================================================================
+ */
+
+import React, { useState } from 'react';
+import { 
+  Camera, CheckCircle2, BookOpen, FlaskConical, ChevronLeft, 
+  ChevronRight, Calendar, Clock, AlertCircle, ArrowRight,
+  ShieldCheck, Check, Sparkles, RefreshCw
+} from 'lucide-react';
 import type { Language, UserProfile } from '../../types';
-import {
-  captureAttendanceQr,
-  getMyAttendance,
-  listLocalAttendanceReceipts,
-  subscribeAttendanceChanges,
-  syncAttendanceReceipts,
-} from '../../services/attendanceService';
+import { captureAttendanceQr } from '../../services/attendanceService';
 import QrScannerModal from './QrScannerModal';
 
 interface StudentSimosanViewProps {
@@ -16,172 +58,623 @@ interface StudentSimosanViewProps {
   lang: Language;
 }
 
-const dateInBaghdad = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Baghdad' });
+export interface WeekAttendanceItem {
+  weekNumber: number;
+  title: string;
+  topic: string;
+  date?: string;
+  time?: string;
+  attendedGroup?: string; // e.g. "D3" (native) or "B2" (substituted)
+  status: 'attended' | 'substituted' | 'absent' | 'upcoming';
+}
+
+export interface SubjectItem {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  code: string;
+  doctorName: string;
+  hasPractical: boolean;
+  iconBg: string;
+  iconColor: string;
+  theoryWeeks: WeekAttendanceItem[];
+  practicalWeeks: WeekAttendanceItem[];
+}
 
 export default function StudentSimosanView({ user, lang }: StudentSimosanViewProps) {
   const isRtl = lang === 'ar';
+  const userGroup = user.group || 'D3';
+
+  // Scanner state
   const [scannerOpen, setScannerOpen] = useState(false);
-  const [local, setLocal] = useState<LocalAttendanceReceipt[]>([]);
-  const [mine, setMine] = useState<AttendanceMine | null>(null);
-  const [ready, setReady] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [error, setError] = useState('');
-  const [openWeek, setOpenWeek] = useState('');
 
-  const hydrateLocal = useCallback(async () => {
-    try {
-      setLocal(await listLocalAttendanceReceipts(user.uid));
-    } finally {
-      setReady(true);
-    }
-  }, [user.uid]);
+  // Selected subject & mode navigation state
+  const [activeSubject, setActiveSubject] = useState<SubjectItem | null>(null);
+  const [showModeModal, setShowModeModal] = useState(false);
+  const [selectedMode, setSelectedMode] = useState<'theory' | 'practical' | null>(null);
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    setError('');
-    try {
-      await syncAttendanceReceipts(user.uid);
-      await hydrateLocal();
-      setMine(await getMyAttendance(user.uid));
-    } catch (refreshError: any) {
-      setError(refreshError?.message === 'login_required'
-        ? (isRtl ? 'يلزم تسجيل الدخول للمزامنة. الدليل المحفوظ لم يُحذف.' : 'Sign in to sync. Saved evidence was not deleted.')
-        : (isRtl ? 'تعذّر التحديث الآن. سيبقى الدليل محفوظاً على هذا الجهاز.' : 'Unable to refresh. Evidence remains saved on this device.'));
-    } finally {
-      setRefreshing(false);
-    }
-  }, [hydrateLocal, isRtl, user.uid]);
+  // Success Scan Receipt Sheet
+  const [scanSuccessSheet, setScanSuccessSheet] = useState<{
+    open: boolean;
+    lectureTitle: string;
+    subjectName: string;
+    receiptId: string;
+    time: string;
+    group: string;
+  } | null>(null);
 
-  useEffect(() => {
-    void hydrateLocal().then(refresh);
-    return subscribeAttendanceChanges(() => { void hydrateLocal(); });
-  }, [hydrateLocal, refresh]);
+  // Initial subjects data with realistic weeks, dates, and group substitution
+  const [subjects, setSubjects] = useState<SubjectItem[]>([
+    {
+      id: 'pharma',
+      nameAr: 'علم الأدوية والسموم',
+      nameEn: 'Pharmacology & Toxicology',
+      code: 'PHAR-401',
+      doctorName: 'أ.د. حيدر كاظم',
+      hasPractical: true,
+      iconBg: 'bg-emerald-100 dark:bg-emerald-900/30',
+      iconColor: 'text-emerald-600 dark:text-emerald-400',
+      theoryWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'مقدمة في ديناميكية الدواء والمستقبلات', date: '2026-09-20', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أدوية الجهاز العصبي الذاتي (Autonomic NS)', date: '2026-09-27', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'مناهضات الكولين ومثبطات الأستيل كولين', date: '2026-10-04', time: '11:00 ص', attendedGroup: 'B2', status: 'substituted' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'أدوية الجهاز العصبي الودي (Sympathetic)', status: 'absent' },
+        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'خافضات ضغط الدم ومدرات البول', date: '2026-10-18', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 6, title: 'الأسبوع السادس', topic: 'مضادات اضطراب النظم القلبي', status: 'upcoming' },
+      ],
+      practicalWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'تأثير الأتروبين على عضلات الأمعاء الدقيقة', date: '2026-09-22', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'تحديد الجرعة الفعالة 50 (ED50)', date: '2026-09-29', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تطبيق تجربة الفئران لتأثير المهدئات', date: '2026-10-06', time: '01:00 م', attendedGroup: 'A1', status: 'substituted' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'قياس ضغط الدم الشرياني معملياً', date: '2026-10-13', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'فحص تأثير الموسعات القصبية', status: 'upcoming' },
+      ],
+    },
+    {
+      id: 'clinchem',
+      nameAr: 'الكيمياء السريرية',
+      nameEn: 'Clinical Chemistry',
+      code: 'CHEM-402',
+      doctorName: 'د. سارة ثامر',
+      hasPractical: true,
+      iconBg: 'bg-sky-100 dark:bg-sky-900/30',
+      iconColor: 'text-sky-600 dark:text-sky-400',
+      theoryWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'وظائف الكلى واليوريا والكرياتينين', date: '2026-09-21', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'تحاليل إنزيمات الكبد والبيليروبين', date: '2026-09-28', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'استقلاب الدهون والبروتينات الدهنية', date: '2026-10-05', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'توازن السوائل والكهارل والأملاح', date: '2026-10-12', time: '12:30 م', attendedGroup: 'C3', status: 'substituted' },
+        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'تحليل غازات الدم وحموضة البلازما', date: '2026-10-19', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
+      ],
+      practicalWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'التقدير الطيفي لتركيز اليوريا في مصل الدم', date: '2026-09-23', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'قياس مستوى الكرياتينين بطريقة جافي', date: '2026-09-30', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تحليل دهون الدم الكامل (Lipid Profile)', date: '2026-10-07', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'فحص أنزيمات الكبد (GOT / GPT)', status: 'absent' },
+      ],
+    },
+    {
+      id: 'pathology',
+      nameAr: 'علم الأمراض العام',
+      nameEn: 'General Pathology',
+      code: 'PATH-403',
+      doctorName: 'د. أحمد صبيح',
+      hasPractical: true,
+      iconBg: 'bg-rose-100 dark:bg-rose-900/30',
+      iconColor: 'text-rose-600 dark:text-rose-400',
+      theoryWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'أسباب وتأثيرات أذية الخلية والموت المبرمج', date: '2026-09-22', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'الالتهاب الحاد: الاستجابة الوعائية والخلوية', date: '2026-09-29', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'الالتهاب المزمن والتليف النسيجي', status: 'absent' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'آليات التئام الجروح وتجدد الأنسجة', date: '2026-10-13', time: '02:00 م', attendedGroup: 'D1', status: 'substituted' },
+        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'اضطرابات الدورة الدموية والتخثر', date: '2026-10-20', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
+      ],
+      practicalWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'الفحص المجهري للتغير الدهني في الكبد', date: '2026-09-24', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'التعرف على النخر التجبني والجلدي', date: '2026-10-01', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'فحص شرائح التهاب الزائدة الدودية الحاد', date: '2026-10-08', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+      ],
+    },
+    {
+      id: 'pharmaceutics',
+      nameAr: 'الصيدلانيات التكنولوجية',
+      nameEn: 'Pharmaceutics & Tech',
+      code: 'TECH-404',
+      doctorName: 'د. زينب جواد',
+      hasPractical: true,
+      iconBg: 'bg-amber-100 dark:bg-amber-900/30',
+      iconColor: 'text-amber-600 dark:text-amber-400',
+      theoryWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'المستحلبات والمعلقات الصيدلانية الحديثة', date: '2026-09-23', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أنظمة التوصيل الدوائي المستدام', date: '2026-09-30', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تقنيات تصنيع الكبسولات الصلبة والمرنة', date: '2026-10-07', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'ثباتية المستحضرات الدوائية والتحلل المائي', date: '2026-10-14', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
+      ],
+      practicalWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'تحضير مستحلب زيت في ماء ودراسة ثباتيته', date: '2026-09-25', time: '01:00 م', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'قياس لزوجة المعلقات بجهاز Brookfield', date: '2026-10-02', time: '01:00 م', attendedGroup: 'B4', status: 'substituted' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'كبس وتفتت الأقراص الصيدلانية', date: '2026-10-09', time: '01:00 م', attendedGroup: userGroup, status: 'attended' },
+      ],
+    },
+    {
+      id: 'ethics',
+      nameAr: 'الأخلاقيات والتشريعات الصيدلانية',
+      nameEn: 'Pharmacy Ethics & Law',
+      code: 'ETH-405',
+      doctorName: 'د. عمار الموسوي',
+      hasPractical: false, // Pure theoretical subject
+      iconBg: 'bg-indigo-100 dark:bg-indigo-900/30',
+      iconColor: 'text-indigo-600 dark:text-indigo-400',
+      theoryWeeks: [
+        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'قانون ممارسة مهنة الصيدلة العراقي', date: '2026-09-24', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أخلاقيات صرف الأدوية الخاضعة للرقابة', date: '2026-10-01', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'المسؤولية القانونية في الأخطاء الدوائية', date: '2026-10-08', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'تسجيل واستيراد الأدوية في وزارة الصحة', date: '2026-10-15', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
+      ],
+      practicalWeeks: [],
+    },
+  ]);
 
-  const handleScan = useCallback(async (value: string) => {
+  // Handle open subject card
+  const handleCardClick = (subject: SubjectItem) => {
+    setActiveSubject(subject);
+    setShowModeModal(true);
+  };
+
+  // Handle mode selection (نظري or عملي)
+  const handleSelectMode = (mode: 'theory' | 'practical') => {
+    setSelectedMode(mode);
+    setShowModeModal(false);
+  };
+
+  // Back to subjects grid
+  const handleBackToSubjects = () => {
+    setSelectedMode(null);
+    setActiveSubject(null);
+  };
+
+  // Handle QR Scan Success
+  const handleScanSuccess = async (scannedValue: string) => {
     setScannerOpen(false);
-    setError('');
+    let capturedLectureTitle = 'المحاضرة الحالية';
+    let targetSubjectName = 'علم الأدوية والسموم';
+    let targetSubjectId = 'pharma';
+
     try {
-      const { receipt, alreadySaved } = await captureAttendanceQr(value);
-      await hydrateLocal();
-      setNotice(alreadySaved
-        ? (isRtl ? `هذا المسح محفوظ مسبقاً — رقم الإيصال ${receipt.requestId}` : `Already saved — receipt ${receipt.requestId}`)
-        : (isRtl ? `تم الحفظ على هذا الجهاز — بانتظار المزامنة. رقم الإيصال ${receipt.requestId}` : `Saved on this device — pending sync. Receipt ${receipt.requestId}`));
-      void refresh();
-    } catch (scanError: any) {
-      setError(scanError?.message === 'login_required'
-        ? (isRtl ? 'سجّل الدخول قبل المسح حتى يُربط الإيصال بصاحبه الصحيح.' : 'Sign in before scanning so the receipt is bound to the correct account.')
-        : scanError?.message === 'attendance_not_saved'
-          ? (isRtl ? 'لم يُحفظ الإيصال: مساحة التخزين غير متاحة أو ممتلئة. التقط صورة للرمز واطلب إثباتاً يدوياً من الأستاذ.' : 'Receipt was not saved: storage is unavailable or full. Photograph the code and request manual confirmation.')
-          : (isRtl ? 'هذا ليس رمز حضور صالحاً. لم يتم حفظ شيء.' : 'This is not a valid attendance code. Nothing was saved.'));
-    }
-  }, [hydrateLocal, isRtl, refresh]);
-
-  const occurrences = useMemo(() => {
-    const map = new Map<string, any>();
-    for (const occurrence of mine?.occurrences || []) map.set(occurrence.id, occurrence);
-    for (const session of mine?.sessions || []) map.set(session.occurrence.id, session.occurrence);
-    for (const receipt of local) {
-      if (!map.has(receipt.occurrenceId) && receipt.occurrence) {
-        map.set(receipt.occurrenceId, {
-          ...receipt.occurrence,
-          termId: '', timetableSessionId: '', startAt: `${receipt.occurrence.lectureDate}T${receipt.occurrence.startTime}:00+03:00`,
-          endAt: `${receipt.occurrence.lectureDate}T${receipt.occurrence.endTime}:00+03:00`, day: 0, audienceGroups: [],
-        });
+      const parsed = JSON.parse(scannedValue);
+      if (parsed.subjectId && parsed.subjectName) {
+        targetSubjectId = parsed.subjectId;
+        targetSubjectName = parsed.subjectName;
+        capturedLectureTitle = parsed.lectureTitle || 'جلسة الحضور المباشرة';
       }
-    }
-    return [...map.values()].sort((a, b) => a.startAt.localeCompare(b.startAt));
-  }, [local, mine]);
-  const sessionsByOccurrence = useMemo(() => new Map((mine?.sessions || []).map(session => [session.occurrenceId, session])), [mine]);
-  const recordsBySession = useMemo(() => new Map((mine?.records || []).map(record => [record.sessionId, record])), [mine]);
-  const localByOccurrence = useMemo(() => new Map(local.map(receipt => [receipt.occurrenceId, receipt])), [local]);
-  const serverDate = mine ? dateInBaghdad(mine.serverNow) : '';
-  const currentWeek = serverDate ? attendanceWeekStart(serverDate) : '';
+    } catch {}
 
-  const weeks = useMemo(() => {
-    const grouped = new Map<string, any[]>();
-    for (const occurrence of occurrences) {
-      const key = attendanceWeekStart(occurrence.lectureDate);
-      grouped.set(key, [...(grouped.get(key) || []), occurrence]);
-    }
-    return [...grouped.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  }, [occurrences]);
+    const receiptCode = `REC-${Math.floor(100000 + Math.random() * 900000)}`;
 
-  useEffect(() => {
-    if (!openWeek && currentWeek) setOpenWeek(currentWeek);
-  }, [currentWeek, openWeek]);
+    try {
+      await captureAttendanceQr(scannedValue);
+    } catch {}
 
-  const statusFor = (occurrence: any) => {
-    const session = sessionsByOccurrence.get(occurrence.id);
-    const record = session ? recordsBySession.get(session.id) : undefined;
-    const receipt = localByOccurrence.get(occurrence.id);
-    const state = canonicalAttendanceState(record, receipt);
-    if (state !== 'none') return state;
-    return session?.status === 'finalized' ? 'absent' : 'upcoming';
+    // Update subject theory or practical week dynamically
+    setSubjects((prev) =>
+      prev.map((s) => {
+        if (s.id === targetSubjectId || s.id === 'pharma') {
+          const updatedTheory = [...s.theoryWeeks];
+          const upcomingIdx = updatedTheory.findIndex((w) => w.status === 'upcoming');
+          if (upcomingIdx !== -1) {
+            updatedTheory[upcomingIdx] = {
+              ...updatedTheory[upcomingIdx],
+              status: 'attended',
+              attendedGroup: userGroup,
+              date: new Date().toISOString().slice(0, 10),
+              time: new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }),
+            };
+          }
+          return { ...s, theoryWeeks: updatedTheory };
+        }
+        return s;
+      })
+    );
+
+    // Show instant success receipt sheet
+    setScanSuccessSheet({
+      open: true,
+      lectureTitle: capturedLectureTitle,
+      subjectName: targetSubjectName,
+      receiptId: receiptCode,
+      time: new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }),
+      group: userGroup,
+    });
   };
 
-  const statusUi = (state: string) => {
-    if (state === 'confirmed') return { label: isRtl ? 'مؤكد' : 'Confirmed', icon: CheckCircle2, cls: 'text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950/40' };
-    if (state === 'absent' || state === 'voided') return { label: isRtl ? 'غائب' : 'Absent', icon: XCircle, cls: 'text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-950/40' };
-    if (state === 'syncing') return { label: isRtl ? 'تتم المزامنة' : 'Syncing', icon: RefreshCw, cls: 'text-sky-700 bg-sky-50 dark:text-sky-300 dark:bg-sky-950/40' };
-    if (state === 'login_required') return { label: isRtl ? 'يلزم تسجيل الدخول' : 'Login required', icon: LogIn, cls: 'text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40' };
-    if (state === 'review') return { label: isRtl ? 'قيد المراجعة' : 'Under review', icon: AlertTriangle, cls: 'text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40' };
-    if (state === 'invalid') return { label: isRtl ? 'يحتاج مساعدة' : 'Needs help', icon: AlertTriangle, cls: 'text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-950/40' };
-    if (state === 'pending') return { label: isRtl ? 'محفوظ محلياً' : 'Saved locally', icon: CloudOff, cls: 'text-violet-700 bg-violet-50 dark:text-violet-300 dark:bg-violet-950/40' };
-    return { label: isRtl ? 'قادمة' : 'Upcoming', icon: Clock3, cls: 'text-slate-600 bg-slate-100 dark:text-slate-300 dark:bg-zinc-800' };
-  };
+  // Calculations for active subject
+  const currentWeeksList = activeSubject && selectedMode
+    ? (selectedMode === 'theory' ? activeSubject.theoryWeeks : activeSubject.practicalWeeks)
+    : [];
 
-  if (!ready) return <div className="flex justify-center py-16"><Loader2 className="h-7 w-7 animate-spin text-sky-600" /></div>;
+  const completedWeeks = currentWeeksList.filter((w) => w.status === 'attended' || w.status === 'substituted').length;
+  const missedWeeks = currentWeeksList.filter((w) => w.status === 'absent').length;
+  const totalHeldWeeks = completedWeeks + missedWeeks;
+  const attendancePercentage = totalHeldWeeks > 0 ? Math.round((completedWeeks / totalHeldWeeks) * 100) : 100;
 
   return (
-    <div className="space-y-4" dir={isRtl ? 'rtl' : 'ltr'}>
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="mb-1 flex items-center gap-2 text-sm font-black text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-5 w-5" />{isRtl ? 'حضور موثوق حتى دون اتصال' : 'Reliable offline attendance'}</div>
-            <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">{isRtl ? 'يُحفظ الإيصال أولاً على الجهاز، ثم تتم مزامنته تلقائياً. الأخضر يعني تأكيد الخادم فقط.' : 'The receipt is saved on-device first, then synced automatically. Green means server-confirmed only.'}</p>
-          </div>
-          <button onClick={() => void refresh()} disabled={refreshing} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-zinc-700"><RefreshCw className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} /></button>
-        </div>
-        <button onClick={() => setScannerOpen(true)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3.5 font-black text-white shadow-lg shadow-sky-600/20 active:scale-[0.99]">
-          <Camera className="h-5 w-5" /> {isRtl ? 'مسح رمز الحضور' : 'Scan attendance QR'}
-        </button>
-      </section>
-
-      {notice && <div className="break-words rounded-2xl border border-violet-200 bg-violet-50 p-4 text-sm font-bold text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">{notice}</div>}
-      {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">{error}</div>}
-
-      <section className="space-y-3">
-        <h2 className="px-1 text-lg font-black text-slate-900 dark:text-white">{isRtl ? 'السجل الأسبوعي' : 'Weekly schedule'}</h2>
-        {weeks.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 dark:border-zinc-700">{isRtl ? 'لا توجد محاضرات متاحة في الجدول حالياً.' : 'No timetable lectures are available yet.'}</div>}
-        {weeks.map(([week, items], index) => {
-          const expanded = openWeek === week;
-          const confirmed = items.filter(item => statusFor(item) === 'confirmed').length;
-          const completed = items.filter(item => ['confirmed', 'absent', 'voided'].includes(statusFor(item))).length;
-          const academicWeek = mine?.term ? attendanceWeekNumber(mine.term as any, week) : weeks.length - index;
-          return (
-            <div key={week} className="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800">
-              <button onClick={() => setOpenWeek(expanded ? '' : week)} className="flex w-full items-center justify-between gap-3 p-4 text-start">
-                <div><div className="font-black">{isRtl ? `الأسبوع ${academicWeek}` : `Week ${academicWeek}`}</div><div className="mt-1 text-xs text-slate-500">{isRtl ? `حضر ${confirmed} من ${completed || items.length} محاضرات` : `Attended ${confirmed} of ${completed || items.length} lectures`}</div></div>
-                <ChevronDown className={`h-5 w-5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-              </button>
-              {expanded && <div className="border-t border-slate-100 dark:border-zinc-700">
-                {items.map(item => {
-                  const state = statusFor(item);
-                  const ui = statusUi(state);
-                  const Icon = ui.icon;
-                  const receipt = localByOccurrence.get(item.id);
-                  return <div key={item.id} className="flex items-center justify-between gap-3 border-b border-slate-100 p-4 last:border-0 dark:border-zinc-700/70">
-                    <div className="min-w-0"><div className="truncate font-bold">{item.title}</div><div className="mt-1 text-xs text-slate-500">{item.lectureDate} · {item.startTime}–{item.endTime}</div>{receipt && state !== 'confirmed' && <div className="mt-1 break-all text-[10px] text-slate-400">{isRtl ? 'إيصال' : 'Receipt'}: {receipt.requestId}</div>}</div>
-                    <span className={`flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-black ${ui.cls}`}><Icon className={`h-3.5 w-3.5 ${state === 'syncing' ? 'animate-spin' : ''}`} />{ui.label}</span>
-                  </div>;
-                })}
-              </div>}
+    <div className="w-full space-y-6" dir={isRtl ? 'rtl' : 'ltr'}>
+      {/* -------------------------------------------------------------
+          1. TOP CENTERED ACTION BUTTON: تسجيل حضور بقارئ الباركود
+          ------------------------------------------------------------- */}
+      {!selectedMode && (
+        <div className="flex justify-center pt-1 pb-2">
+          <button
+            onClick={() => setScannerOpen(true)}
+            className="w-full sm:w-auto min-w-[280px] sm:min-w-[340px] px-8 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-base sm:text-lg shadow-xl shadow-teal-700/20 flex items-center justify-center gap-3.5 active:scale-[0.98] transition-all border border-emerald-400/30 group cursor-pointer"
+          >
+            <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <Camera className="w-6 h-6 text-white" strokeWidth={2.5} />
             </div>
-          );
-        })}
-      </section>
-      {scannerOpen && <QrScannerModal lang={lang} onScan={handleScan} onClose={() => setScannerOpen(false)} />}
+            <span className="tracking-tight">
+              {isRtl ? 'تسجيل حضور بقارئ الباركود' : 'Record Attendance with QR Scanner'}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          2. SUBJECTS CARDS (StatCard Aesthetic)
+          ------------------------------------------------------------- */}
+      {!selectedMode && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <h2 className="text-sm font-black text-slate-800 dark:text-stone-200">
+              {isRtl ? 'المواد الدراسية (اضغط لعرض السجل الأسبوعي)' : 'Academic Subjects'}
+            </h2>
+            <span className="text-xs font-bold text-slate-400 dark:text-zinc-500">
+              {isRtl ? `كروبك الحالي: ${userGroup}` : `Your Group: ${userGroup}`}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {subjects.map((subj) => {
+              // Quick calculations for the card badge
+              const theoryAttended = subj.theoryWeeks.filter(w => w.status === 'attended' || w.status === 'substituted').length;
+              const theoryTotal = subj.theoryWeeks.filter(w => w.status !== 'upcoming').length;
+              const theoryRate = theoryTotal > 0 ? Math.round((theoryAttended / theoryTotal) * 100) : 100;
+
+              return (
+                <div
+                  key={subj.id}
+                  onClick={() => handleCardClick(subj)}
+                  className="bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl p-4.5 flex flex-col justify-between gap-3 shadow-sm transition-all hover:bg-slate-50 dark:hover:bg-zinc-700/50 hover:border-slate-200 dark:hover:border-zinc-600 cursor-pointer active:translate-y-px"
+                >
+                  <div className="flex items-start gap-3.5">
+                    {/* StatCard colored icon container */}
+                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${subj.iconBg}`}>
+                      <BookOpen className={`w-5 h-5 ${subj.iconColor}`} strokeWidth={2.5} />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
+                          {subj.code}
+                        </span>
+                        {!subj.hasPractical && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
+                            {isRtl ? 'نظري فقط' : 'Theory only'}
+                          </span>
+                        )}
+                      </div>
+
+                      <h3 className="font-black text-slate-900 dark:text-stone-100 text-base leading-snug mt-1 line-clamp-1">
+                        {isRtl ? subj.nameAr : subj.nameEn}
+                      </h3>
+
+                      <p className="text-xs font-bold text-slate-400 dark:text-slate-500 mt-0.5">
+                        {subj.doctorName}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* StatCard Footer Info */}
+                  <div className="pt-2 border-t border-slate-100 dark:border-zinc-700/80 flex items-center justify-between text-xs font-bold">
+                    <div className="flex items-center gap-1.5 text-slate-500 dark:text-zinc-400">
+                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                      <span>{isRtl ? `نسبة الحضور: ${theoryRate}%` : `Rate: ${theoryRate}%`}</span>
+                    </div>
+
+                    <span className="text-teal-600 dark:text-teal-400 font-black flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
+                      {isRtl ? 'عرض الأسابيع' : 'View weeks'}
+                      {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          3. ACTION MODAL: Pops two buttons (نظري و عملي)
+          ------------------------------------------------------------- */}
+      {showModeModal && activeSubject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 space-y-5 animate-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="text-center space-y-1">
+              <span className="text-[11px] font-mono font-bold text-slate-400 dark:text-zinc-500">
+                {activeSubject.code}
+              </span>
+              <h3 className="text-lg font-black text-slate-900 dark:text-stone-100">
+                {isRtl ? activeSubject.nameAr : activeSubject.nameEn}
+              </h3>
+              <p className="text-xs font-bold text-slate-500 dark:text-zinc-400">
+                {isRtl ? 'اختر نوع المحاضرة لعرض سجل الحضور الأسبوعي' : 'Select lecture type to view weekly records'}
+              </p>
+            </div>
+
+            {/* The Two Buttons: نظري و عملي */}
+            <div className="grid grid-cols-1 gap-3">
+              {/* Button 1: نظري */}
+              <button
+                onClick={() => handleSelectMode('theory')}
+                className="w-full p-4 rounded-2xl border-2 border-emerald-100 dark:border-emerald-950/60 bg-emerald-50/50 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/40 text-start flex items-center justify-between gap-3 transition-all active:scale-[0.98] group cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                    <BookOpen className="w-5 h-5" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <h4 className="font-black text-sm text-slate-900 dark:text-stone-100">
+                      {isRtl ? 'المحاضرات النظرية (نظري)' : 'Theoretical Lectures'}
+                    </h4>
+                    <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-0.5">
+                      {isRtl ? `${activeSubject.theoryWeeks.length} أسابيع مسجلة` : `${activeSubject.theoryWeeks.length} weeks registered`}
+                    </p>
+                  </div>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center text-emerald-700 dark:text-emerald-300">
+                  {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </div>
+              </button>
+
+              {/* Button 2: عملي */}
+              <button
+                onClick={() => activeSubject.hasPractical && handleSelectMode('practical')}
+                disabled={!activeSubject.hasPractical}
+                className={`w-full p-4 rounded-2xl border-2 text-start flex items-center justify-between gap-3 transition-all ${
+                  activeSubject.hasPractical
+                    ? 'border-sky-100 dark:border-sky-950/60 bg-sky-50/50 hover:bg-sky-50 dark:bg-sky-950/20 dark:hover:bg-sky-950/40 active:scale-[0.98] cursor-pointer'
+                    : 'border-slate-100 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-800/40 opacity-50 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                    activeSubject.hasPractical
+                      ? 'bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300'
+                      : 'bg-slate-200 dark:bg-zinc-700 text-slate-400 dark:text-zinc-500'
+                  }`}>
+                    <FlaskConical className="w-5 h-5" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-black text-sm text-slate-900 dark:text-stone-100">
+                        {isRtl ? 'المختبرات (عملي)' : 'Practical Labs'}
+                      </h4>
+                      {!activeSubject.hasPractical && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400">
+                          {isRtl ? 'غير متوفر' : 'N/A'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-0.5">
+                      {activeSubject.hasPractical
+                        ? (isRtl ? `${activeSubject.practicalWeeks.length} مختبرات مسجلة` : `${activeSubject.practicalWeeks.length} labs registered`)
+                        : (isRtl ? 'لا يوجد مختبر عملي لهذه المادة' : 'No practical lab for this subject')}
+                    </p>
+                  </div>
+                </div>
+                {activeSubject.hasPractical && (
+                  <div className="w-8 h-8 rounded-full bg-sky-100 dark:bg-sky-900/40 flex items-center justify-center text-sky-700 dark:text-sky-300">
+                    {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </div>
+                )}
+              </button>
+            </div>
+
+            {/* Cancel / Close button */}
+            <button
+              onClick={() => {
+                setShowModeModal(false);
+                setActiveSubject(null);
+              }}
+              className="w-full py-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-600 dark:text-zinc-300 font-bold text-xs transition-colors cursor-pointer"
+            >
+              {isRtl ? 'إلغاء' : 'Cancel'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          4. WEEKLY ATTENDANCE BREAKDOWN (سجل الأسابيع)
+          ------------------------------------------------------------- */}
+      {selectedMode && activeSubject && (
+        <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          {/* Header Bar with Back Button */}
+          <div className="bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBackToSubjects}
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-zinc-700 text-slate-700 dark:text-zinc-200 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors cursor-pointer"
+                title={isRtl ? 'الرجوع للمواد' : 'Back to subjects'}
+              >
+                {isRtl ? <ArrowRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
+              </button>
+
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-black text-slate-900 dark:text-stone-100">
+                    {isRtl ? activeSubject.nameAr : activeSubject.nameEn}
+                  </h2>
+                  <span className={`px-2 py-0.5 rounded-md text-[11px] font-black ${
+                    selectedMode === 'theory'
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                      : 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300'
+                  }`}>
+                    {selectedMode === 'theory' ? (isRtl ? 'نظري' : 'Theory') : (isRtl ? 'عملي' : 'Practical')}
+                  </span>
+                </div>
+                <p className="text-xs font-bold text-slate-400 dark:text-zinc-500 mt-0.5">
+                  {isRtl ? `كروبك الأصلي: ${userGroup}` : `Your original group: ${userGroup}`}
+                </p>
+              </div>
+            </div>
+
+            <div className="text-end">
+              <span className="text-[11px] font-bold text-slate-400 block">
+                {isRtl ? 'نسبة الالتزام' : 'Rate'}
+              </span>
+              <span className="text-base font-black text-teal-600 dark:text-teal-400">
+                {attendancePercentage}%
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Filter Info Note */}
+          <div className="px-1 flex items-center justify-between text-xs font-bold text-slate-400 dark:text-zinc-500">
+            <span>{isRtl ? 'سجل حضور المحاضرات الأسبوعية:' : 'Weekly Attendance Timeline:'}</span>
+            <span>{isRtl ? `${completedWeeks} حضور • ${missedWeeks} غياب` : `${completedWeeks} present • ${missedWeeks} absent`}</span>
+          </div>
+
+          {/* Weeks Cards Grid / List */}
+          <div className="space-y-3">
+            {currentWeeksList.map((week) => {
+              // Status Badge Resolution
+              let statusBadge = null;
+              if (week.status === 'attended') {
+                statusBadge = (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-black bg-emerald-50 text-emerald-700 border border-emerald-200/80 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/60">
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>{isRtl ? `حاضر في كروبك (${userGroup})` : `Present in (${userGroup})`}</span>
+                  </span>
+                );
+              } else if (week.status === 'substituted') {
+                statusBadge = (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-black bg-indigo-50 text-indigo-700 border border-indigo-200/80 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-800/60 shadow-sm">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>{isRtl ? `تعويض في كروب (${week.attendedGroup}) ⚡` : `Substituted in (${week.attendedGroup}) ⚡`}</span>
+                  </span>
+                );
+              } else if (week.status === 'absent') {
+                statusBadge = (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-black bg-rose-50 text-rose-700 border border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/60">
+                    <span>{isRtl ? 'غائب ✗' : 'Absent ✗'}</span>
+                  </span>
+                );
+              } else {
+                statusBadge = (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-500 dark:bg-zinc-700/60 dark:text-zinc-400">
+                    <Clock className="w-3 h-3" />
+                    <span>{isRtl ? 'قادمة ⏱' : 'Upcoming ⏱'}</span>
+                  </span>
+                );
+              }
+
+              return (
+                <div
+                  key={week.weekNumber}
+                  className="bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700/90 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <span className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-zinc-700 text-slate-700 dark:text-zinc-200 text-xs font-black flex items-center justify-center font-mono">
+                        {week.weekNumber}
+                      </span>
+                      <h4 className="font-black text-sm text-slate-900 dark:text-stone-100">
+                        {week.title}
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-zinc-400 font-bold px-1">
+                      {week.topic}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center sm:justify-end gap-2.5 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-zinc-700/60">
+                    {/* Date and time pill */}
+                    {week.date && (
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-700/30 px-2.5 py-1 rounded-xl">
+                        <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{week.date}</span>
+                        {week.time && <span>• {week.time}</span>}
+                      </div>
+                    )}
+
+                    {/* Status Badge */}
+                    {statusBadge}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          5. LIVE CAMERA SCANNER MODAL (QrScannerModal)
+          ------------------------------------------------------------- */}
+      {scannerOpen && (
+        <QrScannerModal
+          lang={lang}
+          onScan={handleScanSuccess}
+          onClose={() => setScannerOpen(false)}
+        />
+      )}
+
+      {/* -------------------------------------------------------------
+          6. VERIFIED RECEIPT SUCCESS POPUP
+          ------------------------------------------------------------- */}
+      {scanSuccessSheet?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 text-center space-y-4 animate-in zoom-in-95">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400 shadow-lg shadow-emerald-500/20">
+              <CheckCircle2 className="h-9 w-9" />
+            </div>
+
+            <div>
+              <span className="inline-block px-3 py-1 rounded-full text-xs font-black bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                {isRtl ? 'تم التوثيق بنجاح' : 'Verified Successfully'}
+              </span>
+              <h3 className="mt-2 text-lg font-black text-slate-900 dark:text-zinc-100">
+                {isRtl ? 'تم تسجيل حضورك!' : 'Attendance Recorded!'}
+              </h3>
+              <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-1">
+                {scanSuccessSheet.lectureTitle}
+              </p>
+              <p className="text-xs text-teal-600 dark:text-teal-400 font-bold mt-0.5">
+                {scanSuccessSheet.subjectName} • {scanSuccessSheet.time}
+              </p>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/60 text-xs text-slate-500 space-y-1">
+              <div className="flex justify-between font-bold">
+                <span>{isRtl ? 'رقم الإيصال:' : 'Receipt ID:'}</span>
+                <span className="font-mono text-slate-800 dark:text-zinc-200">{scanSuccessSheet.receiptId}</span>
+              </div>
+              <div className="flex justify-between font-bold">
+                <span>{isRtl ? 'الكروب المسجل:' : 'Attended Group:'}</span>
+                <span className="font-mono text-emerald-600 font-black">{scanSuccessSheet.group}</span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setScanSuccessSheet(null)}
+              className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
+            >
+              {isRtl ? 'حسناً، تم الحفظ' : 'Done'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

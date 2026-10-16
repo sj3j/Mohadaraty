@@ -516,6 +516,46 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                       onClick={() => onOpen('subManage')}
                     />
                   )}
+                  {/* ============================================================================
+                     * [MANAGEMENT TIER] BACKEND AGENT CONTRACT & INTEGRATION GUIDE
+                     * ============================================================================
+                     * 
+                     * 1. SCOPE & BOUNDARY:
+                     *    - EXCLUSIVELY MASTER ADMIN FACING (isMasterAdmin(user)).
+                     *    - Purpose: Provisioning Doctor / Lecturer credentials and assigning academic duties.
+                     *    - STRICT RULE FOR BACKEND AGENT: Master Admin does NOT run live lecture sessions
+                     *      or scan barcodes here. This row is for CREDENTIAL & SUBJECT PROVISIONING ONLY.
+                     * 
+                     * 2. ACCOUNT PROVISIONING PAYLOAD:
+                     *    When the admin taps this row, launch a DoctorAccountProvisionModal collecting:
+                     *    - Doctor Full Name (e.g. "أ.د. حيدر كاظم")
+                     *    - Institutional Email (e.g. "haider.k@alsafwa.edu.iq")
+                     *    - Secure Initial Password
+                     *    - Academic Stage: `assignedStageId` (e.g. "stage_4")
+                     *    - Assigned Subjects: `assignedSubjects` (Array of 1 or 2 subjects maximum):
+                     *      * id: string (e.g. "phar_401")
+                     *      * nameAr: string (e.g. "علم الأدوية والسموم")
+                     *      * nameEn: string (e.g. "Pharmacology & Toxicology")
+                     *      * type: 'theoretical' | 'practical' | 'both'
+                     *    - UserProfile role: MUST BE set to `role: 'doctor'`.
+                     * 
+                     * 3. AUTHENTICATION & LOGIN FLOW:
+                     *    - Write account to Firebase Auth (`createUserWithEmailAndPassword`).
+                     *    - Persist profile to Firestore `users/{uid}` and Supabase `users` table.
+                     *    - When this user logs in, `App.tsx` detects `user.role === 'doctor'` and
+                     *      automatically redirects them directly to `<DoctorPortal />`.
+                     * ============================================================================
+                   */}
+                  {!IS_STORE_BUILD && isMasterAdmin(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.attendanceAdmin}
+                      label={isRtl ? 'إدارة الحضور وحسابات التدريسيين' : 'Manage attendance & doctors'}
+                      sublabel={isRtl ? 'إنشاء حسابات التدريسيين وتعيين المواد' : 'Doctor accounts & subject assignments'}
+                      onClick={() => {
+                        // BACKEND AGENT HOOK: Attach DoctorAccountProvisionModal here
+                      }}
+                    />
+                  )}
                   {canViewAdminLogs(user) && (
                     <SettingsRow
                       isRtl={isRtl} icon={SETTINGS_ICONS.logs}
