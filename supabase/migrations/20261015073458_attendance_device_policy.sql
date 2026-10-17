@@ -115,7 +115,9 @@ begin
   select array_agg(flag) into v_flags from jsonb_array_elements_text(coalesce(p_advisory->'flags', '[]')) flag;
   v_flags := coalesce(v_flags, '{}');
   select * into v_roster from public.attendance_session_roster where session_id = p_session_id and roster_student_id = p_roster_student_id;
-  if not found then v_reason := 'roster_not_snapshotted';
+  if v_received_at > v_session.reconciliation_deadline then
+    v_resolution := 'invalid_evidence'; v_reason := 'submission_deadline_passed';
+  elsif not found then v_reason := 'roster_not_snapshotted';
   elsif p_device_digest is null or p_installation_digest is null then v_reason := 'device_unverified';
   else
     insert into public.attendance_device_claims(session_id, installation_digest, roster_student_id)
@@ -133,7 +135,6 @@ begin
       if not found then v_reason := 'device_enrollment_required';
       elsif v_enrolled <> p_device_digest then v_reason := 'device_change_required';
       elsif v_session.status in ('cancelled', 'finalized') then v_reason := 'session_' || v_session.status;
-      elsif v_received_at > v_session.reconciliation_deadline then v_reason := 'outside_reconciliation_window';
       else
         if not v_roster.expected_attendee then v_flags := v_flags || array['visiting_subgroup']; end if;
         insert into public.attendance_records(session_id, roster_student_id, student_uid, official_name_snapshot, entry_method, installation_digest, review_flags, advisory, client_reported_at)
@@ -153,7 +154,6 @@ begin
   end if;
   insert into public.attendance_receipts(request_id, session_id, challenge_id, actor_uid, roster_student_id, payload_hash, installation_digest, device_digest, local_device_conflict, received_at, resolution, reason, record_id, review_flags, advisory)
   values (p_request_id, p_session_id, p_challenge_id, p_actor_uid, p_roster_student_id, p_payload_hash, p_installation_digest, p_device_digest, p_local_device_conflict, v_received_at, v_resolution, v_reason, v_record.id, v_flags, p_advisory);
-  update public.attendance_sessions set revision = revision + 1 where id = p_session_id;
   return public.attendance_receipt_result(p_request_id);
 end;
 $$;
@@ -180,6 +180,7 @@ begin
   if v_receipt.resolution <> 'needs_review' then raise exception 'receipt_not_reviewable'; end if;
   v_before := to_jsonb(v_receipt);
   if p_decision = 'confirm' then
+    if exists (select 1 from public.attendance_sessions where id = v_receipt.session_id and (status = 'cancelled' or v_receipt.received_at > reconciliation_deadline)) then raise exception 'receipt_not_eligible'; end if;
     select roster_student_id into v_claim from public.attendance_device_claims where session_id = v_receipt.session_id and installation_digest = v_receipt.installation_digest;
     if v_receipt.local_device_conflict or v_claim is distinct from v_receipt.roster_student_id or v_receipt.device_digest is null then raise exception 'device_conflict_requires_manual_attendance'; end if;
     select * into v_roster from public.attendance_session_roster where session_id = v_receipt.session_id and roster_student_id = v_receipt.roster_student_id;
@@ -206,7 +207,6 @@ begin
   else
     update public.attendance_receipts set resolution = 'invalid_evidence', reason = 'professor_rejected' where request_id = p_receipt_id;
   end if;
-  update public.attendance_sessions set revision = revision + 1 where id = v_receipt.session_id;
   insert into public.attendance_audit_events(request_id, session_id, record_id, actor_uid, action, reason, before_state, after_state)
   values (p_request_id, v_receipt.session_id, v_record.id, p_actor_uid, 'review_' || p_decision, p_reason, v_before, public.attendance_receipt_result(p_receipt_id));
   return public.attendance_receipt_result(p_receipt_id);
@@ -235,7 +235,6 @@ begin
   select * into v_record from public.attendance_records where session_id = p_session_id and roster_student_id = p_roster_student_id;
   update public.attendance_receipts set resolution = 'confirmed', reason = 'professor_manual_confirmation', record_id = v_record.id
   where session_id = p_session_id and roster_student_id = p_roster_student_id and resolution = 'needs_review';
-  update public.attendance_sessions set revision = revision + 1 where id = p_session_id;
   insert into public.attendance_audit_events(request_id, session_id, record_id, actor_uid, action, reason, after_state)
   values (p_request_id, p_session_id, v_record.id, p_actor_uid, 'manual_confirmed', p_reason, to_jsonb(v_record));
   return jsonb_build_object('record', to_jsonb(v_record), 'existing', false);

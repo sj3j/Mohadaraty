@@ -4,7 +4,7 @@
   "version": "1.2.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "tsx watch server.ts",
     "build": "node scripts/copyPdfjsAssets.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:native": "node scripts/copyPdfjsAssets.mjs && vite build --mode native && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:ios": "node scripts/copyPdfjsAssets.mjs && vite build --mode ios",
@@ -86,7 +86,7 @@
     "test:staff-permissions": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/staffPermissions.test.ts\"",
     "test:wipe": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/wipe.test.ts\"",
     "test:simosan": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/simosan.test.ts\"",
-    "test:attendance": "npx tsx scripts/attendance.test.ts"
+    "test:attendance": "npx tsx scripts/attendance.test.ts && npx tsx --test scripts/attendanceSecurity.test.ts scripts/attendanceOffline.test.ts scripts/attendanceDatabase.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",

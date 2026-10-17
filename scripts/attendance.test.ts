@@ -128,13 +128,13 @@ check('Supabase is gateway-only and uses atomic idempotency constraints', () => 
   assert.match(migration, /revoke all on table public\.attendance_receipts from public, anon, authenticated/);
   assert.match(migration, /unique \(session_id, roster_student_id\)/);
   assert.match(migration, /attendance_resolve_review/);
-  assert.match(migration, /greatest\(reconciliation_deadline, now\(\) \+ interval '7 days'\)/);
+  assert.doesNotMatch(migration, /now\(\) \+ interval '7 days'/);
   assert.match(migration, /shared_installation/);
 });
 check('development and production expose identical attendance routes', () => {
   const routes = (source: string) => [...source.matchAll(/app\.(?:get|post|patch)\('([^']*attendance[^']*)'/g)].map(match => match[1]).sort();
   assert.deepEqual(routes(server), routes(production));
-  assert.equal(routes(server).length, 10);
+  assert.equal(routes(server).length, 17);
 });
 
 console.log(`\n${failed ? 'FAILED' : 'OK'} (${failed} failures)`);

@@ -84,6 +84,9 @@ export const isRepresentative = (user?: UserProfile | null): boolean =>
 export const isModerator = (user?: UserProfile | null): boolean =>
   user?.role === 'moderator';
 
+export const isDoctor = (user?: UserProfile | null): boolean =>
+  user?.role === 'doctor';
+
 /**
  * A cross-stage support account.
  *

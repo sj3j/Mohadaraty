@@ -1,46 +1,8 @@
 /**
- * ============================================================================
- * [STUDENT TIER] BACKEND AGENT CONTRACT & INTEGRATION GUIDE
- * ============================================================================
- * 
- * 1. SCOPE & BOUNDARY:
- *    - EXCLUSIVELY STUDENT-FACING.
- *    - Navigation: Accessed via Services Tab -> Attendance (الخدمات -> الحضور).
- *    - Controlled in SimosanPage.tsx when user.role !== 'doctor'.
- *    - STRICT RULE FOR BACKEND AGENT: DO NOT inject lecturer controls (QR generation,
- *      hall projector, session closing, student exclusion) into this file!
- * 
- * 2. CORE UI WORKFLOW:
- *    A. Live QR Barcode Scanner (Top Centered Button):
- *       - Button: "تسجيل الحضور بقارئ الباركود" (emerald gradient).
- *       - Opens QrScannerModal for live camera capture.
- *       - Calls `captureAttendanceQr(qrText, user.uid)`.
- *       - Backend Requirement: Verify student device policy, prevent multi-device
- *         fraud, sign local receipt, write to local IndexedDB (offline-first),
- *         and attempt synchronization to Supabase `attendance_records`.
- * 
- *    B. Subject Cards (StatCard Aesthetic):
- *       - Follows the profile statistics card design tokens (2-column responsive).
- *       - Shows subject name (AR/EN), doctor name, overall attendance %, attended count.
- *       - Backend Requirement: Hydrate from enrolled stage subjects and calculate
- *         attendance stats from confirmed sessions.
- * 
- *    C. Action Modal (نظري و عملي):
- *       - Tapping a subject pops up this modal.
- *       - Two options: "نظري" (Theoretical) and "عملي" (Practical).
- *       - If `hasPractical === false`: Automatically disable practical with
- *         badge: "غير متوفر - لا يوجد مختبر عملي لهذه المادة".
- * 
- *    D. Weekly Attendance Breakdown (سجل الأسابيع):
- *       - Chronological timeline of academic weeks.
- *       - Tracks Native vs Substituted Group Attendance:
- *         * Native: Student attended with their registered group (user.group, e.g. "D3"):
- *           Status: 'attended' -> Badge: "حاضر في كروبك (D3) ✓" (emerald).
- *         * Substituted: Student made up attendance in another group (e.g. attendedGroup === "B2"):
- *           Status: 'substituted' -> Badge: "تعويض في كروب (B2) ⚡" (violet).
- *         * Absent: Status: 'absent' -> Badge: "غائب ✗" (rose).
- *         * Upcoming: Status: 'upcoming' -> Badge: "قادمة ⏱" (slate).
- * ============================================================================
+ * Student attendance view. Signed QR captures are saved to IndexedDB before any
+ * upload; pending evidence stays separate from server-confirmed attendance.
+ * Exact dated occurrences and explicitly assigned subject slots drive this view.
+ * Group substitution requires a separate authorized equivalence link.
  */
 
 import React, { useState } from 'react';
@@ -52,6 +14,9 @@ import {
 import type { Language, UserProfile } from '../../types';
 import { captureAttendanceQr } from '../../services/attendanceService';
 import QrScannerModal from './QrScannerModal';
+import { useStudentAttendance } from './useStudentAttendance';
+import type { StudentAttendanceRow } from '../../../shared/attendanceSchedule';
+import { attendanceWeekStart } from '../../../shared/attendance';
 
 interface StudentSimosanViewProps {
   user: UserProfile;
@@ -59,13 +24,16 @@ interface StudentSimosanViewProps {
 }
 
 export interface WeekAttendanceItem {
+  occurrenceId: string;
+  receiptId?: string;
+  state?: StudentAttendanceRow['state'];
   weekNumber: number;
   title: string;
   topic: string;
   date?: string;
   time?: string;
   attendedGroup?: string; // e.g. "D3" (native) or "B2" (substituted)
-  status: 'attended' | 'substituted' | 'absent' | 'upcoming';
+  status: 'attended' | 'substituted' | 'absent' | 'upcoming' | 'pending';
 }
 
 export interface SubjectItem {
@@ -83,13 +51,15 @@ export interface SubjectItem {
 
 export default function StudentSimosanView({ user, lang }: StudentSimosanViewProps) {
   const isRtl = lang === 'ar';
-  const userGroup = user.group || 'D3';
+  const userGroup = user.group || '—';
+  const attendance = useStudentAttendance(user.uid, user.group);
+  const [scanError, setScanError] = useState('');
 
   // Scanner state
   const [scannerOpen, setScannerOpen] = useState(false);
 
   // Selected subject & mode navigation state
-  const [activeSubject, setActiveSubject] = useState<SubjectItem | null>(null);
+  const [activeSubjectId, setActiveSubjectId] = useState<string | null>(null);
   const [showModeModal, setShowModeModal] = useState(false);
   const [selectedMode, setSelectedMode] = useState<'theory' | 'practical' | null>(null);
 
@@ -103,121 +73,54 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
     group: string;
   } | null>(null);
 
-  // Initial subjects data with realistic weeks, dates, and group substitution
-  const [subjects, setSubjects] = useState<SubjectItem[]>([
-    {
-      id: 'pharma',
-      nameAr: 'علم الأدوية والسموم',
-      nameEn: 'Pharmacology & Toxicology',
-      code: 'PHAR-401',
-      doctorName: 'أ.د. حيدر كاظم',
-      hasPractical: true,
-      iconBg: 'bg-emerald-100 dark:bg-emerald-900/30',
-      iconColor: 'text-emerald-600 dark:text-emerald-400',
-      theoryWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'مقدمة في ديناميكية الدواء والمستقبلات', date: '2026-09-20', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أدوية الجهاز العصبي الذاتي (Autonomic NS)', date: '2026-09-27', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'مناهضات الكولين ومثبطات الأستيل كولين', date: '2026-10-04', time: '11:00 ص', attendedGroup: 'B2', status: 'substituted' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'أدوية الجهاز العصبي الودي (Sympathetic)', status: 'absent' },
-        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'خافضات ضغط الدم ومدرات البول', date: '2026-10-18', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 6, title: 'الأسبوع السادس', topic: 'مضادات اضطراب النظم القلبي', status: 'upcoming' },
-      ],
-      practicalWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'تأثير الأتروبين على عضلات الأمعاء الدقيقة', date: '2026-09-22', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'تحديد الجرعة الفعالة 50 (ED50)', date: '2026-09-29', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تطبيق تجربة الفئران لتأثير المهدئات', date: '2026-10-06', time: '01:00 م', attendedGroup: 'A1', status: 'substituted' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'قياس ضغط الدم الشرياني معملياً', date: '2026-10-13', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'فحص تأثير الموسعات القصبية', status: 'upcoming' },
-      ],
-    },
-    {
-      id: 'clinchem',
-      nameAr: 'الكيمياء السريرية',
-      nameEn: 'Clinical Chemistry',
-      code: 'CHEM-402',
-      doctorName: 'د. سارة ثامر',
-      hasPractical: true,
-      iconBg: 'bg-sky-100 dark:bg-sky-900/30',
-      iconColor: 'text-sky-600 dark:text-sky-400',
-      theoryWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'وظائف الكلى واليوريا والكرياتينين', date: '2026-09-21', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'تحاليل إنزيمات الكبد والبيليروبين', date: '2026-09-28', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'استقلاب الدهون والبروتينات الدهنية', date: '2026-10-05', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'توازن السوائل والكهارل والأملاح', date: '2026-10-12', time: '12:30 م', attendedGroup: 'C3', status: 'substituted' },
-        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'تحليل غازات الدم وحموضة البلازما', date: '2026-10-19', time: '10:30 ص', attendedGroup: userGroup, status: 'attended' },
-      ],
-      practicalWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'التقدير الطيفي لتركيز اليوريا في مصل الدم', date: '2026-09-23', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'قياس مستوى الكرياتينين بطريقة جافي', date: '2026-09-30', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تحليل دهون الدم الكامل (Lipid Profile)', date: '2026-10-07', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'فحص أنزيمات الكبد (GOT / GPT)', status: 'absent' },
-      ],
-    },
-    {
-      id: 'pathology',
-      nameAr: 'علم الأمراض العام',
-      nameEn: 'General Pathology',
-      code: 'PATH-403',
-      doctorName: 'د. أحمد صبيح',
-      hasPractical: true,
-      iconBg: 'bg-rose-100 dark:bg-rose-900/30',
-      iconColor: 'text-rose-600 dark:text-rose-400',
-      theoryWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'أسباب وتأثيرات أذية الخلية والموت المبرمج', date: '2026-09-22', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'الالتهاب الحاد: الاستجابة الوعائية والخلوية', date: '2026-09-29', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'الالتهاب المزمن والتليف النسيجي', status: 'absent' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'آليات التئام الجروح وتجدد الأنسجة', date: '2026-10-13', time: '02:00 م', attendedGroup: 'D1', status: 'substituted' },
-        { weekNumber: 5, title: 'الأسبوع الخامس', topic: 'اضطرابات الدورة الدموية والتخثر', date: '2026-10-20', time: '12:00 م', attendedGroup: userGroup, status: 'attended' },
-      ],
-      practicalWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'الفحص المجهري للتغير الدهني في الكبد', date: '2026-09-24', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'التعرف على النخر التجبني والجلدي', date: '2026-10-01', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'فحص شرائح التهاب الزائدة الدودية الحاد', date: '2026-10-08', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-      ],
-    },
-    {
-      id: 'pharmaceutics',
-      nameAr: 'الصيدلانيات التكنولوجية',
-      nameEn: 'Pharmaceutics & Tech',
-      code: 'TECH-404',
-      doctorName: 'د. زينب جواد',
-      hasPractical: true,
-      iconBg: 'bg-amber-100 dark:bg-amber-900/30',
-      iconColor: 'text-amber-600 dark:text-amber-400',
-      theoryWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'المستحلبات والمعلقات الصيدلانية الحديثة', date: '2026-09-23', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أنظمة التوصيل الدوائي المستدام', date: '2026-09-30', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'تقنيات تصنيع الكبسولات الصلبة والمرنة', date: '2026-10-07', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'ثباتية المستحضرات الدوائية والتحلل المائي', date: '2026-10-14', time: '08:30 ص', attendedGroup: userGroup, status: 'attended' },
-      ],
-      practicalWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'تحضير مستحلب زيت في ماء ودراسة ثباتيته', date: '2026-09-25', time: '01:00 م', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'قياس لزوجة المعلقات بجهاز Brookfield', date: '2026-10-02', time: '01:00 م', attendedGroup: 'B4', status: 'substituted' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'كبس وتفتت الأقراص الصيدلانية', date: '2026-10-09', time: '01:00 م', attendedGroup: userGroup, status: 'attended' },
-      ],
-    },
-    {
-      id: 'ethics',
-      nameAr: 'الأخلاقيات والتشريعات الصيدلانية',
-      nameEn: 'Pharmacy Ethics & Law',
-      code: 'ETH-405',
-      doctorName: 'د. عمار الموسوي',
-      hasPractical: false, // Pure theoretical subject
-      iconBg: 'bg-indigo-100 dark:bg-indigo-900/30',
-      iconColor: 'text-indigo-600 dark:text-indigo-400',
-      theoryWeeks: [
-        { weekNumber: 1, title: 'الأسبوع الأول', topic: 'قانون ممارسة مهنة الصيدلة العراقي', date: '2026-09-24', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 2, title: 'الأسبوع الثاني', topic: 'أخلاقيات صرف الأدوية الخاضعة للرقابة', date: '2026-10-01', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 3, title: 'الأسبوع الثالث', topic: 'المسؤولية القانونية في الأخطاء الدوائية', date: '2026-10-08', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-        { weekNumber: 4, title: 'الأسبوع الرابع', topic: 'تسجيل واستيراد الأدوية في وزارة الصحة', date: '2026-10-15', time: '11:00 ص', attendedGroup: userGroup, status: 'attended' },
-      ],
-      practicalWeeks: [],
-    },
-  ]);
+  const subjectMap = new Map<string, SubjectItem>();
+  for (const row of attendance.rows) {
+    const occurrence = row.occurrence;
+    const assignment = attendance.mine?.subjects?.find(subject => subject.timetableSessionIds.includes(occurrence.timetableSessionId || ''));
+    const id = assignment?.id || occurrence.timetableSessionId || occurrence.id;
+    let subject = subjectMap.get(id);
+    if (!subject) {
+      subject = {
+        id, nameAr: assignment?.nameAr || occurrence.title, nameEn: assignment?.nameEn || occurrence.title, code: assignment?.id || '',
+        doctorName: occurrence.teacher || '', hasPractical: assignment?.type !== 'theoretical' && assignment != null,
+        iconBg: 'bg-emerald-100 dark:bg-emerald-900/30',
+        iconColor: 'text-emerald-600 dark:text-emerald-400',
+        theoryWeeks: [], practicalWeeks: [],
+      };
+      subjectMap.set(id, subject);
+    }
+    const weekNumber = attendance.mine?.term
+      ? Math.floor((Date.parse(row.weekStart) - Date.parse(attendanceWeekStart(attendance.mine.term.startDate))) / 604800000) + 1 : 1;
+    const item: WeekAttendanceItem = {
+      occurrenceId: occurrence.id, receiptId: row.receipt?.requestId, state: row.state,
+      weekNumber: Math.max(1, weekNumber),
+      title: isRtl ? 'سجل المحاضرة' : 'Lecture record', topic: occurrence.title,
+      date: occurrence.lectureDate, time: occurrence.startTime,
+      status: row.state === 'confirmed' ? 'attended' : row.state === 'absent' ? 'absent' : row.state === 'none' ? 'upcoming' : 'pending',
+    };
+    if (occurrence.mode === 'practical') {
+      subject.hasPractical = true;
+      subject.practicalWeeks.push(item);
+    } else subject.theoryWeeks.push(item);
+  }
+  const subjects = [...subjectMap.values()];
+  const activeSubject = subjects.find(subject => subject.id === activeSubjectId) || null;
+  const stateLabel = (state?: StudentAttendanceRow['state']) => {
+    const labels: Record<string, [string, string]> = {
+      pending: ['تم الحفظ على هذا الجهاز — بانتظار المزامنة', 'Saved on this device — pending sync'],
+      syncing: ['جارٍ إرسال الإيصال', 'Uploading receipt'],
+      login_required: ['تم الحفظ — سجل الدخول للمزامنة', 'Saved — sign in to sync'],
+      review: ['تم الاستلام — بانتظار مراجعة الأستاذ', 'Received — lecturer review required'],
+      manual_required: ['يحتاج تسجيلاً يدوياً من الأستاذ', 'Ask the lecturer for manual recording'],
+      invalid: ['لم يعتمد الإيصال — راجع الأستاذ', 'Receipt not accepted — contact lecturer'],
+      voided: ['تم إلغاء الحضور بواسطة الأستاذ', 'Attendance voided by lecturer'],
+    };
+    return (labels[state || 'pending'] || labels.pending)[isRtl ? 0 : 1];
+  };
 
   // Handle open subject card
   const handleCardClick = (subject: SubjectItem) => {
-    setActiveSubject(subject);
+    setActiveSubjectId(subject.id);
     setShowModeModal(true);
   };
 
@@ -230,61 +133,25 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
   // Back to subjects grid
   const handleBackToSubjects = () => {
     setSelectedMode(null);
-    setActiveSubject(null);
+    setActiveSubjectId(null);
   };
 
-  // Handle QR Scan Success
   const handleScanSuccess = async (scannedValue: string) => {
     setScannerOpen(false);
-    let capturedLectureTitle = 'المحاضرة الحالية';
-    let targetSubjectName = 'علم الأدوية والسموم';
-    let targetSubjectId = 'pharma';
-
+    setScanError('');
     try {
-      const parsed = JSON.parse(scannedValue);
-      if (parsed.subjectId && parsed.subjectName) {
-        targetSubjectId = parsed.subjectId;
-        targetSubjectName = parsed.subjectName;
-        capturedLectureTitle = parsed.lectureTitle || 'جلسة الحضور المباشرة';
-      }
-    } catch {}
-
-    const receiptCode = `REC-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    try {
-      await captureAttendanceQr(scannedValue);
-    } catch {}
-
-    // Update subject theory or practical week dynamically
-    setSubjects((prev) =>
-      prev.map((s) => {
-        if (s.id === targetSubjectId || s.id === 'pharma') {
-          const updatedTheory = [...s.theoryWeeks];
-          const upcomingIdx = updatedTheory.findIndex((w) => w.status === 'upcoming');
-          if (upcomingIdx !== -1) {
-            updatedTheory[upcomingIdx] = {
-              ...updatedTheory[upcomingIdx],
-              status: 'attended',
-              attendedGroup: userGroup,
-              date: new Date().toISOString().slice(0, 10),
-              time: new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }),
-            };
-          }
-          return { ...s, theoryWeeks: updatedTheory };
-        }
-        return s;
-      })
-    );
-
-    // Show instant success receipt sheet
-    setScanSuccessSheet({
-      open: true,
-      lectureTitle: capturedLectureTitle,
-      subjectName: targetSubjectName,
-      receiptId: receiptCode,
-      time: new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }),
-      group: userGroup,
-    });
+      const { receipt } = await captureAttendanceQr(scannedValue, user.uid);
+      setScanSuccessSheet({
+        open: true, lectureTitle: receipt.occurrence.title,
+        subjectName: receipt.occurrence.lectureDate, receiptId: receipt.requestId,
+        time: receipt.occurrence.startTime, group: userGroup,
+      });
+      void attendance.refresh();
+    } catch {
+      setScanError(isRtl
+        ? 'لم يتم حفظ الإيصال. حاول مجدداً أو اطلب التسجيل اليدوي من الأستاذ.'
+        : 'Receipt was NOT saved. Retry or ask the lecturer for manual attendance.');
+    }
   };
 
   // Calculations for active subject
@@ -295,10 +162,22 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
   const completedWeeks = currentWeeksList.filter((w) => w.status === 'attended' || w.status === 'substituted').length;
   const missedWeeks = currentWeeksList.filter((w) => w.status === 'absent').length;
   const totalHeldWeeks = completedWeeks + missedWeeks;
-  const attendancePercentage = totalHeldWeeks > 0 ? Math.round((completedWeeks / totalHeldWeeks) * 100) : 100;
+  const attendancePercentage = totalHeldWeeks > 0 ? Math.round((completedWeeks / totalHeldWeeks) * 100) : 0;
 
   return (
     <div className="w-full space-y-6" dir={isRtl ? 'rtl' : 'ltr'}>
+      {scanError && <p role="alert" className="rounded-2xl bg-rose-50 p-4 text-rose-800">{scanError}</p>}
+      <div className="flex items-center justify-between rounded-2xl bg-slate-100 p-3 text-xs dark:bg-zinc-800" aria-live="polite">
+        <span>{attendance.loading ? (isRtl ? 'تحميل السجل المحفوظ…' : 'Loading saved records…') : attendance.error || attendance.mine?.offline ? (isRtl ? 'عرض البيانات المحفوظة — الاتصال غير متاح' : 'Showing saved evidence — connection unavailable') : (isRtl ? 'سجل الحضور' : 'Attendance records')}</span>
+        <button onClick={() => void attendance.retry().catch(() => setScanError(isRtl ? 'تعذرت المزامنة؛ الإيصالات محفوظة.' : 'Sync unavailable; saved receipts are retained.'))} className="flex items-center gap-1 font-bold"><RefreshCw className="h-4 w-4" />{isRtl ? 'مزامنة' : 'Sync'}</button>
+      </div>
+      {!attendance.loading && subjects.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm dark:bg-zinc-800">{isRtl ? 'لا توجد محاضرات محملة بعد. يمكنك مسح رمز الأستاذ أو طلب المساعدة.' : 'No lectures are loaded yet. You can scan the lecturer’s QR or ask for help.'}</p>}
+      {attendance.rows.filter(row => row.receipt && !['confirmed', 'none'].includes(row.state)).map(row => (
+        <div key={row.occurrence.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" aria-live="polite">
+          <strong>{row.occurrence.title} — {row.occurrence.lectureDate}</strong>
+          <p>{stateLabel(row.state)}</p><p className="break-all font-mono">{row.receipt?.requestId}</p>
+        </div>
+      ))}
       {/* -------------------------------------------------------------
           1. TOP CENTERED ACTION BUTTON: تسجيل حضور بقارئ الباركود
           ------------------------------------------------------------- */}
@@ -334,10 +213,8 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {subjects.map((subj) => {
-              // Quick calculations for the card badge
-              const theoryAttended = subj.theoryWeeks.filter(w => w.status === 'attended' || w.status === 'substituted').length;
-              const theoryTotal = subj.theoryWeeks.filter(w => w.status !== 'upcoming').length;
-              const theoryRate = theoryTotal > 0 ? Math.round((theoryAttended / theoryTotal) * 100) : 100;
+              const assessed = [...subj.theoryWeeks, ...subj.practicalWeeks].filter(week => week.status === 'attended' || week.status === 'absent');
+              const attendanceRate = assessed.length ? Math.round(100 * assessed.filter(week => week.status === 'attended').length / assessed.length) : 0;
 
               return (
                 <div
@@ -377,7 +254,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                   <div className="pt-2 border-t border-slate-100 dark:border-zinc-700/80 flex items-center justify-between text-xs font-bold">
                     <div className="flex items-center gap-1.5 text-slate-500 dark:text-zinc-400">
                       <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                      <span>{isRtl ? `نسبة الحضور: ${theoryRate}%` : `Rate: ${theoryRate}%`}</span>
+                      <span>{isRtl ? `نسبة الحضور: ${attendanceRate}%` : `Rate: ${attendanceRate}%`}</span>
                     </div>
 
                     <span className="text-teal-600 dark:text-teal-400 font-black flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
@@ -484,7 +361,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
             <button
               onClick={() => {
                 setShowModeModal(false);
-                setActiveSubject(null);
+                setActiveSubjectId(null);
               }}
               className="w-full py-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-600 dark:text-zinc-300 font-bold text-xs transition-colors cursor-pointer"
             >
@@ -554,7 +431,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                 statusBadge = (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-black bg-emerald-50 text-emerald-700 border border-emerald-200/80 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/60">
                     <Check className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>{isRtl ? `حاضر في كروبك (${userGroup})` : `Present in (${userGroup})`}</span>
+                    <span>{isRtl ? 'حضور مؤكد لهذه المحاضرة' : 'Confirmed for this lecture'}</span>
                   </span>
                 );
               } else if (week.status === 'substituted') {
@@ -570,6 +447,8 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                     <span>{isRtl ? 'غائب ✗' : 'Absent ✗'}</span>
                   </span>
                 );
+              } else if (week.status === 'pending') {
+                statusBadge = <span className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{stateLabel(week.state)}<span className="block break-all font-mono">{week.receiptId}</span></span>;
               } else {
                 statusBadge = (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-500 dark:bg-zinc-700/60 dark:text-zinc-400">
@@ -581,7 +460,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
 
               return (
                 <div
-                  key={week.weekNumber}
+                  key={week.occurrenceId}
                   className="bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700/90 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
                 >
                   <div className="space-y-1">
@@ -635,16 +514,16 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
       {scanSuccessSheet?.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
           <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 text-center space-y-4 animate-in zoom-in-95">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400 shadow-lg shadow-emerald-500/20">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
               <CheckCircle2 className="h-9 w-9" />
             </div>
 
             <div>
               <span className="inline-block px-3 py-1 rounded-full text-xs font-black bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                {isRtl ? 'تم التوثيق بنجاح' : 'Verified Successfully'}
+                {isRtl ? 'تم الحفظ على هذا الجهاز' : 'Saved on this device'}
               </span>
               <h3 className="mt-2 text-lg font-black text-slate-900 dark:text-zinc-100">
-                {isRtl ? 'تم تسجيل حضورك!' : 'Attendance Recorded!'}
+                {isRtl ? 'بانتظار المزامنة والتحقق' : 'Awaiting sync and verification'}
               </h3>
               <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-1">
                 {scanSuccessSheet.lectureTitle}
@@ -657,10 +536,10 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/60 text-xs text-slate-500 space-y-1">
               <div className="flex justify-between font-bold">
                 <span>{isRtl ? 'رقم الإيصال:' : 'Receipt ID:'}</span>
-                <span className="font-mono text-slate-800 dark:text-zinc-200">{scanSuccessSheet.receiptId}</span>
+                <span className="max-w-[65%] break-all font-mono text-slate-800 dark:text-zinc-200">{scanSuccessSheet.receiptId}</span>
               </div>
               <div className="flex justify-between font-bold">
-                <span>{isRtl ? 'الكروب المسجل:' : 'Attended Group:'}</span>
+                <span>{isRtl ? 'كروب الحساب:' : 'Account group:'}</span>
                 <span className="font-mono text-emerald-600 font-black">{scanSuccessSheet.group}</span>
               </div>
             </div>

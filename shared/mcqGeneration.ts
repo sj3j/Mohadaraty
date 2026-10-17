@@ -17,7 +17,7 @@
  * Generation now runs server-side, so no Gemini key reaches the browser at all.
  *
  * TWO KEYS, DELIBERATELY. This pipeline uses `GEMINI_FREE_TIER_API_KEY` and
- * `gemini-3.6-flash` (which has a free tier); Simosan uses the paid
+ * `gemini-3.8-flash` (which has a free tier); Simosan uses the paid
  * `GEMINI_API_KEY` and `gemini-3.1-flash-lite` (which does not). Google's terms
  * say unpaid-tier content is used "to provide, improve, and develop Google
  * products" and may be read by human reviewers - accepted here because these
@@ -26,7 +26,7 @@
  */
 
 /** Free tier exists for this model; `gemini-3.1-flash-lite` has none. */
-export const MCQ_MODEL = 'gemini-3.6-flash';
+export const MCQ_MODEL = 'gemini-3.8-flash';
 
 export const MCQ_QUESTION_COUNT = 20;
 

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import {
   ATTENDANCE_QR_VERSION,
-  ATTENDANCE_RECONCILIATION_DAYS,
+  ATTENDANCE_RECONCILIATION_HOURS,
   ATTENDANCE_TIMEZONE,
   attendanceTermId,
   buildAttendanceOccurrences,
@@ -11,6 +11,7 @@ import {
   type AttendanceQrClaims,
   type AttendanceRecordView,
   type AttendanceSessionView,
+  type AttendanceOfflinePermitClaims,
 } from './attendance.js';
 import { baghdadToday } from './academicCalendar.js';
 import { isMasterAdminEmail } from './masterAdmins.js';
@@ -21,6 +22,7 @@ import { getSupabaseAdmin } from './supabaseClient.js';
 import type { StageTimetableDoc } from './timetable.js';
 import { verifyAttendanceDevice } from './attendanceDevice.js';
 import { summarizeAttendanceTelemetry, type CampusBoundary } from './attendanceSecurity.js';
+import { attendanceSessionId, validateAttendancePublicKey, verifyOfflineAttendanceToken } from './attendanceOffline.js';
 
 export interface AttendanceDeps {
   admin: any;
@@ -30,6 +32,7 @@ type Actor = {
   uid: string;
   staff: StaffProjection;
   student: { id: string; data: any } | null;
+  doctor?: { stageId: string; timetableSessionIds: string[]; subjects?: import('./attendance.js').AttendanceDoctorSubject[] };
 };
 
 const MAX_SYNC_RECEIPTS = 25;
@@ -60,6 +63,10 @@ function qrKeyConfig() {
 }
 
 export function signAttendanceQr(claims: AttendanceQrClaims): string {
+  return signServerCredential(claims);
+}
+
+function signServerCredential(claims: AttendanceQrClaims | AttendanceOfflinePermitClaims): string {
   const { privateKey, keyId } = qrKeyConfig();
   if (!privateKey) throw new Error('attendance_qr_not_configured');
   return jwt.sign(claims, privateKey, {
@@ -67,6 +74,14 @@ export function signAttendanceQr(claims: AttendanceQrClaims): string {
     keyid: keyId,
     noTimestamp: true,
   });
+}
+
+function verifyOfflinePermit(token: string): AttendanceOfflinePermitClaims {
+  const header = jwt.decode(token, { complete: true })?.header;
+  const key = header?.kid ? qrKeyConfig().publicKeys[header.kid] : undefined;
+  if (!key) throw new Error('unknown_qr_key');
+  try { return jwt.verify(token, key, { algorithms: ['ES256'] }) as AttendanceOfflinePermitClaims; }
+  catch { throw new Error('invalid_offline_permit'); }
 }
 
 export function verifyAttendanceQr(token: string): AttendanceQrClaims {
@@ -101,23 +116,53 @@ function campusBoundary(): CampusBoundary | undefined {
   return { latitude, longitude, radiusMeters };
 }
 
-function attendanceError(res: any, error: any, label: string) {
+export function attendanceErrorResponse(error: any): { status: number; error: string } {
   const message = String(error?.message || error || 'unknown_error');
-  console.error(`[attendance] ${label} failed`, error);
-  if (message.includes('revision_conflict')) return res.status(409).json({ error: 'revision_conflict' });
+  const code = String(error?.code || 'attendance_error');
+  if (message.includes('revision_conflict')) return { status: 409, error: 'revision_conflict' };
+  if (code === 'PGRST205' || code === '42P01' || /attendance_.+schema cache|public\.attendance_.+does not exist/i.test(message)) {
+    return { status: 503, error: 'attendance_schema_missing' };
+  }
   if (message.includes('not_configured') || message.includes('Supabase')) {
-    return res.status(503).json({ error: 'attendance_not_configured' });
+    return { status: 503, error: 'attendance_not_configured' };
   }
   if (/unknown_|invalid_|not_in_|not_editable|not_ready|finalized|cancelled|too_long|idempotency/.test(message)) {
-    return res.status(400).json({ error: message.split('\n')[0] });
+    return { status: 400, error: message.split('\n')[0] };
   }
-  return res.status(500).json({ error: 'attendance_request_failed' });
+  return { status: 500, error: 'attendance_request_failed' };
+}
+
+function attendanceError(res: any, error: any, label: string) {
+  console.error(`[attendance] ${label} failed`, { code: String(error?.code || 'attendance_error') });
+  const response = attendanceErrorResponse(error);
+  return res.status(response.status).json({ error: response.error });
 }
 
 function supabaseOrThrow() {
   const client = getSupabaseAdmin();
   if (!client) throw new Error('Supabase attendance backend not configured');
   return client;
+}
+
+async function boundedAttendanceRows(query: () => any, maximum = 2000): Promise<{ rows: any[]; complete: boolean }> {
+  const rows: any[] = [];
+  for (let offset = 0; offset < maximum; offset += 500) {
+    const { data, error } = await query().range(offset, Math.min(offset + 499, maximum - 1));
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < 500) return { rows, complete: true };
+  }
+  return { rows, complete: false };
+}
+
+async function attendanceRowsByIds(supabase: ReturnType<typeof supabaseOrThrow>, table: string, column: string, ids: string[]): Promise<any[]> {
+  const rows: any[] = [];
+  for (let offset = 0; offset < ids.length; offset += 20) {
+    const { data, error } = await supabase.from(table).select('*').in(column, ids.slice(offset, offset + 20));
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
 }
 
 async function actorFor(admin: any, req: any): Promise<Actor> {
@@ -139,7 +184,17 @@ async function actorFor(admin: any, req: any): Promise<Actor> {
   } catch (error: any) {
     if (error?.code !== 'NO_STUDENT') throw error;
   }
-  return { uid: token.uid, staff, student };
+  const doctorDoc = await db.collection('attendanceDoctors').doc(token.uid).get();
+  const doctorData = doctorDoc.exists ? doctorDoc.data() : null;
+  const doctor = doctorData?.enabled === true && !staff.staffDisabled && typeof doctorData.stageId === 'string' && Array.isArray(doctorData.timetableSessionIds)
+    ? { stageId: doctorData.stageId, timetableSessionIds: doctorData.timetableSessionIds.filter((id: unknown) => typeof id === 'string'), subjects: doctorData.subjects || [] } : undefined;
+  return { uid: token.uid, staff, student, doctor };
+}
+
+export function canManageOccurrence(actor: Actor, occurrence: AttendanceOccurrenceCandidate): boolean {
+  if (actor.staff.staffDisabled) return false;
+  return hasStageCapability(actor.staff, 'manageAttendance', occurrence.stageId)
+    || (actor.doctor?.stageId === occurrence.stageId && actor.doctor.timetableSessionIds.includes(occurrence.timetableSessionId));
 }
 
 function requestedStage(req: any): string {
@@ -149,8 +204,8 @@ function requestedStage(req: any): string {
 
 function actorStage(actor: Actor, req: any, managing = false): string {
   if (!managing && actor.student?.data?.stageId) return String(actor.student.data.stageId);
-  const stageId = requestedStage(req) || String(actor.staff.managedStageId || '');
-  if (!hasStageCapability(actor.staff, 'manageAttendance', stageId)) {
+  const stageId = requestedStage(req) || actor.doctor?.stageId || String(actor.staff.managedStageId || '');
+  if (!hasStageCapability(actor.staff, 'manageAttendance', stageId) && actor.doctor?.stageId !== stageId) {
     const error: any = new Error('manage_attendance_forbidden');
     error.status = 403;
     throw error;
@@ -201,6 +256,33 @@ async function officialRoster(admin: any, stageId: string, occurrence: Attendanc
     .sort((a: any, b: any) => a.officialName.localeCompare(b.officialName, 'ar'));
 }
 
+const attendanceSubjectCache = new Map<string, { expiresAt: number; value: Promise<import('./attendance.js').AttendanceDoctorSubject[]> }>();
+
+async function loadStageAttendanceSubjects(admin: any, stageId: string) {
+  const snapshot = await admin.firestore().collection('attendanceSubjectSlots').where('stageId', '==', stageId).get();
+  const subjects = new Map<string, import('./attendance.js').AttendanceDoctorSubject>();
+  for (const document of snapshot.docs) {
+    const data = document.data() || {};
+    if (typeof data.subjectId !== 'string' || typeof data.timetableSessionId !== 'string') continue;
+    const existing = subjects.get(data.subjectId);
+    const subject = existing || { id: data.subjectId, nameAr: data.nameAr, nameEn: data.nameEn, type: data.type, timetableSessionIds: [] };
+    if (!subject.timetableSessionIds.includes(data.timetableSessionId)) subject.timetableSessionIds.push(data.timetableSessionId);
+    subjects.set(data.subjectId, subject);
+  }
+  return [...subjects.values()];
+}
+
+function stageAttendanceSubjects(admin: any, stageId: string) {
+  const cached = attendanceSubjectCache.get(stageId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = loadStageAttendanceSubjects(admin, stageId).catch(error => {
+    attendanceSubjectCache.delete(stageId);
+    throw error;
+  });
+  attendanceSubjectCache.set(stageId, { expiresAt: Date.now() + 300000, value });
+  return value;
+}
+
 function occurrenceFromRow(row: any): AttendanceOccurrenceCandidate {
   const lectureDate = String(row.lecture_date);
   const start = new Date(row.start_at);
@@ -216,6 +298,7 @@ function occurrenceFromRow(row: any): AttendanceOccurrenceCandidate {
     termId: row.term_id,
     stageId: row.stage_id,
     timetableSessionId: row.timetable_session_id,
+    mode: row.mode || 'other',
     lectureDate,
     title: row.title,
     startAt: row.start_at,
@@ -269,7 +352,7 @@ async function loadSessionAuthorized(admin: any, req: any, sessionId: string) {
   const { data: occurrence, error: occurrenceError } = await supabase
     .from('attendance_occurrences').select('*').eq('id', session.occurrence_id).single();
   if (occurrenceError || !occurrence) throw occurrenceError || new Error('unknown_occurrence');
-  if (!hasStageCapability(actor.staff, 'manageAttendance', occurrence.stage_id)) {
+  if (!canManageOccurrence(actor, occurrenceFromRow(occurrence))) {
     const error: any = new Error('manage_attendance_forbidden');
     error.status = 403;
     throw error;
@@ -284,10 +367,105 @@ function assertReason(raw: unknown, required = true): string {
 }
 
 export function createAttendanceHandlers({ admin }: AttendanceDeps) {
+  async function doctorWorkspace(req: any, res: any) {
+    try {
+      const actor = await actorFor(admin, req);
+      if (actor.staff.staffDisabled) return res.status(403).json({ error: 'manage_attendance_forbidden' });
+      const stageId = actor.doctor?.stageId || actorStage(actor, req, true);
+      if (!hasStageCapability(actor.staff, 'manageAttendance', stageId) && actor.doctor?.stageId !== stageId) return res.status(403).json({ error: 'manage_attendance_forbidden' });
+      const ctx = await attendanceContext(admin, stageId);
+      const timetable = await timetableFor(admin.firestore(), stageId);
+      const occurrences = buildAttendanceOccurrences(ctx.calendar, timetable, stageId, ctx.today, 52, 52).filter(item => canManageOccurrence(actor, item));
+      const subjects = actor.doctor?.subjects?.length ? actor.doctor.subjects : (timetable?.sessions || []).map(item => ({
+        id: item.id, nameAr: item.title, nameEn: item.title,
+        type: item.kind === 'theory' ? 'theoretical' : 'practical', timetableSessionIds: [item.id],
+      }));
+      const supabase = supabaseOrThrow();
+      const history = await boundedAttendanceRows(() => supabase.from('attendance_occurrences').select('*').eq('stage_id', stageId).order('id'), 10000);
+      if (!history.complete) throw new Error('attendance_history_too_long');
+      const authorized = history.rows.map(occurrenceFromRow).filter(item => canManageOccurrence(actor, item));
+      const sessionRows = await attendanceRowsByIds(supabase, 'attendance_sessions', 'occurrence_id', authorized.map(item => item.id));
+      const byId = new Map(history.rows.map(item => [item.id, item]));
+      const records: any[] = [];
+      for (let offset = 0; offset < sessionRows.length; offset += 20) {
+        const ids = sessionRows.slice(offset, offset + 20).map(row => row.id);
+        const page = await boundedAttendanceRows(() => supabase.from('attendance_records').select('*').in('session_id', ids).order('id'), 20000);
+        if (!page.complete) throw new Error('attendance_history_too_long');
+        records.push(...page.rows);
+      }
+      res.json({ stageId, subjects,
+        roster: await officialRoster(admin, stageId, occurrences[0]),
+        bootstrap: { serverNow: new Date().toISOString(), timezone: ATTENDANCE_TIMEZONE, stageId, term: termPayload(ctx.calendar, ctx.term), occurrences, canManage: true },
+        sessions: sessionRows.map(row => sessionFromRows(row, byId.get(row.occurrence_id)!)),
+        records: records.map(recordFromRow),
+      });
+    } catch (error: any) {
+      if (error?.status === 403) return res.status(403).json({ error: error.message });
+      return attendanceError(res, error, 'doctor workspace');
+    }
+  }
+  async function prepareOffline(req: any, res: any) {
+    try {
+      const actor = await actorFor(admin, req);
+      const stageId = actorStage(actor, req, true);
+      const ctx = await attendanceContext(admin, stageId);
+      if (!ctx.term) return res.status(400).json({ error: 'no_active_academic_term' });
+      const publicKey = validateAttendancePublicKey(req.body?.publicKey);
+      const timetable = await timetableFor(admin.firestore(), stageId);
+      const occurrences = buildAttendanceOccurrences(ctx.calendar, timetable, stageId, ctx.today, 1, 52).filter(item => canManageOccurrence(actor, item));
+      if (!occurrences.length || occurrences.length > 5000) throw new Error('invalid_offline_schedule');
+      const id = requestId();
+      const permit = signServerCredential({ typ: 'simosan-offline-permit', id, professorUid: actor.uid, stageId, publicKey });
+      const roster = await officialRoster(admin, stageId, occurrences[0]);
+      const term = termPayload(ctx.calendar, ctx.term)!;
+      const { error } = await supabaseOrThrow().from('attendance_offline_grants').insert({
+        id, professor_uid: actor.uid, stage_id: stageId, token_hash: sha256(permit), term,
+        occurrences: Object.fromEntries(occurrences.map(item => [item.id, item])), roster,
+        session_ids: Object.fromEntries(occurrences.map(item => [item.id, attendanceSessionId(item.id)])),
+      });
+      if (error) throw error;
+      res.json({ ownerUid: actor.uid, permit, roster, sessions: Object.fromEntries(occurrences.map(item => [item.id, attendanceSessionId(item.id)])), bootstrap: {
+        serverNow: new Date().toISOString(), timezone: ATTENDANCE_TIMEZONE, stageId, term, occurrences, canManage: true,
+      } });
+    } catch (error: any) {
+      if (error.status === 403) return res.status(403).json({ error: error.message });
+      return attendanceError(res, error, 'offline setup');
+    }
+  }
+
+  async function importOfflineToken(qrToken: string, requiredOwner?: string) {
+    const verified = verifyOfflineAttendanceToken(qrToken, verifyOfflinePermit);
+    if (!verified) return null;
+    const { claims, permit, credential } = verified;
+    if (requiredOwner && requiredOwner !== permit.professorUid) throw new Error('invalid_permit_owner');
+    const supabase = supabaseOrThrow();
+    const { data: pack, error } = await supabase.from('attendance_offline_grants').select('*').eq('id', permit.id).single();
+    if (error) throw error;
+    if (!pack || pack.revoked_at || pack.token_hash !== sha256(credential) || pack.professor_uid !== permit.professorUid) throw new Error('invalid_offline_permit');
+    const occurrence = pack.occurrences[claims.occurrenceId] as AttendanceOccurrenceCandidate | undefined;
+    if (!occurrence || ['stageId', 'lectureDate', 'title', 'startTime', 'endTime'].some(field => (occurrence as any)[field] !== (claims as any)[field])) throw new Error('invalid_offline_occurrence');
+    const lecturer = await actorFor(admin, { user: { uid: permit.professorUid } });
+    if (!canManageOccurrence(lecturer, occurrence)) throw new Error('offline_authority_unavailable');
+    const result = await supabase.rpc('attendance_import_offline_session', {
+      p_grant_id: permit.id, p_grant_hash: sha256(credential), p_occurrence_id: occurrence.id,
+      p_session_id: claims.sessionId, p_challenge_id: claims.challengeId, p_qr_token: qrToken, p_token_hash: sha256(qrToken), p_headcount: claims.expectedHeadcount,
+    });
+    if (result.error) throw result.error;
+    return { claims, result: result.data };
+  }
+
+  async function importOfflineSession(req: any, res: any) {
+    try {
+      const imported = await importOfflineToken(req.body?.qrToken, req.user.uid);
+      if (!imported) throw new Error('invalid_offline_qr');
+      return res.json(imported.result);
+    } catch (error) { return attendanceError(res, error, 'offline session import'); }
+  }
+
   async function bootstrap(req: any, res: any) {
     try {
       const actor = await actorFor(admin, req);
-      const wantsManage = requestedStage(req) !== '' || hasStageCapability(
+      const wantsManage = !!actor.doctor || requestedStage(req) !== '' || hasStageCapability(
         actor.staff,
         'manageAttendance',
         actor.staff.managedStageId,
@@ -299,8 +477,8 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
         timezone: ATTENDANCE_TIMEZONE,
         stageId,
         term: termPayload(ctx.calendar, ctx.term),
-        occurrences: ctx.occurrences,
-        canManage: hasStageCapability(actor.staff, 'manageAttendance', stageId),
+        occurrences: wantsManage ? ctx.occurrences.filter(item => canManageOccurrence(actor, item)) : ctx.occurrences,
+        canManage: hasStageCapability(actor.staff, 'manageAttendance', stageId) || actor.doctor?.stageId === stageId,
       });
     } catch (error: any) {
       if (error?.status === 403) return res.status(403).json({ error: error.message });
@@ -314,8 +492,11 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const stageId = actorStage(actor, req, true);
       const ctx = await attendanceContext(admin, stageId);
       if (!ctx.term) return res.status(400).json({ error: 'no_active_academic_term' });
-      const occurrence = ctx.occurrences.find(item => item.id === req.body?.occurrenceId);
+      const timetable = await timetableFor(admin.firestore(), stageId);
+      const occurrence = buildAttendanceOccurrences(ctx.calendar, timetable, stageId, ctx.today, 52, 52)
+        .find(item => item.id === req.body?.occurrenceId);
       if (!occurrence) return res.status(400).json({ error: 'invalid_occurrence' });
+      if (!canManageOccurrence(actor, occurrence)) return res.status(403).json({ error: 'manage_attendance_forbidden' });
       const expectedHeadcount = Number(req.body?.expectedHeadcount);
       const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : '';
       if (!Number.isInteger(expectedHeadcount) || expectedHeadcount < 1 || expectedHeadcount > 10000) {
@@ -323,7 +504,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       }
       if (notes.length > 2000) return res.status(400).json({ error: 'notes_too_long' });
 
-      const sessionId = requestId();
+      const sessionId = attendanceSessionId(occurrence.id);
       const challengeId = requestId();
       const creationRequestId = typeof req.body?.requestId === 'string' ? req.body.requestId : requestId();
       const claims: AttendanceQrClaims = {
@@ -341,7 +522,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const qrToken = signAttendanceQr(claims);
       const roster = await officialRoster(admin, stageId, occurrence);
       const scheduledEnd = new Date(occurrence.endAt);
-      scheduledEnd.setUTCDate(scheduledEnd.getUTCDate() + ATTENDANCE_RECONCILIATION_DAYS);
+      scheduledEnd.setUTCHours(scheduledEnd.getUTCHours() + ATTENDANCE_RECONCILIATION_HOURS);
       const term = termPayload(ctx.calendar, ctx.term)!;
       const { keyId } = qrKeyConfig();
       const { data, error } = await supabaseOrThrow().rpc('attendance_create_session', {
@@ -370,6 +551,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
     try {
       const actor = await actorFor(admin, req);
       if (!actor.student) return res.status(403).json({ error: 'student_identity_required' });
+      if (actor.student.data.isActive === false) return res.status(403).json({ error: 'student_identity_disabled' });
       const receipts = Array.isArray(req.body?.receipts) ? req.body.receipts : [];
       if (receipts.length < 1 || receipts.length > MAX_SYNC_RECEIPTS) {
         return res.status(400).json({ error: 'invalid_receipt_batch' });
@@ -381,7 +563,8 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
         try {
           if (!/^[0-9a-f-]{36}$/i.test(receiptRequestId)) throw new Error('invalid_request_id');
           if (receipt.ownerUid !== actor.uid) throw new Error('receipt_owner_mismatch');
-          const claims = verifyAttendanceQr(receipt.qrToken);
+          const offline = await importOfflineToken(receipt.qrToken);
+          const claims = offline?.claims || verifyAttendanceQr(receipt.qrToken);
           if (receipt.sessionId !== claims.sessionId || receipt.occurrenceId !== claims.occurrenceId) {
             throw new Error('receipt_claim_mismatch');
           }
@@ -433,45 +616,47 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const stageId = String(actor.student.data.stageId || '');
       const ctx = await attendanceContext(admin, stageId);
       const supabase = supabaseOrThrow();
-      const [{ data: recordRows, error: recordError }, { data: receiptRows, error: receiptError }] = await Promise.all([
-        supabase.from('attendance_records').select('*').eq('roster_student_id', actor.student.id).order('received_at', { ascending: false }).limit(500),
-        supabase.from('attendance_receipts').select('*').eq('actor_uid', actor.uid).order('received_at', { ascending: false }).limit(500),
+      const [recordResult, receiptResult, expectedResult] = await Promise.all([
+        boundedAttendanceRows(() => supabase.from('attendance_records').select('*').eq('roster_student_id', actor.student!.id).order('received_at', { ascending: false }).order('id')),
+        boundedAttendanceRows(() => supabase.from('attendance_receipts').select('*').eq('actor_uid', actor.uid).order('received_at', { ascending: false }).order('request_id')),
+        boundedAttendanceRows(() => supabase.from('attendance_session_roster').select('session_id').eq('roster_student_id', actor.student!.id).eq('expected_attendee', true).order('session_id')),
       ]);
-      if (recordError) throw recordError;
-      if (receiptError) throw receiptError;
-      const sessionIds = [...new Set([...(recordRows || []).map(row => row.session_id), ...(receiptRows || []).map(row => row.session_id)])];
+      const recordRows = recordResult.rows;
+      const receiptRows = receiptResult.rows;
+      const sessionIds = [...new Set([...recordRows.map(row => row.session_id), ...receiptRows.map(row => row.session_id), ...expectedResult.rows.map(row => row.session_id)])];
       let sessionRows: any[] = [];
       let occurrenceRows: any[] = [];
       if (sessionIds.length) {
-        const sessionResult = await supabase.from('attendance_sessions').select('*').in('id', sessionIds);
-        if (sessionResult.error) throw sessionResult.error;
-        sessionRows = sessionResult.data || [];
+        sessionRows = await attendanceRowsByIds(supabase, 'attendance_sessions', 'id', sessionIds);
         const occurrenceIds = [...new Set(sessionRows.map(row => row.occurrence_id))];
         if (occurrenceIds.length) {
-          const occurrenceResult = await supabase.from('attendance_occurrences').select('*').in('id', occurrenceIds).eq('stage_id', stageId);
-          if (occurrenceResult.error) throw occurrenceResult.error;
-          occurrenceRows = occurrenceResult.data || [];
+          occurrenceRows = await attendanceRowsByIds(supabase, 'attendance_occurrences', 'id', occurrenceIds);
         }
       }
       const occurrenceMap = new Map(occurrenceRows.map(row => [row.id, row]));
       const sessions = sessionRows
         .filter(row => occurrenceMap.has(row.occurrence_id))
-        .map(row => sessionFromRows(row, occurrenceMap.get(row.occurrence_id)));
+        .map(row => ({ ...sessionFromRows(row, occurrenceMap.get(row.occurrence_id)), notes: '' }));
+      const recordsBySession = new Map((recordRows || []).map(row => [row.session_id, row]));
       res.json({
         serverNow: new Date().toISOString(),
         timezone: ATTENDANCE_TIMEZONE,
         stageId,
         term: termPayload(ctx.calendar, ctx.term),
         occurrences: ctx.occurrences,
+        subjects: await stageAttendanceSubjects(admin, stageId),
         sessions,
         records: (recordRows || []).map(recordFromRow),
+        historyComplete: recordResult.complete && receiptResult.complete && expectedResult.complete,
         receipts: (receiptRows || []).map(row => ({
           requestId: row.request_id,
           sessionId: row.session_id,
-          resolution: row.resolution,
-          reason: row.reason,
+          resolution: recordsBySession.get(row.session_id)?.status === 'confirmed' ? 'confirmed' : recordsBySession.get(row.session_id)?.status === 'voided' ? 'needs_review' : row.resolution,
+          reason: recordsBySession.get(row.session_id)?.status === 'voided' ? 'record_voided' : row.reason,
           receivedAt: row.received_at,
-          recordId: row.record_id,
+          recordId: recordsBySession.get(row.session_id)?.id || null,
+          recordStatus: recordsBySession.get(row.session_id)?.status || null,
+          revision: recordsBySession.get(row.session_id)?.revision || undefined,
         })),
       });
     } catch (error) {
@@ -482,14 +667,13 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
   async function sessionSnapshot(req: any, res: any) {
     try {
       const loaded = await loadSessionAuthorized(admin, req, req.params.sessionId);
-      const [{ data: roster, error: rosterError }, { data: records, error: recordsError }, { data: review, error: reviewError }] = await Promise.all([
-        loaded.supabase.from('attendance_session_roster').select('*').eq('session_id', loaded.session.id).order('official_name'),
-        loaded.supabase.from('attendance_records').select('*').eq('session_id', loaded.session.id).order('received_at'),
-        loaded.supabase.from('attendance_receipts').select('*').eq('session_id', loaded.session.id).eq('resolution', 'needs_review').order('received_at'),
+      const pages = await Promise.all([
+        boundedAttendanceRows(() => loaded.supabase.from('attendance_session_roster').select('*').eq('session_id', loaded.session.id).order('roster_student_id'), 10000),
+        boundedAttendanceRows(() => loaded.supabase.from('attendance_records').select('*').eq('session_id', loaded.session.id).order('id'), 10000),
+        boundedAttendanceRows(() => loaded.supabase.from('attendance_receipts').select('*').eq('session_id', loaded.session.id).eq('resolution', 'needs_review').order('request_id'), 10000),
       ]);
-      if (rosterError) throw rosterError;
-      if (recordsError) throw recordsError;
-      if (reviewError) throw reviewError;
+      if (pages.some(page => !page.complete)) throw new Error('attendance_roster_too_long');
+      const [roster, records, review] = pages.map(page => page.rows);
       const mappedRecords = (records || []).map(recordFromRow);
       const confirmed = mappedRecords.filter(record => record.status === 'confirmed').length;
       res.json({
@@ -626,6 +810,9 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
   }
 
   return {
+    doctorWorkspace,
+    prepareOffline,
+    importOfflineSession,
     bootstrap,
     createSession,
     syncReceipts,

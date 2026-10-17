@@ -214,6 +214,23 @@ export function attendanceDurablePut<T>(store: string, value: T): Promise<IDBVal
   }));
 }
 
+export function commitDoctorAttendanceSession<T extends { requestId: string; ownerUid: string }>(meta: { key: string; data: unknown }, command: T): Promise<void> {
+  return openDb().then(database => new Promise<void>((resolve, reject) => {
+    const transaction = attendanceTransaction(database, [STORE_META, STORE_ATTENDANCE_COMMANDS]);
+    const store = transaction.objectStore(STORE_META);
+    const order = store.get('attendance-command-sequence');
+    order.onsuccess = () => {
+      const sequence = Number(order.result?.value || 0) + 1;
+      store.put({ key: 'attendance-command-sequence', value: sequence });
+      store.put(meta);
+      transaction.objectStore(STORE_ATTENDANCE_COMMANDS).put({ ...command, localOrder: sequence });
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error || new Error('attendance_not_saved'));
+    transaction.onerror = () => reject(transaction.error || new Error('attendance_not_saved'));
+  }));
+}
+
 export const listAttendanceReceipts = <T>(ownerUid: string) =>
   dbGetAllByIndex<T>(STORE_ATTENDANCE_OUTBOX, 'by_owner', IDBKeyRange.only(ownerUid));
 

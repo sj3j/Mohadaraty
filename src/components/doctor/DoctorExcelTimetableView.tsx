@@ -4,7 +4,15 @@ import {
   HelpCircle, ChevronDown, Sparkles, FileSpreadsheet, ShieldAlert
 } from 'lucide-react';
 import { DoctorSubject, LectureColumn, StudentAttendanceRow, AttendanceCellStatus } from './types';
-import { calculateStudentStats } from './mockData';
+const calculateStudentStats = (student: StudentAttendanceRow, lectures: LectureColumn[]) => {
+  const present = lectures.filter(lecture => student.attendance[lecture.id] === 'present').length;
+  const absent = lectures.filter(lecture => student.attendance[lecture.id] === 'absent').length;
+  const excused = lectures.filter(lecture => student.attendance[lecture.id] === 'excused').length;
+  const counted = present + absent;
+  return { present, absent, excused, totalHeld: counted,
+    attendanceRate: counted ? Math.round(100 * present / counted) : 0,
+    absenceRate: counted ? Math.round(100 * absent / counted) : 0, status: 'safe' as const };
+};
 
 interface DoctorExcelTimetableViewProps {
   subject: DoctorSubject;
@@ -12,6 +20,7 @@ interface DoctorExcelTimetableViewProps {
   students: StudentAttendanceRow[];
   isRtl: boolean;
   onUpdateAttendance: (studentId: string, lectureId: string, newStatus: AttendanceCellStatus) => void;
+  isOffline?: boolean;
 }
 
 export default function DoctorExcelTimetableView({
@@ -20,36 +29,24 @@ export default function DoctorExcelTimetableView({
   students,
   isRtl,
   onUpdateAttendance,
+  isOffline,
 }: DoctorExcelTimetableViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
-  const [selectedRiskFilter, setSelectedRiskFilter] = useState<string>('all');
   const [hoveredCell, setHoveredCell] = useState<{ studentId: string; lectureId: string } | null>(null);
 
   // Filter students based on search query, group, and risk status
   const filteredStudents = useMemo(() => {
     return students.filter((student) => {
-      const stats = calculateStudentStats(student, lectures);
       const matchesSearch = student.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                             student.examCode.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesGroup = selectedGroup === 'all' || student.group === selectedGroup;
-      const matchesRisk = selectedRiskFilter === 'all' || 
-                          (selectedRiskFilter === 'deprived' && stats.status === 'deprived') ||
-                          (selectedRiskFilter === 'warning' && (stats.status === 'warning' || stats.status === 'deprived'));
-      return matchesSearch && matchesGroup && matchesRisk;
+      return matchesSearch && matchesGroup;
     });
-  }, [students, lectures, searchQuery, selectedGroup, selectedRiskFilter]);
+  }, [students, lectures, searchQuery, selectedGroup]);
 
-  // Cycle to next status on cell click: present -> absent -> excused -> unrecorded
   const handleCellClick = (studentId: string, lectureId: string, currentStatus: AttendanceCellStatus = 'unrecorded') => {
-    const cycleMap: Record<AttendanceCellStatus, AttendanceCellStatus> = {
-      unrecorded: 'present',
-      present: 'absent',
-      absent: 'excused',
-      excused: 'unrecorded',
-    };
-    const nextStatus = cycleMap[currentStatus] || 'present';
-    onUpdateAttendance(studentId, lectureId, nextStatus);
+    if (currentStatus !== 'pending') onUpdateAttendance(studentId, lectureId, currentStatus === 'present' ? 'voided' : 'present');
   };
 
   // Export to Excel-compatible CSV file with UTF-8 BOM
@@ -73,31 +70,32 @@ export default function DoctorExcelTimetableView({
         if (val === 'present') return isRtl ? 'حاضر' : 'Present';
         if (val === 'absent') return isRtl ? 'غائب' : 'Absent';
         if (val === 'excused') return isRtl ? 'مجاز' : 'Excused';
+        if (val === 'pending') return isRtl ? 'معلق' : 'Pending';
+        if (val === 'voided') return isRtl ? 'ملغى' : 'Voided';
         return '-';
       });
 
-      const statusLabel = stats.status === 'deprived'
-        ? (isRtl ? 'محروم بالغياب' : 'Deprived')
-        : stats.status === 'warning'
-        ? (isRtl ? 'إنذار أول' : 'First Warning')
-        : stats.status === 'alert'
-        ? (isRtl ? 'تنبيه' : 'Alert')
-        : (isRtl ? 'طبيعي' : 'Regular');
+      const statusLabel = isRtl ? 'سياسة العقوبات غير معتمدة' : 'Sanctions policy not configured';
 
       return [
         idx + 1,
-        `"${std.name}"`,
-        `"${std.examCode}"`,
-        `"${std.group}"`,
+        std.name,
+        std.examCode,
+        std.group,
         ...lectureCells,
         stats.present,
         stats.absent,
         `${stats.attendanceRate}%`,
-        `"${statusLabel}"`,
+        statusLabel,
       ];
     });
 
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const csvCell = (value: string | number) => {
+      const raw = String(value);
+      const safe = /^[=+@\-\t\r]/.test(raw) ? "'" + raw : raw;
+      return '"' + safe.replace(/"/g, '""') + '"';
+    };
+    const csvContent = '\uFEFF' + [headers, ...rows].map(row => row.map(csvCell).join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -110,6 +108,7 @@ export default function DoctorExcelTimetableView({
 
   return (
     <div className="space-y-4" dir={isRtl ? 'rtl' : 'ltr'}>
+      {isOffline && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{isRtl ? 'هذه نسخة محفوظة؛ التصحيحات اليدوية تظهر فوراً وتنتظر المزامنة.' : 'Cached ledger; manual corrections save locally and await sync.'}</p>}
       {/* Top Toolbar: Filters & Actions */}
       <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 p-4 rounded-3xl bg-white border border-slate-200/80 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
         {/* Search & Group filters */}
@@ -142,16 +141,6 @@ export default function DoctorExcelTimetableView({
             ))}
           </div>
 
-          {/* Risk Warning Filter */}
-          <select
-            value={selectedRiskFilter}
-            onChange={(e) => setSelectedRiskFilter(e.target.value)}
-            className="rounded-2xl border border-slate-200 bg-slate-50 py-2 px-3 text-xs font-bold text-slate-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
-          >
-            <option value="all">{isRtl ? 'جميع الحالات' : 'All Statuses'}</option>
-            <option value="warning">{isRtl ? 'المهددين بالحرمان (إنذار + محروم)' : 'At Risk (Warning + Deprived)'}</option>
-            <option value="deprived">{isRtl ? 'المحرومين فقط (>15% غياب)' : 'Deprived Only (>15%)'}</option>
-          </select>
         </div>
 
         {/* Export & Print Actions */}
@@ -200,6 +189,12 @@ export default function DoctorExcelTimetableView({
               -
             </span>
             {isRtl ? 'لم تُسجل' : 'Unrecorded'}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="flex h-5 w-5 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300 font-black text-[10px]">
+              ⏳
+            </span>
+            {isRtl ? 'معلق' : 'Pending'}
           </span>
         </div>
 
@@ -269,8 +264,7 @@ export default function DoctorExcelTimetableView({
               {filteredStudents.length > 0 ? (
                 filteredStudents.map((student, idx) => {
                   const stats = calculateStudentStats(student, lectures);
-                  const isDeprived = stats.status === 'deprived';
-                  const isWarning = stats.status === 'warning';
+                  const isDeprived = false;
 
                   return (
                     <tr 
@@ -329,6 +323,14 @@ export default function DoctorExcelTimetableView({
                                 <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 font-black shadow-xs hover:scale-110 transition-transform">
                                   ⏱
                                 </span>
+                              ) : status === 'pending' ? (
+                                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300 font-black shadow-xs hover:scale-110 transition-transform text-[11px]" title={isRtl ? 'بانتظار المزامنة' : 'Pending sync'}>
+                                  ⏳
+                                </span>
+                              ) : status === 'voided' ? (
+                                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400 font-black shadow-xs hover:scale-110 transition-transform text-[11px]" title={isRtl ? 'ملغى' : 'Voided'}>
+                                  ⊘
+                                </span>
                               ) : (
                                 <span className="flex h-7 w-7 items-center justify-center rounded-xl text-slate-300 dark:text-zinc-600 font-bold">
                                   -
@@ -356,20 +358,7 @@ export default function DoctorExcelTimetableView({
 
                       {/* Academic Status Badge */}
                       <td className="py-2.5 px-3 text-center">
-                        {isDeprived ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 font-black text-[10px]">
-                            <ShieldAlert className="h-3 w-3" />
-                            {isRtl ? 'محروم' : 'Deprived'}
-                          </span>
-                        ) : isWarning ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-black text-[10px]">
-                            {isRtl ? 'إنذار أول' : 'Warning'}
-                          </span>
-                        ) : (
-                          <span className="inline-block px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 font-bold text-[10px]">
-                            {isRtl ? 'طبيعي' : 'Normal'}
-                          </span>
-                        )}
+                        <span className="inline-block px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-300 font-bold text-[10px]">{isRtl ? 'السياسة غير معتمدة' : 'Policy unconfigured'}</span>
                       </td>
                     </tr>
                   );

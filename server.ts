@@ -48,6 +48,7 @@ import { AdminUserError, deleteUserAccount, mergeUserAccounts } from "./shared/a
 import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "./shared/yearWipe.js";
 import { createSimosanHandlers } from "./shared/simosanApi.js";
 import { createAttendanceHandlers } from "./shared/attendanceApi.js";
+import { createAttendanceDoctorAdminHandlers } from "./shared/attendanceDoctorAdmin.js";
 import { createStreakHandlers } from "./shared/streakApi.js";
 import { createMcqHandlers } from "./shared/mcqApi.js";
 import { createTimetableHandlers } from "./shared/timetableApi.js";
@@ -2179,16 +2180,25 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   /* Simosan attendance. Firebase authenticates the caller; the shared gateway
    * is the only process granted Supabase attendance privileges. */
   const attendance = createAttendanceHandlers({ admin });
+  const attendanceDoctors = createAttendanceDoctorAdminHandlers({ admin });
+  app.get('/api/attendance/doctor/workspace', verifyAuth, attendance.doctorWorkspace);
+  app.get('/api/attendance/admin/doctors/options', verifyAuth, attendanceDoctors.options);
+  app.get('/api/attendance/admin/doctors', verifyAuth, attendanceDoctors.list);
+  app.post('/api/attendance/admin/doctors', verifyAuth, attendanceDoctors.create);
+  app.post('/api/attendance/admin/doctors/:uid/disable', verifyAuth, attendanceDoctors.disable);
+  app.use('/api/attendance', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   app.get('/api/attendance/bootstrap', verifyAuth, attendance.bootstrap);
   app.get('/api/attendance/mine', verifyAuth, attendance.mine);
   app.post('/api/attendance/receipts/sync', verifyAuth, attendance.syncReceipts);
-  app.post('/api/attendance/sessions', verifyAuth, verifyAdmin, attendance.createSession);
-  app.get('/api/attendance/sessions/:sessionId', verifyAuth, verifyAdmin, attendance.sessionSnapshot);
-  app.patch('/api/attendance/sessions/:sessionId', verifyAuth, verifyAdmin, attendance.updateSession);
-  app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, verifyAdmin, attendance.manualRecord);
-  app.post('/api/attendance/records/:recordId/void', verifyAuth, verifyAdmin, attendance.voidRecord);
-  app.post('/api/attendance/records/:recordId/restore', verifyAuth, verifyAdmin, attendance.restoreRecord);
-  app.post('/api/attendance/reviews/:receiptId/resolve', verifyAuth, verifyAdmin, attendance.resolveReview);
+  app.post('/api/attendance/offline/prepare', verifyAuth, attendance.prepareOffline);
+  app.post('/api/attendance/offline/import', verifyAuth, attendance.importOfflineSession);
+  app.post('/api/attendance/sessions', verifyAuth, attendance.createSession);
+  app.get('/api/attendance/sessions/:sessionId', verifyAuth, attendance.sessionSnapshot);
+  app.patch('/api/attendance/sessions/:sessionId', verifyAuth, attendance.updateSession);
+  app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, attendance.manualRecord);
+  app.post('/api/attendance/records/:recordId/void', verifyAuth, attendance.voidRecord);
+  app.post('/api/attendance/records/:recordId/restore', verifyAuth, attendance.restoreRecord);
+  app.post('/api/attendance/reviews/:receiptId/resolve', verifyAuth, attendance.resolveReview);
 
   /* MCQ generation. Staff-only, on the free-tier key - see
    * shared/mcqGeneration.ts for why it is a second key. Mirrored in api/index.ts. */

@@ -43,6 +43,7 @@ import ProfileScreen from './components/ProfileScreen';
 import RecordsScreen from './components/RecordsScreen';
 import SimosanSoonScreen from './components/SimosanSoonScreen';
 import SimosanPage from './components/simosan/SimosanPage';
+import DoctorPortal from './components/doctor/DoctorPortal';
 import SubjectBrowser from './components/SubjectBrowser';
 import HomeScreen from './components/HomeScreen';
 import LoginScreen from './components/LoginScreen';
@@ -392,6 +393,14 @@ export default function App() {
             }
 
             if (!studentData) {
+              const doctorProfile = await getDoc(doc(db, 'users', firebaseUser.uid));
+              whitelistConfirmedByServer = whitelistConfirmedByServer && !doctorProfile.metadata.fromCache;
+              if (doctorProfile.exists() && doctorProfile.data().role === 'doctor') {
+                studentData = { ...doctorProfile.data(), isActive: doctorProfile.data().staffDisabled !== true };
+              }
+            }
+
+            if (!studentData) {
               const decision = resolveWhitelistVerification({
                 outcome: 'missing',
                 isOnline: navigator.onLine,
@@ -557,6 +566,8 @@ export default function App() {
               pendingProgressionYear: userDoc.data().pendingProgressionYear || undefined,
               pendingProgressionSetAt: userDoc.data().pendingProgressionSetAt || undefined,
               managedStageId: userDoc.data().managedStageId || studentData?.managedStageId || undefined,
+              assignedStageId: userDoc.data().assignedStageId || undefined,
+              assignedSubjects: userDoc.data().assignedSubjects || undefined,
               tahmeelSubjects: userDoc.data().tahmeelSubjects || undefined,
               hasCompletedProgression: userDoc.data().hasCompletedProgression === true,
               lastProgressionYear: userDoc.data().lastProgressionYear || undefined,
@@ -1037,6 +1048,25 @@ export default function App() {
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
   const isAnyOverlayOpen = showOnboarding || showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
+
+  // Dedicated Doctor Portal Pathway:
+  // When a doctor logs in (role === 'doctor'), all standard app screens, bottom tabs,
+  // and student navigation are dropped to provide a focused attendance interface.
+  if (user?.role === 'doctor') {
+    return (
+      <DoctorPortal
+        user={user}
+        lang={lang}
+        onLogout={() => {
+          console.info('[auth-session] doctor signed-out: explicit-logout');
+          setCurrentTab('profile');
+          safeSetStorageItem('wasSignedIn', 'false');
+          clearCachedUserProfile();
+          void signOut(auth);
+        }}
+      />
+    );
+  }
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the

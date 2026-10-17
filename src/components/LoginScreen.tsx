@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { auth, db } from '../lib/firebase';
-import { signInWithCustomToken, UserCredential } from 'firebase/auth';
+import { signInWithCustomToken, signInWithEmailAndPassword, UserCredential } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { Language, TRANSLATIONS } from '../types';
 import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
@@ -253,6 +253,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
   const isRtl = lang === 'ar';
   const [isLoading, setIsLoading] = useState(false);
   const [identifier, setIdentifier] = useState('');
+  const [lecturerLogin, setLecturerLogin] = useState(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isPrivateMode, setIsPrivateMode] = useState(false);
@@ -375,6 +376,10 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
     if (onClearError) onClearError();
 
     try {
+      if (lecturerLogin) {
+        await signInWithEmailAndPassword(auth, identifier.trim(), password);
+        return;
+      }
       const { credential: result, studentId } = await signInWithRetry(identifier, password);
 
       // The id the SERVER resolved, never the typed string: a name or a login
@@ -462,6 +467,11 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
           </div>
         )}
 
+        <div className="mb-4 flex gap-2">
+          <button type="button" disabled={isLoading} onClick={() => { setLecturerLogin(false); setError(null); }} aria-pressed={!lecturerLogin} className={`flex-1 rounded-xl border p-2 text-sm font-bold ${!lecturerLogin ? 'border-teal-600 text-teal-700' : 'border-slate-200 text-slate-500'}`}>{isRtl ? 'دخول الطالب' : 'Student login'}</button>
+          <button type="button" disabled={isLoading} onClick={() => { setLecturerLogin(true); setError(null); }} aria-pressed={lecturerLogin} className={`flex-1 rounded-xl border p-2 text-sm font-bold ${lecturerLogin ? 'border-teal-600 text-teal-700' : 'border-slate-200 text-slate-500'}`}>{isRtl ? 'دخول التدريسي' : 'Lecturer login'}</button>
+        </div>
+        {lecturerLogin && <p className="mb-3 text-xs text-slate-500">{isRtl ? 'استخدم البريد وكلمة المرور اللذين هيأتهما الإدارة. أول تسجيل دخول وتنزيل الجدول يحتاجان الإنترنت.' : 'Use your administration-provisioned email and password. Initial sign-in and offline setup require internet.'}</p>}
         <form onSubmit={handleLogin} className="mb-6 space-y-4 text-left">
           <div>
             <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1.5 px-1">

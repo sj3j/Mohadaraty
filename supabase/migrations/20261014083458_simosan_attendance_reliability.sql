@@ -21,6 +21,7 @@ create table public.attendance_occurrences (
   term_id text not null references public.attendance_terms(id) on delete restrict,
   stage_id text not null,
   timetable_session_id text not null,
+  mode text not null default 'other' check (mode in ('theory', 'practical', 'other')),
   lecture_date date not null,
   title text not null,
   start_at timestamptz not null,
@@ -274,11 +275,11 @@ begin
     end_date = excluded.end_date;
 
   insert into public.attendance_occurrences (
-    id, term_id, stage_id, timetable_session_id, lecture_date, title,
+    id, term_id, stage_id, timetable_session_id, mode, lecture_date, title,
     start_at, end_at, audience_groups, location, teacher
   ) values (
     v_occurrence_id, p_occurrence->>'termId', p_occurrence->>'stageId',
-    p_occurrence->>'timetableSessionId', (p_occurrence->>'lectureDate')::date,
+    p_occurrence->>'timetableSessionId', coalesce(p_occurrence->>'mode', 'other'), (p_occurrence->>'lectureDate')::date,
     p_occurrence->>'title', (p_occurrence->>'startAt')::timestamptz,
     (p_occurrence->>'endAt')::timestamptz,
     array(select jsonb_array_elements_text(coalesce(p_occurrence->'audienceGroups', '[]'::jsonb))),
@@ -599,10 +600,12 @@ declare
   v_audit public.attendance_audit_events%rowtype;
 begin
   if p_status not in ('confirmed', 'voided') then raise exception using errcode = '22023', message = 'invalid_record_status'; end if;
+  if p_reason is null or length(trim(p_reason)) not between 1 and 1000 then raise exception 'invalid_reason'; end if;
+  perform public.attendance_claim_command(p_request_id, p_actor_uid, 'record_status', p_record_id::text, jsonb_build_object('status', p_status, 'reason', p_reason));
   select * into v_audit from public.attendance_audit_events where request_id = p_request_id;
   if found then
     if v_audit.record_id <> p_record_id or v_audit.action <>
-      case when p_status = 'voided' then 'record_voided' else 'record_restored' end then
+      (case when p_status = 'voided' then 'record_voided' else 'record_restored' end) then
       raise exception using errcode = '22023', message = 'idempotency_conflict';
     end if;
     select * into v_record from public.attendance_records where id = v_audit.record_id;
@@ -612,15 +615,15 @@ begin
   select * into v_record from public.attendance_records where id = p_record_id;
   if not found then raise exception using errcode = '22023', message = 'record_not_found'; end if;
   select * into v_session from public.attendance_sessions where id = v_record.session_id for update;
-  if v_session.revision <> p_expected_revision then raise exception using errcode = '40001', message = 'revision_conflict'; end if;
-  if v_session.status = 'finalized' then raise exception using errcode = '22023', message = 'session_finalized'; end if;
+  select * into v_record from public.attendance_records where id = p_record_id for update;
+  if v_record.revision <> p_expected_revision then raise exception using errcode = '40001', message = 'revision_conflict'; end if;
+  if v_session.status = 'cancelled' then raise exception 'session_cancelled'; end if;
 
   v_before := to_jsonb(v_record);
   update public.attendance_records
   set status = p_status, decided_at = now(), revision = revision + 1
   where id = p_record_id
   returning * into v_record;
-  update public.attendance_sessions set revision = revision + 1 where id = v_record.session_id returning * into v_session;
   insert into public.attendance_audit_events (
     request_id, session_id, record_id, actor_uid, action, reason, before_state, after_state
   ) values (
@@ -653,6 +656,7 @@ declare
   v_before jsonb;
   v_audit public.attendance_audit_events%rowtype;
 begin
+  perform public.attendance_claim_command(p_request_id, p_actor_uid, 'session_update', p_session_id::text, jsonb_build_object('headcount', p_expected_headcount, 'notes', p_notes, 'status', p_next_status, 'reason', p_reason));
   select * into v_audit from public.attendance_audit_events where request_id = p_request_id;
   if found then
     if v_audit.session_id <> p_session_id then
@@ -688,10 +692,6 @@ begin
     notes = coalesce(p_notes, notes),
     status = coalesce(p_next_status, status),
     ended_at = case when p_next_status = 'ended' and ended_at is null then now() else ended_at end,
-    reconciliation_deadline = case
-      when p_next_status = 'ended' then greatest(reconciliation_deadline, now() + interval '7 days')
-      else reconciliation_deadline
-    end,
     finalized_at = case when p_next_status = 'finalized' then now() else finalized_at end,
     revision = revision + 1
   where id = p_session_id
@@ -736,7 +736,7 @@ begin
   if found then
     select * into v_receipt from public.attendance_receipts where request_id = p_receipt_id;
     if not found or v_audit.session_id <> v_receipt.session_id or v_audit.action <>
-      case when p_decision = 'confirm' then 'review_confirmed' else 'review_rejected' end then
+      (case when p_decision = 'confirm' then 'review_confirmed' else 'review_rejected' end) then
       raise exception using errcode = '22023', message = 'idempotency_conflict';
     end if;
     if v_receipt.record_id is not null then

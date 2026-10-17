@@ -12,6 +12,7 @@ import AppearanceSettings from './AppearanceSettings';
 import BlockedUsersSettings from './BlockedUsersSettings';
 import AccountSecuritySettings from './AccountSecuritySettings';
 import StageSettings from './StageSettings';
+import DoctorAccountProvisionModal from '../doctor/DoctorAccountProvisionModal';
 import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
@@ -69,6 +70,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   } = props;
   const isRtl = lang === 'ar';
   const [page, setPage] = useState<Page>('root');
+  const [doctorAccountsOpen, setDoctorAccountsOpen] = useState(false);
   const { stages, currentAppStage } = useStageContext();
 
   const isSubscriber = hasLiveSubscription(user);
@@ -551,11 +553,10 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                       isRtl={isRtl} icon={SETTINGS_ICONS.attendanceAdmin}
                       label={isRtl ? 'إدارة الحضور وحسابات التدريسيين' : 'Manage attendance & doctors'}
                       sublabel={isRtl ? 'إنشاء حسابات التدريسيين وتعيين المواد' : 'Doctor accounts & subject assignments'}
-                      onClick={() => {
-                        // BACKEND AGENT HOOK: Attach DoctorAccountProvisionModal here
-                      }}
+                      onClick={() => setDoctorAccountsOpen(true)}
                     />
                   )}
+                  {doctorAccountsOpen && isMasterAdmin(user) && <DoctorAccountProvisionModal stages={stages} isRtl={isRtl} onClose={() => setDoctorAccountsOpen(false)} />}
                   {canViewAdminLogs(user) && (
                     <SettingsRow
                       isRtl={isRtl} icon={SETTINGS_ICONS.logs}

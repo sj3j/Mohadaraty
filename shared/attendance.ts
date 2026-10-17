@@ -3,7 +3,7 @@ import { TEACHING_DAYS, type DayIndex, type StageTimetableDoc, type TimetableSes
 import type { AttendanceAdvisory, AttendanceTelemetry } from './attendanceSecurity.js';
 
 export const ATTENDANCE_TIMEZONE = 'Asia/Baghdad';
-export const ATTENDANCE_RECONCILIATION_DAYS = 7;
+export const ATTENDANCE_RECONCILIATION_HOURS = 36;
 export const ATTENDANCE_QR_VERSION = 1;
 
 export type AttendanceSessionStatus = 'active' | 'ended' | 'finalized' | 'cancelled';
@@ -29,6 +29,7 @@ export interface AttendanceOccurrenceCandidate {
   audienceGroups: string[];
   location?: string;
   teacher?: string;
+  mode?: 'theory' | 'practical' | 'other';
 }
 
 export interface AttendanceQrClaims {
@@ -42,6 +43,23 @@ export interface AttendanceQrClaims {
   title: string;
   startTime: string;
   endTime: string;
+  expectedHeadcount?: number;
+}
+
+export interface AttendanceOfflinePermitClaims {
+  typ: 'simosan-offline-permit';
+  id: string;
+  professorUid: string;
+  stageId: string;
+  publicKey: JsonWebKey;
+}
+
+export interface AttendanceOfflinePack {
+  ownerUid: string;
+  permit: string;
+  bootstrap: AttendanceBootstrap;
+  roster: AttendanceRosterEntry[];
+  sessions: Record<string, string>;
 }
 
 export interface LocalAttendanceReceipt {
@@ -123,10 +141,31 @@ export interface AttendanceBootstrap {
   canManage: boolean;
 }
 
+export interface AttendanceDoctorSubject {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  type: 'theoretical' | 'practical' | 'both';
+  timetableSessionIds: string[];
+}
+
+export interface AttendanceDoctorWorkspace {
+  offline?: boolean;
+  stageId: string;
+  subjects: AttendanceDoctorSubject[];
+  bootstrap: AttendanceBootstrap;
+  roster: AttendanceRosterEntry[];
+  sessions: AttendanceSessionView[];
+  records: AttendanceRecordView[];
+}
+
 export interface AttendanceMine {
+  offline?: boolean;
+  historyComplete?: boolean;
   serverNow: string;
   timezone: typeof ATTENDANCE_TIMEZONE;
   stageId: string;
+  subjects?: AttendanceDoctorSubject[];
   term: AttendanceBootstrap['term'];
   occurrences: AttendanceOccurrenceCandidate[];
   sessions: AttendanceSessionView[];
@@ -144,6 +183,7 @@ export interface AttendanceMine {
 }
 
 export interface AttendanceSessionSnapshot {
+  offline?: boolean;
   serverNow: string;
   session: AttendanceSessionView;
   roster: AttendanceRosterEntry[];
@@ -236,6 +276,7 @@ function toOccurrence(
     termId: attendanceTermId(calendar, term),
     stageId,
     timetableSessionId: session.id,
+    mode: session.kind,
     lectureDate,
     title: session.title,
     startAt: isoAtBaghdad(lectureDate, session.start),

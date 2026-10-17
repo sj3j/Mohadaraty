@@ -1,122 +1,78 @@
 /**
- * ============================================================================
- * [LECTURER / DOCTOR TIER] BACKEND AGENT CONTRACT & INTEGRATION GUIDE
- * ============================================================================
- * 
- * 1. SCOPE & BOUNDARY:
- *    - EXCLUSIVELY DOCTOR / PROFESSOR-FACING.
- *    - Activation: Triggered in App.tsx when user.role === 'doctor'.
- *    - Bypasses student UI completely: drops standard bottom tabs, student courses,
- *      student timetable, and services navigation.
- *    - STRICT RULE FOR BACKEND AGENT: Doctor has authority ONLY over their assigned
- *      academic stage (user.assignedStageId) and assigned subjects (user.assignedSubjects, 1-2 subjects).
- *      DO NOT grant access to other stages, student profile editing, or system settings!
- * 
- * 2. CORE ARCHITECTURE — 3 DEDICATED DOCTOR SCREENS:
- * 
- *    SCREEN 1: Live QR Hall Session & Projector Display (DoctorLiveSessionView.tsx)
- *    - Purpose: Live classroom lecture attendance.
- *    - Projector Mode: Displays full-screen rotating/dynamic QR code for hall projector.
- *    - Live Attendees Feed: Real-time ticker of students checking in via camera.
- *    - Backend Requirements:
- *      * Connect to `POST /api/attendance/sessions` (shared/attendanceApi.ts).
- *      * Generate rotating dynamic cryptographic tokens (valid for ~15-30s) to prevent
- *        remote QR photo sharing over WhatsApp/Telegram.
- *      * Provide Close Session & Review actions.
- * 
- *    SCREEN 2: Excel-like Master Timetable Spreadsheet (DoctorExcelTimetableView.tsx)
- *    - Purpose: Official academic attendance ledger.
- *    - Layout: Sticky student column (Arabic name, group, code), followed by weekly lecture columns.
- *    - Interactive Cells: Doctor clicks any cell to toggle:
- *      * 'present' (✓ Present - Emerald)
- *      * 'absent' (✗ Absent - Rose)
- *      * 'excused' (⏱ Excused - Amber)
- *    - Feature: Export to official CSV / Excel sheet for college administration.
- *    - Backend Requirements:
- *      * Fetch student attendance matrix for the stage/subject.
- *      * Batch-save attendance overrides to Supabase `attendance_records`.
- * 
- *    SCREEN 3: Analytics, Trends & Deprivation Warnings (DoctorAnalyticsView.tsx)
- *    - Purpose: Attendance KPIs, charts, and student deprivation risk monitoring.
- *    - Calibration: Calibrated against the Iraqi Ministry 15% absence ceiling:
- *      * Safe (< 5%)
- *      * Alert (5% - 10%)
- *      * First Warning إنذار أول (10% - 15%)
- *      * Deprived حرمان (>= 15%)
- *    - Backend Requirements: Provide aggregate stats and one-click export for warnings.
- * 
- *    SUBJECT & MODE SELECTOR (SubjectModeModal.tsx):
- *    - Allows doctor to toggle between their assigned subjects (1 or 2).
- *    - Allows switching between Theoretical ('theoretical'), Practical ('practical'), or Both ('both').
- * ============================================================================
+ * Lecturer portal. Session and cell permissions are enforced by the Firebase-authenticated
+ * attendance gateway against exact stage and timetable-slot assignments.
+ * The ledger uses audited manual confirm/void operations. Sanctions analytics require
+ * an approved institutional policy and are intentionally not displayed.
  */
 
 import React, { useState } from 'react';
 import { 
   QrCode, FileSpreadsheet, BarChart3, LogOut, BookOpen, 
-  ChevronDown, GraduationCap, Sparkles, Layers 
+  ChevronDown, GraduationCap, Sparkles, Layers, ArrowRight, ArrowLeft, RefreshCw
 } from 'lucide-react';
 import type { Language, UserProfile } from '../../types';
-import { DoctorSubject, DoctorPortalTab, LectureMode, StudentAttendanceRow, AttendanceCellStatus } from './types';
-import { MOCK_DOCTOR_SUBJECTS, MOCK_LECTURES, MOCK_STUDENTS } from './mockData';
+import { DoctorSubject, DoctorPortalTab, LectureMode, LectureColumn, StudentAttendanceRow, AttendanceCellStatus } from './types';
+import { useDoctorAttendance } from './useDoctorAttendance';
 import SubjectModeModal from './SubjectModeModal';
 import DoctorLiveSessionView from './DoctorLiveSessionView';
 import DoctorExcelTimetableView from './DoctorExcelTimetableView';
-import DoctorAnalyticsView from './DoctorAnalyticsView';
+
 
 interface DoctorPortalProps {
   user: UserProfile;
   lang: Language;
   onLogout: () => void;
+  onBack?: () => void;
+  onOpenOfflineTools?: () => void;
+  stageId?: string;
 }
 
-export default function DoctorPortal({ user, lang, onLogout }: DoctorPortalProps) {
+export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOfflineTools, stageId }: DoctorPortalProps) {
   const isRtl = lang === 'ar';
+  const BackIcon = isRtl ? ArrowRight : ArrowLeft;
 
-  // Fallback to mock subjects if user has none assigned yet
-  const availableSubjects: DoctorSubject[] = (user.assignedSubjects && user.assignedSubjects.length > 0)
-    ? user.assignedSubjects.map((s) => ({
-        id: s.id,
-        nameAr: s.nameAr,
-        nameEn: s.nameEn,
-        stageId: user.assignedStageId || 'stage_3',
-        stageNameAr: 'المرحلة الدراسية',
-        type: s.type,
-      }))
-    : MOCK_DOCTOR_SUBJECTS;
-
-  const [selectedSubject, setSelectedSubject] = useState<DoctorSubject>(availableSubjects[0]);
-  const [selectedMode, setSelectedMode] = useState<LectureMode>(selectedSubject.type || 'both');
+  const attendance = useDoctorAttendance(user.uid, isRtl, stageId);
+  const availableSubjects: DoctorSubject[] = (attendance.workspace?.subjects || []).map(subject => ({
+    id: subject.id, nameAr: subject.nameAr, nameEn: subject.nameEn,
+    stageId: attendance.workspace!.stageId, stageNameAr: attendance.workspace!.stageId,
+    type: subject.type,
+  }));
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
+  const selectedSubject = availableSubjects.find(subject => subject.id === selectedSubjectId) || availableSubjects[0];
+  const [selectedMode, setSelectedMode] = useState<LectureMode>('both');
+  const [matrixPage, setMatrixPage] = useState<number | null>(null);
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DoctorPortalTab>('excel');
-
-  // Local mutable state for students' attendance in memory (no DB modification)
-  const [students, setStudents] = useState<StudentAttendanceRow[]>(MOCK_STUDENTS);
-
-  // Filter lectures matching active mode if theoretical or practical is selected
-  const activeLectures = MOCK_LECTURES.filter((lec) => {
-    if (selectedMode === 'both') return true;
-    return lec.mode === selectedMode;
-  });
-
+  const assignedSlots = new Set(attendance.workspace?.subjects.find(subject => subject.id === selectedSubject?.id)?.timetableSessionIds || []);
+  const activeOccurrences = (attendance.workspace?.bootstrap.occurrences || []).filter(occurrence =>
+    assignedSlots.has(occurrence.timetableSessionId)
+    && (selectedMode === 'both' || occurrence.mode === (selectedMode === 'theoretical' ? 'theory' : 'practical'))
+  );
+  const activeLectures: LectureColumn[] = activeOccurrences.map((occurrence, index) => ({
+    id: occurrence.id, number: index + 1, date: occurrence.lectureDate,
+    title: occurrence.title, mode: occurrence.mode === 'practical' ? 'practical' : 'theoretical',
+    time: occurrence.startTime, location: occurrence.location,
+  }));
+  const matrixPageSize = 20;
+  const totalMatrixPages = Math.max(1, Math.ceil(activeLectures.length / matrixPageSize));
+  const serverDate = attendance.workspace?.bootstrap.serverNow
+    ? new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(attendance.workspace.bootstrap.serverNow)) : '';
+  const nearestIndex = activeOccurrences.findIndex(occurrence => occurrence.lectureDate >= serverDate);
+  const suggestedPage = Math.floor((nearestIndex < 0 ? Math.max(0, activeLectures.length - 1) : nearestIndex) / matrixPageSize);
+  const currentMatrixPage = Math.max(0, Math.min(matrixPage ?? suggestedPage, totalMatrixPages - 1));
+  const matrixLectures = activeLectures.slice(currentMatrixPage * matrixPageSize, (currentMatrixPage + 1) * matrixPageSize);
+  const students = attendance.students;
   const handleUpdateAttendance = (studentId: string, lectureId: string, newStatus: AttendanceCellStatus) => {
-    setStudents((prev) =>
-      prev.map((student) => {
-        if (student.studentId !== studentId) return student;
-        return {
-          ...student,
-          attendance: {
-            ...student.attendance,
-            [lectureId]: newStatus,
-          },
-        };
-      })
-    );
+    void attendance.updateCell(studentId, lectureId, newStatus);
   };
-
   const handleStudentMarkedPresent = (studentId: string, lectureId: string) => {
-    handleUpdateAttendance(studentId, lectureId, 'present');
+    void attendance.updateCell(studentId, lectureId, 'present');
   };
+  if (!selectedSubject) return <div className="min-h-screen p-6 dark:bg-zinc-950 dark:text-white" role="status">
+    {attendance.error || (isRtl ? 'جاري تحميل تكليفات التدريسي والمواد…' : 'Loading assigned subjects and timetable…')}
+    <button className="ms-3 rounded-xl bg-teal-600 px-3 py-2 text-white" onClick={() => void attendance.refresh()}>{isRtl ? 'إعادة المحاولة' : 'Retry'}</button>
+    <button className="ms-3" onClick={onLogout}>{isRtl ? 'خروج' : 'Sign out'}</button>
+  </div>;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 font-sans" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -127,11 +83,12 @@ export default function DoctorPortal({ user, lang, onLogout }: DoctorPortalProps
         subjects={availableSubjects}
         selectedSubject={selectedSubject}
         onSelectSubject={(subj) => {
-          setSelectedSubject(subj);
+          setSelectedSubjectId(subj.id);
           setSelectedMode(subj.type || 'both');
+          setMatrixPage(null);
         }}
         selectedMode={selectedMode}
-        onSelectMode={setSelectedMode}
+        onSelectMode={mode => { setSelectedMode(mode); setMatrixPage(null); }}
         isRtl={isRtl}
       />
 
@@ -176,19 +133,43 @@ export default function DoctorPortal({ user, lang, onLogout }: DoctorPortalProps
               </button>
             </div>
 
-            {/* Right/End: Logout Action */}
+            {/* Right/End: Actions */}
             <div className="flex items-center gap-2 ms-auto md:ms-0">
-              <button
-                onClick={onLogout}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
-                title={isRtl ? 'تسجيل الخروج' : 'Log out'}
-              >
-                <LogOut className="h-4 w-4" />
-                <span className="hidden sm:inline">{isRtl ? 'تسجيل الخروج' : 'Log out'}</span>
-              </button>
+              <button onClick={() => void attendance.refresh()} disabled={attendance.busy} className="rounded-xl border border-teal-200 p-2 text-teal-700 disabled:opacity-40" title={isRtl ? 'تحديث سجل الحضور' : 'Refresh attendance ledger'}><RefreshCw className="h-4 w-4" /></button>
+              {onOpenOfflineTools && (
+                <button
+                  onClick={onOpenOfflineTools}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold border border-teal-200 bg-teal-50/60 text-teal-700 hover:bg-teal-100 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-300 transition-colors cursor-pointer"
+                  title={isRtl ? 'حزمة العمل دون اتصال والمزامنة' : 'Offline Pack & Sync Tools'}
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span className="hidden sm:inline">{isRtl ? 'أدوات دون اتصال' : 'Offline Tools'}</span>
+                </button>
+              )}
+              {onBack ? (
+                <button
+                  onClick={onBack}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-xs font-black text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+                  title={isRtl ? 'الرجوع لشاشة الطالب' : 'Return to Student View'}
+                >
+                  <BackIcon className="h-4 w-4" />
+                  <span>{isRtl ? 'شاشة الطالب' : 'Student View'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={onLogout}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
+                  title={isRtl ? 'تسجيل الخروج' : 'Log out'}
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span className="hidden sm:inline">{isRtl ? 'تسجيل الخروج' : 'Log out'}</span>
+                </button>
+              )}
             </div>
           </div>
 
+          {attendance.error && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{attendance.error}</p>}
+          {attendance.workspace?.offline && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{isRtl ? 'عرض نسخة محفوظة؛ مزامنة الطلاب ستظهر عند عودة الاتصال' : 'Showing cached data; student uploads appear when connected'}</p>}
           {/* Navigation Tabs for the 3 Screens */}
           <div className="mt-3.5 flex items-center gap-1 border-t border-slate-100 pt-3 dark:border-zinc-800/80">
             {[
@@ -203,12 +184,6 @@ export default function DoctorPortal({ user, lang, onLogout }: DoctorPortalProps
                 labelAr: 'جلسة الحضور المباشرة (QR)',
                 labelEn: 'Live Hall Session (QR)',
                 icon: QrCode,
-              },
-              {
-                id: 'analytics',
-                labelAr: 'الإحصائيات والإنذارات',
-                labelEn: 'Analytics & Sanctions',
-                icon: BarChart3,
               },
             ].map((tab) => {
               const Icon = tab.icon;
@@ -241,27 +216,29 @@ export default function DoctorPortal({ user, lang, onLogout }: DoctorPortalProps
             students={students}
             isRtl={isRtl}
             onStudentMarkedPresent={handleStudentMarkedPresent}
+            attendance={attendance}
           />
         )}
 
         {activeTab === 'excel' && (
+          <div className="space-y-3">
+            {totalMatrixPages > 1 && <div className="flex items-center justify-center gap-3 text-xs font-bold">
+              <button disabled={currentMatrixPage === 0} onClick={() => setMatrixPage(currentMatrixPage - 1)} className="rounded-xl border px-3 py-2 disabled:opacity-40">{isRtl ? 'الأقدم' : 'Older'}</button>
+              <span>{currentMatrixPage + 1} / {totalMatrixPages}</span>
+              <button disabled={currentMatrixPage >= totalMatrixPages - 1} onClick={() => setMatrixPage(currentMatrixPage + 1)} className="rounded-xl border px-3 py-2 disabled:opacity-40">{isRtl ? 'الأحدث' : 'Newer'}</button>
+            </div>}
           <DoctorExcelTimetableView
             subject={selectedSubject}
-            lectures={activeLectures}
+            lectures={matrixLectures}
             students={students}
             isRtl={isRtl}
             onUpdateAttendance={handleUpdateAttendance}
+            isOffline={attendance.workspace?.offline === true}
           />
+          </div>
         )}
 
-        {activeTab === 'analytics' && (
-          <DoctorAnalyticsView
-            subject={selectedSubject}
-            lectures={activeLectures}
-            students={students}
-            isRtl={isRtl}
-          />
-        )}
+
       </main>
     </div>
   );

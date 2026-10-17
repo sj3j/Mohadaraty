@@ -220,11 +220,20 @@ export interface UserProfile {
    * than the one in managedStageId, which for a promoted representative is
    * retained as a presentational home stage. See src/lib/permissions.ts.
    */
-  role: 'admin' | 'moderator' | 'support' | 'student' | 'observer';
+  role: 'admin' | 'moderator' | 'support' | 'student' | 'observer' | 'doctor';
   isMasterAdmin?: boolean;
   /** Immediately disables every Support capability without discarding the
    * role, permissions, balances, or historical attribution. */
   staffDisabled?: boolean;
+  /** Doctor assignment: managed stage ID */
+  assignedStageId?: string;
+  /** Doctor assignment: 1 or 2 subjects with practical/theoretical mode */
+  assignedSubjects?: {
+    id: string;
+    nameAr: string;
+    nameEn: string;
+    type: 'theoretical' | 'practical' | 'both';
+  }[];
   photoUrl?: string;
   completedWeeklyTasks?: string[];
   favorites?: string[];

@@ -1,3 +1,5 @@
+import type { UserProfile } from '../types';
+
 export type AttachmentStatus = 'approved' | 'pending';
 
 export interface LectureAttachment {
@@ -14,7 +16,7 @@ export interface LectureAttachment {
   title?: string;
   uploadedBy: string;
   uploaderName: string;
-  uploaderRole?: 'admin' | 'moderator' | 'support' | 'student' | 'observer';
+  uploaderRole?: UserProfile['role'];
   isAnonymous: boolean;
   status: AttachmentStatus;
   createdAt: any;
