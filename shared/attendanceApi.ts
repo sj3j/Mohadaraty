@@ -290,9 +290,24 @@ async function loadStageAttendanceSubjects(admin: any, stageId: string) {
     const data = document.data() || {};
     if (typeof data.subjectId !== 'string' || typeof data.timetableSessionId !== 'string') continue;
     const existing = subjects.get(data.subjectId);
-    const subject = existing || { id: data.subjectId, nameAr: data.nameAr, nameEn: data.nameEn, type: data.type, timetableSessionIds: [] };
-    if (!subject.timetableSessionIds.includes(data.timetableSessionId)) subject.timetableSessionIds.push(data.timetableSessionId);
-    subjects.set(data.subjectId, subject);
+    if (existing) {
+      if (!existing.timetableSessionIds.includes(data.timetableSessionId)) {
+        existing.timetableSessionIds.push(data.timetableSessionId);
+      }
+      if (existing.type !== data.type && data.type) {
+        existing.type = 'both';
+      }
+      if (!existing.nameAr && data.nameAr) existing.nameAr = data.nameAr;
+      if (!existing.nameEn && data.nameEn) existing.nameEn = data.nameEn;
+    } else {
+      subjects.set(data.subjectId, {
+        id: data.subjectId,
+        nameAr: data.nameAr || '',
+        nameEn: data.nameEn || '',
+        type: data.type || 'both',
+        timetableSessionIds: [data.timetableSessionId],
+      });
+    }
   }
   return [...subjects.values()];
 }

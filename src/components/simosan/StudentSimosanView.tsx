@@ -33,6 +33,8 @@ export interface WeekAttendanceItem {
   date?: string;
   time?: string;
   attendedGroup?: string; // e.g. "D3" (native) or "B2" (substituted)
+  teacher?: string;
+  location?: string;
   status: 'attended' | 'substituted' | 'absent' | 'upcoming' | 'pending';
 }
 
@@ -42,11 +44,314 @@ export interface SubjectItem {
   nameEn: string;
   code: string;
   doctorName: string;
+  theoryDoctor?: string;
+  practicalDoctor?: string;
+  hasTheory: boolean;
   hasPractical: boolean;
   iconBg: string;
   iconColor: string;
   theoryWeeks: WeekAttendanceItem[];
   practicalWeeks: WeekAttendanceItem[];
+}
+
+/**
+ * Normalizes subject title for robust matching across theoretical and practical sessions.
+ * Strips parentheses, brackets, mode descriptors ('نظري', 'عملي', 'مختبر', 'theory', 'practical', 'lab'),
+ * punctuation, and unifies Arabic letters and Roman/Arabic numerals.
+ */
+export function normalizeCanonicalSubjectTitle(raw: string): string {
+  if (!raw) return '';
+  let text = String(raw).trim().toLowerCase();
+
+  // 1. Remove text inside brackets/parentheses that mention mode
+  text = text.replace(/[\(\[\{][^\)\]\}]*(?:نظري|عملي|مختبر|theory|practical|lab)[^\)\]\}]*[\)\]\}]/gi, ' ');
+
+  // 2. Remove dash/slash prefixes with mode
+  text = text.replace(/[-–—/]\s*(?:نظري|عملي|مختبر|theory|practical|lab)\b/gi, ' ');
+
+  // 3. Remove standalone mode tokens
+  text = text.replace(/\b(?:theory|theoretical|practical|lab|laboratory)\b/gi, ' ');
+  text = text.replace(/(?:^|\s)(?:نظري|نظرية|عملي|عملية|مختبر|مختبرات)(?:\s|$)/g, ' ');
+
+  // 4. Normalize Arabic characters
+  text = text
+    .replace(/[\u064B-\u065F\u0670]/g, '') // tashkeel
+    .replace(/\u0640/g, '') // tatweel
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    // Arabic numerals to standard digits
+    .replace(/١/g, '1')
+    .replace(/٢/g, '2')
+    .replace(/٣/g, '3')
+    .replace(/٤/g, '4')
+    .replace(/٥/g, '5')
+    .replace(/٦/g, '6')
+    .replace(/٧/g, '7')
+    .replace(/٨/g, '8')
+    .replace(/٩/g, '9')
+    .replace(/٠/g, '0');
+
+  // 5. Roman numerals to digits
+  text = text
+    .replace(/\biv\b/gi, '4')
+    .replace(/\biii\b/gi, '3')
+    .replace(/\bii\b/gi, '2')
+    .replace(/\bi\b/gi, '1');
+
+  // 6. Clean punctuation & extra whitespace
+  return text.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+/**
+ * Strips mode suffixes from display names to get pure academic subject names.
+ */
+export function cleanDisplaySubjectName(raw?: string): string {
+  if (!raw) return '';
+  return raw
+    .replace(/[\(\[\{][^\)\]\}]*(?:نظري|عملي|مختبر|theory|practical|lab)[^\)\]\}]*[\)\]\}]/gi, '')
+    .replace(/[-–—/]\s*(?:نظري|عملي|مختبر|theory|practical|lab)\s*$/gi, '')
+    .replace(/\s+(?:نظري|عملي|مختبر|theory|practical|lab)\s*$/gi, '')
+    .trim();
+}
+
+/**
+ * Formats doctor names context-aware: shows both if different for theory and practical,
+ * or single name if only one doctor teaches.
+ */
+export function formatSubjectDoctor(
+  theoryDoctor?: string,
+  practicalDoctor?: string,
+  isRtl: boolean = true
+): string {
+  const tDoc = (theoryDoctor || '').trim();
+  const pDoc = (practicalDoctor || '').trim();
+  if (tDoc && pDoc && tDoc.toLowerCase() !== pDoc.toLowerCase()) {
+    return isRtl
+      ? `${tDoc} (نظري) • ${pDoc} (عملي)`
+      : `${tDoc} (Theory) • ${pDoc} (Lab)`;
+  }
+  return tDoc || pDoc || '';
+}
+
+/**
+ * Aggregates attendance rows and mine assignments into canonical SubjectItems.
+ * Guarantees that theoretical lectures and practical labs for the same subject merge
+ * into a single unified card, regardless of doctor or slot division.
+ */
+export function buildCanonicalSubjects(
+  rows: StudentAttendanceRow[],
+  mine: import('../../../shared/attendance').AttendanceMine | null,
+  isRtl: boolean = true
+): SubjectItem[] {
+  const assignments = mine?.subjects || [];
+
+  const isPractical = (
+    occurrence: StudentAttendanceRow['occurrence'],
+    assignment?: import('../../../shared/attendance').AttendanceDoctorSubject
+  ) => {
+    if (occurrence.mode === 'practical') return true;
+    if (assignment?.type === 'practical') return true;
+    const combined = `${occurrence.title || ''} ${occurrence.timetableSessionId || ''}`.toLowerCase();
+    return /[\(\[\s_-](?:عملي|مختبر|practical|lab|laboratory)[\)\]\s_-]/i.test(` ${combined} `);
+  };
+
+  interface CanonicalSubjectAccumulator {
+    id: string;
+    nameAr: string;
+    nameEn: string;
+    code: string;
+    theoryDoctors: Set<string>;
+    practicalDoctors: Set<string>;
+    theoryWeeks: WeekAttendanceItem[];
+    practicalWeeks: WeekAttendanceItem[];
+  }
+
+  const canonicalMap = new Map<string, CanonicalSubjectAccumulator>();
+  const keyAliases = new Map<string, string>();
+
+  // Pass 1: Seed canonical map from known stage assignments
+  for (const assignment of assignments) {
+    const normAr = normalizeCanonicalSubjectTitle(assignment.nameAr || '');
+    const normEn = normalizeCanonicalSubjectTitle(assignment.nameEn || '');
+    const baseId = assignment.id.replace(/[-_](?:theory|practical|lab|theoritical|theori|pract)$/i, '');
+
+    const canonicalKey = normAr ? `ar:${normAr}` : (normEn ? `en:${normEn}` : `id:${baseId}`);
+    const targetKey =
+      keyAliases.get(canonicalKey) ||
+      (normAr && keyAliases.get(`ar:${normAr}`)) ||
+      (normEn && keyAliases.get(`en:${normEn}`)) ||
+      (baseId && keyAliases.get(`id:${baseId}`)) ||
+      canonicalKey;
+
+    if (!canonicalMap.has(targetKey)) {
+      canonicalMap.set(targetKey, {
+        id: baseId || assignment.id,
+        nameAr: cleanDisplaySubjectName(assignment.nameAr) || assignment.nameAr || '',
+        nameEn: cleanDisplaySubjectName(assignment.nameEn) || assignment.nameEn || '',
+        code: baseId || assignment.id,
+        theoryDoctors: new Set(),
+        practicalDoctors: new Set(),
+        theoryWeeks: [],
+        practicalWeeks: [],
+      });
+    }
+
+    const existing = canonicalMap.get(targetKey)!;
+    if (!existing.nameAr && assignment.nameAr) existing.nameAr = cleanDisplaySubjectName(assignment.nameAr);
+    if (!existing.nameEn && assignment.nameEn) existing.nameEn = cleanDisplaySubjectName(assignment.nameEn);
+
+    if (normAr) keyAliases.set(`ar:${normAr}`, targetKey);
+    if (normEn) keyAliases.set(`en:${normEn}`, targetKey);
+    if (baseId) keyAliases.set(`id:${baseId}`, targetKey);
+    keyAliases.set(`assign:${assignment.id}`, targetKey);
+    for (const sid of assignment.timetableSessionIds) {
+      if (sid) keyAliases.set(`session:${sid}`, targetKey);
+    }
+  }
+
+  // Pass 2: Map each student attendance occurrence into its canonical subject
+  for (const row of rows) {
+    const occurrence = row.occurrence;
+    const assignment = assignments.find(s => s.timetableSessionIds.includes(occurrence.timetableSessionId || ''));
+
+    const normTitle = normalizeCanonicalSubjectTitle(occurrence.title || '');
+    const sessionId = occurrence.timetableSessionId;
+
+    let targetKey =
+      (sessionId && keyAliases.get(`session:${sessionId}`)) ||
+      (assignment && keyAliases.get(`assign:${assignment.id}`)) ||
+      (normTitle && (keyAliases.get(`ar:${normTitle}`) || keyAliases.get(`en:${normTitle}`))) ||
+      null;
+
+    if (!targetKey) {
+      for (const [cKey, cVal] of canonicalMap.entries()) {
+        if (
+          normTitle &&
+          (normalizeCanonicalSubjectTitle(cVal.nameAr) === normTitle ||
+            normalizeCanonicalSubjectTitle(cVal.nameEn) === normTitle)
+        ) {
+          targetKey = cKey;
+          break;
+        }
+      }
+    }
+
+    if (!targetKey) {
+      targetKey = normTitle ? `title:${normTitle}` : `id:${sessionId || occurrence.id}`;
+      const cleanTitle = cleanDisplaySubjectName(occurrence.title) || occurrence.title;
+      canonicalMap.set(targetKey, {
+        id: sessionId || occurrence.id,
+        nameAr: cleanTitle,
+        nameEn: cleanTitle,
+        code: occurrence.timetableSessionId || '',
+        theoryDoctors: new Set(),
+        practicalDoctors: new Set(),
+        theoryWeeks: [],
+        practicalWeeks: [],
+      });
+      if (normTitle) {
+        keyAliases.set(`ar:${normTitle}`, targetKey);
+        keyAliases.set(`en:${normTitle}`, targetKey);
+      }
+      if (sessionId) keyAliases.set(`session:${sessionId}`, targetKey);
+    }
+
+    const subjectAcc = canonicalMap.get(targetKey)!;
+
+    const isLab = isPractical(occurrence, assignment);
+    const doctor = (occurrence.teacher || '').trim();
+    if (doctor) {
+      if (isLab) {
+        subjectAcc.practicalDoctors.add(doctor);
+      } else {
+        subjectAcc.theoryDoctors.add(doctor);
+      }
+    }
+
+    const weekNumber = mine?.term
+      ? Math.floor((Date.parse(row.weekStart) - Date.parse(attendanceWeekStart(mine.term.startDate))) / 604800000) + 1
+      : 1;
+
+    const item: WeekAttendanceItem = {
+      occurrenceId: occurrence.id,
+      receiptId: row.receipt?.requestId,
+      state: row.state,
+      weekNumber: Math.max(1, weekNumber),
+      title: isRtl ? 'سجل المحاضرة' : 'Lecture record',
+      topic: occurrence.title,
+      date: occurrence.lectureDate,
+      time: occurrence.startTime,
+      teacher: doctor || undefined,
+      location: occurrence.location || undefined,
+      status: row.state === 'confirmed' ? 'attended' : row.state === 'absent' ? 'absent' : row.state === 'none' ? 'upcoming' : 'pending',
+    };
+
+    if (isLab) {
+      subjectAcc.practicalWeeks.push(item);
+    } else {
+      subjectAcc.theoryWeeks.push(item);
+    }
+  }
+
+  // Pass 3: Finalize SubjectItems with chronological ordering and week session labeling
+  const result: SubjectItem[] = [];
+  for (const acc of canonicalMap.values()) {
+    if (acc.theoryWeeks.length === 0 && acc.practicalWeeks.length === 0) {
+      continue;
+    }
+
+    const sortWeeks = (a: WeekAttendanceItem, b: WeekAttendanceItem) =>
+      (a.date || '').localeCompare(b.date || '') ||
+      (a.time || '').localeCompare(b.time || '') ||
+      a.occurrenceId.localeCompare(b.occurrenceId);
+    acc.theoryWeeks.sort(sortWeeks);
+    acc.practicalWeeks.sort(sortWeeks);
+
+    const annotateWeekTitles = (weeks: WeekAttendanceItem[]) => {
+      const weekCounts = new Map<number, number>();
+      for (const w of weeks) {
+        weekCounts.set(w.weekNumber, (weekCounts.get(w.weekNumber) || 0) + 1);
+      }
+      const weekCurrentIndex = new Map<number, number>();
+      for (const w of weeks) {
+        const total = weekCounts.get(w.weekNumber) || 1;
+        if (total > 1) {
+          const current = (weekCurrentIndex.get(w.weekNumber) || 0) + 1;
+          weekCurrentIndex.set(w.weekNumber, current);
+          w.title = isRtl
+            ? `الأسبوع ${w.weekNumber} (الجلسة ${current})`
+            : `Week ${w.weekNumber} (Session ${current})`;
+        } else {
+          w.title = isRtl ? `الأسبوع ${w.weekNumber}` : `Week ${w.weekNumber}`;
+        }
+      }
+    };
+    annotateWeekTitles(acc.theoryWeeks);
+    annotateWeekTitles(acc.practicalWeeks);
+
+    const theoryDoctor = [...acc.theoryDoctors][0] || '';
+    const practicalDoctor = [...acc.practicalDoctors][0] || '';
+    const doctorName = formatSubjectDoctor(theoryDoctor, practicalDoctor, isRtl);
+
+    result.push({
+      id: acc.id,
+      nameAr: acc.nameAr,
+      nameEn: acc.nameEn,
+      code: acc.code,
+      doctorName,
+      theoryDoctor: theoryDoctor || undefined,
+      practicalDoctor: practicalDoctor || undefined,
+      hasTheory: acc.theoryWeeks.length > 0,
+      hasPractical: acc.practicalWeeks.length > 0,
+      iconBg: 'bg-emerald-100 dark:bg-emerald-900/30',
+      iconColor: 'text-emerald-600 dark:text-emerald-400',
+      theoryWeeks: acc.theoryWeeks,
+      practicalWeeks: acc.practicalWeeks,
+    });
+  }
+
+  return result;
 }
 
 export default function StudentSimosanView({ user, lang }: StudentSimosanViewProps) {
@@ -73,37 +378,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
     group: string;
   } | null>(null);
 
-  const subjectMap = new Map<string, SubjectItem>();
-  for (const row of attendance.rows) {
-    const occurrence = row.occurrence;
-    const assignment = attendance.mine?.subjects?.find(subject => subject.timetableSessionIds.includes(occurrence.timetableSessionId || ''));
-    const id = assignment?.id || occurrence.timetableSessionId || occurrence.id;
-    let subject = subjectMap.get(id);
-    if (!subject) {
-      subject = {
-        id, nameAr: assignment?.nameAr || occurrence.title, nameEn: assignment?.nameEn || occurrence.title, code: assignment?.id || '',
-        doctorName: occurrence.teacher || '', hasPractical: assignment?.type !== 'theoretical' && assignment != null,
-        iconBg: 'bg-emerald-100 dark:bg-emerald-900/30',
-        iconColor: 'text-emerald-600 dark:text-emerald-400',
-        theoryWeeks: [], practicalWeeks: [],
-      };
-      subjectMap.set(id, subject);
-    }
-    const weekNumber = attendance.mine?.term
-      ? Math.floor((Date.parse(row.weekStart) - Date.parse(attendanceWeekStart(attendance.mine.term.startDate))) / 604800000) + 1 : 1;
-    const item: WeekAttendanceItem = {
-      occurrenceId: occurrence.id, receiptId: row.receipt?.requestId, state: row.state,
-      weekNumber: Math.max(1, weekNumber),
-      title: isRtl ? 'سجل المحاضرة' : 'Lecture record', topic: occurrence.title,
-      date: occurrence.lectureDate, time: occurrence.startTime,
-      status: row.state === 'confirmed' ? 'attended' : row.state === 'absent' ? 'absent' : row.state === 'none' ? 'upcoming' : 'pending',
-    };
-    if (occurrence.mode === 'practical') {
-      subject.hasPractical = true;
-      subject.practicalWeeks.push(item);
-    } else subject.theoryWeeks.push(item);
-  }
-  const subjects = [...subjectMap.values()];
+  const subjects = buildCanonicalSubjects(attendance.rows, attendance.mine, isRtl);
   const activeSubject = subjects.find(subject => subject.id === activeSubjectId) || null;
   const stateLabel = (state?: StudentAttendanceRow['state']) => {
     const labels: Record<string, [string, string]> = {
@@ -229,13 +504,25 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                     </div>
 
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
-                          {subj.code}
-                        </span>
-                        {!subj.hasPractical && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {subj.code && (
+                          <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
+                            {subj.code}
+                          </span>
+                        )}
+                        {subj.hasTheory && !subj.hasPractical && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
                             {isRtl ? 'نظري فقط' : 'Theory only'}
+                          </span>
+                        )}
+                        {!subj.hasTheory && subj.hasPractical && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-400">
+                            {isRtl ? 'عملي فقط' : 'Practical only'}
+                          </span>
+                        )}
+                        {subj.hasTheory && subj.hasPractical && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-400">
+                            {isRtl ? `${subj.theoryWeeks.length} نظري • ${subj.practicalWeeks.length} عملي` : `${subj.theoryWeeks.length} Theory • ${subj.practicalWeeks.length} Lab`}
                           </span>
                         )}
                       </div>
@@ -292,25 +579,50 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
             <div className="grid grid-cols-1 gap-3">
               {/* Button 1: نظري */}
               <button
-                onClick={() => handleSelectMode('theory')}
-                className="w-full p-4 rounded-2xl border-2 border-emerald-100 dark:border-emerald-950/60 bg-emerald-50/50 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/40 text-start flex items-center justify-between gap-3 transition-all active:scale-[0.98] group cursor-pointer"
+                onClick={() => activeSubject.hasTheory && handleSelectMode('theory')}
+                disabled={!activeSubject.hasTheory}
+                className={`w-full p-4 rounded-2xl border-2 text-start flex items-center justify-between gap-3 transition-all ${
+                  activeSubject.hasTheory
+                    ? 'border-emerald-100 dark:border-emerald-950/60 bg-emerald-50/50 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/40 active:scale-[0.98] cursor-pointer'
+                    : 'border-slate-100 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-800/40 opacity-50 cursor-not-allowed'
+                }`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                    activeSubject.hasTheory
+                      ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-slate-200 dark:bg-zinc-700 text-slate-400 dark:text-zinc-500'
+                  }`}>
                     <BookOpen className="w-5 h-5" strokeWidth={2.5} />
                   </div>
                   <div>
-                    <h4 className="font-black text-sm text-slate-900 dark:text-stone-100">
-                      {isRtl ? 'المحاضرات النظرية (نظري)' : 'Theoretical Lectures'}
-                    </h4>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-black text-sm text-slate-900 dark:text-stone-100">
+                        {isRtl ? 'المحاضرات النظرية (نظري)' : 'Theoretical Lectures'}
+                      </h4>
+                      {!activeSubject.hasTheory && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400">
+                          {isRtl ? 'غير متوفر' : 'N/A'}
+                        </span>
+                      )}
+                    </div>
+                    {activeSubject.theoryDoctor && (
+                      <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400 mt-0.5">
+                        {activeSubject.theoryDoctor}
+                      </p>
+                    )}
                     <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-0.5">
-                      {isRtl ? `${activeSubject.theoryWeeks.length} أسابيع مسجلة` : `${activeSubject.theoryWeeks.length} weeks registered`}
+                      {activeSubject.hasTheory
+                        ? (isRtl ? `${activeSubject.theoryWeeks.length} أسابيع مسجلة` : `${activeSubject.theoryWeeks.length} weeks registered`)
+                        : (isRtl ? 'لا توجد محاضرات نظرية لهذه المادة' : 'No theoretical lectures for this subject')}
                     </p>
                   </div>
                 </div>
-                <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center text-emerald-700 dark:text-emerald-300">
-                  {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                </div>
+                {activeSubject.hasTheory && (
+                  <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center text-emerald-700 dark:text-emerald-300">
+                    {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </div>
+                )}
               </button>
 
               {/* Button 2: عملي */}
@@ -342,6 +654,11 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                         </span>
                       )}
                     </div>
+                    {activeSubject.practicalDoctor && (
+                      <p className="text-xs font-bold text-sky-700 dark:text-sky-400 mt-0.5">
+                        {activeSubject.practicalDoctor}
+                      </p>
+                    )}
                     <p className="text-xs font-bold text-slate-500 dark:text-zinc-400 mt-0.5">
                       {activeSubject.hasPractical
                         ? (isRtl ? `${activeSubject.practicalWeeks.length} مختبرات مسجلة` : `${activeSubject.practicalWeeks.length} labs registered`)
@@ -400,8 +717,16 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                     {selectedMode === 'theory' ? (isRtl ? 'نظري' : 'Theory') : (isRtl ? 'عملي' : 'Practical')}
                   </span>
                 </div>
-                <p className="text-xs font-bold text-slate-400 dark:text-zinc-500 mt-0.5">
-                  {isRtl ? `كروبك الأصلي: ${userGroup}` : `Your original group: ${userGroup}`}
+                <p className="text-xs font-bold text-slate-400 dark:text-zinc-500 mt-0.5 flex items-center gap-2 flex-wrap">
+                  <span>{isRtl ? `كروبك الأصلي: ${userGroup}` : `Your original group: ${userGroup}`}</span>
+                  {((selectedMode === 'theory' ? activeSubject.theoryDoctor : activeSubject.practicalDoctor) || activeSubject.doctorName) && (
+                    <>
+                      <span>•</span>
+                      <span className="text-slate-600 dark:text-zinc-300 font-bold">
+                        {(selectedMode === 'theory' ? activeSubject.theoryDoctor : activeSubject.practicalDoctor) || activeSubject.doctorName}
+                      </span>
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -484,6 +809,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                         <Calendar className="w-3.5 h-3.5 text-slate-400" />
                         <span>{week.date}</span>
                         {week.time && <span>• {week.time}</span>}
+                        {week.location && <span>• {week.location}</span>}
                       </div>
                     )}
 
