@@ -571,11 +571,6 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
 
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
-                        {subj.code && (
-                          <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
-                            {subj.code}
-                          </span>
-                        )}
                         {subj.hasTheory && !subj.hasPractical && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
                             {isRtl ? 'نظري فقط' : 'Theory only'}
@@ -630,9 +625,6 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 space-y-5 animate-in zoom-in-95 duration-150">
             {/* Modal Header */}
             <div className="text-center space-y-1">
-              <span className="text-[11px] font-mono font-bold text-slate-400 dark:text-zinc-500">
-                {activeSubject.code}
-              </span>
               <h3 className="text-lg font-black text-slate-900 dark:text-stone-100">
                 {isRtl ? activeSubject.nameAr : activeSubject.nameEn}
               </h3>
