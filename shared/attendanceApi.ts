@@ -243,15 +243,40 @@ function termPayload(calendar: any, term: any) {
 
 async function officialRoster(admin: any, stageId: string, occurrence: AttendanceOccurrenceCandidate) {
   const snap = await admin.firestore().collection('students').where('stageId', '==', stageId).get();
-  return snap.docs
+  const activeDocs = snap.docs
     .map((doc: any) => ({ id: doc.id, data: doc.data() || {} }))
-    .filter(({ data }: any) => data.isActive !== false)
-    .map(({ id, data }: any) => ({
-      studentId: id,
-      officialName: String(data.name || '').trim(),
-      rosterIdentifier: String(data.loginCode || data.examCode || ''),
-      subgroup: String(data.subgroup || data.group || ''),
-    }))
+    .filter(({ data }: any) => data.isActive !== false);
+
+  const hasMissingSubgroup = activeDocs.some(({ data }: any) => !(data.subgroup || data.group));
+  const userGroupByEmail = new Map<string, string>();
+
+  if (hasMissingSubgroup) {
+    try {
+      const usersSnap = await admin.firestore().collection('users').where('stageId', '==', stageId).get();
+      usersSnap.docs.forEach((uDoc: any) => {
+        const uData = uDoc.data() || {};
+        const grp = String(uData.group || uData.subgroup || '').trim();
+        if (grp) {
+          if (uData.email) userGroupByEmail.set(String(uData.email).trim().toLowerCase(), grp);
+          userGroupByEmail.set(uDoc.id, grp);
+        }
+      });
+    } catch (lookupErr) {
+      console.warn('[attendanceApi] Optional users group fallback failed:', lookupErr);
+    }
+  }
+
+  return activeDocs
+    .map(({ id, data }: any) => {
+      const email = String(data.email || id || '').trim().toLowerCase();
+      const resolvedSubgroup = String(data.subgroup || data.group || userGroupByEmail.get(email) || userGroupByEmail.get(id) || '').trim();
+      return {
+        studentId: id,
+        officialName: String(data.name || '').trim(),
+        rosterIdentifier: String(data.loginCode || data.examCode || ''),
+        subgroup: resolvedSubgroup,
+      };
+    })
     .filter((student: any) => student.officialName)
     .sort((a: any, b: any) => a.officialName.localeCompare(b.officialName, 'ar'));
 }

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { db } from '../lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc } from 'firebase/firestore';
 import { Language, TRANSLATIONS, UserProfile } from '../types';
 import { Loader2, UserCheck } from 'lucide-react';
 import { useStageContext } from '../contexts/StageContext';
@@ -30,9 +30,20 @@ export default function OnboardingScreen({ user, lang }: OnboardingScreenProps) 
 
     setIsLoading(true);
     try {
+      const trimmedGroup = group.trim();
       await updateDoc(doc(db, 'users', user.uid), {
-        group: group.trim()
+        group: trimmedGroup
       });
+      if (user.email) {
+        try {
+          await setDoc(doc(db, 'students', user.email.toLowerCase()), {
+            subgroup: trimmedGroup,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        } catch (studentSyncErr) {
+          console.warn('[OnboardingScreen] Optional students subgroup sync failed:', studentSyncErr);
+        }
+      }
       // App.tsx will automatically re-render because user.group will be updated
     } catch (error) {
       console.error('Error updating profile:', error);

@@ -83,11 +83,17 @@ export default function DoctorExcelTimetableView({
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
   const [selectedSubgroup, setSelectedSubgroup] = useState<string>('all');
 
-  // Derive dynamic groups and subgroups from the current student roster
+  // Derive dynamic groups and subgroups from the student roster + standard stage groups (A, B, C, D)
   const { availableGroups, subgroupsByGroup, hasUnassigned } = useMemo(() => {
-    const groupsSet = new Set<string>();
+    const STANDARD_GROUPS = ['A', 'B', 'C', 'D'];
+    const groupsSet = new Set<string>(STANDARD_GROUPS);
     const subgroupsMap = new Map<string, Set<string>>();
     let unassigned = false;
+
+    // Seed standard subgroups A1..A4, B1..B4, C1..C4, D1..D4
+    for (const g of STANDARD_GROUPS) {
+      subgroupsMap.set(g, new Set([`${g}1`, `${g}2`, `${g}3`, `${g}4`]));
+    }
 
     for (const s of students) {
       const sub = (s.group || '').trim();

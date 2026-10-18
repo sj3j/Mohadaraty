@@ -255,11 +255,23 @@ export default function ProfileScreen({
         });
       }
 
+      const trimmedGroup = editGroup.trim();
       await setDoc(doc(db, 'users', user.uid), {
         name: editName.trim(),
-        group: editGroup.trim(),
+        group: trimmedGroup,
         ...(photoUrl ? { photoUrl } : {})
       }, { merge: true });
+
+      if (user.email) {
+        try {
+          await setDoc(doc(db, 'students', user.email.toLowerCase()), {
+            subgroup: trimmedGroup,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        } catch (studentSyncErr) {
+          console.warn('[ProfileScreen] Optional students subgroup sync failed:', studentSyncErr);
+        }
+      }
 
       setIsEditing(false);
       setEditPhotoFile(null);
