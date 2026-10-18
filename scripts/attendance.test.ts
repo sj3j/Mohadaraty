@@ -131,10 +131,19 @@ check('Supabase is gateway-only and uses atomic idempotency constraints', () => 
   assert.doesNotMatch(migration, /now\(\) \+ interval '7 days'/);
   assert.match(migration, /shared_installation/);
 });
-check('development and production expose identical attendance routes', () => {
+check('development and production expose identical attendance routes and correct middleware order', () => {
   const routes = (source: string) => [...source.matchAll(/app\.(?:get|post|patch)\('([^']*attendance[^']*)'/g)].map(match => match[1]).sort();
   assert.deepEqual(routes(server), routes(production));
-  assert.equal(routes(server).length, 17);
+  assert.equal(routes(server).length, 18);
+  assert.ok(routes(server).includes('/api/attendance/admin/readiness'));
+
+  for (const [name, source] of [['server', server], ['production', production]] as const) {
+    const middlewareIndex = source.indexOf("app.use('/api/attendance', (_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store');");
+    const firstRouteIndex = source.indexOf("app.get('/api/attendance/admin/readiness'");
+    assert.ok(middlewareIndex !== -1, `${name} must contain private, no-store middleware`);
+    assert.ok(firstRouteIndex !== -1, `${name} must contain readiness endpoint`);
+    assert.ok(middlewareIndex < firstRouteIndex, `${name} middleware must precede first attendance route`);
+  }
 });
 
 console.log(`\n${failed ? 'FAILED' : 'OK'} (${failed} failures)`);

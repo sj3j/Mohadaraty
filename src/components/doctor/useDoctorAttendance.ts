@@ -22,7 +22,9 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   const active = useRef(true);
   const actionRunning = useRef(false);
   const errorMessage = (failure: unknown) => {
-    const code = failure instanceof Error ? failure.message : 'attendance_unavailable';
+    const raw = failure instanceof Error ? failure.message : String(failure || 'attendance_unavailable');
+    const code = raw.replace(/^Error:\s*/, '').trim();
+
     if (code === 'attendance_schema_missing') {
       return isRtl
         ? 'قاعدة بيانات الحضور غير مكتملة الإعداد. يرجى التواصل مع مسؤول النظام.'
@@ -33,6 +35,26 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
         ? 'خدمة الحضور غير مهيأة على الخادم. يرجى التواصل مع مسؤول النظام.'
         : 'The attendance service is not configured on the server. Contact the system administrator.';
     }
+    if (code === 'manage_attendance_forbidden' || code === 'forbidden') {
+      return isRtl
+        ? 'ليس لديك صلاحية لإدارة الحضور لهذه المرحلة أو المواد. يرجى مراجعة مسؤول النظام.'
+        : 'You do not have permission to manage attendance for this stage or subject. Contact the system administrator.';
+    }
+    if (code === 'no_active_academic_term') {
+      return isRtl
+        ? 'لا يوجد فصل دراسي نشط حالياً لتسجيل الحضور.'
+        : 'There is no active academic term for attendance.';
+    }
+    if (code === 'attendance_request_failed') {
+      return isRtl
+        ? 'تعذر إتمام طلب الحضور. يرجى المحاولة مرة أخرى.'
+        : 'The attendance request failed. Please try again.';
+    }
+    if (code === 'Failed to fetch' || code.includes('NetworkError') || code === 'network_error' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      return isRtl
+        ? 'تعذر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت أو استخدام الحزمة غير المتصلة.'
+        : 'Cannot connect to the server. Check your internet connection or use the offline pack.';
+    }
     return code;
   };
   const refresh = useCallback(async () => {
@@ -41,6 +63,7 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     if (!active.current) return;
     setWorkspace(result);
     setOfflineReady(!!pack);
+    setError('');
   }, [ownerUid, stageId]);
   useEffect(() => {
     active.current = true;

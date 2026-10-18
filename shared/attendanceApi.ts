@@ -23,6 +23,7 @@ import type { StageTimetableDoc } from './timetable.js';
 import { verifyAttendanceDevice } from './attendanceDevice.js';
 import { summarizeAttendanceTelemetry, type CampusBoundary } from './attendanceSecurity.js';
 import { attendanceSessionId, validateAttendancePublicKey, verifyOfflineAttendanceToken } from './attendanceOffline.js';
+import { validateQrKeyConfig, mapConfigErrorToResponse, type QrKeyConfig } from './attendanceConfig.js';
 
 export interface AttendanceDeps {
   admin: any;
@@ -38,28 +39,11 @@ type Actor = {
 const MAX_SYNC_RECEIPTS = 25;
 const MAX_REASON_LENGTH = 1000;
 
-const normalizePem = (value: string | undefined) => (value || '').replace(/\\n/g, '\n').trim();
 const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 const requestId = () => crypto.randomUUID();
 
-function qrKeyConfig() {
-  const privateKey = normalizePem(process.env.ATTENDANCE_QR_PRIVATE_KEY);
-  const keyId = (process.env.ATTENDANCE_QR_KEY_ID || 'attendance-v1').trim();
-  const publicKeys: Record<string, string> = {};
-  if (privateKey) {
-    publicKeys[keyId] = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString();
-  }
-  try {
-    const configured = JSON.parse(process.env.ATTENDANCE_QR_PUBLIC_KEYS_JSON || '{}');
-    if (configured && typeof configured === 'object') {
-      for (const [kid, value] of Object.entries(configured)) {
-        if (typeof value === 'string' && kid) publicKeys[kid] = normalizePem(value);
-      }
-    }
-  } catch {
-    throw new Error('ATTENDANCE_QR_PUBLIC_KEYS_JSON is not valid JSON');
-  }
-  return { privateKey, keyId, publicKeys };
+function qrKeyConfig(): QrKeyConfig {
+  return validateQrKeyConfig();
 }
 
 export function signAttendanceQr(claims: AttendanceQrClaims): string {
@@ -117,6 +101,10 @@ function campusBoundary(): CampusBoundary | undefined {
 }
 
 export function attendanceErrorResponse(error: any): { status: number; error: string } {
+  // Check typed configuration errors first
+  const configResponse = mapConfigErrorToResponse(error);
+  if (configResponse) return configResponse;
+
   const message = String(error?.message || error || 'unknown_error');
   const code = String(error?.code || 'attendance_error');
   if (message.includes('revision_conflict')) return { status: 409, error: 'revision_conflict' };
@@ -132,9 +120,24 @@ export function attendanceErrorResponse(error: any): { status: number; error: st
   return { status: 500, error: 'attendance_request_failed' };
 }
 
+function safeErrorCode(error: any): string {
+  if (error?.configCode) return error.configCode;
+  const code = String(error?.code || '');
+  if (code && code !== 'attendance_error') return code;
+  const msg = String(error?.message || '');
+  // Return the message if it looks like a known safe code, otherwise generic
+  if (/^[a-z_]+$/.test(msg) && msg.length < 80) return msg;
+  return 'attendance_error';
+}
+
 function attendanceError(res: any, error: any, label: string) {
-  console.error(`[attendance] ${label} failed`, { code: String(error?.code || 'attendance_error') });
   const response = attendanceErrorResponse(error);
+  const code = safeErrorCode(error);
+  console.error(`[attendance] ${label} failed`, {
+    code,
+    category: response.error,
+    status: response.status,
+  });
   return res.status(response.status).json({ error: response.error });
 }
 

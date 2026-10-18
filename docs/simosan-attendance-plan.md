@@ -84,11 +84,33 @@ Updated 2026-10-16, Asia/Baghdad. This specification supersedes the earlier seve
 ## Operator setup before any pilot
 
 1. The three attendance SQL migrations were backed up, staged, and applied in order to the configured Supabase project on 2026-10-17. Remote migration history, RLS/privileges, database advisors, and Ghazwan's authenticated lecturer workspace were verified afterward. Apply the same ordered migrations before using attendance in any other environment; do not substitute edited files into an existing migration history.
-2. Configure server-only Supabase URL/service-role credentials, ES256 attendance signing key/key ID, verification keys for retained receipts, and a stable installation HMAC secret. Rotating or losing the latter requires an explicit device-enrollment migration.
-3. Set optional campus latitude/longitude/radius only after the institution supplies verified boundaries. No coordinates are guessed.
-4. Enable Firebase email/password authentication for lecturers. Use the master-admin Settings modal to provision `users/{uid}`, `attendanceDoctors/{uid}`, and `attendanceSubjectSlots/{slot}` through the authenticated server. Do not grant unrelated administrator permissions or put lecturer accounts in the administrator registry. Deliver initial passwords through an approved private channel; password reset, reassignment, and invitation delivery are later work.
-5. The new Firestore attendance metadata collections must remain server writable only. They are not a substitute for the Supabase attendance ledger, and there is no separate Supabase `users` profile table in this architecture.
-6. Sign in online, open attendance, download the offline pack, and confirm it is saved before disconnecting. Use an OS account appropriate for the cached full-cohort roster, and maintain a paper contingency.
+2. **Required production attendance variables & crypto architecture:**
+   - `SUPABASE_URL`: HTTPS URL to the Supabase project.
+   - `SUPABASE_SERVICE_ROLE_KEY`: Server-only secret key (validated via zero-row read probe).
+   - `ATTENDANCE_QR_KEY_ID`: Active key ID string (defaults to `attendance-v1`).
+   - `ATTENDANCE_QR_PRIVATE_KEY`: P-256 (`prime256v1`) EC private key in PKCS#8 PEM format. Signs ES256 QR tokens.
+   - `ATTENDANCE_QR_PUBLIC_KEYS_JSON`: JSON map of key IDs to P-256 SPKI PEM public keys. Must include the public key for `ATTENDANCE_QR_KEY_ID` matching the private key. Older retained public keys may be included for verifying receipts from previous sessions without overriding the active key.
+   - `ATTENDANCE_INSTALLATION_SECRET`: At least 32 bytes of cryptographically random high-entropy material (base64url). **WARNING:** Treat as permanent infrastructure state; changing it invalidates all enrolled student device digests.
+3. **Admin readiness endpoint & cache control:**
+   - `GET /api/attendance/admin/readiness` is mounted in both `server.ts` and `api/index.ts`.
+   - Access is strictly restricted to master admins with verified email addresses. Non-master or disabled accounts receive HTTP 403.
+   - Returns HTTP 200 with `ready: true` only if all 6 checks pass (or campus boundary is disabled). Returns HTTP 503 if any required check fails.
+   - PostgREST OpenAPI schema is inspected to verify all 12 attendance tables and 9 RPCs without invoking mutations. Internal readiness status is cached for at most 30 seconds.
+   - Cache control middleware `Cache-Control: private, no-store` is mounted before all `/api/attendance/*` routes in both server entrypoints.
+4. **Campus boundary status:**
+   - Remains disabled (`ATTENDANCE_CAMPUS_*` absent) until verified coordinates and radius are officially provided by the college.
+5. **Sanctions and deprivation analytics:**
+   - Sanctions/15% deprivation analytics remain strictly unmounted and hidden until institutional policy is approved.
+6. **Production preflight procedure:**
+   - Run readiness check via authenticated master-admin token.
+   - Verify doctor workspace GET returns valid stage occurrences and roster.
+   - Verify student `/api/attendance/mine` returns HTTP 200.
+   - Never insert synthetic attendance rows into the production database.
+7. **First real operational pilot:**
+   - The first real doctor-led lecture serves as the operational pilot to test the end-to-end mutation flow (session creation, QR scan, sync, review, and manual ledger).
+8. Enable Firebase email/password authentication for lecturers. Use the master-admin Settings modal to provision `users/{uid}`, `attendanceDoctors/{uid}`, and `attendanceSubjectSlots/{slot}` through the authenticated server. Do not grant unrelated administrator permissions or put lecturer accounts in the administrator registry. Deliver initial passwords through an approved private channel; password reset, reassignment, and invitation delivery are later work.
+9. The new Firestore attendance metadata collections must remain server writable only. They are not a substitute for the Supabase attendance ledger, and there is no separate Supabase `users` profile table in this architecture.
+10. Sign in online, open attendance, download the offline pack, and confirm it is saved before disconnecting. Use an OS account appropriate for the cached full-cohort roster, and maintain a paper contingency.
 
 ## Windows executable status
 

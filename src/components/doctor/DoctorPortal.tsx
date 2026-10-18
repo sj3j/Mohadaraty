@@ -69,11 +69,42 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
   const handleStudentMarkedPresent = (studentId: string, lectureId: string) => {
     void attendance.updateCell(studentId, lectureId, 'present');
   };
-  if (!selectedSubject) return <div className="min-h-screen p-6 dark:bg-zinc-950 dark:text-white" role="status">
-    {attendance.error || (isRtl ? 'جاري تحميل تكليفات التدريسي والمواد…' : 'Loading assigned subjects and timetable…')}
-    <button className="ms-3 rounded-xl bg-teal-600 px-3 py-2 text-white" onClick={() => void attendance.refresh()}>{isRtl ? 'إعادة المحاولة' : 'Retry'}</button>
-    <button className="ms-3" onClick={onLogout}>{isRtl ? 'خروج' : 'Sign out'}</button>
-  </div>;
+  if (!selectedSubject) {
+    const isLoading = !attendance.workspace && !attendance.error;
+    const isNoSubjects = !!attendance.workspace && availableSubjects.length === 0;
+    let blockingMessage = attendance.error;
+    if (!blockingMessage) {
+      if (isLoading) {
+        blockingMessage = isRtl ? 'جاري تحميل تكليفات التدريسي والمواد…' : 'Loading assigned subjects and timetable…';
+      } else if (isNoSubjects) {
+        blockingMessage = isRtl
+          ? 'لا توجد مواد دراسية مسندة لحسابك في هذه المرحلة حالياً.'
+          : 'No subjects are currently assigned to your account for this stage.';
+      }
+    }
+    return (
+      <div className="min-h-screen p-6 dark:bg-zinc-950 dark:text-white flex flex-col items-center justify-center text-center max-w-lg mx-auto" role="status">
+        <p className="mb-4 text-sm md:text-base font-medium text-slate-800 dark:text-zinc-200">
+          {blockingMessage}
+        </p>
+        <div className="flex items-center gap-3">
+          <button
+            className="rounded-xl bg-teal-600 px-4 py-2 text-white font-bold hover:bg-teal-700 transition-colors cursor-pointer"
+            onClick={() => void attendance.refresh()}
+            disabled={attendance.busy}
+          >
+            {isRtl ? 'إعادة المحاولة' : 'Retry'}
+          </button>
+          <button
+            className="rounded-xl border border-slate-300 dark:border-zinc-700 px-4 py-2 text-slate-700 dark:text-zinc-300 font-bold hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            onClick={onLogout}
+          >
+            {isRtl ? 'تسجيل الخروج' : 'Sign out'}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 font-sans" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -210,6 +241,21 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
 
       {/* Main Content Area */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6">
+        {activeLectures.length === 0 && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-xs md:text-sm font-bold flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/60" role="status">
+            <span>
+              {isRtl
+                ? 'لا توجد محاضرات مجدولة بتاريخ محدد لهذه المادة وفق النمط المختار (نظري/عملي).'
+                : 'No dated timetable occurrences found for this subject and selected mode.'}
+            </span>
+            <button
+              onClick={() => setIsSubjectModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-amber-200 hover:bg-amber-300 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 text-xs font-black transition-colors cursor-pointer"
+            >
+              {isRtl ? 'تغيير النمط أو المادة' : 'Change Mode or Subject'}
+            </button>
+          </div>
+        )}
         {activeTab === 'live' && (
           <DoctorLiveSessionView
             subject={selectedSubject}

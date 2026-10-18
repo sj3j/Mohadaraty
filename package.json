@@ -86,7 +86,7 @@
     "test:staff-permissions": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/staffPermissions.test.ts\"",
     "test:wipe": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/wipe.test.ts\"",
     "test:simosan": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/simosan.test.ts\"",
-    "test:attendance": "npx tsx scripts/attendance.test.ts && npx tsx --test scripts/attendanceSecurity.test.ts scripts/attendanceOffline.test.ts scripts/attendanceDatabase.test.ts",
+    "test:attendance": "npx tsx scripts/attendance.test.ts && npx tsx scripts/attendanceConfiguration.test.ts && npx tsx scripts/doctorAttendanceSubgroups.test.ts && npx tsx scripts/officialRosterFallback.test.ts && npx tsx scripts/subjectDeduplication.test.ts && npx tsx --test scripts/attendanceSecurity.test.ts scripts/attendanceOffline.test.ts scripts/attendanceDatabase.test.ts",
     "test:subject-dedup": "npx tsx scripts/subjectDeduplication.test.ts"
   },
   "dependencies": {

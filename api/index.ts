@@ -67,6 +67,7 @@ import {
 import { createSimosanHandlers } from "../shared/simosanApi.js";
 import { createAttendanceHandlers } from "../shared/attendanceApi.js";
 import { createAttendanceDoctorAdminHandlers } from "../shared/attendanceDoctorAdmin.js";
+import { checkAttendanceReadiness } from "../shared/attendanceConfig.js";
 import { createStreakHandlers } from "../shared/streakApi.js";
 import { createMcqHandlers } from "../shared/mcqApi.js";
 import { createTimetableHandlers } from "../shared/timetableApi.js";
@@ -2113,15 +2114,32 @@ app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
 app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
 
 /* Simosan attendance. Keep this route block identical to server.ts. */
-const attendance = createAttendanceHandlers({ admin });
+  const attendance = createAttendanceHandlers({ admin });
   const attendanceDoctors = createAttendanceDoctorAdminHandlers({ admin });
+  app.use('/api/attendance', (_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
+  app.get('/api/attendance/admin/readiness', verifyAuth, async (req: any, res: any) => {
+    try {
+      const token = req.user || {};
+      if (!token.uid) return res.status(403).json({ error: 'forbidden' });
+      const profile = await admin.firestore().collection('users').doc(token.uid).get();
+      const data = profile.data() || {};
+      const master = token.email_verified === true && isMasterAdminEmail(token.email);
+      if (data.staffDisabled === true || !(master || data.role === 'master_admin' || data.isMasterAdmin === true)) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+      const result = await checkAttendanceReadiness(true);
+      return res.status(result.ready ? 200 : 503).json(result);
+    } catch (error) {
+      console.error('[attendance] readiness check failed', { code: 'readiness_error' });
+      return res.status(503).json({ error: 'readiness_check_failed' });
+    }
+  });
   app.get('/api/attendance/doctor/workspace', verifyAuth, attendance.doctorWorkspace);
   app.get('/api/attendance/admin/doctors/options', verifyAuth, attendanceDoctors.options);
   app.get('/api/attendance/admin/doctors', verifyAuth, attendanceDoctors.list);
   app.post('/api/attendance/admin/doctors', verifyAuth, attendanceDoctors.create);
   app.post('/api/attendance/admin/doctors/:uid/disable', verifyAuth, attendanceDoctors.disable);
-app.use('/api/attendance', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-app.get('/api/attendance/bootstrap', verifyAuth, attendance.bootstrap);
+  app.get('/api/attendance/bootstrap', verifyAuth, attendance.bootstrap);
 app.get('/api/attendance/mine', verifyAuth, attendance.mine);
 app.post('/api/attendance/receipts/sync', verifyAuth, attendance.syncReceipts);
 app.post('/api/attendance/offline/prepare', verifyAuth, attendance.prepareOffline);
