@@ -135,6 +135,26 @@ export function formatSubjectDoctor(
 }
 
 /**
+ * Splits a normalized subject title into base title and optional level/number.
+ * e.g. "pharmacology 2" -> { baseKey: "pharmacology", level: 2 }
+ *      "pharmacology"   -> { baseKey: "pharmacology", level: null }
+ */
+export function extractBaseSubjectKey(normalizedTitle: string): { baseKey: string; level: number | null } {
+  if (!normalizedTitle) return { baseKey: '', level: null };
+  const match = normalizedTitle.match(/^(.*?)(?:\s+(\d+))$/);
+  if (match) {
+    return {
+      baseKey: match[1].trim(),
+      level: parseInt(match[2], 10),
+    };
+  }
+  return {
+    baseKey: normalizedTitle.trim(),
+    level: null,
+  };
+}
+
+/**
  * Aggregates attendance rows and mine assignments into canonical SubjectItems.
  * Guarantees that theoretical lectures and practical labs for the same subject merge
  * into a single unified card, regardless of doctor or slot division.
@@ -161,6 +181,8 @@ export function buildCanonicalSubjects(
     nameAr: string;
     nameEn: string;
     code: string;
+    level: number | null;
+    baseKey: string;
     theoryDoctors: Set<string>;
     practicalDoctors: Set<string>;
     theoryWeeks: WeekAttendanceItem[];
@@ -174,6 +196,10 @@ export function buildCanonicalSubjects(
   for (const assignment of assignments) {
     const normAr = normalizeCanonicalSubjectTitle(assignment.nameAr || '');
     const normEn = normalizeCanonicalSubjectTitle(assignment.nameEn || '');
+    const { baseKey: baseKeyAr, level: levelAr } = extractBaseSubjectKey(normAr);
+    const { baseKey: baseKeyEn, level: levelEn } = extractBaseSubjectKey(normEn);
+    const baseKey = baseKeyEn || baseKeyAr;
+    const level = levelEn ?? levelAr;
     const baseId = assignment.id.replace(/[-_](?:theory|practical|lab|theoritical|theori|pract)$/i, '');
 
     const canonicalKey = normAr ? `ar:${normAr}` : (normEn ? `en:${normEn}` : `id:${baseId}`);
@@ -190,6 +216,8 @@ export function buildCanonicalSubjects(
         nameAr: cleanDisplaySubjectName(assignment.nameAr) || assignment.nameAr || '',
         nameEn: cleanDisplaySubjectName(assignment.nameEn) || assignment.nameEn || '',
         code: baseId || assignment.id,
+        level,
+        baseKey,
         theoryDoctors: new Set(),
         practicalDoctors: new Set(),
         theoryWeeks: [],
@@ -200,6 +228,8 @@ export function buildCanonicalSubjects(
     const existing = canonicalMap.get(targetKey)!;
     if (!existing.nameAr && assignment.nameAr) existing.nameAr = cleanDisplaySubjectName(assignment.nameAr);
     if (!existing.nameEn && assignment.nameEn) existing.nameEn = cleanDisplaySubjectName(assignment.nameEn);
+    if (existing.level === null && level !== null) existing.level = level;
+    if (!existing.baseKey && baseKey) existing.baseKey = baseKey;
 
     if (normAr) keyAliases.set(`ar:${normAr}`, targetKey);
     if (normEn) keyAliases.set(`en:${normEn}`, targetKey);
@@ -216,6 +246,7 @@ export function buildCanonicalSubjects(
     const assignment = assignments.find(s => s.timetableSessionIds.includes(occurrence.timetableSessionId || ''));
 
     const normTitle = normalizeCanonicalSubjectTitle(occurrence.title || '');
+    const { baseKey, level: incomingLevel } = extractBaseSubjectKey(normTitle);
     const sessionId = occurrence.timetableSessionId;
 
     let targetKey =
@@ -237,6 +268,39 @@ export function buildCanonicalSubjects(
       }
     }
 
+    // Base-key reconciliation: merge unnumbered variant (e.g. Pharmacology lab) with single numbered variant (Pharmacology II)
+    if (!targetKey && baseKey) {
+      for (const [cKey, cVal] of canonicalMap.entries()) {
+        if (cVal.baseKey === baseKey) {
+          // Reconcile if both have same level, or one is unnumbered (level === null)
+          if (
+            cVal.level === incomingLevel ||
+            cVal.level === null ||
+            incomingLevel === null
+          ) {
+            targetKey = cKey;
+            // If incoming has specific level while existing was unadorned, upgrade to qualified title & code
+            if (cVal.level === null && incomingLevel !== null) {
+              cVal.level = incomingLevel;
+              const cleanTitle = cleanDisplaySubjectName(occurrence.title) || occurrence.title;
+              if (cleanTitle) {
+                cVal.nameAr = cleanTitle;
+                cVal.nameEn = cleanTitle;
+              }
+              if (occurrence.timetableSessionId) {
+                cVal.code = occurrence.timetableSessionId;
+              }
+            }
+            if (normTitle) {
+              keyAliases.set(`ar:${normTitle}`, targetKey);
+              keyAliases.set(`en:${normTitle}`, targetKey);
+            }
+            break;
+          }
+        }
+      }
+    }
+
     if (!targetKey) {
       targetKey = normTitle ? `title:${normTitle}` : `id:${sessionId || occurrence.id}`;
       const cleanTitle = cleanDisplaySubjectName(occurrence.title) || occurrence.title;
@@ -245,6 +309,8 @@ export function buildCanonicalSubjects(
         nameAr: cleanTitle,
         nameEn: cleanTitle,
         code: occurrence.timetableSessionId || '',
+        level: incomingLevel,
+        baseKey,
         theoryDoctors: new Set(),
         practicalDoctors: new Set(),
         theoryWeeks: [],

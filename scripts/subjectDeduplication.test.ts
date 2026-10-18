@@ -142,11 +142,19 @@ console.log('Testing Subject Deduplication and Attendance Aggregation...');
   ];
 
   const mine: AttendanceMine = {
+    serverNow: new Date().toISOString(),
+    timezone: 'Asia/Baghdad',
+    stageId: 'stage_2',
+    receipts: [],
     term: {
       id: 'term_1',
-      name: 'Fall 2026',
+      calendarTermId: 'term_1',
+      yearLabel: '2026-2027',
+      nameAr: 'الفصل الأول',
+      nameEn: 'Fall 2026',
       startDate: '2026-10-18',
       endDate: '2027-01-31',
+      timezone: 'Asia/Baghdad',
     },
     subjects: [
       {
@@ -244,6 +252,197 @@ console.log('Testing Subject Deduplication and Attendance Aggregation...');
   assert.equal(subjectsLab[0].doctorName, 'م. مريم');
 
   console.log('✔ Theory-only and practical-only subject tests passed');
+}
+
+// -------------------------------------------------------------
+// 6. Pharmacology & Pharmacology II (Unnumbered & Numbered Variant Merge)
+// -------------------------------------------------------------
+{
+  const pharmacologyRows: StudentAttendanceRow[] = [
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_practical',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-19',
+        startTime: '10:30',
+        endTime: '12:30',
+        title: 'Pharmacology',
+        timetableSessionId: 's_2_1030_muqquj7d_39',
+        teacher: 'م.م آيات',
+        mode: 'practical',
+      },
+    },
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_theory',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-21',
+        startTime: '10:30',
+        endTime: '12:30',
+        title: 'Pharmacology II',
+        timetableSessionId: 's_6_1030_muqquj7a_7',
+        teacher: 'أ.م.د أسامة',
+        mode: 'theory',
+      },
+    },
+  ];
+
+  const subjects = buildCanonicalSubjects(pharmacologyRows, null, true);
+
+  // Must merge into exactly 1 card
+  assert.equal(subjects.length, 1, `Expected 1 card for Pharmacology II, got ${subjects.length}`);
+  const subj = subjects[0];
+  // Must adopt the qualified title
+  assert.equal(subj.nameEn, 'Pharmacology II');
+  assert.equal(subj.hasTheory, true);
+  assert.equal(subj.hasPractical, true);
+  assert.equal(subj.theoryDoctor, 'أ.م.د أسامة');
+  assert.equal(subj.practicalDoctor, 'م.م آيات');
+  assert.equal(subj.doctorName, 'أ.م.د أسامة (نظري) • م.م آيات (عملي)');
+  console.log('✔ Pharmacology and Pharmacology II merging test passed');
+}
+
+// -------------------------------------------------------------
+// 7. Reverse Arrival Order (Pharmacology II Theory First, then Lab Second)
+// -------------------------------------------------------------
+{
+  const reversedRows: StudentAttendanceRow[] = [
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_theory',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-18',
+        startTime: '08:30',
+        endTime: '10:30',
+        title: 'Pharmacology II',
+        timetableSessionId: 's_6_1030_muqquj7a_7',
+        teacher: 'أ.م.د أسامة',
+        mode: 'theory',
+      },
+    },
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_practical',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-20',
+        startTime: '10:30',
+        endTime: '12:30',
+        title: 'Pharmacology',
+        timetableSessionId: 's_2_1030_muqquj7d_39',
+        teacher: 'م.م آيات',
+        mode: 'practical',
+      },
+    },
+  ];
+
+  const subjects = buildCanonicalSubjects(reversedRows, null, true);
+  assert.equal(subjects.length, 1);
+  const subj = subjects[0];
+  assert.equal(subj.nameEn, 'Pharmacology II');
+  assert.equal(subj.hasTheory, true);
+  assert.equal(subj.hasPractical, true);
+  assert.equal(subj.theoryDoctor, 'أ.م.د أسامة');
+  assert.equal(subj.practicalDoctor, 'م.م آيات');
+  assert.equal(subj.doctorName, 'أ.م.د أسامة (نظري) • م.م آيات (عملي)');
+  console.log('✔ Reverse arrival order test passed');
+}
+
+// -------------------------------------------------------------
+// 8. Protection of Distinct Levels (Pharmacology I vs Pharmacology II)
+// -------------------------------------------------------------
+{
+  const distinctLevelRows: StudentAttendanceRow[] = [
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_1',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-18',
+        startTime: '08:30',
+        endTime: '10:30',
+        title: 'Pharmacology I',
+        timetableSessionId: 's_pharm_1',
+        teacher: 'د. خالد',
+        mode: 'theory',
+      },
+    },
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_pharm_2',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-19',
+        startTime: '08:30',
+        endTime: '10:30',
+        title: 'Pharmacology II',
+        timetableSessionId: 's_pharm_2',
+        teacher: 'أ.م.د أسامة',
+        mode: 'theory',
+      },
+    },
+  ];
+
+  const subjects = buildCanonicalSubjects(distinctLevelRows, null, true);
+  assert.equal(subjects.length, 2, 'Distinct course levels must NOT merge');
+  assert.equal(subjects[0].nameEn, 'Pharmacology I');
+  assert.equal(subjects[1].nameEn, 'Pharmacology II');
+  console.log('✔ Distinct levels protection test passed');
+}
+
+// -------------------------------------------------------------
+// 9. Arabic Unadorned vs Numbered Variant (علم الأدوية vs علم الأدوية 2)
+// -------------------------------------------------------------
+{
+  const arabicRows: StudentAttendanceRow[] = [
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_ar_practical',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-19',
+        startTime: '10:30',
+        endTime: '12:30',
+        title: 'علم الأدوية عملي',
+        timetableSessionId: 's_ar_lab',
+        teacher: 'م.م آيات',
+        mode: 'practical',
+      },
+    },
+    {
+      weekStart: '2026-10-18',
+      state: 'confirmed',
+      occurrence: {
+        id: 'occ_ar_theory',
+        stageId: 'stage_3',
+        lectureDate: '2026-10-21',
+        startTime: '10:30',
+        endTime: '12:30',
+        title: 'علم الأدوية 2',
+        timetableSessionId: 's_ar_theory',
+        teacher: 'أ.م.د أسامة',
+        mode: 'theory',
+      },
+    },
+  ];
+
+  const subjects = buildCanonicalSubjects(arabicRows, null, true);
+  assert.equal(subjects.length, 1);
+  assert.equal(subjects[0].nameAr, 'علم الأدوية 2');
+  assert.equal(subjects[0].hasTheory, true);
+  assert.equal(subjects[0].hasPractical, true);
+  assert.equal(subjects[0].doctorName, 'أ.م.د أسامة (نظري) • م.م آيات (عملي)');
+  console.log('✔ Arabic unadorned vs numbered variant test passed');
 }
 
 console.log('All Subject Deduplication and Merging Tests Passed Successfully!');
