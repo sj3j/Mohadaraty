@@ -7,6 +7,7 @@ import {
 import { DoctorSubject, LectureColumn, StudentAttendanceRow } from './types';
 import type { useDoctorAttendance } from './useDoctorAttendance';
 import { attendanceFlagLabel } from '../../../shared/attendanceSecurity';
+import { getLectureDayName, formatLectureTime } from './DoctorExcelTimetableView';
 
 interface DoctorLiveSessionViewProps {
   subject: DoctorSubject;
@@ -28,6 +29,7 @@ export default function DoctorLiveSessionView({
   const [selectedLectureId, setSelectedLectureId] = useState('');
   const [expectedHeadcount, setExpectedHeadcount] = useState(60);
   const [searchQuery, setSearchQuery] = useState('');
+  const [includeAllStudents, setIncludeAllStudents] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const projectorRef = useRef<HTMLDivElement>(null);
   const selectedLecture = lectures.find(lecture => lecture.id === selectedLectureId);
@@ -59,10 +61,22 @@ export default function DoctorLiveSessionView({
     onStudentMarkedPresent(student.studentId, selectedLecture.id);
     setSearchQuery('');
   };
-  const unrecordedStudents = students.filter(student =>
-    student.attendance[selectedLecture?.id] !== 'present' && student.attendance[selectedLecture?.id] !== 'pending'
-    && student.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const lectureAudiences = selectedLecture?.audienceGroups || [];
+  const hasAudienceRestriction = lectureAudiences.length > 0;
+
+  const unrecordedStudents = students.filter(student => {
+    if (selectedLecture?.id && (student.attendance[selectedLecture.id] === 'present' || student.attendance[selectedLecture.id] === 'pending')) {
+      return false;
+    }
+    const query = searchQuery.trim().toLowerCase();
+    const matchesSearch = !query || student.name.toLowerCase().includes(query) || student.examCode.toLowerCase().includes(query);
+    if (!matchesSearch) return false;
+
+    if (!includeAllStudents && hasAudienceRestriction) {
+      return !!student.group && lectureAudiences.includes(student.group);
+    }
+    return true;
+  });
   const recentScannedStudents = (activeSession?.records || []).filter(record => record.status === 'confirmed')
     .sort((first, second) => second.receivedAt.localeCompare(first.receivedAt)).slice(0, 4)
     .map(record => ({ id: record.id, name: record.officialName,
@@ -100,11 +114,16 @@ export default function DoctorLiveSessionView({
               className="mt-1 font-black text-slate-900 bg-transparent dark:text-zinc-100 text-sm md:text-base border-none focus:ring-0 p-0 cursor-pointer"
             >
               <option value="" disabled>{isRtl ? 'اختر المحاضرة بتاريخها' : 'Select a dated lecture'}</option>
-              {lectures.map((lec) => (
-                <option key={lec.id} value={lec.id} className="dark:bg-zinc-900 text-slate-800 dark:text-zinc-200">
-                  محاضرة {lec.number}: {lec.title} ({lec.date})
-                </option>
-              ))}
+              {lectures.map((lec) => {
+                const dayName = getLectureDayName(lec, isRtl);
+                const timeStr = formatLectureTime(lec.time, lec.endTime);
+                const audStr = lec.audienceGroups?.length ? ` [${lec.audienceGroups.join(', ')}]` : '';
+                return (
+                  <option key={lec.id} value={lec.id} className="dark:bg-zinc-900 text-slate-800 dark:text-zinc-200">
+                    محاضرة {lec.number}: {lec.title} ({dayName ? `${dayName} ` : ''}{lec.date}{timeStr ? ` • ${timeStr}` : ''}){audStr}
+                  </option>
+                );
+              })}
             </select>
           </div>
         </div>
@@ -252,7 +271,7 @@ export default function DoctorLiveSessionView({
           </div>
 
           {/* Manual Student Search & Fast Add */}
-          <div className="p-6 rounded-3xl bg-white border border-slate-200/80 shadow-sm dark:bg-zinc-900 dark:border-zinc-800 space-y-4">
+          <div className="p-6 rounded-3xl bg-white border border-slate-200/80 shadow-sm dark:bg-zinc-900 dark:border-zinc-800 space-y-3.5">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-black text-slate-900 dark:text-zinc-100">
                 {isRtl ? 'تسجيل يدوي سريع للطلاب' : 'Quick Manual Check-in'}
@@ -262,6 +281,31 @@ export default function DoctorLiveSessionView({
               </span>
             </div>
 
+            {/* Audience Scoping Indicator & Makeup Override Toggle */}
+            {hasAudienceRestriction && (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 p-2.5 rounded-2xl bg-teal-50/70 dark:bg-teal-950/30 border border-teal-200/60 dark:border-teal-900/60 text-xs">
+                <div className="flex items-center gap-1.5 text-teal-900 dark:text-teal-200 font-bold">
+                  <Users className="h-4 w-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                  <span>
+                    {isRtl ? `مخصصة لشعبة: ${lectureAudiences.join(', ')}` : `Audience: ${lectureAudiences.join(', ')}`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIncludeAllStudents(prev => !prev)}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-black transition-all cursor-pointer ${
+                    includeAllStudents
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'bg-white text-teal-700 border border-teal-200 shadow-xs hover:bg-teal-50 dark:bg-zinc-800 dark:text-teal-300 dark:border-zinc-700'
+                  }`}
+                >
+                  {includeAllStudents
+                    ? (isRtl ? 'عرض كل الطلاب (حضور استثنائي)' : 'Showing all (Makeup allowed)')
+                    : (isRtl ? 'تضمين كل الطلاب (استثناء)' : 'Allow makeup from other groups')}
+                </button>
+              </div>
+            )}
+
             {/* Search Input */}
             <div className="relative">
               <Search className="absolute start-3 top-3 h-4 w-4 text-slate-400" />
@@ -269,7 +313,7 @@ export default function DoctorLiveSessionView({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={isRtl ? 'ابحث بالاسم الرسمي...' : 'Search official name...'}
+                placeholder={isRtl ? 'ابحث بالاسم الرسمي أو الرمز...' : 'Search official name or code...'}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pe-3 ps-10 text-xs font-bold text-slate-800 placeholder-slate-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-teal-500"
               />
             </div>
@@ -278,25 +322,37 @@ export default function DoctorLiveSessionView({
             {searchQuery && (
               <div className="max-h-48 overflow-y-auto space-y-1 rounded-xl border border-slate-200 p-2 dark:border-zinc-700 bg-slate-50/50 dark:bg-zinc-800/40">
                 {unrecordedStudents.length > 0 ? (
-                  unrecordedStudents.slice(0, 5).map((student) => (
-                    <div 
-                      key={student.studentId}
-                      className="flex items-center justify-between p-2 rounded-lg bg-white hover:bg-teal-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 transition-colors"
-                    >
-                      <div>
-                        <p className="text-xs font-black text-slate-800 dark:text-zinc-100">{student.name}</p>
-                        <p className="text-[10px] text-slate-400">شعبة {student.group} • {student.examCode}</p>
-                      </div>
-                      <button
-                        onClick={() => handleManualAdd(student)}
-                        disabled={!activeSession || attendance.busy}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-black text-[11px] transition-colors shadow-sm"
+                  unrecordedStudents.slice(0, 6).map((student) => {
+                    const isOutsideAudience = hasAudienceRestriction && (!student.group || !lectureAudiences.includes(student.group));
+                    return (
+                      <div 
+                        key={student.studentId}
+                        className="flex items-center justify-between p-2 rounded-lg bg-white hover:bg-teal-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 transition-colors"
                       >
-                        <UserPlus className="h-3.5 w-3.5" />
-                        {isRtl ? 'تسجيل' : 'Mark'}
-                      </button>
-                    </div>
-                  ))
+                        <div className="min-w-0 pe-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-xs font-black text-slate-800 dark:text-zinc-100 truncate">{student.name}</p>
+                            {isOutsideAudience && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 font-bold">
+                                {isRtl ? 'استثنائي' : 'Makeup'}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400">
+                            {isRtl ? `شعبة ${student.group || 'غير محدد'}` : `Group ${student.group || 'Unassigned'}`} • {student.examCode}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleManualAdd(student)}
+                          disabled={!activeSession || attendance.busy}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-black text-[11px] transition-colors shadow-sm shrink-0 cursor-pointer"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          {isRtl ? 'تسجيل' : 'Mark'}
+                        </button>
+                      </div>
+                    );
+                  })
                 ) : (
                   <p className="text-center py-3 text-xs text-slate-400 font-bold">
                     {isRtl ? 'لا يوجد طلاب غير مسجلين بهذا الاسم' : 'No matching unrecorded students'}

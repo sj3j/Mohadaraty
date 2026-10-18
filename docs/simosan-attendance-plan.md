@@ -83,7 +83,7 @@ Updated 2026-10-16, Asia/Baghdad. This specification supersedes the earlier seve
 
 ## Operator setup before any pilot
 
-1. Review and apply the three attendance SQL migrations in order. They have not been applied to a live Supabase project by this work. Earlier migrations were corrected before deployment, including PL/pgSQL parsing and idempotency fixes; do not assume they can be substituted silently into an already-deployed migration history.
+1. The three attendance SQL migrations were backed up, staged, and applied in order to the configured Supabase project on 2026-10-17. Remote migration history, RLS/privileges, database advisors, and Ghazwan's authenticated lecturer workspace were verified afterward. Apply the same ordered migrations before using attendance in any other environment; do not substitute edited files into an existing migration history.
 2. Configure server-only Supabase URL/service-role credentials, ES256 attendance signing key/key ID, verification keys for retained receipts, and a stable installation HMAC secret. Rotating or losing the latter requires an explicit device-enrollment migration.
 3. Set optional campus latitude/longitude/radius only after the institution supplies verified boundaries. No coordinates are guessed.
 4. Enable Firebase email/password authentication for lecturers. Use the master-admin Settings modal to provision `users/{uid}`, `attendanceDoctors/{uid}`, and `attendanceSubjectSlots/{slot}` through the authenticated server. Do not grant unrelated administrator permissions or put lecturer accounts in the administrator registry. Deliver initial passwords through an approved private channel; password reset, reassignment, and invitation delivery are later work.

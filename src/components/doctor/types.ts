@@ -1,6 +1,6 @@
 export type LectureMode = 'theoretical' | 'practical' | 'both';
 
-export type AttendanceCellStatus = 'present' | 'absent' | 'excused' | 'unrecorded' | 'pending' | 'voided';
+export type AttendanceCellStatus = 'present' | 'absent' | 'excused' | 'unrecorded' | 'pending' | 'voided' | 'not_applicable';
 
 export interface DoctorSubject {
   id: string;
@@ -19,6 +19,9 @@ export interface LectureColumn {
   title: string;
   mode: 'theoretical' | 'practical';
   time?: string;
+  endTime?: string;
+  day?: number;
+  audienceGroups?: string[];
   location?: string;
 }
 

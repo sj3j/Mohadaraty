@@ -51,7 +51,8 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
   const activeLectures: LectureColumn[] = activeOccurrences.map((occurrence, index) => ({
     id: occurrence.id, number: index + 1, date: occurrence.lectureDate,
     title: occurrence.title, mode: occurrence.mode === 'practical' ? 'practical' : 'theoretical',
-    time: occurrence.startTime, location: occurrence.location,
+    time: occurrence.startTime, endTime: occurrence.endTime, day: occurrence.day,
+    audienceGroups: occurrence.audienceGroups || [], location: occurrence.location,
   }));
   const matrixPageSize = 20;
   const totalMatrixPages = Math.max(1, Math.ceil(activeLectures.length / matrixPageSize));

@@ -15,6 +15,7 @@ Keep entries to one line. No prose, no rationale beyond the rule itself — if
 it needs more than a line, it belongs in CLAUDE.md and this just points there.
 
 ## Auth & identity
+- A lecturer-list request started when the account modal opens can finish after the post-create refresh and replace the new account with stale data or a stale error; sequence-gate both successful and failed responses before updating list or message state.
 - A server-enforced staff flag is not a UI override until `App.tsx` hydrates it into `UserProfile` → every new authorization field must be added to the live profile projection as well as its type and backend checks.
 - Master admin whitelist has 4 copies that can't share an import (rules have
   none, functions/ ships standalone, .mjs scripts) → any new source of truth
