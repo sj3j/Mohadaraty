@@ -19,6 +19,7 @@ import { uploadAttachment } from '../../services/lectureAttachmentService';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
 import { legacyCategoryLabel } from '../../lib/subjectDisplay';
 import { canManageLectures } from '../../lib/permissions';
+import { hasStageCapability } from '../../../shared/staffCapabilities';
 
 interface UploadAttachmentModalProps {
   isOpen: boolean;
@@ -57,7 +58,8 @@ export default function UploadAttachmentModal({
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
-  const isStaff = canManageLectures(user);
+  const resolvedStageId = (lecture.stageId || user.managedStageId || user.stageId || '').trim();
+  const isStaff = hasStageCapability(user as any, 'manageLectures', resolvedStageId);
 
   // Clean up object URLs on unmount
   useEffect(() => {
@@ -140,7 +142,7 @@ export default function UploadAttachmentModal({
         lectureId: lecture.id,
         lectureTitle: lecture.title,
         lectureNumber: lecture.number,
-        stageId: lecture.stageId || user.stageId || '',
+        stageId: resolvedStageId,
         subjectId: lecture.subjectId,
         subjectName: subjectNameEnResolved,
         subjectNameAr: subjectNameArResolved,
@@ -184,18 +186,26 @@ export default function UploadAttachmentModal({
     setGeneralError(null);
     setSuccessToast(null);
 
+    const pendingItems = stagedFiles.filter((item) => item.status !== 'done');
+    if (pendingItems.length === 0) {
+      setIsSubmitting(false);
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      pendingItems.map((item) => uploadSingleItem(item))
+    );
+
     let successCount = 0;
     let failCount = 0;
 
-    for (const item of stagedFiles) {
-      if (item.status === 'done') {
+    results.forEach((res) => {
+      if (res.status === 'fulfilled' && res.value === true) {
         successCount++;
-        continue;
+      } else {
+        failCount++;
       }
-      const ok = await uploadSingleItem(item);
-      if (ok) successCount++;
-      else failCount++;
-    }
+    });
 
     setIsSubmitting(false);
 

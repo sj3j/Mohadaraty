@@ -16,6 +16,7 @@ import { LectureAttachment } from '../types/lectureAttachment.types';
 import { UserProfile } from '../types';
 import { compressImage } from '../lib/imageCompressor';
 import { canManageLectures } from '../lib/permissions';
+import { hasStageCapability } from '../../shared/staffCapabilities';
 
 export interface UploadAttachmentOptions {
   lectureId: string;
@@ -52,24 +53,35 @@ export function safeTimestampMillis(val: any): number {
  */
 export async function getLectureAttachments(
   lectureId: string,
-  currentUser?: UserProfile | null
+  currentUser?: UserProfile | null,
+  stageId?: string
 ): Promise<LectureAttachment[]> {
   try {
-    const isStaff = canManageLectures(currentUser);
+    const isStaff = stageId
+      ? hasStageCapability(currentUser as any, 'manageLectures', stageId)
+      : canManageLectures(currentUser);
 
     const resultsMap = new Map<string, LectureAttachment>();
+    let querySucceeded = false;
 
     if (isStaff) {
-      // Staff can query all attachments directly
-      const q = query(
-        collection(db, 'lecture_attachments'),
-        where('lectureId', '==', lectureId)
-      );
-      const snap = await getDocs(q);
-      snap.forEach((d) => {
-        resultsMap.set(d.id, { id: d.id, ...(d.data() as Omit<LectureAttachment, 'id'>) });
-      });
-    } else {
+      try {
+        // Staff can query all attachments directly
+        const q = query(
+          collection(db, 'lecture_attachments'),
+          where('lectureId', '==', lectureId)
+        );
+        const snap = await getDocs(q);
+        snap.forEach((d) => {
+          resultsMap.set(d.id, { id: d.id, ...(d.data() as Omit<LectureAttachment, 'id'>) });
+        });
+        querySucceeded = true;
+      } catch (staffErr) {
+        console.warn('[lectureAttachmentService] Staff query failed, falling back to student query:', staffErr);
+      }
+    }
+
+    if (!querySucceeded) {
       // Regular students:
       // 1. Query approved attachments (100% compliant with Firestore read rules)
       const approvedQuery = query(
@@ -173,7 +185,7 @@ export async function uploadAttachment({
   const { file: compressedFile, width, height } = await compressImage(file, 2048, 0.85);
 
   // 2. Determine upload destination in Storage
-  const cleanStageId = (stageId || user.stageId || 'general').trim();
+  const cleanStageId = (stageId || user.managedStageId || user.stageId || 'general').trim();
   const extension = compressedFile.name.split('.').pop() || 'jpg';
   const fileName = `${currentUid}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
   const storagePath = `lecture_attachments/${cleanStageId}/${lectureId}/${fileName}`;
@@ -182,7 +194,7 @@ export async function uploadAttachment({
   // 3. Upload to Firebase Storage with progress tracking
   await new Promise<void>((resolve, reject) => {
     const uploadTask = uploadBytesResumable(fileRef, compressedFile, {
-      contentType: compressedFile.type,
+      contentType: compressedFile.type || 'image/jpeg',
       customMetadata: {
         uploaderUid: currentUid,
         lectureId,
@@ -206,24 +218,24 @@ export async function uploadAttachment({
   const url = await getDownloadURL(fileRef);
 
   // 4. Determine status: staff uploads are auto-approved; students are pending
-  const isStaff = canManageLectures(user);
+  const isStaff = hasStageCapability(user as any, 'manageLectures', cleanStageId);
   const status: 'approved' | 'pending' = isStaff ? 'approved' : 'pending';
 
-  // 5. Save metadata to Firestore
-  const attachmentData: Omit<LectureAttachment, 'id'> = {
+  // 5. Save metadata to Firestore - sanitize all fields to never contain undefined
+  const attachmentData: Record<string, any> = {
     lectureId,
     lectureTitle: (lectureTitle || '').trim(),
-    lectureNumber: typeof lectureNumber === 'number' ? lectureNumber : undefined,
+    lectureNumber: typeof lectureNumber === 'number' ? lectureNumber : null,
     stageId: cleanStageId,
     subjectId: subjectId || '',
-    subjectName: (subjectName || '').trim() || undefined,
-    subjectNameAr: (subjectNameAr || subjectName || '').trim() || undefined,
+    subjectName: (subjectName || '').trim() || null,
+    subjectNameAr: (subjectNameAr || subjectName || '').trim() || null,
     url,
     storagePath,
     title: (title || '').trim(),
     uploadedBy: currentUid,
     uploaderName: user.name || 'طالب',
-    uploaderRole: user.role,
+    uploaderRole: user.role || 'student',
     isAnonymous: Boolean(isAnonymous),
     status,
     createdAt: serverTimestamp(),
@@ -232,7 +244,18 @@ export async function uploadAttachment({
     size: compressedFile.size,
   };
 
-  const docRef = await addDoc(collection(db, 'lecture_attachments'), attachmentData);
+  let docRef;
+  try {
+    docRef = await addDoc(collection(db, 'lecture_attachments'), attachmentData);
+  } catch (firestoreError) {
+    // Rollback uploaded storage object so failed writes do not leave orphan files
+    try {
+      await deleteObject(fileRef);
+    } catch (cleanupErr) {
+      console.warn('[lectureAttachmentService] Storage file rollback failed:', cleanupErr);
+    }
+    throw firestoreError;
+  }
 
   // 6. If student submission, create an adminAlert for representatives
   if (status === 'pending') {
@@ -259,7 +282,7 @@ export async function uploadAttachment({
   return {
     id: docRef.id,
     ...attachmentData,
-  };
+  } as LectureAttachment;
 }
 
 /**
