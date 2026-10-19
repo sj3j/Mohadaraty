@@ -45,7 +45,7 @@ const config: CapacitorConfig = {
     // default iOS scheme is `capacitor://localhost`; pinning it to https keeps
     // the origin shape identical on both platforms, which also keeps one CORS
     // allowlist and one set of Firebase authorized domains valid for both.
-    iosScheme: 'https',
+    iosScheme: 'capacitor',
     // Keep top-level navigation inside the app; outward links open in a browser
     // sheet rather than replacing the app shell with a page it cannot leave.
     allowNavigation: [],

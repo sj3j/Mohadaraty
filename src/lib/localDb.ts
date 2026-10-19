@@ -21,6 +21,7 @@
  */
 
 import type { LocalAttendanceReceipt } from '../../shared/attendance';
+import { secureRequestId } from './secureRandom';
 
 const DB_NAME = 'mylecture-local';
 const DB_VERSION = 6;
@@ -335,8 +336,15 @@ export interface OfflineLecture {
 export const saveOfflineLecture = (rec: OfflineLecture) =>
   dbPut<OfflineLecture>(STORE_OFFLINE_LECTURES, rec);
 
-export const listOfflineLectures = () =>
-  dbGetAll<OfflineLecture>(STORE_OFFLINE_LECTURES);
+export const listOfflineLectures = async (): Promise<OfflineLecture[]> => {
+  try {
+    const { isNativePlatform, listNativeOfflineLectures } = await import('./nativePdfRepository');
+    if (await isNativePlatform()) {
+      return await listNativeOfflineLectures();
+    }
+  } catch {}
+  return dbGetAll<OfflineLecture>(STORE_OFFLINE_LECTURES);
+};
 
 export const removeOfflineLecture = (id: string) =>
   dbDelete(STORE_OFFLINE_LECTURES, id);
@@ -429,10 +437,7 @@ export interface UserFileBlob {
 }
 
 function generateLocalId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+  return secureRequestId();
 }
 
 export async function createUserFolder(

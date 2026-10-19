@@ -7,6 +7,10 @@
  * which is the same trick useOfflinePDF plays with `pdf_${lectureId}`: it lets
  * a card render an "N highlights" badge synchronously, with no async DB open in
  * the render path.
+ *
+ * On iOS and Android (Capacitor native builds), annotations and document metadata
+ * are persisted directly into the native filesystem via NativePdfRepository,
+ * ensuring resilience against WebKit storage wiping and Safari Lockdown Mode.
  */
 
 import {
@@ -19,6 +23,15 @@ import {
   dbDeleteByIndex,
   isLocalDbAvailable,
 } from '../lib/localDb';
+import {
+  isNativePlatform,
+  listNativeAnnotations,
+  saveNativeAnnotation,
+  deleteNativeAnnotation,
+  deleteAllNativeAnnotations,
+  getNativeDocMeta,
+  setNativeDocMeta,
+} from '../lib/nativePdfRepository';
 import {
   SCHEMA_VERSION,
   type PdfAnnotation,
@@ -52,8 +65,15 @@ function writeCountIndex(lectureId: string, n: number): void {
 }
 
 export async function listAnnotations(lectureId: string): Promise<PdfAnnotation[]> {
-  if (!isLocalDbAvailable()) return [];
   try {
+    if (await isNativePlatform()) {
+      const rows = await listNativeAnnotations(lectureId);
+      const out = rows.map(migrateRecord).sort((a, b) => a.page - b.page || a.createdAt - b.createdAt);
+      writeCountIndex(lectureId, out.length);
+      return out;
+    }
+
+    if (!isLocalDbAvailable()) return [];
     const rows = await dbGetAllByIndex<PdfAnnotation>(STORE_ANNOTATIONS, 'by_lecture', lectureId);
     const out = rows.map(migrateRecord).sort((a, b) => a.page - b.page || a.createdAt - b.createdAt);
     writeCountIndex(lectureId, out.length);
@@ -65,8 +85,17 @@ export async function listAnnotations(lectureId: string): Promise<PdfAnnotation[
 }
 
 export async function saveAnnotation(a: PdfAnnotation): Promise<boolean> {
-  if (!isLocalDbAvailable()) return false;
   try {
+    if (await isNativePlatform()) {
+      const ok = await saveNativeAnnotation({ ...a, schema: SCHEMA_VERSION, updatedAt: Date.now() });
+      if (ok) {
+        const rows = await listNativeAnnotations(a.lectureId);
+        writeCountIndex(a.lectureId, rows.length);
+      }
+      return ok;
+    }
+
+    if (!isLocalDbAvailable()) return false;
     await dbPut(STORE_ANNOTATIONS, { ...a, schema: SCHEMA_VERSION, updatedAt: Date.now() });
     // Recount from the source of truth rather than trusting an increment.
     const rows = await dbGetAllByIndex<PdfAnnotation>(STORE_ANNOTATIONS, 'by_lecture', a.lectureId);
@@ -79,8 +108,17 @@ export async function saveAnnotation(a: PdfAnnotation): Promise<boolean> {
 }
 
 export async function deleteAnnotation(id: string, lectureId: string): Promise<boolean> {
-  if (!isLocalDbAvailable()) return false;
   try {
+    if (await isNativePlatform()) {
+      const ok = await deleteNativeAnnotation(id, lectureId);
+      if (ok) {
+        const rows = await listNativeAnnotations(lectureId);
+        writeCountIndex(lectureId, rows.length);
+      }
+      return ok;
+    }
+
+    if (!isLocalDbAvailable()) return false;
     await dbDelete(STORE_ANNOTATIONS, id);
     const rows = await dbGetAllByIndex<PdfAnnotation>(STORE_ANNOTATIONS, 'by_lecture', lectureId);
     writeCountIndex(lectureId, rows.length);
@@ -99,8 +137,14 @@ export async function deleteAnnotation(id: string, lectureId: string): Promise<b
  * it. This runs only from an explicit, confirmed action.
  */
 export async function deleteAllForLecture(lectureId: string): Promise<number> {
-  if (!isLocalDbAvailable()) return 0;
   try {
+    if (await isNativePlatform()) {
+      const count = await deleteAllNativeAnnotations(lectureId);
+      writeCountIndex(lectureId, 0);
+      return count;
+    }
+
+    if (!isLocalDbAvailable()) return 0;
     const n = await dbDeleteByIndex(STORE_ANNOTATIONS, 'by_lecture', lectureId);
     writeCountIndex(lectureId, 0);
     return n;
@@ -111,8 +155,12 @@ export async function deleteAllForLecture(lectureId: string): Promise<number> {
 }
 
 export async function getDocMeta(lectureId: string): Promise<DocMeta | null> {
-  if (!isLocalDbAvailable()) return null;
   try {
+    if (await isNativePlatform()) {
+      return await getNativeDocMeta(lectureId);
+    }
+
+    if (!isLocalDbAvailable()) return null;
     return (await dbGet<DocMeta>(STORE_META, META_KEY(lectureId))) ?? null;
   } catch {
     return null;
@@ -120,8 +168,13 @@ export async function getDocMeta(lectureId: string): Promise<DocMeta | null> {
 }
 
 export async function setDocMeta(lectureId: string, patch: Partial<DocMeta>): Promise<void> {
-  if (!isLocalDbAvailable()) return;
   try {
+    if (await isNativePlatform()) {
+      await setNativeDocMeta(lectureId, patch);
+      return;
+    }
+
+    if (!isLocalDbAvailable()) return;
     const prev = await getDocMeta(lectureId);
     await dbPut(STORE_META, {
       key: META_KEY(lectureId),

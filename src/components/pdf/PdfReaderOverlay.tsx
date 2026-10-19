@@ -27,6 +27,7 @@ import SimosanDrawer from './SimosanDrawer';
 import { exportLecture, getDocMeta, setDocMeta } from '../../services/pdfAnnotationService';
 import { fetchSimosanState } from '../../services/simosanService';
 import { getUserFileBlob } from '../../lib/localDb';
+import { secureRequestId } from '../../lib/secureRandom';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language, UserProfile } from '../../types';
@@ -329,7 +330,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
         if (!buf) {
           // Prefer the downloaded copy: it works offline and skips the network
           // entirely for a lecture the student already saved.
-          const local = await readStoredPdf(pdfUrl);
+          const local = await readStoredPdf(pdfUrl, lectureId);
           if (cancelled) return;
           buf = local ?? await fetchPdfBytes(pdfUrl, ac.signal);
         }
@@ -1247,13 +1248,13 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     const snap = selection;
     if (!snap) return;
 
-    const groupId = snap.fragments.length > 1 ? crypto.randomUUID() : undefined;
+    const groupId = snap.fragments.length > 1 ? secureRequestId() : undefined;
     const now = Date.now();
     let first: PdfAnnotation | null = null;
 
     for (const f of snap.fragments) {
       const a: PdfAnnotation = {
-        id: crypto.randomUUID(),
+        id: secureRequestId(),
         lectureId,
         docFingerprint: fingerprint.current,
         kind: 'highlight',
@@ -1287,7 +1288,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     if (gesture.current || spring.current != null) return;
     const now = Date.now();
     const a: PdfAnnotation = {
-      id: crypto.randomUUID(),
+      id: secureRequestId(),
       lectureId,
       docFingerprint: fingerprint.current,
       kind: 'pin',
