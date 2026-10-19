@@ -38,14 +38,29 @@ if ('serviceWorker' in navigator) {
   registerSW({ immediate: true });
 }
 
+import { WebViewCompatibilityGate } from './components/attendance/WebViewCompatibilityGate';
+import { runLosslessAttendanceMigration } from './services/attendanceMigration';
+import { migrateLegacyIndexedDbToNative } from './lib/nativePdfRepository';
+
+void runLosslessAttendanceMigration().catch(err => {
+  console.warn('[attendance] Initial migration check failed:', err);
+});
+
+void migrateLegacyIndexedDbToNative().catch(err => {
+  console.warn('[storage] Legacy PDF migration check failed:', err);
+});
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <StageProvider>
         <AudioProvider>
-          <App />
+          <WebViewCompatibilityGate>
+            <App />
+          </WebViewCompatibilityGate>
         </AudioProvider>
       </StageProvider>
     </ErrorBoundary>
   </StrictMode>,
 );
+

@@ -28,7 +28,7 @@ export default function SubjectModeModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
       <div 
-        className="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl border border-slate-200 dark:bg-zinc-900 dark:border-zinc-800"
+        className="w-full max-w-lg sm:max-w-xl md:max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-3xl bg-white shadow-2xl border border-slate-200 dark:bg-zinc-900 dark:border-zinc-800"
         dir={isRtl ? 'rtl' : 'ltr'}
       >
         {/* Header */}
@@ -55,7 +55,7 @@ export default function SubjectModeModal({
         </div>
 
         {/* Body */}
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 flex-1 overflow-y-auto">
           {/* Subject selection */}
           <div className="space-y-3">
             <label className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-zinc-500">

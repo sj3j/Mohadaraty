@@ -1,10 +1,10 @@
 import { auth } from '../lib/firebase';
 import { apiUrl } from '../lib/apiBase';
+import { secureRequestId } from '../lib/secureRandom';
 import type { ManualPaymentMethod } from '../../shared/subscriptionTypes';
 import type { SubscriptionPlan } from '../types';
 
-export const newRequestId = (): string =>
-  globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+export const newRequestId = (): string => secureRequestId();
 
 const retryRequestIds = new Map<string, string>();
 const retryRequestId = (key: string) => {

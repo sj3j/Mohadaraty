@@ -19,6 +19,7 @@ import {
   type DoctorAttendanceCommand,
 } from '../../services/attendanceService';
 import { attendanceFlagLabel } from '../../../shared/attendanceSecurity';
+import { secureRequestId } from '../../lib/secureRandom';
 
 interface ProfessorSimosanViewProps {
   lang: Language;
@@ -26,7 +27,7 @@ interface ProfessorSimosanViewProps {
   ownerUid: string;
 }
 
-const newId = () => crypto.randomUUID();
+const newId = () => secureRequestId();
 
 export default function ProfessorSimosanView({ lang, stageId, ownerUid }: ProfessorSimosanViewProps) {
   const isRtl = lang === 'ar';
@@ -84,7 +85,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
       if (!live) return;
       setBootstrap(data);
       const today = new Date(data.serverNow).toLocaleDateString('en-CA', { timeZone: data.timezone });
-      const preferred = data.occurrences.find(item => item.lectureDate === today) || data.occurrences.at(-1);
+      const preferred = data.occurrences.find(item => item.lectureDate === today) || data.occurrences[data.occurrences.length - 1];
       setOccurrenceId(preferred?.id || '');
     }).catch(() => setError(isRtl ? 'تعذر تحميل جدول الحضور.' : 'Could not load attendance timetable.')).finally(() => live && setLoading(false));
     return () => { live = false; };

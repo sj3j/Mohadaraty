@@ -61,7 +61,7 @@ export function resolveAuthState(input: {
 }): SessionBootstrapResult {
   if (input.firebaseUserPresent) return AUTHENTICATED;
 
-  if (!input.isOnline && input.wasSignedIn && input.cachedProfileAvailable) {
+  if (input.wasSignedIn && input.cachedProfileAvailable) {
     return preserve('cached-profile-restored', true);
   }
 

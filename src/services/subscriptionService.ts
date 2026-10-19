@@ -6,6 +6,7 @@ import {
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Subscription, SubscriptionPlan, PaymentMethod, PLAN_CONFIG } from '../types';
 import { apiUrl } from '../lib/apiBase';
+import { secureRequestId } from '../lib/secureRandom';
 import {
   EMPTY_PAYMENT_CONTACT,
   PAYMENT_CONTACT_COLLECTION,
@@ -286,7 +287,7 @@ export async function grantSubscription(
       'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
-      requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      requestId: secureRequestId(),
       studentEmail: userId,
       plan,
       reason: notes,

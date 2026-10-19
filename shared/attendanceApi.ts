@@ -20,7 +20,7 @@ import { hasStageCapability, type StaffProjection } from './staffCapabilities.js
 import { studentForToken } from './studentLookup.js';
 import { getSupabaseAdmin } from './supabaseClient.js';
 import type { StageTimetableDoc } from './timetable.js';
-import { verifyAttendanceDevice } from './attendanceDevice.js';
+import { verifyAttendanceDevice, verifyAttendanceKeyRotation } from './attendanceDevice.js';
 import { summarizeAttendanceTelemetry, type CampusBoundary } from './attendanceSecurity.js';
 import { attendanceSessionId, validateAttendancePublicKey, verifyOfflineAttendanceToken } from './attendanceOffline.js';
 import { validateQrKeyConfig, mapConfigErrorToResponse, type QrKeyConfig } from './attendanceConfig.js';
@@ -843,12 +843,72 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
         p_reason: assertReason(req.body?.reason),
         p_expected_revision: expectedRevision,
         p_enroll_device: req.body?.enrollDevice === true,
+        p_allow_late_confirmation: req.body?.allowLateConfirmation === true,
       });
       if (error) throw error;
       res.json(data);
     } catch (error: any) {
       if (error?.status === 403) return res.status(403).json({ error: error.message });
       return attendanceError(res, error, 'resolve review');
+    }
+  }
+
+  async function createKeyRotationChallenge(req: any, res: any) {
+    try {
+      const actor = await actorFor(admin, req);
+      if (!actor.student) return res.status(403).json({ error: 'student_identity_required' });
+      if (actor.student.data.isActive === false) return res.status(403).json({ error: 'student_identity_disabled' });
+      const nonce = typeof req.body?.nonce === 'string' && req.body.nonce.length >= 16 ? req.body.nonce : crypto.randomBytes(32).toString('hex');
+      const { data, error } = await supabaseOrThrow().rpc('attendance_create_key_rotation_challenge', {
+        p_actor_uid: actor.uid,
+        p_nonce: nonce,
+      });
+      if (error) throw error;
+      res.json({ challengeId: data, nonce });
+    } catch (error: any) {
+      if (error?.status === 403) return res.status(403).json({ error: error.message });
+      return attendanceError(res, error, 'create key rotation challenge');
+    }
+  }
+
+  async function commitKeyRotation(req: any, res: any) {
+    try {
+      const actor = await actorFor(admin, req);
+      if (!actor.student) return res.status(403).json({ error: 'student_identity_required' });
+      if (actor.student.data.isActive === false) return res.status(403).json({ error: 'student_identity_disabled' });
+      const { challengeId, nonce, oldKey, newKey, oldSignature, newSignature } = req.body || {};
+      if (!challengeId || !nonce || !oldKey || !newKey || !oldSignature || !newSignature) {
+        return res.status(400).json({ error: 'invalid_rotation_payload' });
+      }
+      const { oldDeviceDigest, newDeviceDigest } = verifyAttendanceKeyRotation({
+        actorUid: actor.uid,
+        challengeId,
+        nonce,
+        oldKey,
+        newKey,
+        oldSignature,
+        newSignature,
+      });
+      const { data, error } = await supabaseOrThrow().rpc('attendance_commit_key_rotation', {
+        p_challenge_id: challengeId,
+        p_actor_uid: actor.uid,
+        p_roster_student_id: actor.student.id,
+        p_old_device_digest: oldDeviceDigest,
+        p_new_device_digest: newDeviceDigest,
+        p_rotation_proof: {
+          oldKey,
+          newKey,
+          oldSignature,
+          newSignature,
+          nonce,
+          rotatedAt: new Date().toISOString(),
+        },
+      });
+      if (error) throw error;
+      res.json(data);
+    } catch (error: any) {
+      if (error?.status === 403) return res.status(403).json({ error: error.message });
+      return attendanceError(res, error, 'commit key rotation');
     }
   }
 
@@ -866,5 +926,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
     voidRecord: (req: any, res: any) => setRecordStatus(req, res, 'voided'),
     restoreRecord: (req: any, res: any) => setRecordStatus(req, res, 'confirmed'),
     resolveReview,
+    createKeyRotationChallenge,
+    commitKeyRotation,
   };
 }

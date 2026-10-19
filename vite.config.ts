@@ -1,4 +1,3 @@
-import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
@@ -30,6 +29,8 @@ export default defineConfig(({mode}) => {
   return {
     base: './',
     build: {
+      target: ['es2020', 'safari15', 'chrome108'],
+      cssTarget: ['safari15', 'chrome108'],
       outDir: 'dist',
       emptyOutDir: true,
       rollupOptions: {
@@ -75,7 +76,6 @@ export default defineConfig(({mode}) => {
     },
     plugins: [
       react(), 
-      tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
         injectRegister: 'script',

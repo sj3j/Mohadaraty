@@ -68,6 +68,7 @@ export function attendanceFlagLabel(flag: string, arabic: boolean): string {
     location_unavailable: ['تعذر تحديد الموقع', 'Location unavailable'],
     location_low_accuracy: ['دقة الموقع منخفضة', 'Low location accuracy'],
     rapid_reconnect: ['اتصال سريع بعد المسح دون إنترنت — مؤشر ضعيف', 'Rapid reconnect — low-confidence signal'],
+    late_arrival: ['وصول متأخر (بعد الموعد النهائي) — يتطلب موافقة صريحة من الأستاذ', 'Late arrival (after deadline) — requires explicit doctor confirmation'],
     professor_reviewed: ['راجع الأستاذ الإثبات', 'Professor reviewed'],
     visiting_subgroup: ['طالب من مجموعة أخرى', 'Visiting subgroup'],
   };

@@ -2151,6 +2151,26 @@ app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, attendance.ma
 app.post('/api/attendance/records/:recordId/void', verifyAuth, attendance.voidRecord);
 app.post('/api/attendance/records/:recordId/restore', verifyAuth, attendance.restoreRecord);
 app.post('/api/attendance/reviews/:receiptId/resolve', verifyAuth, attendance.resolveReview);
+app.post('/api/attendance/key-rotation/challenge', verifyAuth, attendance.createKeyRotationChallenge);
+app.post('/api/attendance/key-rotation/commit', verifyAuth, attendance.commitKeyRotation);
+
+app.post('/api/auth/session-bridge', verifyAuth, async (req: express.Request, res: express.Response) => {
+  res.setHeader('Cache-Control', 'private, no-store');
+  try {
+    const user = (req as any).user;
+    if (!user || !user.uid) return res.status(401).json({ error: 'unauthorized' });
+    const userRecord = await admin.auth().getUser(user.uid);
+    if (userRecord.disabled) return res.status(403).json({ error: 'account_disabled' });
+    const userDoc = await admin.firestore().collection('users').doc(user.uid).get();
+    if (userDoc.exists && userDoc.data()?.disabled === true) {
+      return res.status(403).json({ error: 'account_disabled' });
+    }
+    const customToken = await admin.auth().createCustomToken(user.uid);
+    res.json({ ok: true, customToken });
+  } catch (error: any) {
+    res.status(500).json({ error: 'session_bridge_failed' });
+  }
+});
 
 /* MCQ generation. Staff-only, on the free-tier key - see shared/mcqGeneration.ts
  * for why it is a second key. Mirrored in server.ts. */

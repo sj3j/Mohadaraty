@@ -134,8 +134,10 @@ check('Supabase is gateway-only and uses atomic idempotency constraints', () => 
 check('development and production expose identical attendance routes and correct middleware order', () => {
   const routes = (source: string) => [...source.matchAll(/app\.(?:get|post|patch)\('([^']*attendance[^']*)'/g)].map(match => match[1]).sort();
   assert.deepEqual(routes(server), routes(production));
-  assert.equal(routes(server).length, 18);
+  assert.equal(routes(server).length, 20);
   assert.ok(routes(server).includes('/api/attendance/admin/readiness'));
+  assert.ok(routes(server).includes('/api/attendance/key-rotation/challenge'));
+  assert.ok(routes(server).includes('/api/attendance/key-rotation/commit'));
 
   for (const [name, source] of [['server', server], ['production', production]] as const) {
     const middlewareIndex = source.indexOf("app.use('/api/attendance', (_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store');");

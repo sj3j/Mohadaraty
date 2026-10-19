@@ -1155,7 +1155,7 @@ async function getExpiring(admin: any, actor: SubscriptionActor, cursorValue: un
       staffTag: record ? record.data().actor?.name || record.data().actor?.email || '-' : '-',
     });
   }));
-  const last = docs.at(-1);
+  const last = docs[docs.length - 1];
   return {
     items,
     nextCursor: snap.docs.length > EXPIRING_PAGE_SIZE && last
@@ -1744,7 +1744,7 @@ export async function getActiveSubscriptions(
     });
   });
 
-  const last = docs.at(-1);
+  const last = docs[docs.length - 1];
   return {
     items,
     nextCursor: snap.docs.length > ACTIVE_PAGE_SIZE && last

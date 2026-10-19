@@ -3,6 +3,7 @@ import { X, GraduationCap, Sparkles, CheckCircle2, ShieldAlert, UserPlus, BookOp
 import type { Stage } from '../../types';
 import type { AttendanceDoctorSubject } from '../../../shared/attendance';
 import { attendanceApiRequest } from '../../services/attendanceService';
+import { secureRequestId } from '../../lib/secureRandom';
 import { createLatestDoctorListRefresher } from './doctorAccountList';
 
 type Options = {
@@ -94,7 +95,7 @@ export default function DoctorAccountProvisionModal({
     setMessage(null);
     const fingerprint = JSON.stringify({ name, email, stageId, subjects });
     if (pending.current?.fingerprint !== fingerprint) {
-      pending.current = { fingerprint, id: crypto.randomUUID() };
+      pending.current = { fingerprint, id: secureRequestId() };
     }
 
     try {

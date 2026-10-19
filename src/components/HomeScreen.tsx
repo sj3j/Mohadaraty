@@ -9,8 +9,8 @@ import RecordsScreen from './RecordsScreen';
 import LeaderboardTab from './LeaderboardTab';
 import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
-import { db } from '../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+
+
 import PersonalSpaceTab from './PersonalSpaceTab';
 import { type UserFile } from '../lib/localDb';
 

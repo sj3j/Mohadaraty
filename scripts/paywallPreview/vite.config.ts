@@ -1,4 +1,3 @@
-import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
@@ -53,7 +52,7 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: { input: path.resolve(root, 'index.html') },
   },
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   define: {
     __PREVIEW_PRICES__: JSON.stringify(prices),
     __PREVIEW_ACTIVE__: JSON.stringify(process.env.PAYWALL_ACTIVE === '1'),

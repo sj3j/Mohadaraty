@@ -8,6 +8,7 @@ import {
   listDoctorAttendanceCommands, subscribeAttendanceChanges, resolveAttendanceReview,
   type DoctorAttendanceCommand,
 } from '../../services/attendanceService';
+import { secureRequestId } from '../../lib/secureRandom';
 import type { AttendanceCellStatus, StudentAttendanceRow } from './types';
 
 export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: string) {
@@ -115,7 +116,7 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     const input = { stageId: workspace.stageId, occurrenceId, expectedHeadcount };
     const result = offlineReady
       ? await createOfflineAttendanceSession(input, ownerUid)
-      : await createAttendanceSession({ ...input, notes: '', requestId: crypto.randomUUID() });
+      : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
     const data = await getAttendanceSessionSnapshot(result.sessionId, ownerUid);
     if (data.session.status !== 'active') throw new Error('session_not_editable');
     setWorkspace(current => current ? { ...current, sessions: [...current.sessions.filter(session => session.id !== data.session.id), data.session] } : current);
@@ -125,7 +126,7 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   });
   const saveSession = (patch: Record<string, unknown>) => run(async () => {
     if (!snapshot) throw new Error('select_active_session');
-    await updateAttendanceSession(snapshot.session.id, { ...patch, requestId: crypto.randomUUID(), expectedRevision: snapshot.session.revision }, ownerUid);
+    await updateAttendanceSession(snapshot.session.id, { ...patch, requestId: secureRequestId(), expectedRevision: snapshot.session.revision }, ownerUid);
     setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
     if (patch.status === 'ended') setQrToken('');
   });
@@ -155,24 +156,24 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
       const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, expectedHeadcount };
       const created = offlineReady
         ? await createOfflineAttendanceSession(input, ownerUid)
-        : await createAttendanceSession({ ...input, notes: '', requestId: crypto.randomUUID() });
+        : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
       const data = await getAttendanceSessionSnapshot(created.sessionId, ownerUid);
       session = data.session;
       setWorkspace(current => current ? { ...current, sessions: [...current.sessions, data.session] } : current);
     }
     const record = records.find(item => item.sessionId === session.id && item.rosterStudentId === studentId);
-    if (status === 'present' && !record) await markAttendanceManually(session.id, { studentId, reason, expectedRevision: session.revision, requestId: crypto.randomUUID() }, ownerUid);
-    else if (record) await setAttendanceRecordStatus(record.id, status === 'present' ? 'restore' : 'void', { reason, expectedRevision: record.revision, requestId: crypto.randomUUID() });
+    if (status === 'present' && !record) await markAttendanceManually(session.id, { studentId, reason, expectedRevision: session.revision, requestId: secureRequestId() }, ownerUid);
+    else if (record) await setAttendanceRecordStatus(record.id, status === 'present' ? 'restore' : 'void', { reason, expectedRevision: record.revision, requestId: secureRequestId() });
     const data = await getAttendanceSessionSnapshot(session.id, ownerUid);
     setWorkspace(current => current ? { ...current, records: [...current.records.filter(item => item.sessionId !== session.id), ...data.records] } : current);
     if (session.id === snapshot?.session.id) setSnapshot(data);
     setCommands(await listDoctorAttendanceCommands(ownerUid));
   });
-  const review = (requestId: string, enrollDevice: boolean, decision: 'confirm' | 'reject') => run(async () => {
+  const review = (requestId: string, enrollDevice: boolean, decision: 'confirm' | 'reject', allowLateConfirmation?: boolean) => run(async () => {
     if (!snapshot) return;
     const reason = window.prompt(isRtl ? 'سبب القرار والتحقق من هوية الطالب:' : 'Decision reason and identity check:')?.trim();
     if (!reason) return;
-    await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, expectedRevision: snapshot.session.revision, requestId: crypto.randomUUID() });
+    await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, allowLateConfirmation: allowLateConfirmation === true, expectedRevision: snapshot.session.revision, requestId: secureRequestId() });
     setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
   });
   return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, prepare, start, saveSession, students, updateCell, review, refresh: () => run(refresh) };

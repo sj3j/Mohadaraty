@@ -49,10 +49,10 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
           exit={{ opacity: 0, scale: 0.9, y: 20 }}
           transition={{ type: 'spring', stiffness: 400, damping: 30 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative w-full max-w-sm bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
+          className="relative w-full max-w-sm sm:max-w-md max-h-[90vh] flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
           dir={isRtl ? 'rtl' : 'ltr'}
         >
-          <div className="relative px-6 pt-8 pb-8 bg-gradient-to-br from-amber-500 via-orange-500 to-rose-500 text-white overflow-hidden">
+          <div className="relative shrink-0 px-6 pt-8 pb-8 bg-gradient-to-br from-amber-500 via-orange-500 to-rose-500 text-white overflow-hidden">
             <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/10 rounded-full" />
             <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-white/10 rounded-full" />
 
@@ -84,7 +84,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
             </div>
           </div>
 
-          <div className="p-6 space-y-3">
+          <div className="p-6 space-y-3 flex-1 overflow-y-auto">
             {/* Interactive VIP Perks Card Button */}
             <button
               type="button"

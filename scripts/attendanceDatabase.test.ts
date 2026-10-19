@@ -12,7 +12,12 @@ const sharedInstallation = 'b'.repeat(64);
 
 before(async () => {
   await database.exec('create role anon; create role authenticated; create role service_role bypassrls; grant usage on schema public to service_role;');
-  for (const path of ['supabase/migrations/20261014083458_simosan_attendance_reliability.sql', 'supabase/migrations/20261015073458_attendance_device_policy.sql', 'supabase/migrations/20261015155756_attendance_offline_sessions.sql']) {
+  for (const path of [
+    'supabase/migrations/20261014083458_simosan_attendance_reliability.sql',
+    'supabase/migrations/20261015073458_attendance_device_policy.sql',
+    'supabase/migrations/20261015155756_attendance_offline_sessions.sql',
+    'supabase/migrations/20261018160000_attendance_late_receipts_key_rotation.sql',
+  ]) {
     try {
       await database.exec(readFileSync(path, 'utf8'));
     } catch (error: any) {
@@ -46,8 +51,8 @@ async function submit(receipt: ReturnType<typeof input>, flags: string[] = []) {
   return result.rows[0].result;
 }
 
-async function review(receiptId: string, enrollDevice: boolean, requestId = randomUUID()) {
-  const result = await database.query<{ result: any }>("select attendance_resolve_review($1,$2,'doctor','confirm','College ID checked',1,$3) as result", [requestId, receiptId, enrollDevice]);
+async function review(receiptId: string, enrollDevice: boolean, requestId = randomUUID(), allowLateConfirmation = false) {
+  const result = await database.query<{ result: any }>("select attendance_resolve_review($1,$2,'doctor','confirm','College ID checked',1,$3,$4) as result", [requestId, receiptId, enrollDevice, allowLateConfirmation]);
   return result.rows[0].result;
 }
 
@@ -123,10 +128,13 @@ test('36-hour deadline is fixed to scheduled end and closure never extends it', 
   const deadline = await database.query<{ fixed: boolean }>("select session.reconciliation_deadline=occurrence.end_at+interval '36 hours' as fixed from attendance_sessions session join attendance_occurrences occurrence on occurrence.id=session.occurrence_id where session.id=$1", [sessions[5].id]);
   assert.equal(deadline.rows[0].fixed, true);
   const late = input(5);
-  assert.equal((await submit(late)).reason, 'submission_deadline_passed');
-  assert.equal((await submit(late)).resolution, 'invalid_evidence');
-  await assert.rejects(review(late.requestId, true), /receipt_not_reviewable|receipt_not_eligible/);
-  const result = await database.query<{ result: any }>("select attendance_manual_record($1,$2,'doctor','student-a','Independent lecturer evidence',1) result", [randomUUID(), sessions[5].id]);
+  const lateResult = await submit(late);
+  assert.equal(lateResult.reason, 'late_arrival');
+  assert.equal(lateResult.resolution, 'needs_review');
+  await assert.rejects(review(late.requestId, true, randomUUID(), false), /late_receipt_requires_explicit_confirmation/);
+  const lateReviewed = await review(late.requestId, true, randomUUID(), true);
+  assert.equal(lateReviewed.recordStatus, 'confirmed');
+  const result = await database.query<{ result: any }>("select attendance_manual_record($1,$2,'doctor','student-b','Independent lecturer evidence',1) result", [randomUUID(), sessions[5].id]);
   assert.equal(result.rows[0].result.record.entry_method, 'manual');
 });
 
@@ -142,7 +150,7 @@ test('receipt committed at exact deadline is eligible; acknowledged retry after 
     await database.exec('commit');
   } catch (error) { await database.exec('rollback'); throw error; }
   assert.equal((await submit(receipt)).recordStatus, 'confirmed');
-  assert.equal((await submit(input(6, 'student-b'))).reason, 'submission_deadline_passed');
+  assert.equal((await submit(input(6, 'student-b'))).reason, 'late_arrival');
 });
 
 test('review uses receipt arrival, not professor review time', async () => {
@@ -195,3 +203,35 @@ test('session edits are idempotent without being invalidated by student uploads'
   await assert.rejects(update('Changed payload'), /idempotency_conflict/);
   await assert.rejects(update('Saved notes', 'another-doctor'), /idempotency_conflict/);
 });
+
+test('key rotation preserves enrolled device identity and resolves alias to canonical device', async () => {
+  const nonce = 'n'.repeat(32);
+  const challengeResult = await database.query<{ id: string }>(
+    "select attendance_create_key_rotation_challenge('student-a', $1) as id",
+    [nonce]
+  );
+  const challengeId = challengeResult.rows[0].id;
+  assert.ok(challengeId);
+
+  const newDevice = 'c'.repeat(64);
+  const commitResult = await database.query<{ result: any }>(
+    "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
+    [challengeId, device, newDevice, JSON.stringify({ nonce, rotatedAt: new Date().toISOString() })]
+  );
+  assert.equal(commitResult.rows[0].result.rotated, true);
+  assert.equal(commitResult.rows[0].result.canonicalDeviceDigest, device);
+
+  // Submitting with rotated alias device succeeds as confirmed without requiring new device enrollment
+  const receiptWithRotatedKey = input(2, 'student-a', sharedInstallation, newDevice);
+  assert.equal((await submit(receiptWithRotatedKey)).resolution, 'confirmed');
+
+  // Challenge cannot be reused
+  await assert.rejects(
+    database.query(
+      "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
+      [challengeId, device, newDevice, JSON.stringify({})]
+    ),
+    /challenge_already_consumed/
+  );
+});
+

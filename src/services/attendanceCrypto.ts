@@ -1,8 +1,10 @@
 import { attendanceDeviceMessage } from '../../shared/attendanceSecurity';
 import { dbGet, getOrCreateAttendanceInstallation, STORE_META, type AttendanceInstallation } from '../lib/localDb';
 
+import { secureRequestId } from '../lib/secureRandom';
+
 export function attendanceRequestId(): string {
-  return crypto.randomUUID();
+  return secureRequestId();
 }
 
 export async function attendanceInstallation(): Promise<AttendanceInstallation> {

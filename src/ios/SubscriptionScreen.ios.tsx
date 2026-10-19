@@ -143,7 +143,7 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
   })();
 
   return (
-    <div className="p-4 sm:p-6 max-w-lg mx-auto space-y-4" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="p-4 sm:p-6 md:p-8 max-w-4xl w-full mx-auto space-y-6" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* ---- current state ------------------------------------------------ */}
       <div className="bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 rounded-3xl p-6 text-center">
         <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${
@@ -193,6 +193,7 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
           <h3 className="text-sm font-black text-slate-500 dark:text-slate-400 px-1">
             {t.payChoosePlan}
           </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {packages.map(pkg => {
             const buying = busy?.kind === 'buying' && busy.id === pkg.identifier;
             const plan = planForProduct(pkg.product.identifier) as SubscriptionPlan | null;
@@ -234,6 +235,7 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
               </button>
             );
           })}
+          </div>
         </div>
       )}
 

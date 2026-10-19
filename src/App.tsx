@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit } from 'firebase/firestore';
@@ -16,7 +16,7 @@ import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks/useAuthWatchdog';
-import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile } from './lib/authPersistence';
+import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
 import { canAttemptStreakActivity, createSingleFlight } from './lib/streakActivity';
@@ -120,6 +120,7 @@ export default function App() {
     return wasSignedIn ? getCachedUserProfile() : null;
   });
   const [authenticatedUid, setAuthenticatedUid] = useState<string | null>(null);
+  const authGenerationRef = useRef(0);
   const streakActivitySingleFlight = useMemo(createSingleFlight, []);
 
   const isProgressionSnoozed = useMemo(() => {
@@ -315,6 +316,7 @@ export default function App() {
         sessionStorage.removeItem('googleLoginStartedAt');
       }
 
+      const generation = ++authGenerationRef.current;
       setAuthenticatedUid(firebaseUser?.uid ?? null);
 
       if (firebaseUser) {
@@ -322,7 +324,7 @@ export default function App() {
           firebaseUserPresent: true,
           isOnline: navigator.onLine,
           wasSignedIn: safeGetStorageItem('wasSignedIn') === 'true',
-          cachedProfileAvailable: getCachedUserProfile() !== null,
+          cachedProfileAvailable: getCachedUserProfile(firebaseUser.uid) !== null,
         }));
         safeSetStorageItem('wasSignedIn', 'true');
         const userEmail = firebaseUser.email || firebaseUser.uid;
@@ -462,6 +464,7 @@ export default function App() {
 
         // Listen to user document
         userUnsubscribe = onSnapshot(doc(db, 'users', firebaseUser.uid), async (userDoc) => {
+          if (authGenerationRef.current !== generation) return;
           // Read before the exists() guard: exists() is a type predicate, and in
           // the negative branch it narrows the snapshot to `never`.
           const servedFromCache = userDoc.metadata.fromCache;
@@ -472,7 +475,7 @@ export default function App() {
           // out every master admin and Google-uid account on an offline launch
           // (roster students dodged it only because their uid contains an '@').
           // Absence is only meaningful when it comes from the server.
-          const cachedProfile = getCachedUserProfile();
+          const cachedProfile = getCachedUserProfile(firebaseUser.uid);
           const userDocumentDecision = resolveUserDocument({
             exists: userDoc.exists(),
             fromCache: servedFromCache,
@@ -659,11 +662,19 @@ export default function App() {
             hideNameOnLeaderboard: false,
             hidePhotoOnLeaderboard: false
           };
+          if (authGenerationRef.current !== generation) return;
           setUser(profile);
           saveCachedUserProfile(profile);
           setIsAuthReady(true);
         });
       } else {
+        if (hasExplicitLogoutMarker()) {
+          safeSetStorageItem('wasSignedIn', 'false');
+          if (userUnsubscribe) userUnsubscribe();
+          setUser(null);
+          setIsAuthReady(true);
+          return;
+        }
         const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
         const cached = getCachedUserProfile();
         const decision = resolveAuthState({
@@ -1061,7 +1072,7 @@ export default function App() {
           console.info('[auth-session] doctor signed-out: explicit-logout');
           setCurrentTab('profile');
           safeSetStorageItem('wasSignedIn', 'false');
-          clearCachedUserProfile();
+          clearCachedUserProfile(user?.uid);
           void signOut(auth);
         }}
       />
@@ -1204,7 +1215,7 @@ export default function App() {
             console.info('[auth-session] signed-out: explicit-logout');
             setCurrentTab('profile');
             safeSetStorageItem('wasSignedIn', 'false');
-            clearCachedUserProfile();
+            clearCachedUserProfile(user?.uid);
             void signOut(auth);
           }}
           onOpen={(what) => {

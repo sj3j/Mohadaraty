@@ -11,22 +11,17 @@ import {
 import { apiUrl } from '../lib/apiBase';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { attendanceInstallation, attendanceRequestId, signDeviceReceipt, signOfflineAttendanceQr } from './attendanceCrypto';
+import { attendanceRequestId } from './attendanceCrypto';
 import type { AttendanceTelemetry } from '../../shared/attendanceSecurity';
 import {
   STORE_META,
   attendanceDurablePut,
   dbGet,
-  getAttendanceReceipt,
   getAttendanceState,
-  listAttendanceReceipts,
   saveAttendanceState,
-  commitAttendanceCapture,
-  changeAttendanceReceipt,
-  STORE_ATTENDANCE_COMMANDS,
-  dbGetAllByIndex,
-  commitDoctorAttendanceSession,
 } from '../lib/localDb';
+import { getAttendanceRepository, getAttendanceSigner } from './attendanceRepositoryFactory';
+import type { StorageHealth } from './attendanceRepository';
 
 const ATTENDANCE_EVENT = 'simosan-attendance-changed';
 const activeSync = new Map<string, Promise<void>>();
@@ -96,7 +91,9 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
 
   const now = Date.now();
   try {
-    const installation = await attendanceInstallation();
+    const signer = getAttendanceSigner();
+    const repo = getAttendanceRepository();
+    const identity = await signer.getPublicIdentity();
     const receipt: LocalAttendanceReceipt = {
       requestId: attendanceRequestId(),
       ownerUid,
@@ -112,8 +109,8 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
         startTime: claims.startTime,
         endTime: claims.endTime,
       },
-      installationId: installation.value,
-      devicePublicKey: installation.publicKey,
+      installationId: identity.installationId,
+      devicePublicKey: identity.publicKey,
       capturedAtClient: new Date(now).toISOString(),
       savedAt: now,
       updatedAt: now,
@@ -122,10 +119,11 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
       telemetry: { capturedOffline: navigator.onLine === false, location: { state: 'not_requested', phase: 'scan' } },
     };
     const [normalSignature, conflictSignature] = await Promise.all([
-      signDeviceReceipt(installation, receipt), signDeviceReceipt(installation, { ...receipt, localDeviceConflict: true }),
+      signer.signReceipt(receipt),
+      signer.signReceipt({ ...receipt, localDeviceConflict: true }),
     ]);
     receipt.deviceSignature = normalSignature;
-    const result = await commitAttendanceCapture(receipt, conflictSignature);
+    const result = await repo.capture({ receipt, conflictSignature });
     try {
       emitAttendanceChange();
       if (!result.alreadySaved) {
@@ -151,16 +149,19 @@ async function collectScanLocation(receipt: LocalAttendanceReceipt): Promise<voi
       error => finish({ state: error.code === 1 ? 'permission_unavailable' : error.code === 3 ? 'timeout' : 'unavailable', phase: 'scan' }),
       { enableHighAccuracy: false, maximumAge: 0, timeout: 3000 });
   });
-  await changeAttendanceReceipt(receipt.requestId, current => ({ ...current, telemetry: { ...current.telemetry, location } }));
+  const repo = getAttendanceRepository();
+  await repo.updateReceipt(receipt.requestId, current => ({ ...current, telemetry: { ...current.telemetry, location } }));
 }
 
 export async function listLocalAttendanceReceipts(ownerUid: string): Promise<LocalAttendanceReceipt[]> {
-  const receipts = await listAttendanceReceipts<LocalAttendanceReceipt>(ownerUid);
+  const repo = getAttendanceRepository();
+  const receipts = await repo.listReceipts(ownerUid);
   return receipts.sort((a, b) => b.savedAt - a.savedAt);
 }
 
 async function updateReceipt(requestId: string, patch: Partial<LocalAttendanceReceipt>) {
-  await changeAttendanceReceipt(requestId, current => {
+  const repo = getAttendanceRepository();
+  await repo.updateReceipt(requestId, current => {
     if (patch.recordRevision && (current.recordRevision || 0) > patch.recordRevision) return current;
     if (['pending', 'syncing', 'waiting_for_login'].includes(patch.status || '') && ['confirmed', 'review', 'invalid'].includes(current.status)) return current;
     const fields: Partial<LocalAttendanceReceipt> = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
@@ -192,11 +193,12 @@ async function runSync(ownerUid?: string): Promise<void> {
   }
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
+  const repo = getAttendanceRepository();
   for (let offset = 0; offset < receipts.length; offset += 25) {
     if (auth.currentUser?.uid !== uid) return;
     const selected = receipts.slice(offset, offset + 25);
     await Promise.all(selected.map(receipt => telemetryJobs.get(receipt.requestId)));
-    const batch = await Promise.all(selected.map(async receipt => await getAttendanceReceipt<LocalAttendanceReceipt>(receipt.requestId) || receipt));
+    const batch = await Promise.all(selected.map(async receipt => await repo.getReceipt(receipt.requestId) || receipt));
     await markBatch(batch, { status: 'syncing', reason: undefined });
     const payload = batch.map(receipt => ({
       requestId: receipt.requestId,
@@ -340,9 +342,10 @@ export async function getDoctorAttendanceWorkspace(ownerUid: string, stageId?: s
 }
 
 export async function prepareOfflineAttendance(stageId: string, ownerUid: string): Promise<AttendanceOfflinePack> {
-  const installation = await attendanceInstallation();
+  const signer = getAttendanceSigner();
+  const identity = await signer.getPublicIdentity();
   const pack = await apiRequest<AttendanceOfflinePack>('/api/attendance/offline/prepare', {
-    method: 'POST', body: JSON.stringify({ stageId, publicKey: installation.publicKey }),
+    method: 'POST', body: JSON.stringify({ stageId, publicKey: identity.publicKey }),
   }, false, ownerUid);
   if (pack.ownerUid !== ownerUid) throw new Error('invalid_permit_owner');
   await attendanceDurablePut(STORE_META, { key: `attendance-pack:${ownerUid}:${stageId}`, data: pack });
@@ -356,7 +359,9 @@ export async function createOfflineAttendanceSession(input: { stageId: string; o
   if (!pack || !occurrence) throw new Error('offline_setup_required');
   if (!Number.isInteger(input.expectedHeadcount) || input.expectedHeadcount < 1 || input.expectedHeadcount > 10000) throw new Error('invalid_headcount');
   const sessionId = pack.sessions[occurrence.id];
-  const qrToken = await signOfflineAttendanceQr(pack.permit, {
+  const signer = getAttendanceSigner();
+  const qrToken = await signer.signDoctorQr({
+    permit: pack.permit,
     v: 1, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
     stageId: occurrence.stageId, lectureDate: occurrence.lectureDate, title: occurrence.title, startTime: occurrence.startTime,
     endTime: occurrence.endTime, expectedHeadcount: input.expectedHeadcount,
@@ -372,7 +377,8 @@ export async function createOfflineAttendanceSession(input: { stageId: string; o
   };
   if (snapshot.session.status !== 'active') throw new Error('session_not_editable');
   const command: DoctorAttendanceCommand = { kind: 'import', requestId: attendanceRequestId(), ownerUid, sessionId, input: { qrToken }, status: 'pending' };
-  await commitDoctorAttendanceSession({ key, data: snapshot }, command);
+  const repo = getAttendanceRepository();
+  await repo.commitDoctorSession({ meta: { key, data: snapshot }, command });
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return { sessionId, qrToken, revision: snapshot.session.revision, status: 'active' };
@@ -429,7 +435,8 @@ export async function updateAttendanceSession(sessionId: string, input: Record<s
   const snapshot = await overlayDoctorCommands(cached.data, ownerUid);
   const basis = { notes: snapshot.session.notes, expectedHeadcount: snapshot.session.expectedHeadcount };
   const command: DoctorAttendanceCommand = { kind: 'session_update', requestId: String(input.requestId || attendanceRequestId()), ownerUid, sessionId, input: { ...input, basis }, status: 'pending' };
-  await commitDoctorAttendanceSession({ key, data: cached.data }, command);
+  const repo = getAttendanceRepository();
+  await repo.commitDoctorSession({ meta: { key, data: cached.data }, command });
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return command;
@@ -450,7 +457,8 @@ export async function markAttendanceManually(sessionId: string, input: Record<st
   if (!ownerUid) throw new Error('login_required');
   if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
   const command: DoctorAttendanceCommand = { requestId: String(input.requestId || attendanceRequestId()), ownerUid, sessionId, input, status: 'pending' };
-  await attendanceDurablePut(STORE_ATTENDANCE_COMMANDS, command);
+  const repo = getAttendanceRepository();
+  await repo.enqueueDoctorCommand(command);
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return command;
@@ -465,12 +473,17 @@ export interface DoctorAttendanceCommand {
   input: Record<string, unknown>;
   status: 'pending' | 'synced' | 'needs_help';
   reason?: string;
+  [key: string]: unknown;
 }
 
-export const listDoctorAttendanceCommands = (ownerUid: string) => dbGetAllByIndex<DoctorAttendanceCommand>(STORE_ATTENDANCE_COMMANDS, 'by_owner', IDBKeyRange.only(ownerUid));
+export const listDoctorAttendanceCommands = async (ownerUid: string): Promise<DoctorAttendanceCommand[]> => {
+  const repo = getAttendanceRepository();
+  return (await repo.listDoctorCommands(ownerUid)) as unknown as DoctorAttendanceCommand[];
+};
 
 export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<void> {
   if (auth.currentUser?.uid !== ownerUid || navigator.onLine === false) return;
+  const repo = getAttendanceRepository();
   const commands = await listDoctorAttendanceCommands(ownerUid);
   const pending = commands.filter(item => item.status === 'pending').sort((first, second) => Number(second.kind === 'import') - Number(first.kind === 'import') || (first.localOrder || 0) - (second.localOrder || 0));
   const blockedSessions = new Set<string>();
@@ -494,7 +507,7 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
       const cached = await dbGet<{ data: AttendanceSessionSnapshot }>(STORE_META, key);
       if (cached && result.session) {
         const data = { ...cached.data, session: { ...cached.data.session, notes: result.session.notes, expectedHeadcount: result.session.expected_headcount, status: result.session.status, revision: Number(result.session.revision), endedAt: result.session.ended_at } };
-        await commitDoctorAttendanceSession({ key, data }, { ...command, status: 'synced' });
+        await repo.commitDoctorSession({ meta: { key, data }, command: { ...command, status: 'synced' } });
       } else if (cached && result.record) {
         const row = result.record;
         const record = { id: row.id, sessionId: row.session_id, rosterStudentId: row.roster_student_id, officialName: row.official_name_snapshot,
@@ -502,13 +515,15 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
         const records = cached.data.records.filter(item => item.id !== record.id).concat(record);
         const counts = { ...cached.data.counts, confirmed: records.filter(item => item.status === 'confirmed').length };
         counts.discrepancy = Math.max(0, counts.confirmed - cached.data.session.expectedHeadcount);
-        await commitDoctorAttendanceSession({ key, data: { ...cached.data, records, counts } }, { ...command, status: 'synced' });
-      } else await attendanceDurablePut(STORE_ATTENDANCE_COMMANDS, { ...command, status: 'synced' });
+        await repo.commitDoctorSession({ meta: { key, data: { ...cached.data, records, counts } }, command: { ...command, status: 'synced' } });
+      } else {
+        await repo.updateDoctorCommand({ ...command, status: 'synced' });
+      }
       emitAttendanceChange();
     } catch (error: any) {
       blockedSessions.add(command.sessionId);
       if ([400, 403, 409].includes(error.status)) {
-        await attendanceDurablePut(STORE_ATTENDANCE_COMMANDS, { ...command, status: 'needs_help', reason: error.message });
+        await repo.updateDoctorCommand({ ...command, status: 'needs_help', reason: error.message });
         emitAttendanceChange();
       }
     }
@@ -531,4 +546,31 @@ export async function resolveAttendanceReview(receiptId: string, input: Record<s
   });
 }
 
+export async function requestAttendanceKeyRotationChallenge(nonce?: string): Promise<{ challengeId: string; nonce: string }> {
+  return apiRequest('/api/attendance/key-rotation/challenge', {
+    method: 'POST',
+    body: JSON.stringify(nonce ? { nonce } : {}),
+  });
+}
+
+export async function commitAttendanceKeyRotation(payload: {
+  challengeId: string;
+  nonce: string;
+  oldKey: any;
+  newKey: any;
+  oldSignature: string;
+  newSignature: string;
+}): Promise<any> {
+  return apiRequest('/api/attendance/key-rotation/commit', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getAttendanceStorageHealth(ownerUid: string): Promise<StorageHealth> {
+  const repo = getAttendanceRepository();
+  return repo.getHealth(ownerUid);
+}
+
 export { canonicalAttendanceState };
+

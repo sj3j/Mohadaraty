@@ -499,7 +499,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="relative w-full max-w-md bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200 dark:border-zinc-800"
+            className="relative w-full max-w-md sm:max-w-xl md:max-w-2xl lg:max-w-3xl bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200 dark:border-zinc-800"
           >
             <div className="px-6 py-4 border-b border-slate-100 dark:border-zinc-800 flex justify-between items-center bg-sky-600 dark:bg-sky-600 text-white">
               <h2 className="text-xl font-bold flex items-center gap-2">
@@ -594,6 +594,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
 
                   <div className="bg-slate-50 dark:bg-zinc-800 p-4 rounded-xl border border-slate-200 dark:border-zinc-700 flex flex-col gap-2">
                     <h4 className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1">{isRtl ? 'الصلاحيات' : 'Permissions'}</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {permissionsForRole(newRole).map(perm => (
                       <label key={perm.id} className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -605,6 +606,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
                         <span className="text-sm text-slate-700 dark:text-slate-300">{isRtl ? perm.labelAr : perm.labelEn}</span>
                       </label>
                     ))}
+                    </div>
                   </div>
 
                   <button

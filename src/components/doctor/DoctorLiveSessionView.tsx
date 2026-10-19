@@ -396,13 +396,29 @@ export default function DoctorLiveSessionView({
             <button disabled={attendance.busy} className="rounded-lg border px-2 py-1" onClick={() => void attendance.updateCell(record.rosterStudentId, selectedLecture.id, record.status === 'confirmed' ? 'voided' : 'present')}>{record.status === 'confirmed' ? (isRtl ? 'إلغاء' : 'Void') : (isRtl ? 'استعادة' : 'Restore')}</button>
           </div>)}
           {activeSession.reviewReceipts.map(receipt => <div key={receipt.requestId} className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            <strong>{activeSession.roster.find(student => student.studentId === receipt.rosterStudentId)?.officialName || receipt.rosterStudentId}</strong>
-            <p>{attendanceFlagLabel(receipt.reason, isRtl)} · {receipt.requestId}</p>
-            <button disabled={attendance.busy || ['device_session_conflict', 'device_unverified'].includes(receipt.reason)} className="me-2 rounded-lg bg-teal-600 px-2 py-1 text-white disabled:opacity-50" onClick={() => {
-              const enrollment = ['device_enrollment_required', 'device_change_required'].includes(receipt.reason);
-              if (!enrollment || window.confirm(isRtl ? 'هل تحققت شخصياً من هوية الطالب وملكية الجهاز؟' : 'Did you personally verify identity and device ownership?')) void attendance.review(receipt.requestId, enrollment, 'confirm');
-            }}>{isRtl ? 'تأكيد' : 'Confirm'}</button>
-            <button disabled={attendance.busy} className="rounded-lg bg-red-700 px-2 py-1 text-white" onClick={() => void attendance.review(receipt.requestId, false, 'reject')}>{isRtl ? 'رفض' : 'Reject'}</button>
+            <div className="flex items-center gap-1.5">
+              {receipt.reason === 'late_arrival' && (
+                <span className="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-bold text-amber-900">
+                  {isRtl ? 'وصول متأخر' : 'LATE'}
+                </span>
+              )}
+              <strong>{activeSession.roster.find(student => student.studentId === receipt.rosterStudentId)?.officialName || receipt.rosterStudentId}</strong>
+            </div>
+            <p className="mt-1">{attendanceFlagLabel(receipt.reason, isRtl)} · {receipt.requestId}</p>
+            <div className="mt-2">
+              <button disabled={attendance.busy || ['device_session_conflict', 'device_unverified'].includes(receipt.reason)} className="me-2 rounded-lg bg-teal-600 px-2 py-1 text-white disabled:opacity-50" onClick={() => {
+                const isLate = receipt.reason === 'late_arrival';
+                const enrollment = ['device_enrollment_required', 'device_change_required'].includes(receipt.reason);
+                if (isLate) {
+                  if (window.confirm(isRtl ? 'هذا الإيصال تم استلامه بعد الموعد النهائي التلقائي (36 ساعة). هل تؤكد الحضور بصفتك أستاذ المادة؟' : 'This receipt arrived after the 36-hour automatic deadline. Do you confirm attendance as the authorized doctor?')) {
+                    void attendance.review(receipt.requestId, enrollment, 'confirm', true);
+                  }
+                  return;
+                }
+                if (!enrollment || window.confirm(isRtl ? 'هل تحققت شخصياً من هوية الطالب وملكية الجهاز؟' : 'Did you personally verify identity and device ownership?')) void attendance.review(receipt.requestId, enrollment, 'confirm');
+              }}>{isRtl ? 'تأكيد' : 'Confirm'}</button>
+              <button disabled={attendance.busy} className="rounded-lg bg-red-700 px-2 py-1 text-white" onClick={() => void attendance.review(receipt.requestId, false, 'reject')}>{isRtl ? 'رفض' : 'Reject'}</button>
+            </div>
           </div>)}
         </div>
       </div>}

@@ -253,7 +253,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   const proofReady = isProofSufficient(superkeyRef, !!receipt);
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-4 pb-12" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-16" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* Top Header Bar */}
       <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100 dark:border-zinc-800">
         <div className="flex items-center gap-2.5">
@@ -371,7 +371,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
           >
             {/* Header */}
             <div className="text-center mb-6">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-white">{t.subscriptionPlans}</h2>
+              <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">{t.subscriptionPlans}</h2>
               <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
                 {isRtl ? 'اختر الخطة المناسبة لك' : 'Choose the plan that suits you'}
               </p>
@@ -379,7 +379,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                 <button
                   type="button"
                   onClick={() => setShowPerksModal(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-all active:scale-95"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-all active:scale-95 shadow-xs"
                 >
                   <Crown className="w-3.5 h-3.5 text-amber-500" />
                   <span>{isRtl ? 'استعراض كامل ميزات الاشتراك' : 'Explore all subscription perks'}</span>
@@ -402,8 +402,8 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
               </div>
             ) : (
               <>
-                {/* Plan Cards */}
-                <div className="space-y-3 mb-8">
+                {/* Plan Cards in 4 Columns on Desktop, 2 on Tablet, 1 on Mobile */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 mb-8">
                   {plans.map((plan, index) => {
                     const config = PLAN_CONFIG[plan.key];
                     const label = isRtl ? config.labelAr : config.labelEn;
@@ -418,7 +418,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.05 * index }}
                         onClick={() => setSelectedPlan(plan.key)}
-                        className={`relative w-full p-4 rounded-2xl border-2 text-right rtl:text-right transition-all ${
+                        className={`relative w-full p-4 rounded-2xl border-2 text-right rtl:text-right transition-all flex flex-col justify-between gap-3 ${
                           isSelected
                             ? plan.highlight
                               ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-500 shadow-lg shadow-orange-500/10 ring-2 ring-orange-400/30'
@@ -436,9 +436,9 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                           </span>
                         )}
                         
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between w-full">
                           <div className="flex items-center gap-3">
-                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
                               isSelected
                                 ? plan.highlight
                                   ? 'border-orange-500 bg-orange-500'
@@ -452,13 +452,20 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                               <div className="flex items-center gap-1.5 mt-0.5 text-slate-500 dark:text-slate-400 text-xs">
                                 <Clock className="w-3 h-3" />
                                 <span>{config.days} {t.days}</span>
-                                {config.days > 30 && (
-                                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                    ({perMonth.toLocaleString()} {t.pricePerMonth})
-                                  </span>
-                                )}
                               </div>
                             </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80 flex items-baseline justify-between w-full">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                            {config.days > 30 ? (
+                              <span className="text-emerald-600 dark:text-emerald-400">
+                                {perMonth.toLocaleString()} {t.pricePerMonth}
+                              </span>
+                            ) : (
+                              <span>{t.iqd}</span>
+                            )}
                           </div>
                           <div className="text-left rtl:text-right">
                             {anchor > config.price && (
@@ -469,7 +476,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                             <span className="text-xl font-extrabold text-slate-900 dark:text-white">
                               {config.price.toLocaleString()}
                             </span>
-                            <span className="text-xs text-slate-500 dark:text-slate-400"> {t.iqd}</span>
+                            <span className="text-xs text-slate-500 dark:text-slate-400 mr-0.5 rtl:ml-0.5"> {t.iqd}</span>
                           </div>
                         </div>
                       </motion.button>
@@ -479,8 +486,8 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
 
                 {/* Payment Section */}
                 {viewState === 'plans' && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                    <h3 className="font-bold text-slate-900 dark:text-white mb-3">{t.choosePayment}</h3>
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto">
+                    <h3 className="font-bold text-slate-900 dark:text-white mb-3 text-center sm:text-start">{t.choosePayment}</h3>
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       {(['zaincash', 'superkey'] as PaymentMethod[]).map(method => (
                         <button
@@ -534,7 +541,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="space-y-4"
+                    className="space-y-4 max-w-2xl mx-auto"
                   >
                     <button
                       onClick={() => setViewState('plans')}
