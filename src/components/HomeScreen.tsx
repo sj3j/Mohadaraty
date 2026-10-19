@@ -9,8 +9,6 @@ import RecordsScreen from './RecordsScreen';
 import LeaderboardTab from './LeaderboardTab';
 import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
-
-
 import PersonalSpaceTab from './PersonalSpaceTab';
 import { type UserFile } from '../lib/localDb';
 
@@ -63,31 +61,11 @@ export default function HomeScreen({
   const { isPendingProgression, provisionalStages, selectedStudentStage, setSelectedStudentStage, effectiveStageId } = useStageContext();
   
   const [activeTab, setActiveTab] = useState<InnerTab>(initialTab);
-  const [pendingDaysLeft, setPendingDaysLeft] = useState<number | null>(null);
 
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  useEffect(() => {
-    if (user?.hasPendingStreakReset && user.uid) {
-      getDoc(doc(db, 'pending_streak_resets', user.uid)).then(d => {
-        if (d.exists()) {
-          const data = d.data();
-          if (data.expiresAt) {
-            const exp = data.expiresAt.toDate ? data.expiresAt.toDate() : new Date(data.expiresAt);
-            const now = new Date();
-            const diffTime = exp.getTime() - now.getTime();
-            if (diffTime > 0) {
-              setPendingDaysLeft(Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
-            }
-          }
-        }
-      }).catch(console.error);
-    } else {
-      setPendingDaysLeft(null);
-    }
-  }, [user?.uid, user?.hasPendingStreakReset]);
 
   const getGreeting = () => {
     const hour = new Date().getHours();
@@ -211,18 +189,6 @@ export default function HomeScreen({
               </div>
             </div>
 
-            {user.hasPendingStreakReset && pendingDaysLeft !== null && (
-              <div className="flex items-center gap-1.5 px-3 py-2 bg-rose-50 dark:bg-rose-900/30 border-2 border-rose-100 dark:border-rose-900/50 rounded-2xl shadow-sm cursor-help relative group">
-                <span className="text-xs font-black text-rose-600 dark:text-rose-400">
-                  {isRtl ? `ستريك معلق (${pendingDaysLeft})` : `Streak at risk (${pendingDaysLeft})`}
-                </span>
-                <div className="absolute top-full mt-2 w-48 p-2 bg-slate-800 text-white text-xs rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-20 end-0">
-                  {isRtl
-                    ? `أمامك ${pendingDaysLeft} أيام لاستعادة الستريك المفقود قبل أن يختفي العرض نهائياً.`
-                    : `You have ${pendingDaysLeft} days to restore your lost streak before the offer disappears.`}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>
