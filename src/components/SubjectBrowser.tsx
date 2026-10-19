@@ -9,12 +9,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../contexts/StageContext';
 import CourseTabs from './CourseTabs';
 import { COURSE_IDS, DEFAULT_COURSE_ID } from '../types';
-import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings, CheckSquare, Archive, Download, X } from 'lucide-react';
+import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings, CheckSquare, Archive, Download, X, Share2 } from 'lucide-react';
 import { canManageGroups } from '../lib/permissions';
-import { downloadZip } from 'client-zip';
 import { isNativePlatform, downloadAndPublishLecture, readNativePdfBytes } from '../lib/nativePdfRepository';
 import { safeFileName } from '../lib/shareFileName';
 import { forceDownload } from '../lib/utils';
+import { shareMultipleFiles, type ShareFileInput } from '../lib/shareFile';
 
 interface SubjectBrowserProps {
   lectures: Lecture[];
@@ -129,14 +129,14 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     }, 1500);
   };
 
-  const handleBatchShareZip = async (selectedLectures: Lecture[]) => {
+  const handleBatchShareFiles = async (selectedLectures: Lecture[]) => {
     if (selectedLectures.length === 0 || isProcessingBatch) return;
     setIsProcessingBatch(true);
-    setBatchActionStatus(isRtl ? 'جارٍ تجميع الملفات في حزمة zip...' : 'Packaging lectures into zip bundle...');
+    setBatchActionStatus(isRtl ? 'جارٍ تجهيز الملفات للمشاركة...' : 'Preparing files to share...');
 
     try {
       const native = await isNativePlatform();
-      const zipFiles: { name: string; input: ArrayBuffer }[] = [];
+      const shareInputs: ShareFileInput[] = [];
 
       for (let i = 0; i < selectedLectures.length; i++) {
         const lec = selectedLectures[i];
@@ -159,54 +159,36 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           }
         }
 
-        if (buf) {
-          const safeName = safeFileName(
-            lec.number ? `${lec.title} - ${lec.number}` : lec.title,
-            'pdf'
-          );
-          zipFiles.push({ name: safeName, input: buf });
-        }
-      }
-
-      if (zipFiles.length === 0) {
-        throw new Error('No files could be gathered for zip bundle');
-      }
-
-      setBatchActionStatus(isRtl ? 'جارٍ ضغط الحزمة...' : 'Compressing zip bundle...');
-      const zipResponse = downloadZip(zipFiles);
-      const zipBlob = await zipResponse.blob();
-
-      if (native) {
-        const { Filesystem, Directory } = await import('@capacitor/filesystem');
-        const { Share } = await import('@capacitor/share');
-        const zipBuf = await zipBlob.arrayBuffer();
-        const { arrayBufferToBase64 } = await import('../lib/nativePdfRepository');
-        const base64 = arrayBufferToBase64(zipBuf);
-
-        await Filesystem.mkdir({ path: 'shared', directory: Directory.Cache, recursive: true }).catch(() => {});
-        const zipPath = 'shared/mohadaraty_bundle.zip';
-        await Filesystem.writeFile({
-          path: zipPath,
-          data: base64,
-          directory: Directory.Cache,
-          recursive: true,
+        const safeTitle = lec.number ? `${lec.title} - ${lec.number}` : lec.title;
+        shareInputs.push({
+          url: lec.pdfUrl,
+          name: safeTitle,
+          extension: 'pdf',
+          mimeType: 'application/pdf',
+          title: lec.title,
+          lectureId: lec.id,
+          bytes: buf,
         });
-        const { uri } = await Filesystem.getUri({ path: zipPath, directory: Directory.Cache });
-        await Share.share({
-          title: isRtl ? 'حزمة محاضرات' : 'Lecture Bundle',
-          files: [uri],
-          dialogTitle: isRtl ? 'مشاركة حزمة المحاضرات' : 'Share Lecture Bundle',
-        });
-      } else {
-        const url = URL.createObjectURL(zipBlob);
-        await forceDownload(url, 'mohadaraty_bundle.zip');
-        URL.revokeObjectURL(url);
       }
 
-      setBatchActionStatus(isRtl ? 'تمت المشاركة بنجاح!' : 'Bundle ready!');
+      if (shareInputs.length === 0) {
+        throw new Error('No files could be gathered for share');
+      }
+
+      setBatchActionStatus(isRtl ? 'جارٍ فتح نافذة المشاركة...' : 'Opening share sheet...');
+      const batchTitle = isRtl ? 'محاضرات محددة' : 'Selected Lectures';
+      const result = await shareMultipleFiles(shareInputs, batchTitle, (curr, total, name) => {
+        setBatchActionStatus(
+          isRtl ? `جارٍ تجهيز ${curr} من ${total}: ${name}` : `Preparing ${curr} of ${total}: ${name}`
+        );
+      });
+
+      if (result === 'shared' || result === 'downloaded') {
+        setBatchActionStatus(isRtl ? 'تمت المشاركة بنجاح!' : 'Shared successfully!');
+      }
     } catch (err: any) {
-      console.error('Batch share zip failed:', err);
-      alert(isRtl ? 'تعذّر إنشاء حزمة الملفات المضغوطة' : 'Failed to create zip bundle');
+      console.error('Batch share files failed:', err);
+      alert(isRtl ? 'تعذّرت مشاركة الملفات' : 'Failed to share files');
     } finally {
       setTimeout(() => {
         setBatchActionStatus(null);
@@ -741,12 +723,13 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
 
               <button
                 type="button"
-                onClick={() => handleBatchShareZip(lectures.filter(l => selectedIds.has(l.id)))}
+                onClick={() => handleBatchShareFiles(lectures.filter(l => selectedIds.has(l.id)))}
                 disabled={selectedIds.size === 0 || isProcessingBatch}
                 className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 active:scale-95 text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50 cursor-pointer"
+                title={isRtl ? 'مشاركة الملفات مباشرة للتطبيقات (NotebookLM والملاحظات)' : 'Share uncompressed files to NotebookLM and Notes apps'}
               >
-                <Archive className="w-4 h-4" />
-                <span>{isRtl ? 'مشاركة حزمة (Zip)' : 'Share Zip'}</span>
+                <Share2 className="w-4 h-4" />
+                <span>{isRtl ? 'مشاركة الملفات' : 'Share Files'}</span>
               </button>
 
               <button

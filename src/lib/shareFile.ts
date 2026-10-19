@@ -166,3 +166,127 @@ export async function shareFile(input: ShareFileInput): Promise<ShareFileResult>
     return 'failed';
   }
 }
+
+export interface MultiShareProgressCallback {
+  (current: number, total: number, itemName: string): void;
+}
+
+/**
+ * Share a bundle of multiple uncompressed files directly to the OS share sheet.
+ *
+ * On iOS and Android (Capacitor native builds):
+ * Copies/downloads each file into Directory.Cache/shared and passes an array of
+ * native file:// URIs (`files: fileUris`) to Share.share(). This enables raw document
+ * sharing into apps like NotebookLM, GoodNotes, Notability, and Files without zip overhead.
+ * Zero FileReader is used, ensuring resilience under iOS Lockdown Mode.
+ *
+ * On Web:
+ * Attempts `navigator.share({ files })` if the browser supports multi-file Web Share API.
+ * Falls back to generating and downloading a .zip bundle for desktop browsers.
+ */
+export async function shareMultipleFiles(
+  inputs: ShareFileInput[],
+  batchTitle?: string,
+  onProgress?: MultiShareProgressCallback
+): Promise<ShareFileResult> {
+  if (!inputs || inputs.length === 0) return 'failed';
+  if (inputs.length === 1) {
+    return shareFile(inputs[0]);
+  }
+
+  const defaultTitle = batchTitle || 'Lecture Bundle';
+
+  if (await isNative()) {
+    try {
+      const Share = (globalThis as any).__mockShare || (await import('@capacitor/share')).Share;
+      const { Filesystem, Directory } = (globalThis as any).__mockFs
+        ? { Filesystem: (globalThis as any).__mockFs, Directory: { Cache: 'CACHE', Data: 'DATA' } }
+        : await import('@capacitor/filesystem');
+
+      await sweepStaleCopies(Filesystem, Directory);
+
+      const { getNativeShareUri } = await import('./nativePdfRepository');
+      const fileUris: string[] = [];
+
+      for (let i = 0; i < inputs.length; i++) {
+        const item = inputs[i];
+        const filename = safeFileName(item.name, item.extension);
+        if (onProgress) onProgress(i + 1, inputs.length, item.name);
+        const uri = await getNativeShareUri(item.lectureId, filename, item.url);
+        fileUris.push(uri);
+      }
+
+      await Share.share({
+        title: defaultTitle,
+        files: fileUris,
+        dialogTitle: defaultTitle,
+      });
+      return 'shared';
+    } catch (err) {
+      if (isCancellation(err)) return 'cancelled';
+      console.error('[shareMultipleFiles] Native share failed:', err);
+      return 'failed';
+    }
+  }
+
+  // Web Platform
+  try {
+    const nav = typeof navigator !== 'undefined' ? (navigator as any) : null;
+
+    // 1. Gather file buffers
+    const webFiles: File[] = [];
+    const zipEntries: { name: string; input: ArrayBuffer }[] = [];
+
+    for (let i = 0; i < inputs.length; i++) {
+      const item = inputs[i];
+      const filename = safeFileName(item.name, item.extension);
+      if (onProgress) onProgress(i + 1, inputs.length, item.name);
+
+      let buf: ArrayBuffer | null = item.bytes || null;
+      if (!buf) {
+        try {
+          const res = await fetch(item.url);
+          if (res.ok) buf = await res.arrayBuffer();
+        } catch {
+          // ignore fetch error
+        }
+      }
+
+      if (buf) {
+        const blob = new Blob([buf], { type: item.mimeType });
+        const file = new File([blob], filename, { type: item.mimeType });
+        webFiles.push(file);
+        zipEntries.push({ name: filename, input: buf });
+      }
+    }
+
+    // 2. If Web Share API supports sharing files:
+    if (webFiles.length > 0 && nav && typeof nav.canShare === 'function' && nav.canShare({ files: webFiles })) {
+      try {
+        await nav.share({
+          files: webFiles,
+          title: defaultTitle,
+        });
+        return 'shared';
+      } catch (err) {
+        if (isCancellation(err)) return 'cancelled';
+      }
+    }
+
+    // 3. Fallback on Web: download a zip bundle if canShare({ files }) is not supported
+    if (zipEntries.length > 0) {
+      const { downloadZip } = await import('client-zip');
+      const zipResponse = downloadZip(zipEntries);
+      const zipBlob = await zipResponse.blob();
+      const zipUrl = URL.createObjectURL(zipBlob);
+      await forceDownload(zipUrl, 'mohadaraty_bundle.zip');
+      URL.revokeObjectURL(zipUrl);
+      return 'downloaded';
+    }
+
+    return 'failed';
+  } catch (err) {
+    console.error('[shareMultipleFiles] Web share failed:', err);
+    return 'failed';
+  }
+}
