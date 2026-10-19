@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileText, Download, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon } from 'lucide-react';
+import { FileText, Download, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
@@ -10,6 +10,7 @@ import { useOfflinePDF, readStoredPdf } from '../hooks/useOfflinePDF';
 import { forceDownload, getYoutubeEmbedUrl } from '../lib/utils';
 import { useMCQStatus } from '../hooks/useMCQStatus';
 import { shareFile } from '../lib/shareFile';
+import { exportPdfToDevice } from '../lib/deviceExport';
 import LectureAttachmentsSection from './lecture/LectureAttachmentsSection';
 
 interface LectureCardProps {
@@ -21,18 +22,57 @@ interface LectureCardProps {
   onOpenMCQ?: (lecture: Lecture) => void;
   onOpenReader?: (lecture: Lecture) => void;
   onShowPaywall?: () => void;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (lecture: Lecture) => void;
   key?: string;
 }
 
-export default React.memo(function LectureCard({ lecture, lang, user, onEdit, onRemoveDownload, onOpenMCQ, onOpenReader, onShowPaywall }: LectureCardProps) {
+export default React.memo(function LectureCard({
+  lecture,
+  lang,
+  user,
+  onEdit,
+  onRemoveDownload,
+  onOpenMCQ,
+  onOpenReader,
+  onShowPaywall,
+  isSelectionMode = false,
+  isSelected = false,
+  onToggleSelect,
+}: LectureCardProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const [showPreview, setShowPreview] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
   
+  /**
+   * Export the lecture's PDF directly to device files / downloads.
+   */
+  const handleLocalExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      const res = await exportPdfToDevice({
+        url: lecture.pdfUrl,
+        title: lecture.title,
+        lectureId: lecture.id,
+      });
+      if (res.message) {
+        setShareToast(res.message);
+      }
+    } catch (err) {
+      console.error('Local export failed:', err);
+      setShareToast(isRtl ? 'تعذّر تحميل الملف' : 'Download failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   /**
    * Hand the lecture's actual PDF to the OS share sheet.
    *
@@ -44,8 +84,9 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
     if (isSharing) return;
     setIsSharing(true);
     try {
-      const stored = await readStoredPdf(lecture.pdfUrl).catch(() => null);
+      const stored = await readStoredPdf(lecture.pdfUrl, lecture.id).catch(() => null);
       const result = await shareFile({
+        lectureId: lecture.id,
         url: lecture.pdfUrl,
         // The number disambiguates the two dozen lectures a subject can carry;
         // a bare title arrives in WhatsApp as one of several identical files.
@@ -148,21 +189,45 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
         whileHover={{ y: -3, transition: { duration: 0.2 } }}
         whileTap={{ scale: 0.985 }}
         transition={{ duration: 0.3, ease: [0.25, 0.1, 0.25, 1] }}
-        onClick={() => setShowPreview(true)}
+        onClick={() => {
+          if (isSelectionMode) {
+            onToggleSelect?.(lecture);
+          } else {
+            setShowPreview(true);
+          }
+        }}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            setShowPreview(true);
+            if (isSelectionMode) onToggleSelect?.(lecture);
+            else setShowPreview(true);
           }
         }}
-        className="group bg-white dark:bg-zinc-800 rounded-xl sm:rounded-2xl border border-slate-200 dark:border-zinc-700 p-2.5 sm:p-5 hover:shadow-xl hover:shadow-slate-200 dark:hover:shadow-none hover:border-sky-200 dark:hover:border-sky-500/50 transition-all duration-300 flex flex-col h-full cursor-pointer select-none"
+        className={`group bg-white dark:bg-zinc-800 rounded-xl sm:rounded-2xl border p-2.5 sm:p-5 transition-all duration-300 flex flex-col h-full cursor-pointer select-none ${
+          isSelectionMode && isSelected
+            ? 'border-sky-500 ring-2 ring-sky-500/25 bg-sky-50/20 dark:bg-sky-950/20 shadow-md'
+            : 'border-slate-200 dark:border-zinc-700 hover:shadow-xl hover:shadow-slate-200 dark:hover:shadow-none hover:border-sky-200 dark:hover:border-sky-500/50'
+        }`}
         dir={isRtl ? 'rtl' : 'ltr'}
       >
         <div className="flex justify-between items-start mb-2 sm:mb-4">
-          <div className={ `p-1.5 sm:p-3 rounded-lg sm:rounded-xl ${lecture.type === 'theoretical' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'}` }>
-            <FileText className="w-4 h-4 sm:w-6 sm:h-6" />
+          <div className="flex items-center gap-2">
+            {isSelectionMode && (
+              <div
+                className={`w-5 h-5 sm:w-6 sm:h-6 rounded-md flex items-center justify-center transition-all border ${
+                  isSelected
+                    ? 'bg-sky-500 border-sky-500 text-white shadow-sm'
+                    : 'border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800'
+                }`}
+              >
+                {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+              </div>
+            )}
+            <div className={ `p-1.5 sm:p-3 rounded-lg sm:rounded-xl ${lecture.type === 'theoretical' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'}` }>
+              <FileText className="w-4 h-4 sm:w-6 sm:h-6" />
+            </div>
           </div>
           <div className="flex flex-col sm:flex-row items-end gap-1 sm:gap-2 flex-wrap justify-end">
             <span className={ `text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider ${lecture.type === 'theoretical' ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300' : 'bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300'}` }>
@@ -178,7 +243,12 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
                 {t.translated}
               </span>
             )}
-            {isDownloaded && (
+            {isDownloading ? (
+              <span className="text-[9px] sm:text-xs font-bold px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 flex items-center gap-1">
+                <Loader2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 animate-spin" />
+                <span>{downloadProgress > 0 ? `${downloadProgress}%` : (isRtl ? 'تنزيل...' : 'Downloading...')}</span>
+              </span>
+            ) : isDownloaded ? (
               <span 
                 className="text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center gap-1"
                 title={isRtl ? 'محفوظة على جهازك' : 'Downloaded'}
@@ -186,7 +256,7 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
                 <CheckCircle2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 {isRtl ? 'محفوظة' : 'Saved'}
               </span>
-            )}
+            ) : null}
             {lecture.youtubeUrl && (
               <a 
                 href={lecture.youtubeUrl}
@@ -690,6 +760,24 @@ export default React.memo(function LectureCard({ lecture, lang, user, onEdit, on
                     >
                       {isSharing ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1 animate-spin" /> : <Share2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />}
                       <span className="text-[10px] font-bold">{isRtl ? 'مشاركة' : 'Share'}</span>
+                    </button>
+                  )}
+
+                  {/* Local Device Download ("تحميل") */}
+                  {user && (
+                    <button
+                      type="button"
+                      onClick={handleLocalExport}
+                      disabled={isExporting}
+                      className="flex-1 flex flex-col items-center justify-center py-2 px-1 rounded-xl text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-all disabled:opacity-50 cursor-pointer"
+                      title={isRtl ? 'تحميل إلى ملفات الجهاز' : 'Download to device'}
+                    >
+                      {isExporting ? (
+                        <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1 animate-spin text-sky-500" />
+                      ) : (
+                        <Download className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
+                      )}
+                      <span className="text-[10px] font-bold">{isRtl ? 'تحميل' : 'Download'}</span>
                     </button>
                   )}
 

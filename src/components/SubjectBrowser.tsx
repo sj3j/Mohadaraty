@@ -9,8 +9,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useStageContext } from '../contexts/StageContext';
 import CourseTabs from './CourseTabs';
 import { COURSE_IDS, DEFAULT_COURSE_ID } from '../types';
-import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings } from 'lucide-react';
+import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings, CheckSquare, Archive, Download, X } from 'lucide-react';
 import { canManageGroups } from '../lib/permissions';
+import { downloadZip } from 'client-zip';
+import { isNativePlatform, downloadAndPublishLecture, readNativePdfBytes } from '../lib/nativePdfRepository';
+import { safeFileName } from '../lib/shareFileName';
+import { forceDownload } from '../lib/utils';
 
 interface SubjectBrowserProps {
   lectures: Lecture[];
@@ -43,6 +47,173 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     }
     return 1;
   });
+
+  // Batch selection mode state
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
+  const [batchActionStatus, setBatchActionStatus] = useState<string | null>(null);
+
+  const handleToggleSelect = (lecture: Lecture) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(lecture.id)) next.delete(lecture.id);
+      else next.add(lecture.id);
+      return next;
+    });
+  };
+
+  const handleToggleSelectAll = (visibleLectures: Lecture[]) => {
+    if (selectedIds.size === visibleLectures.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(visibleLectures.map(l => l.id)));
+    }
+  };
+
+  const handleBatchDownload = async (selectedLectures: Lecture[]) => {
+    if (selectedLectures.length === 0 || isProcessingBatch) return;
+    setIsProcessingBatch(true);
+    const native = await isNativePlatform();
+    let completed = 0;
+    const total = selectedLectures.length;
+
+    for (const lec of selectedLectures) {
+      completed++;
+      setBatchActionStatus(
+        isRtl
+          ? `جارٍ تنزيل ${completed} من ${total}: ${lec.title}`
+          : `Downloading ${completed} of ${total}: ${lec.title}`
+      );
+
+      try {
+        if (native) {
+          await downloadAndPublishLecture({
+            id: lec.id,
+            title: lec.title,
+            pdfUrl: lec.pdfUrl,
+            subjectId: lec.subjectId,
+            stageId: lec.stageId,
+            number: lec.number,
+            type: lec.type,
+          });
+        } else {
+          const res = await fetch(lec.pdfUrl);
+          if (res.ok) {
+            const blob = await res.blob();
+            const { dbPut, STORE_BLOBS, saveOfflineLecture } = await import('../lib/localDb');
+            await dbPut(STORE_BLOBS, { url: lec.pdfUrl, blob, savedAt: Date.now() });
+            await saveOfflineLecture({
+              id: lec.id,
+              title: lec.title,
+              pdfUrl: lec.pdfUrl,
+              subjectId: lec.subjectId,
+              stageId: lec.stageId,
+              number: lec.number,
+              type: lec.type,
+              savedAt: Date.now(),
+            }).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn('Batch download item failed:', lec.id, err);
+      }
+    }
+
+    setBatchActionStatus(isRtl ? 'اكتمل التنزيل بنجاح!' : 'Batch download complete!');
+    setTimeout(() => {
+      setBatchActionStatus(null);
+      setIsProcessingBatch(false);
+      setIsSelectionMode(false);
+      setSelectedIds(new Set());
+    }, 1500);
+  };
+
+  const handleBatchShareZip = async (selectedLectures: Lecture[]) => {
+    if (selectedLectures.length === 0 || isProcessingBatch) return;
+    setIsProcessingBatch(true);
+    setBatchActionStatus(isRtl ? 'جارٍ تجميع الملفات في حزمة zip...' : 'Packaging lectures into zip bundle...');
+
+    try {
+      const native = await isNativePlatform();
+      const zipFiles: { name: string; input: ArrayBuffer }[] = [];
+
+      for (let i = 0; i < selectedLectures.length; i++) {
+        const lec = selectedLectures[i];
+        setBatchActionStatus(
+          isRtl
+            ? `جارٍ تجهيز ${i + 1} من ${selectedLectures.length}: ${lec.title}`
+            : `Preparing ${i + 1} of ${selectedLectures.length}: ${lec.title}`
+        );
+
+        let buf: ArrayBuffer | null = null;
+        if (native) {
+          buf = await readNativePdfBytes(lec.id, lec.pdfUrl);
+        }
+        if (!buf) {
+          try {
+            const res = await fetch(lec.pdfUrl);
+            if (res.ok) buf = await res.arrayBuffer();
+          } catch {
+            // ignore
+          }
+        }
+
+        if (buf) {
+          const safeName = safeFileName(
+            lec.number ? `${lec.title} - ${lec.number}` : lec.title,
+            'pdf'
+          );
+          zipFiles.push({ name: safeName, input: buf });
+        }
+      }
+
+      if (zipFiles.length === 0) {
+        throw new Error('No files could be gathered for zip bundle');
+      }
+
+      setBatchActionStatus(isRtl ? 'جارٍ ضغط الحزمة...' : 'Compressing zip bundle...');
+      const zipResponse = downloadZip(zipFiles);
+      const zipBlob = await zipResponse.blob();
+
+      if (native) {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        const { Share } = await import('@capacitor/share');
+        const zipBuf = await zipBlob.arrayBuffer();
+        const { arrayBufferToBase64 } = await import('../lib/nativePdfRepository');
+        const base64 = arrayBufferToBase64(zipBuf);
+
+        await Filesystem.mkdir({ path: 'shared', directory: Directory.Cache, recursive: true }).catch(() => {});
+        const zipPath = 'shared/mohadaraty_bundle.zip';
+        await Filesystem.writeFile({
+          path: zipPath,
+          data: base64,
+          directory: Directory.Cache,
+          recursive: true,
+        });
+        const { uri } = await Filesystem.getUri({ path: zipPath, directory: Directory.Cache });
+        await Share.share({
+          title: isRtl ? 'حزمة محاضرات' : 'Lecture Bundle',
+          files: [uri],
+          dialogTitle: isRtl ? 'مشاركة حزمة المحاضرات' : 'Share Lecture Bundle',
+        });
+      } else {
+        const url = URL.createObjectURL(zipBlob);
+        await forceDownload(url, 'mohadaraty_bundle.zip');
+        URL.revokeObjectURL(url);
+      }
+
+      setBatchActionStatus(isRtl ? 'تمت المشاركة بنجاح!' : 'Bundle ready!');
+    } catch (err: any) {
+      console.error('Batch share zip failed:', err);
+      alert(isRtl ? 'تعذّر إنشاء حزمة الملفات المضغوطة' : 'Failed to create zip bundle');
+    } finally {
+      setTimeout(() => {
+        setBatchActionStatus(null);
+        setIsProcessingBatch(false);
+      }, 1500);
+    }
+  };
 
   const { effectiveStageId, activeCourseId } = useStageContext();
   const [subjects, setSubjects] = useState<any[]>([]);
@@ -124,28 +295,45 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           <div className="text-sm font-medium text-slate-500 dark:text-slate-400">
             {lectures.length} {t.navLectures}
           </div>
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl">
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setGridColumns(1)}
-              className={`p-1.5 rounded-lg transition-colors ${gridColumns === 1 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              title="1 Column"
+              onClick={() => {
+                setIsSelectionMode(prev => !prev);
+                if (isSelectionMode) setSelectedIds(new Set());
+              }}
+              className={`p-1.5 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                isSelectionMode
+                  ? 'bg-sky-500 text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-zinc-800/50 text-slate-600 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-700'
+              }`}
+              title={isSelectionMode ? (isRtl ? 'إلغاء التحديد' : 'Done') : (isRtl ? 'تحديد متعدد' : 'Select')}
             >
-              <List className="w-4 h-4" />
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>{isSelectionMode ? (isRtl ? 'تم' : 'Done') : (isRtl ? 'تحديد' : 'Select')}</span>
             </button>
-            <button
-              onClick={() => setGridColumns(2)}
-              className={`p-1.5 rounded-lg transition-colors ${gridColumns === 2 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              title="2 Columns"
-            >
-              <LayoutGrid className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setGridColumns(3)}
-              className={`p-1.5 rounded-lg transition-colors ${gridColumns === 3 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              title="3 Columns"
-            >
-              <Grid className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl">
+              <button
+                onClick={() => setGridColumns(1)}
+                className={`p-1.5 rounded-lg transition-colors ${gridColumns === 1 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                title="1 Column"
+              >
+                <List className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setGridColumns(2)}
+                className={`p-1.5 rounded-lg transition-colors ${gridColumns === 2 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                title="2 Columns"
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setGridColumns(3)}
+                className={`p-1.5 rounded-lg transition-colors ${gridColumns === 3 ? 'bg-white dark:bg-zinc-700 shadow-sm text-sky-600 dark:text-sky-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                title="3 Columns"
+              >
+                <Grid className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
         <div className={`grid gap-2 sm:gap-4 md:gap-6 px-2 sm:px-0 ${
@@ -154,7 +342,20 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           'grid-cols-3'
         }`}>
           {lectures.map(lecture => (
-            <LectureCard key={lecture.id} lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} onShowPaywall={onShowPaywall} />
+            <LectureCard
+              key={lecture.id}
+              lecture={lecture}
+              lang={lang}
+              user={user}
+              onEdit={onEdit}
+              onOpenMCQ={onOpenMCQ}
+              onOpenReader={onOpenReader}
+              onRemoveDownload={onRemoveDownload}
+              onShowPaywall={onShowPaywall}
+              isSelectionMode={isSelectionMode}
+              isSelected={selectedIds.has(lecture.id)}
+              onToggleSelect={handleToggleSelect}
+            />
           ))}
         </div>
       </div>
@@ -417,6 +618,22 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             <div className="text-sm font-medium text-slate-500 dark:text-slate-400">
               {filteredLectures.length} {t.navLectures}
             </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setIsSelectionMode(prev => !prev);
+                if (isSelectionMode) setSelectedIds(new Set());
+              }}
+              className={`p-1.5 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                isSelectionMode
+                  ? 'bg-sky-500 text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-zinc-800/50 text-slate-600 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-700'
+              }`}
+              title={isSelectionMode ? (isRtl ? 'إلغاء التحديد' : 'Done') : (isRtl ? 'تحديد متعدد' : 'Select')}
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>{isSelectionMode ? (isRtl ? 'تم' : 'Done') : (isRtl ? 'تحديد' : 'Select')}</span>
+            </button>
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl">
               <button
                 onClick={() => setGridColumns(1)}
@@ -441,33 +658,128 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
               </button>
             </div>
           </div>
-          <div className={`grid gap-2 sm:gap-4 md:gap-6 px-2 sm:px-0 ${
-            gridColumns === 1 ? 'grid-cols-1' : 
-            gridColumns === 2 ? 'grid-cols-2' : 
-            'grid-cols-3'
-          }`}>
-            <AnimatePresence mode="popLayout">
-              {filteredLectures.map((lecture) => (
-                <motion.div
-                  key={lecture.id}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }} 
-                >
-                  <LectureCard lecture={lecture} lang={lang} user={user} onEdit={onEdit} onOpenMCQ={onOpenMCQ} onOpenReader={onOpenReader} onRemoveDownload={onRemoveDownload} onShowPaywall={onShowPaywall} />
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-        </>
-      )}
+        </div>
+        <div className={`grid gap-2 sm:gap-4 md:gap-6 px-2 sm:px-0 ${
+          gridColumns === 1 ? 'grid-cols-1' : 
+          gridColumns === 2 ? 'grid-cols-2' : 
+          'grid-cols-3'
+        }`}>
+          <AnimatePresence mode="popLayout">
+            {filteredLectures.map((lecture) => (
+              <motion.div
+                key={lecture.id}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }} 
+              >
+                <LectureCard
+                  lecture={lecture}
+                  lang={lang}
+                  user={user}
+                  onEdit={onEdit}
+                  onOpenMCQ={onOpenMCQ}
+                  onOpenReader={onOpenReader}
+                  onRemoveDownload={onRemoveDownload}
+                  onShowPaywall={onShowPaywall}
+                  isSelectionMode={isSelectionMode}
+                  isSelected={selectedIds.has(lecture.id)}
+                  onToggleSelect={handleToggleSelect}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </>
+    )}
       <ManageLectureTabsModal
         isOpen={showTabsModal}
         onClose={() => setShowTabsModal(false)}
         lang={lang}
         allLectures={lectures}
       />
+
+      {/* Batch Actions Floating Bar */}
+      <AnimatePresence>
+        {isSelectionMode && (
+          <motion.div
+            initial={{ y: 60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 60, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-24 inset-x-4 sm:inset-x-auto sm:right-8 sm:left-8 max-w-2xl mx-auto z-40 bg-white/95 dark:bg-zinc-800/95 backdrop-blur-md rounded-2xl p-3 sm:p-4 shadow-2xl border border-sky-200 dark:border-sky-500/30 flex flex-wrap items-center justify-between gap-2.5"
+            dir={isRtl ? 'rtl' : 'ltr'}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-zinc-200">
+                {isRtl ? `تم تحديد ${selectedIds.size} محاضرة` : `${selectedIds.size} selected`}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const visible = searchQuery ? lectures : (filteredLectures || []);
+                  handleToggleSelectAll(visible);
+                }}
+                className="text-xs text-sky-600 dark:text-sky-400 hover:underline font-semibold px-1.5 py-0.5 rounded cursor-pointer"
+              >
+                {selectedIds.size > 0 && selectedIds.size === (searchQuery ? lectures.length : (filteredLectures?.length ?? 0))
+                  ? (isRtl ? 'إلغاء التحديد' : 'Deselect all')
+                  : (isRtl ? 'تحديد الكل' : 'Select all')}
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleBatchDownload(lectures.filter(l => selectedIds.has(l.id)))}
+                disabled={selectedIds.size === 0 || isProcessingBatch}
+                className="flex items-center gap-1.5 px-3 py-2 bg-sky-500 hover:bg-sky-600 active:scale-95 text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-md shadow-sky-500/20 disabled:opacity-50 cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isRtl ? 'تنزيل المحدد' : 'Download'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleBatchShareZip(lectures.filter(l => selectedIds.has(l.id)))}
+                disabled={selectedIds.size === 0 || isProcessingBatch}
+                className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 active:scale-95 text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50 cursor-pointer"
+              >
+                <Archive className="w-4 h-4" />
+                <span>{isRtl ? 'مشاركة حزمة (Zip)' : 'Share Zip'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSelectionMode(false);
+                  setSelectedIds(new Set());
+                }}
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 rounded-lg cursor-pointer"
+                title={isRtl ? 'إلغاء' : 'Cancel'}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch Processing Toast */}
+      <AnimatePresence>
+        {batchActionStatus && (
+          <motion.div
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 20, opacity: 0 }}
+            className="fixed top-6 inset-x-4 sm:inset-x-auto sm:right-1/2 sm:translate-x-1/2 z-50 bg-slate-900/90 dark:bg-zinc-800/95 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-2xl shadow-xl backdrop-blur-md flex items-center gap-2.5 border border-white/10"
+            dir={isRtl ? 'rtl' : 'ltr'}
+          >
+            {isProcessingBatch && <Loader2 className="w-4 h-4 animate-spin text-sky-400" />}
+            <span>{batchActionStatus}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
