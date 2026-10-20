@@ -387,18 +387,30 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
               </div>
             </div>
 
-            {/* Store build message (Compliance: No prices, no plans, no 'Ask Representative') */}
+            {/* Store build message (Compliance: Showcase VIP features cleanly without third-party activation mentions) */}
             {IS_STORE_BUILD ? (
-              <div className="text-center py-12 px-4 rounded-2xl bg-slate-50 dark:bg-zinc-800/50 border border-slate-100 dark:border-zinc-800">
-                <Shield className="w-12 h-12 mx-auto mb-4 text-slate-400 dark:text-slate-500" />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
-                  {isRtl ? 'حسابك تتم إدارته بواسطة ممثل المرحلة' : 'Account managed by your stage representative'}
-                </h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                  {isRtl 
-                    ? 'يتم منح وتفعيل الوصول إلى الميزات الإضافية حصراً من خلال ممثل المرحلة أو مسؤولي المشروع. لا تتوفر أي عمليات شراء داخل هذا التطبيق.'
-                    : 'Access to additional features is provisioned exclusively by your stage representative or project administrators. No in-app purchases are available.'}
-                </p>
+              <div className="text-center py-10 px-5 rounded-3xl bg-slate-50 dark:bg-zinc-800/50 border border-slate-100 dark:border-zinc-800 space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 flex items-center justify-center text-white shadow-md shadow-amber-500/20 mx-auto">
+                  <Crown className="w-7 h-7" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900 dark:text-white mb-1.5">
+                    {isRtl ? 'ميزات وامتيازات العضوية VIP' : 'VIP Membership Features & Perks'}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+                    {isRtl 
+                      ? 'تتضمن العضوية ترجمة المحاضرات الفورية، بنك الأسئلة الشامل، ملحقات المحاضرات، المساعد الذكي سيموسان، وخصومات حصرية.'
+                      : 'Includes instant lecture translation, comprehensive MCQ bank, lecture attachments, Simosan AI tutor, and special membership discounts.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPerksModal(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-yellow-500 text-white shadow-sm shadow-amber-500/20 hover:from-amber-600 hover:to-yellow-600 active:scale-95 transition-all"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isRtl ? 'عرض تفاصيل كافة الميزات' : 'View All Feature Details'}</span>
+                </button>
               </div>
             ) : (
               <>

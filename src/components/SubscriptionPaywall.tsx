@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Crown, Sparkles, Shield, Clock } from 'lucide-react';
+import { X, Crown, Sparkles, Shield, Clock, Languages, FileText, BadgePercent } from 'lucide-react';
 import { Language, TRANSLATIONS, PLAN_CONFIG, planAnchorPrice, SubscriptionPlan } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 
@@ -128,9 +128,11 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
               {[
                 { icon: Sparkles, text: isRtl ? 'وصول كامل لجميع أسئلة MCQ' : 'Full access to all MCQ questions' },
-                { icon: Shield, text: isRtl ? 'بنك أسئلة شامل' : 'Comprehensive question bank' },
+                { icon: Languages, text: isRtl ? 'دعم ترجمة المحاضرات وقارئ PDF' : 'Lecture & PDF translation support' },
+                { icon: FileText, text: isRtl ? 'فتح ملحقات ومخططات المحاضرات' : 'All lecture attachments & diagrams' },
+                { icon: BadgePercent, text: isRtl ? 'خصومات وعروض حصرية للعضوية' : 'Special membership discounts' },
               ].map(({ icon: Icon, text }, i) => (
-                <div key={i} className="flex items-center gap-3 text-xs sm:text-sm text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-zinc-800/60 p-2.5 rounded-xl border border-slate-100 dark:border-zinc-800/80">
+                <div key={i} className="flex items-center gap-2.5 text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-zinc-800/60 p-2.5 rounded-xl border border-slate-100 dark:border-zinc-800/80">
                   <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-amber-100 to-orange-100 dark:from-amber-900/30 dark:to-orange-900/30 flex items-center justify-center">
                     <Icon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                   </div>
@@ -143,11 +145,13 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
           {/* Pinned Bottom CTA */}
           <div className="px-6 py-4 shrink-0 border-t border-slate-100 dark:border-zinc-800 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-sm">
             {IS_STORE_BUILD ? (
-              // Native build: no payment links
-              <div className="text-center py-3 px-6 rounded-2xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300 text-sm">
-                <Shield className="w-5 h-5 mx-auto mb-1.5 text-slate-400" />
-                {t.askRepresentative}
-              </div>
+              // Store build: clean compliant button to view features / dismiss
+              <button
+                onClick={onClose}
+                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white font-bold text-sm sm:text-base shadow-md shadow-orange-500/20 active:scale-[0.99] transition-all"
+              >
+                {isRtl ? 'استعراض ميزات الاشتراك' : 'Explore VIP Perks'}
+              </button>
             ) : (
               <motion.button
                 whileHover={{ scale: 1.01 }}

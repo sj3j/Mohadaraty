@@ -29,11 +29,11 @@ export default function TermsOfUse() {
         </Section>
 
         <Section heading="الاشتراكات والمدفوعات">
-          <p>بعض الميزات والمحتويات تتطلب وصولاً أو اشتراكاً فعّالاً:</p>
+          <p>بعض الميزات والمحتويات التعليمية المتقدمة تتطلب اشتراكاً أو وصولاً فعّالاً:</p>
           <Bullets items={[
-            'تتم إدارة الوصول للاشتراكات في نظامنا الأساسي بواسطة المشرفين الأكاديميين للمراحل.',
-            'قد يوفر التطبيق (في نسخة iOS فقط) عمليات شراء واشتراكات داخل التطبيق عبر نظام Apple In-App Purchases. تخضع هذه العمليات لشروط وأحكام Apple.',
-            'تطبيق الأندرويد لا يحتوي على أي عمليات شراء داخلي، وتتم إدارة الوصول فيه عبر المشرفين حصراً.',
+            'تتيح الاشتراكات الوصول إلى ميزات إضافية تشمل ترجمة المحاضرات، بنك الأسئلة، الملحقات الكاملة، والمساعد الذكي.',
+            'قد يوفر التطبيق عمليات شراء واشتراكات داخل التطبيق على المنصات المدعومة وفقاً لسياسات وشروط المتاجر المعنية.',
+            'تخضع كافة الاشتراكات لشروط الاستخدام وسياسات الحساب المعمول بها.',
             'كافة المبالغ المدفوعة غير قابلة للاسترداد، ما لم ينص القانون المعمول به أو سياسات متجر التطبيقات على خلاف ذلك.',
           ]} />
         </Section>
@@ -120,11 +120,11 @@ export default function TermsOfUse() {
       </Section>
 
       <Section heading="Subscriptions & Payments">
-        <p>Some features and content require active access or a valid subscription:</p>
+        <p>Certain advanced educational features and content require an active subscription or membership:</p>
         <Bullets items={[
-          'Subscription access on our primary platform is managed by stage academic moderators.',
-          'The app may offer in-app purchases and subscriptions (on the iOS app only) via Apple In-App Purchases. These are subject to Apple’s terms and conditions.',
-          'The Android app contains no in-app purchases, and access is managed exclusively by stage moderators.',
+          'Subscriptions unlock premium features including instant lecture translation, MCQ question bank, full attachments, and AI study tutor.',
+          'The app may offer in-app purchases and subscriptions on supported platforms in compliance with relevant store terms and billing policies.',
+          'All subscriptions and access tiers are subject to our standard account policies and acceptable use guidelines.',
           'All payments made are final and non-refundable, unless otherwise required by applicable store policies or law.',
         ]} />
       </Section>

@@ -103,7 +103,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
                     </span>
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium line-clamp-1 mt-0.5">
-                    {isRtl ? 'ملحقات المحاضرات، بنك الأسئلة، سيموسان AI والمزيد' : 'Full attachments, question bank, Simosan AI & more'}
+                    {isRtl ? 'ترجمة المحاضرات، بنك الأسئلة، الملحقات، سيموسان AI والمزيد' : 'Lecture translation, question bank, attachments, Simosan AI & more'}
                   </div>
                 </div>
               </div>

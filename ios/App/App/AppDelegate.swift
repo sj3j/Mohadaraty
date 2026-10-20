@@ -30,8 +30,28 @@ public class SettingsLauncherPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 }
 
+@objc(SystemBarsPlugin)
+public class SystemBarsPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "SystemBarsPlugin"
+    public let jsName = "SystemBars"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "setStyle", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func setStyle(_ call: CAPPluginCall) {
+        let dark = call.getBool("darkBackground", false)
+        DispatchQueue.main.async {
+            if let window = UIApplication.shared.windows.first {
+                window.overrideUserInterfaceStyle = dark ? .dark : .light
+            }
+            call.resolve(["darkBackground": dark])
+        }
+    }
+}
+
 public class MyLectureBridgeViewController: CAPBridgeViewController {
     public override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(SystemBarsPlugin())
         bridge?.registerPluginInstance(SettingsLauncherPlugin())
         bridge?.registerPluginInstance(AttendanceStoragePlugin())
     }

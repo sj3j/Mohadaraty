@@ -8,7 +8,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-/** Keeps navigation-bar icon contrast aligned with the web app's own theme. */
+/** Keeps status-bar and navigation-bar icon contrast aligned with the web app's own theme in edge-to-edge mode. */
 @CapacitorPlugin(name = "SystemBars")
 public class SystemBarsPlugin extends Plugin {
     @PluginMethod
@@ -19,6 +19,7 @@ public class SystemBarsPlugin extends Plugin {
                 getActivity().getWindow(),
                 getActivity().getWindow().getDecorView()
             );
+            controller.setAppearanceLightStatusBars(!darkBackground);
             controller.setAppearanceLightNavigationBars(!darkBackground);
             JSObject result = new JSObject();
             result.put("darkBackground", darkBackground);

@@ -2,17 +2,18 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X, Crown, Sparkles, FileText, Target, Bot,
-  Palette, Zap, CheckCircle2, Star, ShieldCheck
+  Palette, Zap, CheckCircle2, Star, ShieldCheck,
+  Languages, BadgePercent
 } from 'lucide-react';
 import { Language } from '../../types';
 
-interface SubscriptionPerksModalProps {
+export interface SubscriptionPerksModalProps {
   isOpen: boolean;
   onClose: () => void;
   lang: Language;
 }
 
-interface PerkItem {
+export interface PerkItem {
   id: string;
   icon: React.ElementType;
   badgeAr: string;
@@ -26,7 +27,7 @@ interface PerkItem {
   iconColor: string;
 }
 
-const PERKS: PerkItem[] = [
+export const PERKS: PerkItem[] = [
   {
     id: 'attachments',
     icon: FileText,
@@ -54,6 +55,19 @@ const PERKS: PerkItem[] = [
     iconColor: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
   },
   {
+    id: 'translation_support',
+    icon: Languages,
+    badgeAr: 'ترجمة فورية',
+    badgeEn: 'Instant Translate',
+    titleAr: 'دعم ترجمة المحاضرات وقارئ PDF',
+    titleEn: 'Lecture & PDF Translation Support',
+    descAr: 'ترجمة فورية للمصطلحات والفقرات داخل قارئ المحاضرات وPDF مع إمكانية الاستماع للنطق الصوتي، لتسهيل فهم المواد الطبية واللغات الأجنبية.',
+    descEn: 'Instant in-reader translation for lecture texts and PDF passages with audio pronunciation support, helping you master medical terminology effortlessly.',
+    gradient: 'from-cyan-500/10 via-teal-500/5 to-transparent',
+    borderGlow: 'border-cyan-500/30 dark:border-cyan-400/20',
+    iconColor: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400',
+  },
+  {
     id: 'simosan_ai',
     icon: Bot,
     badgeAr: 'ذكاء اصطناعي',
@@ -65,6 +79,19 @@ const PERKS: PerkItem[] = [
     gradient: 'from-indigo-500/10 via-purple-500/5 to-transparent',
     borderGlow: 'border-indigo-500/30 dark:border-indigo-400/20',
     iconColor: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400',
+  },
+  {
+    id: 'member_discounts',
+    icon: BadgePercent,
+    badgeAr: 'توفير خاص',
+    badgeEn: 'Special Savings',
+    titleAr: 'خصومات وعروض حصرية للعضوية',
+    titleEn: 'Special Membership Discounts',
+    descAr: 'توفير استثنائي على الاشتراكات والخطط الموسعة والسنوية، مع عروض دراسية إضافية مستمرة لأعضاء VIP.',
+    descEn: 'Exclusive discounts on long-term, seasonal, and annual plans, plus ongoing promotional perks and savings for VIP members.',
+    gradient: 'from-rose-500/10 via-orange-500/5 to-transparent',
+    borderGlow: 'border-rose-500/30 dark:border-rose-400/20',
+    iconColor: 'bg-rose-500/15 text-rose-600 dark:text-rose-400',
   },
   {
     id: 'leaderboard_vip',

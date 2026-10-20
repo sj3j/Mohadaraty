@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { StatusBar, Style } from '@capacitor/status-bar';
 
 interface SystemBarsPlugin {
   setStyle(options: { darkBackground: boolean }): Promise<{ darkBackground: boolean }>;
@@ -10,10 +9,8 @@ const SystemBars = registerPlugin<SystemBarsPlugin>('SystemBars');
 
 function syncNativeSystemBars(darkBackground: boolean) {
   if (!Capacitor.isNativePlatform()) return;
-  void Promise.all([
-    StatusBar.setStyle({ style: darkBackground ? Style.Dark : Style.Light }),
-    SystemBars.setStyle({ darkBackground }),
-  ]).catch(error => console.warn('[system-bars] Failed to synchronize icon contrast:', error));
+  void SystemBars.setStyle({ darkBackground })
+    .catch(error => console.warn('[system-bars] Failed to synchronize icon contrast:', error));
 }
 
 /**
