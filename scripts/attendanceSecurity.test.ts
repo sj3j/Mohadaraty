@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import 'fake-indexeddb/auto';
 import { canonicalAttendanceState, type LocalAttendanceReceipt } from '../shared/attendance';
 import { summarizeAttendanceTelemetry } from '../shared/attendanceSecurity';
+import { AL_SAFWA_CAMPUS, calculateCampusDistance } from '../shared/campusLocation';
 import { commitAttendanceCapture, getAttendanceReceipt, openDb } from '../src/lib/localDb';
 
 function receipt(ownerUid: string, sessionId: string): LocalAttendanceReceipt {
@@ -48,7 +49,7 @@ test('confirmed acknowledgement survives missing schedule response', () => {
 });
 
 test('upload-time coordinates never become scan-location evidence', () => {
-  const result = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'upload', latitude: 0, longitude: 0, accuracyMeters: 1 } }, { latitude: 33.3, longitude: 44.3, radiusMeters: 500 });
+  const result = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'upload', latitude: 0, longitude: 0, accuracyMeters: 1 } });
   assert.equal(result.flags.includes('reported_off_campus'), false);
   assert.equal(result.reportedDistanceMeters, undefined);
 });
@@ -63,12 +64,42 @@ test('GPS failure and rapid reconnect are advisory; no trusted scan time exists'
 });
 
 test('off-campus flag respects accuracy and does not retain coordinates', () => {
-  const campus = { latitude: 33.3, longitude: 44.3, radiusMeters: 500 };
-  const outside = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'scan', latitude: 33.4, longitude: 44.3, accuracyMeters: 20 } }, campus);
+  const outside = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'scan', latitude: 33.4, longitude: 44.3, accuracyMeters: 20 } });
   assert.ok(outside.flags.includes('reported_off_campus'));
   assert.equal('latitude' in outside, false);
-  const uncertain = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'scan', latitude: 33.31, longitude: 44.3, accuracyMeters: 2000 } }, campus);
-  assert.equal(uncertain.flags.includes('reported_off_campus'), false);
+  const uncertain = summarizeAttendanceTelemetry({ location: { state: 'available', phase: 'scan', latitude: 33.31, longitude: 44.3, accuracyMeters: 2000 } });
+  assert.equal(uncertain.flags.includes('reported_off_campus'), true);
+});
+
+test('Al-Safwa campus distance uses the exact centre and capped indoor allowance', () => {
+  assert.deepEqual(calculateCampusDistance(AL_SAFWA_CAMPUS.lat, AL_SAFWA_CAMPUS.lng), {
+    distanceMeters: 0, accuracyMeters: 0, locationStatus: 'on_campus',
+  });
+  const latitudeAt500m = AL_SAFWA_CAMPUS.lat + 500 / 111195;
+  assert.equal(calculateCampusDistance(latitudeAt500m, AL_SAFWA_CAMPUS.lng, 49).locationStatus, 'off_campus');
+  assert.equal(calculateCampusDistance(latitudeAt500m, AL_SAFWA_CAMPUS.lng, 50).locationStatus, 'on_campus');
+  const latitudeAt601m = AL_SAFWA_CAMPUS.lat + 601 / 111195;
+  assert.equal(calculateCampusDistance(latitudeAt601m, AL_SAFWA_CAMPUS.lng, 5000).locationStatus, 'off_campus');
+});
+
+test('invalid campus coordinates are rejected', () => {
+  for (const values of [[NaN, 44, 1], [91, 44, 1], [32, 181, 1], [32, 44, -1]] as const) {
+    assert.throws(() => calculateCampusDistance(values[0], values[1], values[2]), /invalid_campus_coordinates/);
+  }
+});
+
+test('server summary recomputes coordinates and accepts native indoor timeout without a distance', () => {
+  const offCampus = summarizeAttendanceTelemetry({
+    location: {
+      state: 'available', phase: 'scan', latitude: 33, longitude: 44,
+      accuracyMeters: 5, distanceMeters: 0, locationStatus: 'on_campus',
+    },
+  });
+  assert.equal(offCampus.locationStatus, 'off_campus');
+  assert.ok(offCampus.reportedDistanceMeters && offCampus.reportedDistanceMeters > 1000);
+  const indoor = summarizeAttendanceTelemetry({ location: { state: 'gps_on_indoor_timeout', phase: 'scan', locationStatus: 'gps_on_indoor_timeout' } });
+  assert.equal(indoor.locationStatus, 'gps_on_indoor_timeout');
+  assert.equal(indoor.reportedDistanceMeters, undefined);
 });
 
 test('invalid timing telemetry stays unknown', () => {

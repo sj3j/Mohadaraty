@@ -29,6 +29,7 @@ export interface UploadAttachmentOptions {
   file: File;
   title?: string;
   isAnonymous: boolean;
+  isFree?: boolean;
   user: UserProfile;
   onProgress?: (percent: number) => void;
 }
@@ -173,6 +174,7 @@ export async function uploadAttachment({
   file,
   title,
   isAnonymous,
+  isFree,
   user,
   onProgress,
 }: UploadAttachmentOptions): Promise<LectureAttachment> {
@@ -181,24 +183,42 @@ export async function uploadAttachment({
     throw new Error('User is not authenticated');
   }
 
-  // 1. Client-side image compression
-  const { file: compressedFile, width, height } = await compressImage(file, 2048, 0.85);
+  // 1. Differentiate PDF vs Image
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  let uploadFile: File | Blob = file;
+  let width: number | null = null;
+  let height: number | null = null;
+  const fileType: 'image' | 'pdf' = isPdf ? 'pdf' : 'image';
+
+  if (isPdf) {
+    if (file.size > 30 * 1024 * 1024) {
+      throw new Error('حجم ملف PDF يتجاوز الحد الأقصى (30 ميغابايت)');
+    }
+    uploadFile = file;
+  } else {
+    // Client-side image compression
+    const compressed = await compressImage(file, 2048, 0.85);
+    uploadFile = compressed.file;
+    width = compressed.width;
+    height = compressed.height;
+  }
 
   // 2. Determine upload destination in Storage
   const cleanStageId = (stageId || user.managedStageId || user.stageId || 'general').trim();
-  const extension = compressedFile.name.split('.').pop() || 'jpg';
+  const extension = isPdf ? 'pdf' : (file.name.split('.').pop() || 'jpg');
   const fileName = `${currentUid}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
   const storagePath = `lecture_attachments/${cleanStageId}/${lectureId}/${fileName}`;
   const fileRef = ref(storage, storagePath);
 
   // 3. Upload to Firebase Storage with progress tracking
   await new Promise<void>((resolve, reject) => {
-    const uploadTask = uploadBytesResumable(fileRef, compressedFile, {
-      contentType: compressedFile.type || 'image/jpeg',
+    const uploadTask = uploadBytesResumable(fileRef, uploadFile, {
+      contentType: isPdf ? 'application/pdf' : (uploadFile.type || 'image/jpeg'),
       customMetadata: {
         uploaderUid: currentUid,
         lectureId,
         stageId: cleanStageId,
+        fileType,
       },
     });
 
@@ -238,10 +258,12 @@ export async function uploadAttachment({
     uploaderRole: user.role || 'student',
     isAnonymous: Boolean(isAnonymous),
     status,
+    isFree: Boolean(isFree),
+    fileType,
     createdAt: serverTimestamp(),
     width,
     height,
-    size: compressedFile.size,
+    size: uploadFile.size,
   };
 
   let docRef;
@@ -290,14 +312,19 @@ export async function uploadAttachment({
  */
 export async function approveAttachment(
   attachment: LectureAttachment,
-  reviewerUser: UserProfile
+  reviewerUser: UserProfile,
+  isFree?: boolean
 ): Promise<void> {
   const docRef = doc(db, 'lecture_attachments', attachment.id);
-  await updateDoc(docRef, {
+  const updateData: Record<string, any> = {
     status: 'approved',
     reviewedAt: serverTimestamp(),
     reviewedBy: reviewerUser.uid,
-  });
+  };
+  if (typeof isFree === 'boolean') {
+    updateData.isFree = isFree;
+  }
+  await updateDoc(docRef, updateData);
 
   // Notify student
   try {
@@ -311,6 +338,19 @@ export async function approveAttachment(
   } catch (e) {
     console.warn('[lectureAttachmentService] Could not notify student of approval:', e);
   }
+}
+
+/**
+ * Toggle free access for an attachment.
+ */
+export async function toggleAttachmentFreeStatus(
+  attachmentId: string,
+  isFree: boolean
+): Promise<void> {
+  const docRef = doc(db, 'lecture_attachments', attachmentId);
+  await updateDoc(docRef, {
+    isFree: Boolean(isFree),
+  });
 }
 
 /**

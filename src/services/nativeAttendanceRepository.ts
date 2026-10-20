@@ -1,6 +1,8 @@
 import { registerPlugin } from '@capacitor/core';
 import type { LocalAttendanceReceipt } from '../../shared/attendance';
+import { attendanceDeviceMessage } from '../../shared/attendanceSecurity';
 import type {
+  AcknowledgementItem,
   AttendanceRepository,
   AttendanceSigner,
   CaptureInput,
@@ -9,14 +11,19 @@ import type {
   DurableCaptureResult,
   PublicDeviceIdentity,
   StorageHealth,
+  UploadBatch,
 } from './attendanceRepository';
 
 export interface NativeStoragePlugin {
-  initialize(): Promise<{
+  initialize(options?: { ownerUid?: string }): Promise<{
     storageType: string;
     isDurable: boolean;
+    healthState?: string;
     unresolvedReceiptsCount: number;
     unresolvedCommandsCount: number;
+    unreadableRecordsCount?: number;
+    oldestPendingAgeMs?: number;
+    legacyMigrationPending?: boolean;
   }>;
   capture(options: { receipt: string; conflictSignature?: string }): Promise<{
     receipt: string;
@@ -33,12 +40,40 @@ export interface NativeStoragePlugin {
   listDoctorCommands(options: { ownerUid: string }): Promise<{ commands: string[] }>;
   updateDoctorCommand(options: { command: string }): Promise<void>;
   updateReceipt(options: { requestId: string; receipt: string }): Promise<void>;
+  transitionReceipt(options: {
+    requestId: string;
+    status: string;
+    resolution?: string;
+    reason?: string;
+    recordRevision?: number;
+  }): Promise<{ receipt?: string }>;
+  acquireUploadLease(options: {
+    ownerUid?: string;
+    limit?: number;
+    leaseDurationMs?: number;
+  }): Promise<{ leaseId: string; receipts: string[] }>;
+  acknowledgeBatch(options: {
+    acknowledgements: Array<{
+      requestId: string;
+      resolution: string;
+      reason?: string;
+      recordId?: string;
+      recordRevision?: number;
+    }>;
+  }): Promise<void>;
+  releaseUploadLease(options: { leaseId: string }): Promise<void>;
+  getMetadata(options: { key: string; ownerUid?: string }): Promise<{ value: string | null }>;
+  setMetadata(options: { key: string; value: string; ownerUid?: string }): Promise<void>;
+  deleteMetadata(options: { key: string; ownerUid?: string }): Promise<void>;
   recoverInterruptedWork(): Promise<void>;
   getHealth(options: { ownerUid: string }): Promise<{
     storageType: string;
     isDurable: boolean;
+    healthState?: string;
     unresolvedReceiptsCount: number;
     unresolvedCommandsCount: number;
+    unreadableRecordsCount?: number;
+    oldestPendingAgeMs?: number;
     lastSuccessfulSync?: string;
     legacyMigrationPending?: boolean;
   }>;
@@ -47,8 +82,8 @@ export interface NativeStoragePlugin {
     publicKey: any;
     installationId: string;
   }>;
-  signReceipt(options: { receipt: string }): Promise<{ signature: string }>;
-  signDoctorQr(options: { claims: string }): Promise<{ signature: string }>;
+  signReceipt(options: { receipt?: string; message?: string }): Promise<{ signature: string }>;
+  signDoctorQr(options: { claims: string; permit?: string }): Promise<{ signature: string }>;
   signRotationMessage(options: { message: string }): Promise<{ signature: string }>;
   migrateLegacyData(options: {
     receipts: string[];
@@ -61,13 +96,17 @@ export interface NativeStoragePlugin {
 export const NativeAttendanceStorage = registerPlugin<NativeStoragePlugin>('AttendanceStorage');
 
 export class NativeAttendanceRepository implements AttendanceRepository {
-  async initialize(): Promise<StorageHealth> {
-    const res = await NativeAttendanceStorage.initialize();
+  async initialize(ownerUid = ''): Promise<StorageHealth> {
+    const res = await NativeAttendanceStorage.initialize({ ownerUid });
     return {
-      storageType: (res.storageType as any) || 'native_sqlite',
+      storageType: 'native_sqlite',
       isDurable: res.isDurable ?? true,
+      healthState: (res.healthState as any) || 'ready',
       unresolvedReceiptsCount: res.unresolvedReceiptsCount || 0,
       unresolvedCommandsCount: res.unresolvedCommandsCount || 0,
+      unreadableRecordsCount: res.unreadableRecordsCount || 0,
+      oldestPendingAgeMs: res.oldestPendingAgeMs,
+      legacyMigrationPending: res.legacyMigrationPending,
     };
   }
 
@@ -130,6 +169,68 @@ export class NativeAttendanceRepository implements AttendanceRepository {
     });
   }
 
+  async transitionReceipt(
+    requestId: string,
+    status: string,
+    options?: { resolution?: string; reason?: string; recordRevision?: number }
+  ): Promise<LocalAttendanceReceipt | null> {
+    const res = await NativeAttendanceStorage.transitionReceipt({
+      requestId,
+      status,
+      resolution: options?.resolution,
+      reason: options?.reason,
+      recordRevision: options?.recordRevision,
+    });
+    return res.receipt ? JSON.parse(res.receipt) : null;
+  }
+
+  async acquireUploadLease(ownerUid: string, limit = 25, leaseDurationMs = 60000): Promise<UploadBatch> {
+    const res = await NativeAttendanceStorage.acquireUploadLease({
+      ownerUid,
+      limit,
+      leaseDurationMs,
+    });
+    return {
+      leaseId: res.leaseId,
+      receipts: (res.receipts || []).map(r => JSON.parse(r)),
+    };
+  }
+
+  async acknowledgeBatch(leaseId: string, acknowledgements: AcknowledgementItem[]): Promise<void> {
+    await NativeAttendanceStorage.acknowledgeBatch({
+      acknowledgements: acknowledgements.map(a => ({
+        requestId: a.requestId,
+        resolution: a.resolution,
+        reason: a.reason,
+        recordId: a.recordId,
+        recordRevision: a.recordRevision,
+      })),
+    });
+  }
+
+  async releaseUploadLease(leaseId: string): Promise<void> {
+    await NativeAttendanceStorage.releaseUploadLease({ leaseId });
+  }
+
+  async getMetadata<T = any>(key: string, ownerUid?: string): Promise<T | null> {
+    const res = await NativeAttendanceStorage.getMetadata({ key, ownerUid });
+    if (!res.value) return null;
+    try {
+      return JSON.parse(res.value) as T;
+    } catch {
+      return res.value as unknown as T;
+    }
+  }
+
+  async setMetadata<T = any>(key: string, data: T, ownerUid?: string): Promise<void> {
+    const value = typeof data === 'string' ? data : JSON.stringify(data);
+    await NativeAttendanceStorage.setMetadata({ key, value, ownerUid });
+  }
+
+  async deleteMetadata(key: string, ownerUid?: string): Promise<void> {
+    await NativeAttendanceStorage.deleteMetadata({ key, ownerUid });
+  }
+
   async recoverInterruptedWork(): Promise<void> {
     await NativeAttendanceStorage.recoverInterruptedWork();
   }
@@ -139,8 +240,11 @@ export class NativeAttendanceRepository implements AttendanceRepository {
     return {
       storageType: 'native_sqlite',
       isDurable: res.isDurable ?? true,
+      healthState: (res.healthState as any) || 'ready',
       unresolvedReceiptsCount: res.unresolvedReceiptsCount || 0,
       unresolvedCommandsCount: res.unresolvedCommandsCount || 0,
+      unreadableRecordsCount: res.unreadableRecordsCount || 0,
+      oldestPendingAgeMs: res.oldestPendingAgeMs,
       lastSuccessfulSync: res.lastSuccessfulSync,
       legacyMigrationPending: res.legacyMigrationPending,
     };
@@ -158,15 +262,28 @@ export class NativeAttendanceSigner implements AttendanceSigner {
     };
   }
 
-  async signReceipt(receipt: any): Promise<string> {
+  async signReceipt(receipt: any, message?: string): Promise<string> {
+    const serializedMessage = message || attendanceDeviceMessage(receipt);
     const res = await NativeAttendanceStorage.signReceipt({
+      message: serializedMessage,
       receipt: JSON.stringify(receipt),
     });
     return res.signature;
   }
 
-  async signDoctorQr(claims: any): Promise<string> {
+  async signDoctorQr(claimsOrParams: any): Promise<string> {
+    let permit = '';
+    let claims: any = claimsOrParams;
+    if (claimsOrParams && typeof claimsOrParams === 'object') {
+      if ('permit' in claimsOrParams && 'claims' in claimsOrParams) {
+        permit = claimsOrParams.permit;
+        claims = claimsOrParams.claims;
+      } else if ('permit' in claimsOrParams) {
+        permit = claimsOrParams.permit;
+      }
+    }
     const res = await NativeAttendanceStorage.signDoctorQr({
+      permit,
       claims: JSON.stringify(claims),
     });
     return res.signature;

@@ -21,7 +21,7 @@ import { studentForToken } from './studentLookup.js';
 import { getSupabaseAdmin } from './supabaseClient.js';
 import type { StageTimetableDoc } from './timetable.js';
 import { verifyAttendanceDevice, verifyAttendanceKeyRotation } from './attendanceDevice.js';
-import { summarizeAttendanceTelemetry, type CampusBoundary } from './attendanceSecurity.js';
+import { summarizeAttendanceTelemetry } from './attendanceSecurity.js';
 import { attendanceSessionId, validateAttendancePublicKey, verifyOfflineAttendanceToken } from './attendanceOffline.js';
 import { validateQrKeyConfig, mapConfigErrorToResponse, type QrKeyConfig } from './attendanceConfig.js';
 
@@ -92,14 +92,6 @@ export function verifyAttendanceQr(token: string): AttendanceQrClaims {
   return claims;
 }
 
-function campusBoundary(): CampusBoundary | undefined {
-  const values = [process.env.ATTENDANCE_CAMPUS_LATITUDE, process.env.ATTENDANCE_CAMPUS_LONGITUDE, process.env.ATTENDANCE_CAMPUS_RADIUS_METERS];
-  if (values.some(value => !value?.trim())) return undefined;
-  const [latitude, longitude, radiusMeters] = values.map(Number);
-  if (![latitude, longitude, radiusMeters].every(Number.isFinite) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180 || radiusMeters <= 0) return undefined;
-  return { latitude, longitude, radiusMeters };
-}
-
 export function attendanceErrorResponse(error: any): { status: number; error: string } {
   // Check typed configuration errors first
   const configResponse = mapConfigErrorToResponse(error);
@@ -107,7 +99,9 @@ export function attendanceErrorResponse(error: any): { status: number; error: st
 
   const message = String(error?.message || error || 'unknown_error');
   const code = String(error?.code || 'attendance_error');
-  if (message.includes('revision_conflict')) return { status: 409, error: 'revision_conflict' };
+  if (message.includes('revision_conflict') || message.includes('concurrency_conflict') || message.includes('challenge_already_consumed') || message.includes('alias_conflict')) {
+    return { status: 409, error: message.split('\n')[0] };
+  }
   if (code === 'PGRST205' || code === '42P01' || /attendance_.+schema cache|public\.attendance_.+does not exist/i.test(message)) {
     return { status: 503, error: 'attendance_schema_missing' };
   }
@@ -635,7 +629,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
             p_installation_digest: device.installationDigest,
             p_device_digest: device.deviceDigest,
             p_local_device_conflict: receipt.localDeviceConflict === true,
-            p_advisory: summarizeAttendanceTelemetry(receipt.telemetry, campusBoundary()),
+            p_advisory: summarizeAttendanceTelemetry(receipt.telemetry),
             p_client_reported_at: clientReportedAt,
           });
           if (error) throw error;
@@ -739,6 +733,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
           receivedAt: row.received_at,
           reviewFlags: row.review_flags || [],
           advisory: row.advisory || undefined,
+          reviewRevision: Number(row.review_revision) || 1,
         })),
         counts: {
           confirmed,
@@ -858,7 +853,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const actor = await actorFor(admin, req);
       if (!actor.student) return res.status(403).json({ error: 'student_identity_required' });
       if (actor.student.data.isActive === false) return res.status(403).json({ error: 'student_identity_disabled' });
-      const nonce = typeof req.body?.nonce === 'string' && req.body.nonce.length >= 16 ? req.body.nonce : crypto.randomBytes(32).toString('hex');
+      const nonce = crypto.randomBytes(32).toString('hex');
       const { data, error } = await supabaseOrThrow().rpc('attendance_create_key_rotation_challenge', {
         p_actor_uid: actor.uid,
         p_nonce: nonce,
@@ -901,7 +896,6 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
           oldSignature,
           newSignature,
           nonce,
-          rotatedAt: new Date().toISOString(),
         },
       });
       if (error) throw error;

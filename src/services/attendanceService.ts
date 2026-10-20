@@ -12,20 +12,17 @@ import { apiUrl } from '../lib/apiBase';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { attendanceRequestId } from './attendanceCrypto';
-import type { AttendanceTelemetry } from '../../shared/attendanceSecurity';
+import type { AttendanceScanLocationEvidence } from '../../shared/attendanceSecurity';
 import {
-  STORE_META,
-  attendanceDurablePut,
-  dbGet,
   getAttendanceState,
   saveAttendanceState,
 } from '../lib/localDb';
 import { getAttendanceRepository, getAttendanceSigner } from './attendanceRepositoryFactory';
 import type { StorageHealth } from './attendanceRepository';
+import { ensureAttendanceInitialized } from './attendanceMigration';
 
 const ATTENDANCE_EVENT = 'simosan-attendance-changed';
 const activeSync = new Map<string, Promise<void>>();
-const telemetryJobs = new Map<string, Promise<void>>();
 const capturedMonotonic = new Map<string, number>();
 const channel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(ATTENDANCE_EVENT) : null;
 if (channel) channel.onmessage = () => window.dispatchEvent(new Event(ATTENDANCE_EVENT));
@@ -78,10 +75,15 @@ export async function attendanceApiRequest<T>(path: string, init: RequestInit = 
 }
 const apiRequest = attendanceApiRequest;
 
-export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: string): Promise<{
+export async function captureAttendanceQr(
+  rawQrToken: string,
+  cachedOwnerUid: string | undefined,
+  scanLocation: AttendanceScanLocationEvidence,
+): Promise<{
   receipt: LocalAttendanceReceipt;
   alreadySaved: boolean;
 }> {
+  await ensureAttendanceInitialized();
   const current = auth.currentUser;
   const ownerUid = current?.uid || cachedOwnerUid;
   if (!ownerUid || (current && cachedOwnerUid && current.uid !== cachedOwnerUid)) throw new Error('login_required');
@@ -116,7 +118,7 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
       updatedAt: now,
       status: 'pending',
       attemptCount: 0,
-      telemetry: { capturedOffline: navigator.onLine === false, location: { state: 'not_requested', phase: 'scan' } },
+      telemetry: { capturedOffline: navigator.onLine === false, location: scanLocation },
     };
     const [normalSignature, conflictSignature] = await Promise.all([
       signer.signReceipt(receipt),
@@ -128,8 +130,6 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
       emitAttendanceChange();
       if (!result.alreadySaved) {
         capturedMonotonic.set(receipt.requestId, performance.now());
-        const job = collectScanLocation(result.receipt).catch(() => undefined).finally(() => telemetryJobs.delete(receipt.requestId));
-        telemetryJobs.set(receipt.requestId, job);
         void navigator.storage?.persist?.().catch(() => false);
       }
     } catch {}
@@ -139,21 +139,8 @@ export async function captureAttendanceQr(rawQrToken: string, cachedOwnerUid?: s
   }
 }
 
-async function collectScanLocation(receipt: LocalAttendanceReceipt): Promise<void> {
-  if (receipt.telemetry?.capturedOffline || receipt.localDeviceConflict || !navigator.geolocation) return;
-  const location = await new Promise<AttendanceTelemetry['location']>(resolve => {
-    let complete = false;
-    const finish = (value: AttendanceTelemetry['location']) => { if (!complete) { complete = true; clearTimeout(timer); resolve(value); } };
-    const timer = setTimeout(() => finish({ state: 'timeout', phase: 'scan' }), 3500);
-    navigator.geolocation.getCurrentPosition(position => finish({ state: 'available', phase: 'scan', latitude: position.coords.latitude, longitude: position.coords.longitude, accuracyMeters: position.coords.accuracy }),
-      error => finish({ state: error.code === 1 ? 'permission_unavailable' : error.code === 3 ? 'timeout' : 'unavailable', phase: 'scan' }),
-      { enableHighAccuracy: false, maximumAge: 0, timeout: 3000 });
-  });
-  const repo = getAttendanceRepository();
-  await repo.updateReceipt(receipt.requestId, current => ({ ...current, telemetry: { ...current.telemetry, location } }));
-}
-
 export async function listLocalAttendanceReceipts(ownerUid: string): Promise<LocalAttendanceReceipt[]> {
+  await ensureAttendanceInitialized();
   const repo = getAttendanceRepository();
   const receipts = await repo.listReceipts(ownerUid);
   return receipts.sort((a, b) => b.savedAt - a.savedAt);
@@ -180,96 +167,88 @@ async function markBatch(receipts: LocalAttendanceReceipt[], patch: Partial<Loca
 }
 
 async function runSync(ownerUid?: string): Promise<void> {
+  await ensureAttendanceInitialized();
   const current = auth.currentUser;
   const uid = ownerUid || current?.uid;
   if (!uid) return;
   await syncDoctorAttendanceCommands(uid);
-  const receipts = (await listLocalAttendanceReceipts(uid)).filter(receipt =>
-    receipt.status === 'pending' || receipt.status === 'syncing' || receipt.status === 'waiting_for_login');
-  if (!receipts.length) return;
-  if (!current || current.uid !== uid) {
-    await markBatch(receipts, { status: 'waiting_for_login', reason: 'login_required' });
-    return;
-  }
+  if (!current || current.uid !== uid) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
   const repo = getAttendanceRepository();
-  for (let offset = 0; offset < receipts.length; offset += 25) {
-    if (auth.currentUser?.uid !== uid) return;
-    const selected = receipts.slice(offset, offset + 25);
-    await Promise.all(selected.map(receipt => telemetryJobs.get(receipt.requestId)));
-    const batch = await Promise.all(selected.map(async receipt => await repo.getReceipt(receipt.requestId) || receipt));
-    await markBatch(batch, { status: 'syncing', reason: undefined });
-    const payload = batch.map(receipt => ({
-      requestId: receipt.requestId,
-      ownerUid: receipt.ownerUid,
-      qrToken: receipt.qrToken,
-      sessionId: receipt.sessionId,
-      occurrenceId: receipt.occurrenceId,
-      installationId: receipt.installationId,
-      capturedAtClient: receipt.capturedAtClient,
-      localDeviceConflict: receipt.localDeviceConflict,
-      devicePublicKey: receipt.devicePublicKey,
-      deviceSignature: receipt.deviceSignature,
-      telemetry: { ...receipt.telemetry, sameRuntimeElapsedSeconds: capturedMonotonic.has(receipt.requestId) ? Math.max(0, (performance.now() - capturedMonotonic.get(receipt.requestId)!) / 1000) : undefined },
-    }));
+  const { leaseId, receipts: batch } = await repo.acquireUploadLease(uid, 25, 60000);
+  if (!batch.length) return;
 
-    let response: { results: any[] };
-    try {
-      response = await apiRequest('/api/attendance/receipts/sync', {
-        method: 'POST',
-        body: JSON.stringify({ receipts: payload }),
-      }, false, uid);
-    } catch (error: any) {
-      if (error?.status === 401) {
-        try {
-          response = await apiRequest('/api/attendance/receipts/sync', {
-            method: 'POST',
-            body: JSON.stringify({ receipts: payload }),
-          }, true, uid);
-        } catch (retryError: any) {
-          await markBatch(batch, {
-            status: retryError?.status === 401 ? 'waiting_for_login' : 'pending',
-            reason: retryError?.status === 401 ? 'login_required' : 'retry_later',
-          });
-          continue;
-        }
-      } else {
-        const authFailure = typeof error?.code === 'string' && error.code.startsWith('auth/')
-          && error.code !== 'auth/network-request-failed';
+  const payload = batch.map(receipt => ({
+    requestId: receipt.requestId,
+    ownerUid: receipt.ownerUid,
+    qrToken: receipt.qrToken,
+    sessionId: receipt.sessionId,
+    occurrenceId: receipt.occurrenceId,
+    installationId: receipt.installationId,
+    capturedAtClient: receipt.capturedAtClient,
+    localDeviceConflict: receipt.localDeviceConflict,
+    devicePublicKey: receipt.devicePublicKey,
+    deviceSignature: receipt.deviceSignature,
+    telemetry: { ...receipt.telemetry, sameRuntimeElapsedSeconds: capturedMonotonic.has(receipt.requestId) ? Math.max(0, (performance.now() - capturedMonotonic.get(receipt.requestId)!) / 1000) : undefined },
+  }));
+
+  let response: { results: any[] };
+  try {
+    response = await apiRequest('/api/attendance/receipts/sync', {
+      method: 'POST',
+      body: JSON.stringify({ receipts: payload }),
+    }, false, uid);
+  } catch (error: any) {
+    if (error?.status === 401) {
+      try {
+        response = await apiRequest('/api/attendance/receipts/sync', {
+          method: 'POST',
+          body: JSON.stringify({ receipts: payload }),
+        }, true, uid);
+      } catch (retryError: any) {
         await markBatch(batch, {
-          status: authFailure ? 'waiting_for_login' : 'pending',
-          reason: authFailure ? 'login_required' : 'retry_later',
+          status: retryError?.status === 401 ? 'waiting_for_login' : 'pending',
+          reason: retryError?.status === 401 ? 'login_required' : 'retry_later',
         });
-        continue;
+        await repo.releaseUploadLease(leaseId);
+        return;
       }
-    }
-
-    const byRequest = new Map(response.results.map(result => [result.requestId, result]));
-    for (const receipt of batch) {
-      const result = byRequest.get(receipt.requestId);
-      if (!result) {
-        await updateReceipt(receipt.requestId, { status: 'pending', reason: 'missing_acknowledgement' });
-        continue;
-      }
-      const resolution = result.resolution;
-      const status: LocalAttendanceReceipt['status'] =
-        resolution === 'confirmed' || resolution === 'already_recorded' ? 'confirmed'
-          : resolution === 'needs_review' ? 'review'
-            : resolution === 'invalid_evidence' ? 'invalid'
-              : 'pending';
-      await updateReceipt(receipt.requestId, {
-        status,
-        resolution,
-        reason: result.reason,
-        recordId: result.recordId || null,
-        receivedAt: result.receivedAt || null,
-        recordStatus: result.recordStatus || null,
-        recordRevision: Number(result.revision) || undefined,
-        telemetry: { capturedOffline: receipt.telemetry?.capturedOffline },
-        attemptCount: receipt.attemptCount + 1,
+    } else {
+      const authFailure = typeof error?.code === 'string' && error.code.startsWith('auth/')
+        && error.code !== 'auth/network-request-failed';
+      await markBatch(batch, {
+        status: authFailure ? 'waiting_for_login' : 'pending',
+        reason: authFailure ? 'login_required' : 'retry_later',
       });
+      await repo.releaseUploadLease(leaseId);
+      return;
     }
+  }
+
+  const byRequest = new Map(response.results.map(result => [result.requestId, result]));
+  const acks: Array<{ requestId: string; resolution: string; reason?: string; recordId?: string; recordRevision?: number }> = [];
+
+  for (const receipt of batch) {
+    const result = byRequest.get(receipt.requestId);
+    if (!result) {
+      await updateReceipt(receipt.requestId, { status: 'pending', reason: 'missing_acknowledgement' });
+      continue;
+    }
+    acks.push({
+      requestId: receipt.requestId,
+      resolution: result.resolution,
+      reason: result.reason,
+      recordId: result.recordId || undefined,
+      recordRevision: Number(result.revision) || undefined,
+    });
+  }
+
+  if (acks.length > 0) {
+    await repo.acknowledgeBatch(leaseId, acks);
+    emitAttendanceChange();
+  } else {
+    await repo.releaseUploadLease(leaseId);
   }
 }
 
@@ -324,35 +303,43 @@ export async function getAttendanceBootstrap(stageId?: string, ownerUid = auth.c
 }
 
 export async function getOfflineAttendancePack(ownerUid: string, stageId: string): Promise<AttendanceOfflinePack | undefined> {
-  return (await dbGet<{ data: AttendanceOfflinePack }>(STORE_META, `attendance-pack:${ownerUid}:${stageId}`))?.data;
+  await ensureAttendanceInitialized();
+  const repo = getAttendanceRepository();
+  const pack = await repo.getMetadata<AttendanceOfflinePack>(`attendance-pack:${ownerUid}:${stageId}`, ownerUid);
+  return pack || undefined;
 }
 
 export async function getDoctorAttendanceWorkspace(ownerUid: string, stageId?: string): Promise<AttendanceDoctorWorkspace> {
+  await ensureAttendanceInitialized();
+  const repo = getAttendanceRepository();
   const key = `attendance-workspace:${ownerUid}:${stageId || ''}`;
   try {
     const data = await apiRequest<AttendanceDoctorWorkspace>(`/api/attendance/doctor/workspace${stageId ? `?stageId=${encodeURIComponent(stageId)}` : ''}`, {}, false, ownerUid);
-    await attendanceDurablePut(STORE_META, { key, data });
+    await repo.setMetadata(key, data, ownerUid);
     return data;
   } catch (error: any) {
     if (error.status === 403) throw error;
-    const cached = await dbGet<{ data: AttendanceDoctorWorkspace }>(STORE_META, key);
+    const cached = await repo.getMetadata<AttendanceDoctorWorkspace>(key, ownerUid);
     if (!cached) throw error;
-    return { ...cached.data, offline: true };
+    return { ...cached, offline: true };
   }
 }
 
 export async function prepareOfflineAttendance(stageId: string, ownerUid: string): Promise<AttendanceOfflinePack> {
+  await ensureAttendanceInitialized();
   const signer = getAttendanceSigner();
   const identity = await signer.getPublicIdentity();
   const pack = await apiRequest<AttendanceOfflinePack>('/api/attendance/offline/prepare', {
     method: 'POST', body: JSON.stringify({ stageId, publicKey: identity.publicKey }),
   }, false, ownerUid);
   if (pack.ownerUid !== ownerUid) throw new Error('invalid_permit_owner');
-  await attendanceDurablePut(STORE_META, { key: `attendance-pack:${ownerUid}:${stageId}`, data: pack });
+  const repo = getAttendanceRepository();
+  await repo.setMetadata(`attendance-pack:${ownerUid}:${stageId}`, pack, ownerUid);
   return pack;
 }
 
 export async function createOfflineAttendanceSession(input: { stageId: string; occurrenceId: string; expectedHeadcount: number }, ownerUid: string) {
+  await ensureAttendanceInitialized();
   if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
   const pack = await getOfflineAttendancePack(ownerUid, input.stageId);
   const occurrence = pack?.bootstrap.occurrences.find(item => item.id === input.occurrenceId);
@@ -362,13 +349,16 @@ export async function createOfflineAttendanceSession(input: { stageId: string; o
   const signer = getAttendanceSigner();
   const qrToken = await signer.signDoctorQr({
     permit: pack.permit,
-    v: 1, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
-    stageId: occurrence.stageId, lectureDate: occurrence.lectureDate, title: occurrence.title, startTime: occurrence.startTime,
-    endTime: occurrence.endTime, expectedHeadcount: input.expectedHeadcount,
+    claims: {
+      v: 1, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
+      stageId: occurrence.stageId, lectureDate: occurrence.lectureDate, title: occurrence.title, startTime: occurrence.startTime,
+      endTime: occurrence.endTime, expectedHeadcount: input.expectedHeadcount,
+    },
   });
   const key = `attendance-doctor:${ownerUid}:${sessionId}`;
-  const previous = await dbGet<{ data: AttendanceSessionSnapshot }>(STORE_META, key);
-  const snapshot: AttendanceSessionSnapshot = previous?.data || {
+  const repo = getAttendanceRepository();
+  const previous = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
+  const snapshot: AttendanceSessionSnapshot = previous || {
     offline: true, serverNow: pack.bootstrap.serverNow,
     session: { id: sessionId, occurrenceId: occurrence.id, occurrence, expectedHeadcount: input.expectedHeadcount, notes: '', status: 'active',
       createdAt: '', reconciliationDeadline: new Date(Date.parse(occurrence.endAt) + 36 * 3600000).toISOString(), revision: 0 },
@@ -377,14 +367,15 @@ export async function createOfflineAttendanceSession(input: { stageId: string; o
   };
   if (snapshot.session.status !== 'active') throw new Error('session_not_editable');
   const command: DoctorAttendanceCommand = { kind: 'import', requestId: attendanceRequestId(), ownerUid, sessionId, input: { qrToken }, status: 'pending' };
-  const repo = getAttendanceRepository();
   await repo.commitDoctorSession({ meta: { key, data: snapshot }, command });
+  await repo.setMetadata(key, snapshot, ownerUid);
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return { sessionId, qrToken, revision: snapshot.session.revision, status: 'active' };
 }
 
 export async function getMyAttendance(ownerUid: string): Promise<AttendanceMine> {
+  await ensureAttendanceInitialized();
   try {
     const data = await apiRequest<AttendanceMine>('/api/attendance/mine', {}, false, ownerUid);
     await saveAttendanceState<CachedAttendanceState>({ ownerUid, data, updatedAt: Date.now() }).catch(() => undefined);
@@ -408,35 +399,40 @@ export async function createAttendanceSession(input: {
   notes: string;
   requestId: string;
 }): Promise<{ sessionId: string; qrToken: string; revision: number; status: string; existing: boolean; rosterCount: number }> {
+  await ensureAttendanceInitialized();
   return apiRequest('/api/attendance/sessions', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export async function getAttendanceSessionSnapshot(sessionId: string, ownerUid = auth.currentUser?.uid): Promise<AttendanceSessionSnapshot> {
+  await ensureAttendanceInitialized();
   if (!ownerUid) throw new Error('login_required');
   if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
   const key = `attendance-doctor:${ownerUid}:${sessionId}`;
+  const repo = getAttendanceRepository();
   try {
     const data = await apiRequest<AttendanceSessionSnapshot>(`/api/attendance/sessions/${encodeURIComponent(sessionId)}`, {}, false, ownerUid);
-    await attendanceDurablePut(STORE_META, { key, data }).catch(() => undefined);
+    await repo.setMetadata(key, data, ownerUid).catch(() => undefined);
     return overlayDoctorCommands(data, ownerUid);
   } catch (error: any) {
     if (error.status === 403) throw error;
-    const cached = await dbGet<{ data: AttendanceSessionSnapshot }>(STORE_META, key);
+    const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
     if (!cached) throw error;
-    return overlayDoctorCommands({ ...cached.data, offline: true }, ownerUid);
+    return overlayDoctorCommands({ ...cached, offline: true }, ownerUid);
   }
 }
 
 export async function updateAttendanceSession(sessionId: string, input: Record<string, unknown>, ownerUid = auth.currentUser?.uid): Promise<any> {
+  await ensureAttendanceInitialized();
   if (!ownerUid || (auth.currentUser && auth.currentUser.uid !== ownerUid)) throw new Error('login_required');
   const key = `attendance-doctor:${ownerUid}:${sessionId}`;
-  const cached = await dbGet<{ data: AttendanceSessionSnapshot }>(STORE_META, key);
+  const repo = getAttendanceRepository();
+  const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
   if (!cached) throw new Error('offline_session_not_cached');
-  const snapshot = await overlayDoctorCommands(cached.data, ownerUid);
+  const snapshot = await overlayDoctorCommands(cached, ownerUid);
   const basis = { notes: snapshot.session.notes, expectedHeadcount: snapshot.session.expectedHeadcount };
   const command: DoctorAttendanceCommand = { kind: 'session_update', requestId: String(input.requestId || attendanceRequestId()), ownerUid, sessionId, input: { ...input, basis }, status: 'pending' };
-  const repo = getAttendanceRepository();
-  await repo.commitDoctorSession({ meta: { key, data: cached.data }, command });
+  await repo.commitDoctorSession({ meta: { key, data: cached }, command });
+  await repo.setMetadata(key, cached, ownerUid);
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return command;
@@ -454,6 +450,7 @@ async function overlayDoctorCommands(snapshot: AttendanceSessionSnapshot, ownerU
 }
 
 export async function markAttendanceManually(sessionId: string, input: Record<string, unknown>, ownerUid = auth.currentUser?.uid): Promise<DoctorAttendanceCommand> {
+  await ensureAttendanceInitialized();
   if (!ownerUid) throw new Error('login_required');
   if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
   const command: DoctorAttendanceCommand = { requestId: String(input.requestId || attendanceRequestId()), ownerUid, sessionId, input, status: 'pending' };
@@ -477,11 +474,13 @@ export interface DoctorAttendanceCommand {
 }
 
 export const listDoctorAttendanceCommands = async (ownerUid: string): Promise<DoctorAttendanceCommand[]> => {
+  await ensureAttendanceInitialized();
   const repo = getAttendanceRepository();
   return (await repo.listDoctorCommands(ownerUid)) as unknown as DoctorAttendanceCommand[];
 };
 
 export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<void> {
+  await ensureAttendanceInitialized();
   if (auth.currentUser?.uid !== ownerUid || navigator.onLine === false) return;
   const repo = getAttendanceRepository();
   const commands = await listDoctorAttendanceCommands(ownerUid);
@@ -504,18 +503,21 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
       }
       const result: any = await apiRequest(path, { method: command.kind === 'session_update' ? 'PATCH' : 'POST', body: JSON.stringify(input) }, false, ownerUid);
       const key = `attendance-doctor:${ownerUid}:${command.sessionId}`;
-      const cached = await dbGet<{ data: AttendanceSessionSnapshot }>(STORE_META, key);
+      const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
       if (cached && result.session) {
-        const data = { ...cached.data, session: { ...cached.data.session, notes: result.session.notes, expectedHeadcount: result.session.expected_headcount, status: result.session.status, revision: Number(result.session.revision), endedAt: result.session.ended_at } };
+        const data = { ...cached, session: { ...cached.session, notes: result.session.notes, expectedHeadcount: result.session.expected_headcount, status: result.session.status, revision: Number(result.session.revision), endedAt: result.session.ended_at } };
         await repo.commitDoctorSession({ meta: { key, data }, command: { ...command, status: 'synced' } });
+        await repo.setMetadata(key, data, ownerUid);
       } else if (cached && result.record) {
         const row = result.record;
         const record = { id: row.id, sessionId: row.session_id, rosterStudentId: row.roster_student_id, officialName: row.official_name_snapshot,
           entryMethod: row.entry_method, status: row.status, receivedAt: row.received_at, decidedAt: row.decided_at, reviewFlags: row.review_flags || [], revision: Number(row.revision) };
-        const records = cached.data.records.filter(item => item.id !== record.id).concat(record);
-        const counts = { ...cached.data.counts, confirmed: records.filter(item => item.status === 'confirmed').length };
-        counts.discrepancy = Math.max(0, counts.confirmed - cached.data.session.expectedHeadcount);
-        await repo.commitDoctorSession({ meta: { key, data: { ...cached.data, records, counts } }, command: { ...command, status: 'synced' } });
+        const records = cached.records.filter(item => item.id !== record.id).concat(record);
+        const counts = { ...cached.counts, confirmed: records.filter(item => item.status === 'confirmed').length };
+        counts.discrepancy = Math.max(0, counts.confirmed - cached.session.expectedHeadcount);
+        const data = { ...cached, records, counts };
+        await repo.commitDoctorSession({ meta: { key, data }, command: { ...command, status: 'synced' } });
+        await repo.setMetadata(key, data, ownerUid);
       } else {
         await repo.updateDoctorCommand({ ...command, status: 'synced' });
       }

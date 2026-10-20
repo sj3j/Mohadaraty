@@ -17,6 +17,8 @@ before(async () => {
     'supabase/migrations/20261015073458_attendance_device_policy.sql',
     'supabase/migrations/20261015155756_attendance_offline_sessions.sql',
     'supabase/migrations/20261018160000_attendance_late_receipts_key_rotation.sql',
+    'supabase/migrations/20261021000000_attendance_review_revisions_key_rotation.sql',
+    'supabase/migrations/20261021000001_attendance_review_retry_integrity.sql',
   ]) {
     try {
       await database.exec(readFileSync(path, 'utf8'));
@@ -51,8 +53,8 @@ async function submit(receipt: ReturnType<typeof input>, flags: string[] = []) {
   return result.rows[0].result;
 }
 
-async function review(receiptId: string, enrollDevice: boolean, requestId = randomUUID(), allowLateConfirmation = false) {
-  const result = await database.query<{ result: any }>("select attendance_resolve_review($1,$2,'doctor','confirm','College ID checked',1,$3,$4) as result", [requestId, receiptId, enrollDevice, allowLateConfirmation]);
+async function review(receiptId: string, enrollDevice: boolean, requestId = randomUUID(), allowLateConfirmation = false, expectedRevision: number = 1) {
+  const result = await database.query<{ result: any }>("select attendance_resolve_review($1,$2,'doctor','confirm','College ID checked',$3,$4,$5) as result", [requestId, receiptId, expectedRevision, enrollDevice, allowLateConfirmation]);
   return result.rows[0].result;
 }
 
@@ -225,7 +227,7 @@ test('key rotation preserves enrolled device identity and resolves alias to cano
   const receiptWithRotatedKey = input(2, 'student-a', sharedInstallation, newDevice);
   assert.equal((await submit(receiptWithRotatedKey)).resolution, 'confirmed');
 
-  // Challenge cannot be reused
+  // Challenge cannot be reused with changed payload
   await assert.rejects(
     database.query(
       "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
@@ -233,5 +235,83 @@ test('key rotation preserves enrolled device identity and resolves alias to cano
     ),
     /challenge_already_consumed/
   );
+
+  // Identical retry of completed rotation returns recorded result
+  const retryResult = await database.query<{ result: any }>(
+    "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
+    [challengeId, device, newDevice, JSON.stringify({ nonce, rotatedAt: new Date().toISOString() })]
+  );
+  assert.equal(retryResult.rows[0].result.rotated, true);
+  assert.equal(retryResult.rows[0].result.existing, true);
+
+  // Mismatched nonce rejection
+  const challenge2 = (await database.query<{ id: string }>(
+    "select attendance_create_key_rotation_challenge('student-a', $1) as id",
+    ['correct-nonce-1234567890']
+  )).rows[0].id;
+  await assert.rejects(
+    database.query(
+      "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
+      [challenge2, device, 'x'.repeat(64), JSON.stringify({ nonce: 'wrong-nonce-9876543210' })]
+    ),
+    /invalid_challenge_nonce/
+  );
+});
+
+test('review enforces revision concurrency protection and increments review revision', async () => {
+  const receipt = input(4, 'student-b', 'f'.repeat(64), 'g'.repeat(64));
+  const submitted = await submit(receipt);
+  assert.equal(submitted.resolution, 'needs_review');
+
+  // 1. Stale / invalid revision (-999) fails with concurrency_conflict
+  await assert.rejects(
+    review(receipt.requestId, true, randomUUID(), false, -999),
+    /concurrency_conflict/
+  );
+
+  // 2. Successful review with expectedRevision = 1
+  const reviewCmdId = randomUUID();
+  const confirmed = await review(receipt.requestId, true, reviewCmdId, false, 1);
+  assert.equal(confirmed.resolution, 'confirmed');
+  assert.equal(confirmed.reviewRevision, 2);
+
+  // 3. Identical completed review returns recorded result
+  const identical = await review(receipt.requestId, true, reviewCmdId, false, 1);
+  assert.equal(identical.resolution, 'confirmed');
+
+  // 4. Subsequent review with stale revision 1 fails with concurrency_conflict
+  await assert.rejects(
+    review(receipt.requestId, true, randomUUID(), false, 1),
+    /concurrency_conflict/
+  );
+});
+
+test('completed review rejects changed-payload and cross-receipt request ID reuse', async () => {
+  const receipt = input(7, 'student-b', '7'.repeat(64), '8'.repeat(64));
+  await submit(receipt);
+  const requestId = randomUUID();
+  const query = (decision: string, receiptId = receipt.requestId) => database.query(
+    'select attendance_resolve_review($1,$2,\'doctor\',$3,\'ID checked\',1,false,false)',
+    [requestId, receiptId, decision],
+  );
+  await query('reject');
+  await assert.rejects(query('confirm'), /idempotency_conflict/);
+  const another = input(6, 'student-b', '9'.repeat(64), '8'.repeat(64));
+  await submit(another);
+  await assert.rejects(query('reject', another.requestId), /idempotency_conflict/);
+});
+
+test('rotation retry binds the complete committed proof', async () => {
+  const nonce = 'rotation-retry-proof-nonce';
+  const challengeId = (await database.query<{ id: string }>(
+    "select attendance_create_key_rotation_challenge('student-a',$1) id", [nonce],
+  )).rows[0].id;
+  const proof = { nonce, oldSignature: 'original', newSignature: 'original' };
+  const rotate = (body: object) => database.query(
+    "select attendance_commit_key_rotation($1,'student-a','student-a',$2,$3,$4)",
+    [challengeId, device, '6'.repeat(64), JSON.stringify(body)],
+  );
+  await rotate(proof);
+  await assert.rejects(rotate({ ...proof, oldSignature: 'changed' }), /idempotency_conflict/);
 });
 

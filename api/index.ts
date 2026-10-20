@@ -2159,15 +2159,36 @@ app.post('/api/auth/session-bridge', verifyAuth, async (req: express.Request, re
   try {
     const user = (req as any).user;
     if (!user || !user.uid) return res.status(401).json({ error: 'unauthorized' });
-    const userRecord = await admin.auth().getUser(user.uid);
+
+    // Reject caller-supplied target UID
+    if (req.body && typeof req.body === 'object' && ('targetUid' in req.body || 'uid' in req.body)) {
+      const requestedTarget = (req.body as any).targetUid || (req.body as any).uid;
+      if (requestedTarget && requestedTarget !== user.uid) {
+        return res.status(400).json({ error: 'target_uid_not_permitted' });
+      }
+    }
+
+    // Verify token revocation
+    const authHeader = req.headers.authorization;
+    const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : '';
+    if (!idToken) return res.status(401).json({ error: 'unauthorized' });
+
+    const verified = await admin.auth().verifyIdToken(idToken, true);
+    const userRecord = await admin.auth().getUser(verified.uid);
     if (userRecord.disabled) return res.status(403).json({ error: 'account_disabled' });
-    const userDoc = await admin.firestore().collection('users').doc(user.uid).get();
+
+    const userDoc = await admin.firestore().collection('users').doc(verified.uid).get();
     if (userDoc.exists && userDoc.data()?.disabled === true) {
       return res.status(403).json({ error: 'account_disabled' });
     }
-    const customToken = await admin.auth().createCustomToken(user.uid);
+
+    // Mint only for the verified caller's UID
+    const customToken = await admin.auth().createCustomToken(verified.uid);
     res.json({ ok: true, customToken });
   } catch (error: any) {
+    if (error?.code === 'auth/id-token-revoked' || error?.code === 'auth/user-disabled') {
+      return res.status(401).json({ error: 'token_revoked' });
+    }
     res.status(500).json({ error: 'session_bridge_failed' });
   }
 });

@@ -4,6 +4,7 @@ import {
   X,
   Upload,
   Image as ImageIcon,
+  FileText,
   Loader2,
   CheckCircle2,
   AlertCircle,
@@ -20,6 +21,7 @@ import { LectureAttachment } from '../../types/lectureAttachment.types';
 import { legacyCategoryLabel } from '../../lib/subjectDisplay';
 import { canManageLectures } from '../../lib/permissions';
 import { hasStageCapability } from '../../../shared/staffCapabilities';
+import { loadPdfjs, PDFJS_DOC_OPTIONS, freshBytes } from '../../lib/pdfjs';
 
 interface UploadAttachmentModalProps {
   isOpen: boolean;
@@ -33,11 +35,42 @@ interface UploadAttachmentModalProps {
 interface StagedAttachment {
   id: string;
   file: File;
+  fileType: 'image' | 'pdf';
   previewUrl: string;
   title: string;
   progress?: number;
   status: 'pending' | 'uploading' | 'done' | 'error';
   error?: string;
+}
+
+/**
+ * Generate a fast page 1 preview for staged PDFs client-side.
+ */
+async function generateLocalPdfPreview(file: File): Promise<string | null> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfjs = await loadPdfjs();
+    const doc = await pdfjs.getDocument({
+      data: freshBytes(arrayBuffer),
+      ...PDFJS_DOC_OPTIONS,
+    }).promise;
+    const page = await doc.getPage(1);
+    const vp = page.getViewport({ scale: 0.4 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      await page.render({ canvasContext: ctx, viewport: vp, canvas: null as any }).promise;
+      const url = canvas.toDataURL('image/jpeg', 0.8);
+      try { (doc as any)?.destroy?.(); } catch {}
+      return url;
+    }
+    try { (doc as any)?.destroy?.(); } catch {}
+  } catch (err) {
+    console.warn('[UploadAttachmentModal] PDF local preview failed:', err);
+  }
+  return null;
 }
 
 export default function UploadAttachmentModal({
@@ -53,6 +86,7 @@ export default function UploadAttachmentModal({
 
   const [stagedFiles, setStagedFiles] = useState<StagedAttachment[]>([]);
   const [isAnonymous, setIsAnonymous] = useState(false);
+  const [isFree, setIsFree] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
@@ -65,7 +99,7 @@ export default function UploadAttachmentModal({
   useEffect(() => {
     return () => {
       stagedFiles.forEach((item) => {
-        if (item.previewUrl) {
+        if (item.previewUrl && item.previewUrl.startsWith('blob:')) {
           try {
             URL.revokeObjectURL(item.previewUrl);
           } catch {}
@@ -76,7 +110,7 @@ export default function UploadAttachmentModal({
 
   if (!isOpen) return null;
 
-  const handleFilesChosen = (files: FileList | null) => {
+  const handleFilesChosen = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setGeneralError(null);
 
@@ -84,25 +118,44 @@ export default function UploadAttachmentModal({
     const remainingSlots = 5 - currentCount;
 
     if (remainingSlots <= 0) {
-      setGeneralError(isRtl ? 'الحد الأقصى هو 5 صور في المرة الواحدة' : 'Maximum 5 images per upload');
+      setGeneralError(isRtl ? 'الحد الأقصى هو 5 مرفقات في المرة الواحدة' : 'Maximum 5 files per upload');
       return;
     }
 
     const chosen = Array.from(files).slice(0, remainingSlots);
-    const validImages = chosen.filter((f) => f.type.startsWith('image/'));
+    const valid = chosen.filter(
+      (f) => f.type.startsWith('image/') || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
 
-    if (validImages.length === 0) {
-      setGeneralError(isRtl ? 'يرجى اختيار ملفات صور فقط (JPG, PNG, WebP)' : 'Please select image files only');
+    if (valid.length === 0) {
+      setGeneralError(isRtl ? 'يرجى اختيار صور (JPG, PNG) أو ملفات PDF (ملخصات، ترجمات)' : 'Please select image files or PDF documents');
       return;
     }
 
-    const newStaged: StagedAttachment[] = validImages.map((file) => ({
-      id: `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-      file,
-      previewUrl: URL.createObjectURL(file),
-      title: '',
-      status: 'pending',
-    }));
+    const newStaged: StagedAttachment[] = [];
+    for (const file of valid) {
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      if (isPdf && file.size > 30 * 1024 * 1024) {
+        setGeneralError(isRtl ? `الملف ${file.name} يتجاوز الحد الأقصى (30 ميغابايت)` : `File ${file.name} exceeds 30MB limit`);
+        continue;
+      }
+
+      let previewUrl = '';
+      if (isPdf) {
+        previewUrl = (await generateLocalPdfPreview(file)) || '';
+      } else {
+        previewUrl = URL.createObjectURL(file);
+      }
+
+      newStaged.push({
+        id: `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        file,
+        fileType: isPdf ? 'pdf' : 'image',
+        previewUrl,
+        title: '',
+        status: 'pending',
+      });
+    }
 
     setStagedFiles((prev) => [...prev, ...newStaged]);
   };
@@ -110,7 +163,9 @@ export default function UploadAttachmentModal({
   const handleRemoveStaged = (id: string) => {
     setStagedFiles((prev) => {
       const target = prev.find((item) => item.id === id);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      if (target?.previewUrl && target.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
       return prev.filter((item) => item.id !== id);
     });
   };
@@ -149,6 +204,7 @@ export default function UploadAttachmentModal({
         file: item.file,
         title: item.title,
         isAnonymous,
+        isFree: isStaff ? isFree : false,
         user,
         onProgress: (p) => {
           setStagedFiles((prev) =>
@@ -160,94 +216,54 @@ export default function UploadAttachmentModal({
       setStagedFiles((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: 'done', progress: 100 } : it))
       );
+
       onAttachmentUploaded?.(uploaded);
       return true;
     } catch (err: any) {
-      console.error('Failed to upload attachment:', err);
-      const errorMsg =
-        err?.code === 'storage/unauthorized' || err?.code === 'permission-denied'
-          ? (isRtl ? 'صلاحيات غير كافية أو تعذر الوصول' : 'Permission denied')
-          : err?.message || (isRtl ? 'فشل الرفع' : 'Upload failed');
-
+      console.error('[UploadAttachmentModal] Upload failed:', err);
+      const errMsg = err?.message || (isRtl ? 'تعذر رفع الملف' : 'Upload failed');
       setStagedFiles((prev) =>
-        prev.map((it) =>
-          it.id === item.id
-            ? { ...it, status: 'error', error: errorMsg }
-            : it
-        )
+        prev.map((it) => (it.id === item.id ? { ...it, status: 'error', error: errMsg } : it))
       );
       return false;
     }
   };
 
   const handleUploadAll = async () => {
-    if (stagedFiles.length === 0 || isSubmitting) return;
+    const toUpload = stagedFiles.filter((it) => it.status !== 'done');
+    if (toUpload.length === 0) return;
+
     setIsSubmitting(true);
     setGeneralError(null);
-    setSuccessToast(null);
 
-    const pendingItems = stagedFiles.filter((item) => item.status !== 'done');
-    if (pendingItems.length === 0) {
-      setIsSubmitting(false);
-      return;
+    let successes = 0;
+    for (const item of toUpload) {
+      const ok = await uploadSingleItem(item);
+      if (ok) successes++;
     }
-
-    const results = await Promise.allSettled(
-      pendingItems.map((item) => uploadSingleItem(item))
-    );
-
-    let successCount = 0;
-    let failCount = 0;
-
-    results.forEach((res) => {
-      if (res.status === 'fulfilled' && res.value === true) {
-        successCount++;
-      } else {
-        failCount++;
-      }
-    });
 
     setIsSubmitting(false);
 
-    if (failCount > 0) {
-      setGeneralError(
-        isRtl
-          ? `تعذر رفع ${failCount} من المرفقات. انقر على زر إعادة المحاولة بجانب المرفق.`
-          : `Failed to upload ${failCount} attachment(s). Please retry the failed files.`
-      );
-    }
-
-    if (failCount === 0 && successCount > 0) {
+    if (successes > 0) {
       setSuccessToast(
-        isRtl
-          ? isStaff
-            ? 'تم رفع واعتماد المرفقات بنجاح!'
-            : 'تم إرسال المرفقات للمراجعة بنجاح!'
-          : 'Attachments uploaded successfully!'
+        isStaff
+          ? isRtl
+            ? `تم اعتماد ونشر ${successes} مرفق(ات) بنجاح!`
+            : `Successfully published ${successes} attachment(s)!`
+          : isRtl
+          ? `تم إرسال ${successes} مرفق(ات) للمراجعة من قبل ممثل مرحلتك!`
+          : `Sent ${successes} attachment(s) for review!`
       );
       setTimeout(() => {
         onClose();
-      }, 900);
+      }, 1400);
     }
   };
 
-  const handleRetryItem = async (id: string) => {
+  const handleRetryItem = (id: string) => {
     const item = stagedFiles.find((it) => it.id === id);
-    if (!item || isSubmitting) return;
-    setIsSubmitting(true);
-    setGeneralError(null);
-    const ok = await uploadSingleItem(item);
-    setIsSubmitting(false);
-    if (ok) {
-      // Check remaining errors
-      setStagedFiles((current) => {
-        const remainingErrors = current.filter((it) => it.status === 'error');
-        if (remainingErrors.length === 0) {
-          setSuccessToast(isRtl ? 'تم الرفع بنجاح!' : 'Uploaded successfully!');
-          setTimeout(() => onClose(), 800);
-        }
-        return current;
-      });
+    if (item) {
+      uploadSingleItem(item);
     }
   };
 
@@ -266,11 +282,11 @@ export default function UploadAttachmentModal({
         <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100 dark:border-zinc-800">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center">
-              <ImageIcon className="w-5 h-5" />
+              <Upload className="w-5 h-5" />
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-stone-100">
-                {isRtl ? 'إضافة مرفقات للمحاضرة' : 'Add Lecture Attachments'}
+                {isRtl ? 'إضافة مرفقات وملخصات للمحاضرة' : 'Add Attachments & Summaries'}
               </h3>
               <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate max-w-[240px] sm:max-w-xs">
                 {lecture.title}
@@ -303,7 +319,7 @@ export default function UploadAttachmentModal({
               ) : (
                 <span>
                   {isRtl
-                    ? 'سيتم مراجعة الصور واعتمادها من قبل ممثل مرحلتك قبل ظهورها لبقية الطلاب لضمان جودة المحتوى.'
+                    ? 'سيتم مراجعة المرفقات واعتمادها من قبل ممثل مرحلتك قبل ظهورها لبقية الطلاب لضمان جودة المحتوى.'
                     : 'Your attachments will be reviewed and approved by your stage representative before being visible to other students.'}
                 </span>
               )}
@@ -333,7 +349,7 @@ export default function UploadAttachmentModal({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,application/pdf"
                 multiple
                 className="hidden"
                 onChange={(e) => handleFilesChosen(e.target.files)}
@@ -342,10 +358,10 @@ export default function UploadAttachmentModal({
                 <Upload className="w-6 h-6" />
               </div>
               <p className="text-sm font-bold text-slate-800 dark:text-stone-200 mb-1">
-                {isRtl ? 'انقر لاختيار صور أو اسحبها هنا' : 'Click to select images or drag & drop'}
+                {isRtl ? 'انقر لاختيار صور أو ملفات PDF أو اسحبها هنا' : 'Click to select images or PDFs or drag & drop'}
               </p>
               <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                {isRtl ? 'صور سبورة، مخططات، ملخصات (JPG, PNG, WebP) - حتى 5 صور' : 'Board photos, diagrams, notes (JPG, PNG, WebP) - up to 5'}
+                {isRtl ? 'صور سبورة، ملخصات، أو ملفات PDF مترجمة (حتى 30 ميغابايت) - 5 كحد أقصى' : 'Board photos, diagrams, summaries or translated PDFs (up to 30MB) - up to 5'}
               </p>
             </div>
           )}
@@ -368,9 +384,9 @@ export default function UploadAttachmentModal({
           {stagedFiles.length > 0 && (
             <div className="space-y-2.5">
               <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-400">
-                <span>{isRtl ? `الصور المختارة (${stagedFiles.length}/5)` : `Selected Images (${stagedFiles.length}/5)`}</span>
+                <span>{isRtl ? `المرفقات المختارة (${stagedFiles.length}/5)` : `Selected Attachments (${stagedFiles.length}/5)`}</span>
                 <span className="text-[11px] font-normal text-slate-400">
-                  {isRtl ? 'يتم ضغط الصور تلقائياً' : 'Auto-compressed'}
+                  {isRtl ? 'ملخصات، ترجمات، وصور' : 'Summaries, translations, & photos'}
                 </span>
               </div>
 
@@ -378,14 +394,25 @@ export default function UploadAttachmentModal({
                 {stagedFiles.map((item) => (
                   <div
                     key={item.id}
-                    className={`p-2 sm:p-2.5 rounded-xl border bg-slate-50/50 dark:bg-zinc-800/40 flex items-center gap-3 transition-colors ${
+                    className={`p-2.5 rounded-xl border bg-slate-50/50 dark:bg-zinc-800/40 flex items-start gap-3 transition-colors ${
                       item.status === 'error'
                         ? 'border-rose-300 dark:border-rose-800/60 bg-rose-50/20'
                         : 'border-slate-100 dark:border-zinc-800'
                     }`}
                   >
-                    <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-zinc-700 relative">
-                      <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
+                    <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-zinc-700 relative bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
+                      {item.previewUrl ? (
+                        <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <FileText className="w-7 h-7 text-rose-500" />
+                      )}
+
+                      {item.fileType === 'pdf' && (
+                        <span className="absolute top-1 right-1 px-1 py-0.2 rounded text-[7px] font-black uppercase bg-rose-600 text-white shadow-xs">
+                          PDF
+                        </span>
+                      )}
+
                       {item.status === 'uploading' && (
                         <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white">
                           <Loader2 className="w-4 h-4 text-white animate-spin mb-0.5" />
@@ -407,12 +434,32 @@ export default function UploadAttachmentModal({
                     <div className="flex-1 min-w-0">
                       <input
                         type="text"
-                        placeholder={isRtl ? 'وصف أو عنوان للصورة (اختياري)...' : 'Optional caption or title...'}
+                        placeholder={isRtl ? 'عنوان أو وصف للمرفق (مثال: ترجمة، ملخص)...' : 'Attachment title (e.g. Translation, Summary)...'}
                         value={item.title}
                         onChange={(e) => handleTitleChange(item.id, e.target.value)}
                         disabled={isSubmitting || item.status === 'done'}
                         className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-800 dark:text-stone-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
+
+                      {/* Quick Title Presets */}
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {[
+                          isRtl ? 'ترجمة المحاضرة' : 'Lecture Translation',
+                          isRtl ? 'تلخيص المحاضرة' : 'Lecture Summary',
+                          isRtl ? 'ملاحظات وأسئلة' : 'Notes & Questions',
+                        ].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => handleTitleChange(item.id, preset)}
+                            disabled={isSubmitting || item.status === 'done'}
+                            className="text-[9px] px-2 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-800 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-slate-600 dark:text-stone-300 hover:text-sky-600 transition-colors cursor-pointer"
+                          >
+                            + {preset}
+                          </button>
+                        ))}
+                      </div>
+
                       {item.status === 'error' && (
                         <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-1">
                           <AlertCircle className="w-3 h-3 flex-shrink-0" />
@@ -421,7 +468,7 @@ export default function UploadAttachmentModal({
                       )}
                       <div className="flex items-center justify-between mt-1 text-[10px] text-slate-400">
                         <span className="truncate max-w-[150px]">{item.file.name}</span>
-                        <span>{(item.file.size / 1024).toFixed(0)} KB</span>
+                        <span>{(item.file.size / (1024 * 1024)).toFixed(1)} MB</span>
                       </div>
                     </div>
 
@@ -483,6 +530,41 @@ export default function UploadAttachmentModal({
               <div className="w-9 h-5 bg-slate-300 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sky-600"></div>
             </label>
           </div>
+
+          {/* Admin Free Attachment Toggle */}
+          {isStaff && (
+            <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-800/40 rounded-xl flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-800 dark:text-stone-200 flex items-center gap-1.5">
+                    <span>{isRtl ? 'مرفق مجاني لجميع الطلاب' : 'Free for all students'}</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded font-black bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">
+                      {isRtl ? 'مجاني' : 'FREE'}
+                    </span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {isRtl
+                      ? 'يمكن للطلاب غير المشتركين فتح وقراءة هذا المرفق مجاناً بدون حجب'
+                      : 'Non-subscribers can view and read this attachment without paywall'}
+                  </p>
+                </div>
+              </div>
+
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isFree}
+                  onChange={(e) => setIsFree(e.target.checked)}
+                  disabled={isSubmitting}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-slate-300 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+              </label>
+            </div>
+          )}
         </div>
 
         {/* Footer Actions */}
@@ -505,7 +587,7 @@ export default function UploadAttachmentModal({
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>{isRtl ? 'جارِ الضغط والرفع...' : 'Compressing & Uploading...'}</span>
+                <span>{isRtl ? 'جارِ المعالجة والرفع...' : 'Processing & Uploading...'}</span>
               </>
             ) : (
               <>

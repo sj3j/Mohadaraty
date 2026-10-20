@@ -58,6 +58,10 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>يحتاج التطبيق للوصول إلى الكاميرا لالتقاط صورة الملف الشخصي أو تصوير المستندات الدراسية.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>يحتاج التطبيق إلى الموقع الجغرافي للتحقق من حالة الحرم الجامعي قبل فتح ماسح الحضور.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>يحتاج التطبيق إلى الموقع الجغرافي للتحقق من حالة الحرم الجامعي قبل فتح ماسح الحضور.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>يحتاج التطبيق للوصول إلى مكتبة الصور لاختيار صورة الملف الشخصي أو إرفاق المستندات الدراسية.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

@@ -11,10 +11,11 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "attendance_native.db";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 2;
 
     public AttendanceDatabaseHelper(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -37,6 +38,8 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
             "status TEXT NOT NULL, " +
             "encrypted_payload TEXT NOT NULL, " +
             "local_device_conflict INTEGER NOT NULL DEFAULT 0, " +
+            "lease_id TEXT, " +
+            "lease_expires_at INTEGER, " +
             "created_at INTEGER NOT NULL, " +
             "updated_at INTEGER NOT NULL" +
             ");");
@@ -62,7 +65,9 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
 
         db.execSQL("CREATE TABLE attendance_meta (" +
             "key TEXT PRIMARY KEY, " +
-            "value TEXT NOT NULL" +
+            "owner_uid TEXT, " +
+            "encrypted_value TEXT NOT NULL, " +
+            "updated_at INTEGER NOT NULL" +
             ");");
 
         db.execSQL("CREATE TABLE attendance_migration_journal (" +
@@ -75,7 +80,13 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Forward schema migrations preserve data
+        if (oldVersion < 2) {
+            try { db.execSQL("ALTER TABLE attendance_receipts ADD COLUMN lease_id TEXT;"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_receipts ADD COLUMN lease_expires_at INTEGER;"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_meta ADD COLUMN owner_uid TEXT;"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_meta ADD COLUMN encrypted_value TEXT;"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_meta ADD COLUMN updated_at INTEGER;"); } catch (Exception ignored) {}
+        }
     }
 
     public JSONObject captureAtomic(JSONObject receipt, String conflictSignature, AttendanceKeyManager km) throws Exception {
@@ -87,7 +98,7 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
             String requestId = receipt.getString("requestId");
             String occurrenceId = receipt.optString("occurrenceId", "");
 
-            // 1. Check same-account duplicate
+            // 1. Check duplicate under same account
             Cursor cursor = db.query("attendance_receipts",
                 new String[]{"encrypted_payload"},
                 "session_id = ? AND owner_uid = ? AND status != 'invalid'",
@@ -196,36 +207,255 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
         db.update("attendance_receipts", cv, "request_id = ?", new String[]{requestId});
     }
 
+    public JSONObject transitionReceipt(String requestId, String newStatus, String resolution, String reason, Integer recordRevision, AttendanceKeyManager km) throws Exception {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Cursor cursor = db.query("attendance_receipts",
+                new String[]{"encrypted_payload"},
+                "request_id = ?",
+                new String[]{requestId}, null, null, null, "1");
+            if (!cursor.moveToFirst()) {
+                cursor.close();
+                return null;
+            }
+            String enc = cursor.getString(0);
+            cursor.close();
+
+            JSONObject receipt = new JSONObject(km.decryptPayload(enc));
+            int curRev = receipt.optInt("recordRevision", 0);
+            if (recordRevision != null && curRev > recordRevision) {
+                // Reject revision regression
+                db.setTransactionSuccessful();
+                return receipt;
+            }
+
+            receipt.put("status", newStatus);
+            if (resolution != null) receipt.put("resolution", resolution);
+            if (reason != null) receipt.put("reason", reason);
+            if (recordRevision != null) receipt.put("recordRevision", recordRevision);
+            long now = System.currentTimeMillis();
+            receipt.put("updatedAt", now);
+
+            ContentValues cv = new ContentValues();
+            cv.put("status", newStatus);
+            cv.put("encrypted_payload", km.encryptPayload(receipt.toString()));
+            cv.put("updated_at", now);
+            db.update("attendance_receipts", cv, "request_id = ?", new String[]{requestId});
+            db.setTransactionSuccessful();
+            return receipt;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public JSONObject acquireUploadLease(String ownerUid, int limit, long durationMs, AttendanceKeyManager km) throws Exception {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long now = System.currentTimeMillis();
+            long expiresAt = now + durationMs;
+            String leaseId = UUID.randomUUID().toString();
+
+            String selection = (ownerUid != null && !ownerUid.isEmpty())
+                ? "owner_uid = ? AND status IN ('pending', 'syncing', 'waiting_for_login') AND (lease_id IS NULL OR lease_expires_at < ?)"
+                : "status IN ('pending', 'syncing', 'waiting_for_login') AND (lease_id IS NULL OR lease_expires_at < ?)";
+
+            String[] selectionArgs = (ownerUid != null && !ownerUid.isEmpty())
+                ? new String[]{ownerUid, String.valueOf(now)}
+                : new String[]{String.valueOf(now)};
+
+            Cursor cursor = db.query("attendance_receipts",
+                new String[]{"request_id", "encrypted_payload"},
+                selection, selectionArgs, null, null, "created_at ASC", String.valueOf(limit));
+
+            List<String> requestIds = new ArrayList<>();
+            JSONArray receiptsArr = new JSONArray();
+
+            while (cursor.moveToNext()) {
+                String reqId = cursor.getString(0);
+                String enc = cursor.getString(1);
+                try {
+                    JSONObject obj = new JSONObject(km.decryptPayload(enc));
+                    requestIds.add(reqId);
+                    receiptsArr.put(obj.toString());
+                } catch (Exception ignored) {}
+            }
+            cursor.close();
+
+            for (String reqId : requestIds) {
+                ContentValues cv = new ContentValues();
+                cv.put("lease_id", leaseId);
+                cv.put("lease_expires_at", expiresAt);
+                cv.put("status", "syncing");
+                cv.put("updated_at", now);
+                db.update("attendance_receipts", cv, "request_id = ?", new String[]{reqId});
+            }
+
+            db.setTransactionSuccessful();
+            JSONObject res = new JSONObject();
+            res.put("leaseId", leaseId);
+            res.put("receipts", receiptsArr);
+            return res;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public void acknowledgeBatch(JSONArray acks, AttendanceKeyManager km) throws Exception {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < acks.length(); i++) {
+                JSONObject ack = acks.getJSONObject(i);
+                String reqId = ack.getString("requestId");
+                String resolution = ack.getString("resolution");
+                String reason = ack.optString("reason", null);
+                String recordId = ack.optString("recordId", null);
+                int recordRevision = ack.optInt("recordRevision", -1);
+
+                String newStatus = ("confirmed".equals(resolution) || "already_recorded".equals(resolution)) ? "confirmed"
+                    : "needs_review".equals(resolution) ? "review"
+                    : "invalid_evidence".equals(resolution) ? "invalid" : "pending";
+
+                Cursor cursor = db.query("attendance_receipts",
+                    new String[]{"encrypted_payload"},
+                    "request_id = ?",
+                    new String[]{reqId}, null, null, null, "1");
+
+                if (cursor.moveToFirst()) {
+                    String enc = cursor.getString(0);
+                    cursor.close();
+                    JSONObject receipt = new JSONObject(km.decryptPayload(enc));
+                    int curRev = receipt.optInt("recordRevision", 0);
+                    if (recordRevision >= 0 && curRev > recordRevision) {
+                        continue;
+                    }
+                    receipt.put("status", newStatus);
+                    receipt.put("resolution", resolution);
+                    if (reason != null) receipt.put("reason", reason);
+                    if (recordId != null) receipt.put("recordId", recordId);
+                    if (recordRevision >= 0) receipt.put("recordRevision", recordRevision);
+                    receipt.put("updatedAt", now);
+
+                    ContentValues cv = new ContentValues();
+                    cv.put("status", newStatus);
+                    cv.put("encrypted_payload", km.encryptPayload(receipt.toString()));
+                    cv.put("lease_id", (String) null);
+                    cv.put("lease_expires_at", (Long) null);
+                    cv.put("updated_at", now);
+                    db.update("attendance_receipts", cv, "request_id = ?", new String[]{reqId});
+                } else {
+                    cursor.close();
+                }
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public void releaseUploadLease(String leaseId) {
+        SQLiteDatabase db = getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put("lease_id", (String) null);
+        cv.put("lease_expires_at", (Long) null);
+        cv.put("status", "pending");
+        db.update("attendance_receipts", cv, "lease_id = ?", new String[]{leaseId});
+    }
+
+    public void recoverInterruptedWork() {
+        SQLiteDatabase db = getWritableDatabase();
+        long now = System.currentTimeMillis();
+        ContentValues cv = new ContentValues();
+        cv.put("lease_id", (String) null);
+        cv.put("lease_expires_at", (Long) null);
+        cv.put("status", "pending");
+        db.update("attendance_receipts", cv, "lease_expires_at < ?", new String[]{String.valueOf(now)});
+    }
+
+    public String getMetadata(String key, String ownerUid, AttendanceKeyManager km) throws Exception {
+        SQLiteDatabase db = getReadableDatabase();
+        String selection = (ownerUid != null && !ownerUid.isEmpty())
+            ? "key = ? AND (owner_uid = ? OR owner_uid IS NULL)"
+            : "key = ?";
+        String[] args = (ownerUid != null && !ownerUid.isEmpty())
+            ? new String[]{key, ownerUid}
+            : new String[]{key};
+
+        Cursor cursor = db.query("attendance_meta",
+            new String[]{"encrypted_value"},
+            selection, args, null, null, null, "1");
+        if (cursor.moveToFirst()) {
+            String enc = cursor.getString(0);
+            cursor.close();
+            return km.decryptPayload(enc);
+        }
+        cursor.close();
+        return null;
+    }
+
+    public void setMetadata(String key, String value, String ownerUid, AttendanceKeyManager km) throws Exception {
+        SQLiteDatabase db = getWritableDatabase();
+        long now = System.currentTimeMillis();
+        String enc = km.encryptPayload(value);
+        ContentValues cv = new ContentValues();
+        cv.put("key", key);
+        cv.put("owner_uid", (ownerUid != null && !ownerUid.isEmpty()) ? ownerUid : null);
+        cv.put("encrypted_value", enc);
+        cv.put("updated_at", now);
+        db.insertWithOnConflict("attendance_meta", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    public void deleteMetadata(String key, String ownerUid) {
+        SQLiteDatabase db = getWritableDatabase();
+        String selection = (ownerUid != null && !ownerUid.isEmpty())
+            ? "key = ? AND (owner_uid = ? OR owner_uid IS NULL)"
+            : "key = ?";
+        String[] args = (ownerUid != null && !ownerUid.isEmpty())
+            ? new String[]{key, ownerUid}
+            : new String[]{key};
+        db.delete("attendance_meta", selection, args);
+    }
+
     public void commitDoctorSession(String metaKey, String metaData, JSONObject command, AttendanceKeyManager km) throws Exception {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            // Get sequence
             int sequence = 1;
-            Cursor cursor = db.query("attendance_meta", new String[]{"value"}, "key = 'attendance-command-sequence'", null, null, null, null);
+            Cursor cursor = db.query("attendance_meta", new String[]{"encrypted_value"}, "key = 'attendance-command-sequence'", null, null, null, null);
             if (cursor.moveToFirst()) {
-                sequence = Integer.parseInt(cursor.getString(0)) + 1;
+                String enc = cursor.getString(0);
+                try {
+                    sequence = Integer.parseInt(km.decryptPayload(enc)) + 1;
+                } catch (Exception ignored) {}
             }
             cursor.close();
 
+            long now = System.currentTimeMillis();
             ContentValues seqCv = new ContentValues();
             seqCv.put("key", "attendance-command-sequence");
-            seqCv.put("value", String.valueOf(sequence));
+            seqCv.put("encrypted_value", km.encryptPayload(String.valueOf(sequence)));
+            seqCv.put("updated_at", now);
             db.insertWithOnConflict("attendance_meta", null, seqCv, SQLiteDatabase.CONFLICT_REPLACE);
 
+            String ownerUid = command.getString("ownerUid");
             ContentValues metaCv = new ContentValues();
             metaCv.put("key", metaKey);
-            metaCv.put("value", metaData);
+            metaCv.put("owner_uid", ownerUid);
+            metaCv.put("encrypted_value", km.encryptPayload(metaData));
+            metaCv.put("updated_at", now);
             db.insertWithOnConflict("attendance_meta", null, metaCv, SQLiteDatabase.CONFLICT_REPLACE);
 
             command.put("localOrder", sequence);
             ContentValues cmdCv = new ContentValues();
             cmdCv.put("request_id", command.getString("requestId"));
-            cmdCv.put("owner_uid", command.getString("ownerUid"));
+            cmdCv.put("owner_uid", ownerUid);
             cmdCv.put("status", command.optString("status", "pending"));
             cmdCv.put("local_order", sequence);
             cmdCv.put("encrypted_payload", km.encryptPayload(command.toString()));
-            cmdCv.put("created_at", System.currentTimeMillis());
+            cmdCv.put("created_at", now);
             db.insertWithOnConflict("attendance_commands", null, cmdCv, SQLiteDatabase.CONFLICT_REPLACE);
 
             db.setTransactionSuccessful();
@@ -263,26 +493,76 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
         return list;
     }
 
-    public int getUnresolvedReceiptsCount(String ownerUid) {
-        SQLiteDatabase db = getReadableDatabase();
-        String selection = ownerUid != null && !ownerUid.isEmpty() ? "owner_uid = ? AND status = 'pending'" : "status = 'pending'";
-        String[] args = ownerUid != null && !ownerUid.isEmpty() ? new String[]{ownerUid} : null;
-        Cursor cursor = db.rawQuery("SELECT count(*) FROM attendance_receipts WHERE " + selection, args);
-        int count = 0;
-        if (cursor.moveToFirst()) count = cursor.getInt(0);
-        cursor.close();
-        return count;
-    }
+    public JSONObject getHealth(String ownerUid, AttendanceKeyManager km) {
+        JSONObject res = new JSONObject();
+        try {
+            SQLiteDatabase db = getReadableDatabase();
+            int unresolvedReceipts = 0;
+            int unresolvedCommands = 0;
+            int unreadableCount = 0;
+            long oldestPendingAgeMs = 0;
+            long now = System.currentTimeMillis();
 
-    public int getUnresolvedCommandsCount(String ownerUid) {
-        SQLiteDatabase db = getReadableDatabase();
-        String selection = ownerUid != null && !ownerUid.isEmpty() ? "owner_uid = ? AND status != 'synced'" : "status != 'synced'";
-        String[] args = ownerUid != null && !ownerUid.isEmpty() ? new String[]{ownerUid} : null;
-        Cursor cursor = db.rawQuery("SELECT count(*) FROM attendance_commands WHERE " + selection, args);
-        int count = 0;
-        if (cursor.moveToFirst()) count = cursor.getInt(0);
-        cursor.close();
-        return count;
+            String selection = (ownerUid != null && !ownerUid.isEmpty())
+                ? "owner_uid = ? AND status = 'pending'"
+                : "status = 'pending'";
+            String[] args = (ownerUid != null && !ownerUid.isEmpty())
+                ? new String[]{ownerUid}
+                : null;
+
+            Cursor cursor = db.query("attendance_receipts",
+                new String[]{"created_at", "encrypted_payload"},
+                selection, args, null, null, "created_at ASC");
+            while (cursor.moveToNext()) {
+                unresolvedReceipts++;
+                long createdAt = cursor.getLong(0);
+                if (oldestPendingAgeMs == 0 && createdAt > 0) {
+                    oldestPendingAgeMs = Math.max(0, now - createdAt);
+                }
+                String enc = cursor.getString(1);
+                try {
+                    km.decryptPayload(enc);
+                } catch (Exception e) {
+                    unreadableCount++;
+                }
+            }
+            cursor.close();
+
+            String cmdSelection = (ownerUid != null && !ownerUid.isEmpty())
+                ? "owner_uid = ? AND status != 'synced'"
+                : "status != 'synced'";
+            String[] cmdArgs = (ownerUid != null && !ownerUid.isEmpty())
+                ? new String[]{ownerUid}
+                : null;
+            Cursor cmdCursor = db.rawQuery("SELECT count(*) FROM attendance_commands WHERE " + cmdSelection, cmdArgs);
+            if (cmdCursor.moveToFirst()) {
+                unresolvedCommands = cmdCursor.getInt(0);
+            }
+            cmdCursor.close();
+
+            boolean migrationCompleted = false;
+            Cursor jnlCursor = db.rawQuery("SELECT count(*) FROM attendance_migration_journal WHERE action = 'legacy_indexeddb_migration'", null);
+            if (jnlCursor.moveToFirst()) {
+                migrationCompleted = jnlCursor.getInt(0) > 0;
+            }
+            jnlCursor.close();
+
+            res.put("storageType", "native_sqlite");
+            res.put("isDurable", true);
+            res.put("healthState", unreadableCount > 0 ? "corrupt" : "ready");
+            res.put("unresolvedReceiptsCount", unresolvedReceipts);
+            res.put("unresolvedCommandsCount", unresolvedCommands);
+            res.put("unreadableRecordsCount", unreadableCount);
+            res.put("oldestPendingAgeMs", oldestPendingAgeMs);
+            res.put("legacyMigrationPending", !migrationCompleted);
+        } catch (Exception e) {
+            try {
+                res.put("storageType", "native_sqlite");
+                res.put("isDurable", false);
+                res.put("healthState", "unavailable");
+            } catch (Exception ignored) {}
+        }
+        return res;
     }
 
     public int migrateLegacyData(List<String> receipts, List<String> locks, List<String> commands, List<String> metaList, AttendanceKeyManager km) throws Exception {
@@ -339,7 +619,9 @@ public class AttendanceDatabaseHelper extends SQLiteOpenHelper {
                 JSONObject m = new JSONObject(mStr);
                 ContentValues cv = new ContentValues();
                 cv.put("key", m.getString("key"));
-                cv.put("value", mStr);
+                cv.put("owner_uid", m.optString("ownerUid", null));
+                cv.put("encrypted_value", km.encryptPayload(mStr));
+                cv.put("updated_at", now);
                 db.insertWithOnConflict("attendance_meta", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
             }
 

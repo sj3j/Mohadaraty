@@ -5,7 +5,7 @@
  * Group substitution requires a separate authorized equivalence link.
  */
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { 
   Camera, CheckCircle2, BookOpen, FlaskConical, ChevronLeft, 
   ChevronRight, Calendar, Clock, AlertCircle, ArrowRight,
@@ -17,6 +17,14 @@ import QrScannerModal from './QrScannerModal';
 import { useStudentAttendance } from './useStudentAttendance';
 import type { StudentAttendanceRow } from '../../../shared/attendanceSchedule';
 import { attendanceWeekStart } from '../../../shared/attendance';
+import type { AttendanceScanLocationEvidence } from '../../../shared/attendanceSecurity';
+import {
+  AttendanceLocationGateError,
+  resolveAttendancePermissionBlock,
+  retryAttendanceGpsEnablement,
+  verifyAttendanceScanLocation,
+  type AttendanceLocationGateFailure,
+} from '../../services/attendanceLocationGate';
 
 interface StudentSimosanViewProps {
   user: UserProfile;
@@ -428,6 +436,11 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
 
   // Scanner state
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanGateBusy, setScanGateBusy] = useState(false);
+  const [scanGateFailure, setScanGateFailure] = useState<AttendanceLocationGateFailure | null>(null);
+  const [scanLocation, setScanLocation] = useState<AttendanceScanLocationEvidence | null>(null);
+  const scanAttemptRef = useRef(0);
+  const reopenOnForegroundRef = useRef(false);
 
   // Selected subject & mode navigation state
   const [activeSubjectId, setActiveSubjectId] = useState<string | null>(null);
@@ -477,11 +490,85 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
     setActiveSubjectId(null);
   };
 
+  const runLocationGate = useCallback(async (
+    verify: () => Promise<AttendanceScanLocationEvidence> = verifyAttendanceScanLocation,
+  ) => {
+    const attempt = ++scanAttemptRef.current;
+    setScanGateBusy(true);
+    setScanGateFailure(null);
+    setScanError('');
+    try {
+      const evidence = await verify();
+      if (attempt !== scanAttemptRef.current || document.visibilityState === 'hidden') return;
+      setScanLocation(evidence);
+      setScannerOpen(true);
+      reopenOnForegroundRef.current = false;
+    } catch (error) {
+      if (attempt !== scanAttemptRef.current) return;
+      setScanLocation(null);
+      setScannerOpen(false);
+      setScanGateFailure(error instanceof AttendanceLocationGateError ? error.kind : 'unavailable');
+    } finally {
+      if (attempt === scanAttemptRef.current) setScanGateBusy(false);
+    }
+  }, []);
+
+  const closeScanner = useCallback(() => {
+    scanAttemptRef.current += 1;
+    reopenOnForegroundRef.current = false;
+    setScannerOpen(false);
+    setScanLocation(null);
+    setScanGateBusy(false);
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (scannerOpen || scanGateBusy) reopenOnForegroundRef.current = true;
+        scanAttemptRef.current += 1;
+        setScannerOpen(false);
+        setScanLocation(null);
+        setScanGateBusy(false);
+        return;
+      }
+      if (reopenOnForegroundRef.current) {
+        reopenOnForegroundRef.current = false;
+        void runLocationGate();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [runLocationGate, scanGateBusy, scannerOpen]);
+
+  useEffect(() => closeScanner, [closeScanner, user.uid]);
+
+  const handlePermissionAction = async () => {
+    setScanGateBusy(true);
+    try {
+      const action = await resolveAttendancePermissionBlock();
+      if (action === 'foreground') {
+        reopenOnForegroundRef.current = true;
+        return;
+      }
+    } catch {
+      setScanGateFailure('unavailable');
+      setScanGateBusy(false);
+      return;
+    }
+    await runLocationGate();
+  };
+
   const handleScanSuccess = async (scannedValue: string) => {
     setScannerOpen(false);
     setScanError('');
+    const locationEvidence = scanLocation;
+    setScanLocation(null);
+    if (!locationEvidence) {
+      setScanError(isRtl ? 'يجب التحقق من الموقع قبل فتح الماسح.' : 'Location must be verified before scanning.');
+      return;
+    }
     try {
-      const { receipt } = await captureAttendanceQr(scannedValue, user.uid);
+      const { receipt } = await captureAttendanceQr(scannedValue, user.uid, locationEvidence);
       setScanSuccessSheet({
         open: true, lectureTitle: receipt.occurrence.title,
         subjectName: receipt.occurrence.lectureDate, receiptId: receipt.requestId,
@@ -525,14 +612,17 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
       {!selectedMode && (
         <div className="flex justify-center pt-1 pb-2">
           <button
-            onClick={() => setScannerOpen(true)}
+            onClick={() => void runLocationGate()}
+            disabled={scanGateBusy}
             className="w-full sm:w-auto min-w-[280px] sm:min-w-[340px] px-8 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-base sm:text-lg shadow-xl shadow-teal-700/20 flex items-center justify-center gap-3.5 active:scale-[0.98] transition-all border border-emerald-400/30 group cursor-pointer"
           >
             <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
               <Camera className="w-6 h-6 text-white" strokeWidth={2.5} />
             </div>
             <span className="tracking-tight">
-              {isRtl ? 'تسجيل حضور بقارئ الباركود' : 'Record Attendance with QR Scanner'}
+              {scanGateBusy
+                ? (isRtl ? 'جارٍ التحقق من الموقع…' : 'Verifying location…')
+                : (isRtl ? 'تسجيل حضور بقارئ الباركود' : 'Record Attendance with QR Scanner')}
             </span>
           </button>
         </div>
@@ -553,19 +643,15 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {subjects.map((subj) => {
-              const assessed = [...subj.theoryWeeks, ...subj.practicalWeeks].filter(week => week.status === 'attended' || week.status === 'absent');
-              const attendanceRate = assessed.length ? Math.round(100 * assessed.filter(week => week.status === 'attended').length / assessed.length) : 0;
-
-              return (
+            {subjects.map((subj) => (
                 <div
                   key={subj.id}
                   onClick={() => handleCardClick(subj)}
-                  className="bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl p-4.5 flex flex-col justify-between gap-3 shadow-sm transition-all hover:bg-slate-50 dark:hover:bg-zinc-700/50 hover:border-slate-200 dark:hover:border-zinc-600 cursor-pointer active:translate-y-px"
+                  className="group bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl p-3.5 sm:p-4 md:p-5 flex flex-col justify-between gap-3 sm:gap-3.5 shadow-sm transition-all hover:bg-slate-50 dark:hover:bg-zinc-700/50 hover:border-slate-200 dark:hover:border-zinc-600 cursor-pointer active:translate-y-px"
                 >
-                  <div className="flex items-start gap-3.5">
+                  <div className="flex items-start gap-3 sm:gap-3.5">
                     {/* StatCard colored icon container */}
-                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${subj.iconBg}`}>
+                    <div className={`w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center shrink-0 ${subj.iconBg}`}>
                       <BookOpen className={`w-5 h-5 ${subj.iconColor}`} strokeWidth={2.5} />
                     </div>
 
@@ -588,7 +674,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                         )}
                       </div>
 
-                      <h3 className="font-black text-slate-900 dark:text-stone-100 text-base leading-snug mt-1 line-clamp-1">
+                      <h3 className="font-black text-slate-900 dark:text-stone-100 text-sm sm:text-base leading-snug mt-1 line-clamp-1">
                         {isRtl ? subj.nameAr : subj.nameEn}
                       </h3>
 
@@ -599,20 +685,14 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                   </div>
 
                   {/* StatCard Footer Info */}
-                  <div className="pt-2 border-t border-slate-100 dark:border-zinc-700/80 flex items-center justify-between text-xs font-bold">
-                    <div className="flex items-center gap-1.5 text-slate-500 dark:text-zinc-400">
-                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                      <span>{isRtl ? `نسبة الحضور: ${attendanceRate}%` : `Rate: ${attendanceRate}%`}</span>
-                    </div>
-
-                    <span className="text-teal-600 dark:text-teal-400 font-black flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
+                  <div className="pt-2.5 sm:pt-3 border-t border-slate-100 dark:border-zinc-700/80 flex items-center justify-end text-xs font-bold">
+                    <span className={`text-teal-600 dark:text-teal-400 font-black flex items-center gap-0.5 ${isRtl ? 'group-hover:-translate-x-1' : 'group-hover:translate-x-1'} transition-transform`}>
                       {isRtl ? 'عرض الأسابيع' : 'View weeks'}
                       {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                     </span>
                   </div>
                 </div>
-              );
-            })}
+              ))}
           </div>
         </div>
       )}
@@ -888,8 +968,49 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
         <QrScannerModal
           lang={lang}
           onScan={handleScanSuccess}
-          onClose={() => setScannerOpen(false)}
+          onClose={closeScanner}
         />
+      )}
+
+      {scanGateFailure && !scannerOpen && (
+        <div className="fixed inset-0 z-[125] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
+          <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+              <AlertCircle className="h-6 w-6" />
+            </div>
+            <p className="font-bold leading-7 text-slate-800 dark:text-slate-100">
+              {scanGateFailure === 'permission_denied'
+                ? (isRtl ? 'لا يمكن فتح الكاميرا لتسجيل الحضور إلا بعد تفعيل صلاحية الموقع الجغرافي (GPS).' : 'The camera can only open for attendance after location (GPS) permission is enabled.')
+                : scanGateFailure === 'gps_disabled'
+                  ? (isRtl ? 'يرجى تشغيل الموقع الجغرافي (GPS) من شريط إشعارات الهاتف لفتح الماسح الضوئي.' : 'Turn on device location (GPS) to open the scanner.')
+                  : scanGateFailure === 'timeout'
+                    ? (isRtl ? 'انتهت مهلة تحديد الموقع. تأكد من السماح للموقع وحاول مرة أخرى.' : 'Location timed out. Check site permission and try again.')
+                    : (isRtl ? 'تعذر التحقق من الموقع الجغرافي. تحقق من إعدادات الموقع وحاول مرة أخرى.' : 'Location could not be verified. Check location settings and try again.')}
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                disabled={scanGateBusy}
+                onClick={() => void (scanGateFailure === 'permission_denied'
+                  ? handlePermissionAction()
+                  : scanGateFailure === 'gps_disabled'
+                    ? runLocationGate(retryAttendanceGpsEnablement)
+                    : runLocationGate())}
+                className="rounded-xl bg-teal-600 px-4 py-3 font-black text-white disabled:opacity-60"
+              >
+                {scanGateBusy
+                  ? (isRtl ? 'جارٍ التحقق…' : 'Checking…')
+                  : scanGateFailure === 'permission_denied'
+                    ? (isRtl ? 'تفعيل صلاحية الموقع' : 'Enable location permission')
+                    : scanGateFailure === 'gps_disabled'
+                      ? (isRtl ? 'تشغيل الـ GPS وإعادة المحاولة' : 'Turn on GPS and retry')
+                      : (isRtl ? 'إعادة المحاولة' : 'Retry')}
+              </button>
+              <button onClick={() => { scanAttemptRef.current += 1; setScanGateFailure(null); setScanGateBusy(false); reopenOnForegroundRef.current = false; }} className="rounded-xl border border-slate-200 px-4 py-3 font-bold dark:border-zinc-700">
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* -------------------------------------------------------------

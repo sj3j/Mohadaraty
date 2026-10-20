@@ -86,6 +86,8 @@ export interface LocalAttendanceReceipt {
   recordStatus?: AttendanceRecordStatus | null;
   recordRevision?: number;
   attemptCount: number;
+  leaseId?: string;
+  leaseExpiresAt?: number;
 }
 
 export interface AttendanceRecordView {
@@ -197,6 +199,7 @@ export interface AttendanceSessionSnapshot {
     receivedAt: string;
     reviewFlags?: string[];
     advisory?: AttendanceAdvisory;
+    reviewRevision?: number;
   }>;
   counts: { confirmed: number; voided: number; review: number; discrepancy: number };
 }

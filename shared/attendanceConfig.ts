@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { getSupabaseAdmin } from './supabaseClient.js';
+import { AL_SAFWA_CAMPUS } from './campusLocation.js';
 
 /* ------------------------------------------------------------------ */
 /*  Public safe types                                                  */
@@ -219,30 +220,14 @@ export interface CampusBoundaryConfig {
 }
 
 export function validateCampusBoundary(): CampusBoundaryConfig {
-  const lat = process.env.ATTENDANCE_CAMPUS_LATITUDE;
-  const lng = process.env.ATTENDANCE_CAMPUS_LONGITUDE;
-  const rad = process.env.ATTENDANCE_CAMPUS_RADIUS_METERS;
-
-  const present = [lat, lng, rad].map(v => !!v?.trim());
-  const allAbsent = present.every(p => !p);
-  const allPresent = present.every(p => p);
-
-  if (allAbsent) return { status: 'disabled' };
-
-  if (!allPresent) {
-    throw new AttendanceConfigError('attendance_campus_boundary_invalid');
-  }
-
-  const latitude = Number(lat);
-  const longitude = Number(lng);
-  const radiusMeters = Number(rad);
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(radiusMeters)
-    || Math.abs(latitude) > 90 || Math.abs(longitude) > 180 || radiusMeters <= 0) {
-    throw new AttendanceConfigError('attendance_campus_boundary_invalid');
-  }
-
-  return { status: 'ok', boundary: { latitude, longitude, radiusMeters } };
+  return {
+    status: 'ok',
+    boundary: {
+      latitude: AL_SAFWA_CAMPUS.lat,
+      longitude: AL_SAFWA_CAMPUS.lng,
+      radiusMeters: AL_SAFWA_CAMPUS.radiusMeters,
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,6 +268,8 @@ export const REQUIRED_TABLES = [
   'attendance_enrolled_devices',
   'attendance_commands',
   'attendance_offline_grants',
+  'attendance_key_rotation_challenges',
+  'attendance_key_aliases',
 ] as const;
 
 /* ------------------------------------------------------------------ */
@@ -299,6 +286,8 @@ export const REQUIRED_RPCS = [
   'attendance_set_record_status',
   'attendance_submit_receipt',
   'attendance_update_session',
+  'attendance_create_key_rotation_challenge',
+  'attendance_commit_key_rotation',
 ] as const;
 
 /* ------------------------------------------------------------------ */
@@ -461,12 +450,12 @@ export async function checkAttendanceReadiness(forceRefresh = false): Promise<At
     }
   }
 
-  // Readiness: all required checks must be ok (campusBoundary disabled is acceptable)
+  // Campus coordinates are compiled into the shared attendance implementation.
   const requiredChecks: (keyof AttendanceReadinessResult['checks'])[] = [
     'supabase', 'schema', 'rpcSurface', 'qrSigning', 'installationSecret',
   ];
   const ready = requiredChecks.every(k => checks[k] === 'ok')
-    && (checks.campusBoundary === 'ok' || checks.campusBoundary === 'disabled');
+    && checks.campusBoundary === 'ok';
 
   const result: AttendanceReadinessResult = {
     ready,

@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
         SplashScreen.installSplashScreen(this);
         EdgeToEdge.enable(this);
         registerPlugin(SystemBarsPlugin.class);
+        registerPlugin(SettingsLauncherPlugin.class);
         registerPlugin(com.mohadaraty.app.attendance.AttendanceStoragePlugin.class);
         super.onCreate(savedInstanceState);
     }

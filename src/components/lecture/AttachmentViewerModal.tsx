@@ -14,6 +14,8 @@ import {
   EyeOff,
   Loader2,
   Maximize2,
+  FileText,
+  BookOpen,
 } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
@@ -28,6 +30,7 @@ interface AttachmentViewerModalProps {
   user: UserProfile | null;
   lang: Language;
   onDelete?: (attachment: LectureAttachment) => Promise<void>;
+  onOpenReader?: (attachment: LectureAttachment) => void;
 }
 
 export default function AttachmentViewerModal({
@@ -38,6 +41,7 @@ export default function AttachmentViewerModal({
   user,
   lang,
   onDelete,
+  onOpenReader,
 }: AttachmentViewerModalProps) {
   const isRtl = lang === 'ar';
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -403,6 +407,21 @@ export default function AttachmentViewerModal({
 
           {/* Right Action Icons */}
           <div className="flex items-center gap-1 sm:gap-2">
+            {/* Open in Reader button for PDFs */}
+            {(current.fileType === 'pdf' || current.url.toLowerCase().includes('.pdf')) && onOpenReader && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenReader(current);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-sky-500/20 transition-all cursor-pointer"
+                title={isRtl ? 'فتح في القارئ' : 'Open in Reader'}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>{isRtl ? 'قراءة في التطبيق' : 'Read in App'}</span>
+              </button>
+            )}
+
             <button
               onClick={handleZoomOut}
               disabled={scale <= 1}
@@ -528,9 +547,35 @@ export default function AttachmentViewerModal({
             </>
           )}
 
-          {/* Active Image Container with Free Zoom & Pan */}
+          {/* Active Image or PDF Container */}
           <div className="w-full h-full flex items-center justify-center">
-            {imageError ? (
+            {current.fileType === 'pdf' || current.url.toLowerCase().includes('.pdf') ? (
+              <div className="flex flex-col items-center justify-center p-6 text-center max-w-sm bg-white/10 dark:bg-zinc-900/80 backdrop-blur-md rounded-3xl border border-white/20 shadow-2xl mx-4">
+                <div className="w-16 h-16 rounded-2xl bg-rose-500/20 text-rose-400 flex items-center justify-center mb-4 shadow-inner">
+                  <FileText className="w-9 h-9" />
+                </div>
+                <h3 className="text-base sm:text-lg font-bold text-white mb-1.5">
+                  {current.title || (isRtl ? 'ملخص / ترجمة PDF' : 'PDF Document')}
+                </h3>
+                <p className="text-xs text-white/70 mb-5 leading-relaxed">
+                  {isRtl
+                    ? 'ملف مستند PDF مرفق للمحاضرة يمكنك قراءته وتظليله وتصفح صفحاته داخل قارئ التطبيق'
+                    : 'Attached PDF document. Read, annotate and navigate pages inside the app reader.'}
+                </p>
+                {onOpenReader && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenReader(current);
+                    }}
+                    className="w-full py-3 px-5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white font-bold text-sm shadow-lg shadow-sky-500/30 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
+                  >
+                    <BookOpen className="w-4 h-4" />
+                    <span>{isRtl ? 'فتح وقراءة في القارئ' : 'Open in In-App Reader'}</span>
+                  </button>
+                )}
+              </div>
+            ) : imageError ? (
               <div className="text-center p-6 bg-white/5 rounded-2xl border border-white/10 max-w-xs text-white/80">
                 <p className="text-sm font-bold mb-1">
                   {isRtl ? 'تعذر تحميل الصورة' : 'Could not load image'}
@@ -587,7 +632,16 @@ export default function AttachmentViewerModal({
                     : 'border-white/20 opacity-50 hover:opacity-100'
                 }`}
               >
-                <img src={item.url} alt="" className="w-full h-full object-cover" />
+                {item.fileType === 'pdf' || item.url.toLowerCase().includes('.pdf') ? (
+                  <div className="w-full h-full bg-slate-800 flex items-center justify-center text-rose-400">
+                    <FileText className="w-5 h-5" />
+                    <span className="absolute top-0.5 right-0.5 px-1 py-0.2 rounded text-[7px] font-black bg-rose-600 text-white">
+                      PDF
+                    </span>
+                  </div>
+                ) : (
+                  <img src={item.url} alt="" className="w-full h-full object-cover" />
+                )}
                 {item.status === 'pending' && (
                   <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-400" />
                 )}

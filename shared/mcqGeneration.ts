@@ -17,16 +17,20 @@
  * Generation now runs server-side, so no Gemini key reaches the browser at all.
  *
  * TWO KEYS, DELIBERATELY. This pipeline uses `GEMINI_FREE_TIER_API_KEY` and
- * `gemini-3.8-flash` (which has a free tier); Simosan uses the paid
- * `GEMINI_API_KEY` and `gemini-3.1-flash-lite` (which does not). Google's terms
+ * `gemini-3.5-flash` (which has a generous free tier of 1,500 RPD, 15 RPM); Simosan uses the paid
+ * `GEMINI_API_KEY` and `gemini-3.1-flash-lite` (which has none). Google's terms
  * say unpaid-tier content is used "to provide, improve, and develop Google
  * products" and may be read by human reviewers - accepted here because these
  * lectures are already public material. Do not route Simosan through the free
  * key: student questions are not public, and flash-lite has no free tier anyway.
  */
 
-/** Free tier exists for this model; `gemini-3.1-flash-lite` has none. */
-export const MCQ_MODEL = 'gemini-3.8-flash';
+/**
+ * Free tier model for MCQ generation and Timetable OCR.
+ * `gemini-3.5-flash` provides 1,500 RPD, 15 RPM, 1,000,000 TPM and ~1.6s latency,
+ * avoiding the 20 RPD cap and 503 capacity bottlenecks of gemini-3.8-flash.
+ */
+export const MCQ_MODEL = 'gemini-3.5-flash';
 
 export const MCQ_QUESTION_COUNT = 20;
 

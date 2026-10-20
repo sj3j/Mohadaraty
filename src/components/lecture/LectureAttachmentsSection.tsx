@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Image as ImageIcon,
+  FileText,
+  BookOpen,
   Plus,
   Clock,
   User,
@@ -23,9 +25,11 @@ import {
   rejectAttachment,
   deleteAttachment,
   getStudentApprovedCourseAttachmentsCount,
+  toggleAttachmentFreeStatus,
 } from '../../services/lectureAttachmentService';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import { canManageLectures } from '../../lib/permissions';
+import { usePdfThumbnail } from '../../hooks/usePdfThumbnail';
 import AttachmentViewerModal from './AttachmentViewerModal';
 import UploadAttachmentModal from './UploadAttachmentModal';
 
@@ -35,6 +39,230 @@ interface LectureAttachmentsSectionProps {
   lang: Language;
   onAttachmentsCountChanged?: (count: number) => void;
   onShowPaywall?: () => void;
+  onOpenReader?: (lecture: Lecture) => void;
+}
+
+/**
+ * Thumbnail item in the attachments gallery grid.
+ * Dynamically handles both images and multi-page PDF summaries/translations.
+ */
+function AttachmentGridCard({
+  item,
+  index,
+  isLocked,
+  onClick,
+  onOpenPdf,
+  onToggleFree,
+  isRtl,
+  isStaff,
+}: {
+  item: LectureAttachment;
+  index: number;
+  isLocked?: boolean;
+  onClick: () => void;
+  onOpenPdf?: (item: LectureAttachment) => void;
+  onToggleFree?: (item: LectureAttachment) => void;
+  isRtl: boolean;
+  isStaff: boolean;
+}) {
+  const isPdf = item.fileType === 'pdf' || item.url.toLowerCase().includes('.pdf');
+  const { thumbnail, isLoading } = usePdfThumbnail(item.id, item.url, isPdf);
+
+  const displayName = item.isAnonymous
+    ? isStaff
+      ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
+      : isRtl
+      ? 'طالب (مجهول)'
+      : 'Anonymous'
+    : item.uploaderName || (isRtl ? 'طالب' : 'Student');
+
+  const handleItemClick = () => {
+    if (isLocked) {
+      onClick();
+      return;
+    }
+    if (isPdf && onOpenPdf) {
+      onOpenPdf(item);
+    } else {
+      onClick();
+    }
+  };
+
+  return (
+    <div
+      onClick={handleItemClick}
+      className={`group relative rounded-xl sm:rounded-2xl overflow-hidden border ${
+        isLocked
+          ? 'border-amber-200/80 dark:border-amber-900/40 hover:border-amber-400 dark:hover:border-amber-500 shadow-xs hover:shadow-md'
+          : item.isFree
+          ? 'border-emerald-200/80 dark:border-emerald-900/40 hover:border-emerald-400 dark:hover:border-emerald-500 hover:shadow-lg'
+          : 'border-slate-200 dark:border-zinc-700/80 hover:border-sky-300 dark:hover:border-sky-500 hover:shadow-lg'
+      } bg-slate-50 dark:bg-zinc-800 aspect-[4/3] cursor-pointer transition-all select-none flex items-center justify-center`}
+    >
+      {/* Media thumbnail with 75% blur when locked */}
+      <div className={`w-full h-full relative overflow-hidden ${isLocked ? 'filter blur-[7px] opacity-80 scale-105 pointer-events-none select-none' : ''}`}>
+        {isPdf ? (
+          thumbnail ? (
+            <img
+              src={thumbnail}
+              alt={item.title || 'PDF Attachment'}
+              loading="lazy"
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            />
+          ) : isLoading ? (
+            <div className="w-full h-full bg-slate-100 dark:bg-zinc-800/80 animate-pulse flex flex-col items-center justify-center p-2">
+              <FileText className="w-7 h-7 text-slate-300 dark:text-zinc-600 mb-1" />
+              <div className="w-10 h-1 bg-slate-300 dark:bg-zinc-600 rounded-full" />
+            </div>
+          ) : (
+            <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex flex-col items-center justify-center p-2 text-rose-500 text-center">
+              <FileText className="w-8 h-8 mb-1 text-rose-500" />
+              <span className="text-[10px] font-bold text-slate-700 dark:text-stone-300 truncate max-w-full px-1">
+                {item.title || 'PDF'}
+              </span>
+            </div>
+          )
+        ) : (
+          <img
+            src={item.url}
+            alt={item.title || 'Attachment'}
+            loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          />
+        )}
+      </div>
+
+      {/* Center Lock Badge overlay when locked */}
+      {isLocked && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="p-2 sm:p-2.5 rounded-full bg-slate-900/65 dark:bg-black/70 text-amber-300 backdrop-blur-md border border-white/20 shadow-lg group-hover:scale-110 transition-transform">
+            <Lock className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" />
+          </div>
+        </div>
+      )}
+
+      {/* Top Badges Row */}
+      <div className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none z-20">
+        {/* Free Badge / Staff Toggle */}
+        {isStaff && onToggleFree ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFree(item);
+            }}
+            className={`pointer-events-auto px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-sm ${
+              item.isFree
+                ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                : 'bg-black/60 text-amber-300 hover:bg-black/80 border border-white/20'
+            }`}
+            title={isRtl ? (item.isFree ? 'انقر لجعله للمشتركين' : 'انقر لجعله مجاناً للجميع') : (item.isFree ? 'Click to make PRO' : 'Click to make Free')}
+          >
+            {item.isFree ? (
+              <>
+                <Sparkles className="w-2.5 h-2.5" />
+                <span>{isRtl ? 'مجاني' : 'FREE'}</span>
+              </>
+            ) : (
+              <>
+                <Lock className="w-2.5 h-2.5" />
+                <span>{isRtl ? 'خاص' : 'PRO'}</span>
+              </>
+            )}
+          </button>
+        ) : item.isFree ? (
+          <div className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-emerald-600 text-white shadow-xs flex items-center gap-1">
+            <Sparkles className="w-2.5 h-2.5" />
+            <span>{isRtl ? 'مجاني' : 'FREE'}</span>
+          </div>
+        ) : (
+          <div />
+        )}
+
+        {/* PDF Document Badge */}
+        {isPdf && (
+          <div className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-rose-600 text-white shadow-xs flex items-center gap-1">
+            <BookOpen className="w-2.5 h-2.5" />
+            <span>PDF</span>
+          </div>
+        )}
+      </div>
+
+      {/* Gradient overlay for metadata - kept crisp and legible */}
+      <div
+        className={`absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent ${
+          isLocked ? 'opacity-95' : 'opacity-90 sm:opacity-0 group-hover:opacity-100'
+        } transition-opacity flex flex-col justify-end p-2 text-white z-20`}
+      >
+        {item.title && (
+          <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
+            {item.title}
+          </p>
+        )}
+        <div className="flex items-center justify-between text-[9px] text-white/80">
+          <span className="flex items-center gap-1 truncate max-w-[80px]">
+            {item.isAnonymous ? (
+              <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
+            ) : (
+              <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
+            )}
+            <span className="truncate">{displayName}</span>
+          </span>
+          <div className="flex items-center gap-1 font-semibold text-sky-300">
+            {isLocked ? (
+              <span className="flex items-center gap-1 text-amber-300 font-bold">
+                <Lock className="w-2.5 h-2.5" />
+                <span>{isRtl ? 'للمشتركين' : 'PRO'}</span>
+              </span>
+            ) : item.isFree ? (
+              <span className="flex items-center gap-1 text-emerald-300 font-bold">
+                <span>{isRtl ? 'مجاني' : 'Free'}</span>
+                {isPdf ? <BookOpen className="w-3 h-3" /> : <ExternalLink className="w-3 h-3 opacity-80" />}
+              </span>
+            ) : isPdf ? (
+              <>
+                <BookOpen className="w-3 h-3" />
+                <span>{isRtl ? 'قراءة' : 'Read'}</span>
+              </>
+            ) : (
+              <ExternalLink className="w-3 h-3 opacity-70" />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Thumbnail for pending items in the moderation review strip.
+ */
+function PendingItemThumbnail({ item }: { item: LectureAttachment }) {
+  const isPdf = item.fileType === 'pdf' || item.url.toLowerCase().includes('.pdf');
+  const { thumbnail } = usePdfThumbnail(item.id, item.url, isPdf);
+
+  if (isPdf) {
+    return (
+      <div className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-zinc-700 relative bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
+        {thumbnail ? (
+          <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <FileText className="w-6 h-6 text-rose-500" />
+        )}
+        <span className="absolute top-0.5 right-0.5 px-1 py-0.2 rounded text-[7px] font-black bg-rose-600 text-white">
+          PDF
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={item.url}
+      alt=""
+      className="w-12 h-12 rounded-lg object-cover flex-shrink-0 border border-slate-200 dark:border-zinc-700"
+    />
+  );
 }
 
 export default function LectureAttachmentsSection({
@@ -43,6 +271,7 @@ export default function LectureAttachmentsSection({
   lang,
   onAttachmentsCountChanged,
   onShowPaywall,
+  onOpenReader,
 }: LectureAttachmentsSectionProps) {
   const isRtl = lang === 'ar';
 
@@ -56,6 +285,7 @@ export default function LectureAttachmentsSection({
   const [rejectingItem, setRejectingItem] = useState<LectureAttachment | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isProcessingAction, setIsProcessingAction] = useState(false);
+  const [pendingFreeMap, setPendingFreeMap] = useState<Record<string, boolean>>({});
 
   const isStaff = canManageLectures(user);
 
@@ -92,12 +322,26 @@ export default function LectureAttachmentsSection({
     if (!user || !isStaff) return;
     setIsProcessingAction(true);
     try {
-      await approveAttachment(attachment, user);
+      const isFree = Boolean(pendingFreeMap[attachment.id]);
+      await approveAttachment(attachment, user, isFree);
       await loadAttachments();
     } catch (err) {
       console.error('Failed to approve attachment:', err);
     } finally {
       setIsProcessingAction(false);
+    }
+  };
+
+  const handleToggleFree = async (attachment: LectureAttachment) => {
+    if (!user || !isStaff) return;
+    const newFree = !attachment.isFree;
+    try {
+      await toggleAttachmentFreeStatus(attachment.id, newFree);
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === attachment.id ? { ...a, isFree: newFree } : a))
+      );
+    } catch (err) {
+      console.error('Failed to toggle attachment free status:', err);
     }
   };
 
@@ -121,17 +365,30 @@ export default function LectureAttachmentsSection({
     await loadAttachments();
   };
 
+  const handleOpenPdfAttachment = (attachment: LectureAttachment) => {
+    if (onOpenReader) {
+      onOpenReader({
+        ...lecture,
+        id: `att_${attachment.id}`,
+        title: attachment.title || `${lecture.title} (${isRtl ? 'ملخص / ترجمة' : 'Summary / Translation'})`,
+        pdfUrl: attachment.url,
+      });
+    } else {
+      window.open(attachment.url, '_blank');
+    }
+  };
+
   return (
     <div className="space-y-3.5 pt-2">
       {/* Section Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-sky-100 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400">
-            <ImageIcon className="w-4 h-4" />
+            <BookOpen className="w-4 h-4" />
           </div>
           <div className="flex items-center gap-2">
             <h4 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-stone-200">
-              {isRtl ? 'مرفقات وصور المحاضرة' : 'Lecture Attachments'}
+              {isRtl ? 'مرفقات وملخصات المحاضرة' : 'Attachments & Summaries'}
             </h4>
             {!isUnlocked && (
               <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 flex items-center gap-1">
@@ -151,7 +408,7 @@ export default function LectureAttachmentsSection({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 dark:hover:bg-sky-900/50 text-xs font-bold transition-all active:scale-95 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-            <span>{isRtl ? 'إضافة صورة' : 'Add Image'}</span>
+            <span>{isRtl ? 'إضافة ملخص / مرفق' : 'Add Attachment'}</span>
           </button>
         )}
       </div>
@@ -180,15 +437,16 @@ export default function LectureAttachmentsSection({
                 <div
                   className="flex items-center gap-2.5 min-w-0 cursor-pointer"
                   onClick={() => {
-                    const idx = attachments.findIndex((a) => a.id === item.id);
-                    if (idx !== -1) setViewerIndex(idx);
+                    const isPdf = item.fileType === 'pdf' || item.url.toLowerCase().includes('.pdf');
+                    if (isPdf) {
+                      handleOpenPdfAttachment(item);
+                    } else {
+                      const idx = attachments.findIndex((a) => a.id === item.id);
+                      if (idx !== -1) setViewerIndex(idx);
+                    }
                   }}
                 >
-                  <img
-                    src={item.url}
-                    alt=""
-                    className="w-12 h-12 rounded-lg object-cover flex-shrink-0 border border-slate-200 dark:border-zinc-700"
-                  />
+                  <PendingItemThumbnail item={item} />
                   <div className="min-w-0">
                     <p className="text-xs font-bold text-slate-800 dark:text-stone-200 truncate">
                       {item.title || (isRtl ? 'مرفق بدون عنوان' : 'Untitled attachment')}
@@ -200,6 +458,34 @@ export default function LectureAttachmentsSection({
                 </div>
 
                 <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPendingFreeMap((prev) => ({
+                        ...prev,
+                        [item.id]: !prev[item.id],
+                      }))
+                    }
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer flex items-center gap-1 ${
+                      pendingFreeMap[item.id]
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                        : 'bg-slate-50 dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-500 dark:text-slate-400'
+                    }`}
+                    title={isRtl ? 'تحديد: هل المرفق مجاني للجميع أم للمشتركين فقط' : 'Toggle Free or PRO'}
+                  >
+                    {pendingFreeMap[item.id] ? (
+                      <>
+                        <Sparkles className="w-3 h-3 text-emerald-500" />
+                        <span>{isRtl ? 'مجاني' : 'FREE'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3 h-3 text-amber-500" />
+                        <span>{isRtl ? 'للمشتركين' : 'PRO'}</span>
+                      </>
+                    )}
+                  </button>
+
                   <button
                     onClick={() => handleApprove(item)}
                     disabled={isProcessingAction}
@@ -247,15 +533,16 @@ export default function LectureAttachmentsSection({
                 <div
                   className="flex items-center gap-2 min-w-0 cursor-pointer"
                   onClick={() => {
-                    const idx = attachments.findIndex((a) => a.id === item.id);
-                    if (idx !== -1) setViewerIndex(idx);
+                    const isPdf = item.fileType === 'pdf' || item.url.toLowerCase().includes('.pdf');
+                    if (isPdf) {
+                      handleOpenPdfAttachment(item);
+                    } else {
+                      const idx = attachments.findIndex((a) => a.id === item.id);
+                      if (idx !== -1) setViewerIndex(idx);
+                    }
                   }}
                 >
-                  <img
-                    src={item.url}
-                    alt=""
-                    className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-slate-200 dark:border-zinc-700"
-                  />
+                  <PendingItemThumbnail item={item} />
                   <div className="min-w-0">
                     <p className="text-xs font-bold text-slate-800 dark:text-stone-200 truncate">
                       {item.title || (isRtl ? 'مرفقك قيد التدقيق' : 'Pending upload')}
@@ -295,162 +582,84 @@ export default function LectureAttachmentsSection({
       {!loading && approvedList.length === 0 && pendingList.length === 0 && (
         <div className="p-5 text-center bg-slate-50 dark:bg-zinc-800/30 rounded-2xl border border-slate-100 dark:border-zinc-800/80">
           <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-400 mx-auto flex items-center justify-center mb-2">
-            <ImageIcon className="w-5 h-5" />
+            <BookOpen className="w-5 h-5" />
           </div>
           <p className="text-xs font-bold text-slate-700 dark:text-stone-300 mb-0.5">
-            {isRtl ? 'لا توجد صور أو مرفقات مضافة بعد' : 'No attachments yet'}
+            {isRtl ? 'لا توجد مرفقات أو ملخصات مضافة بعد' : 'No attachments or summaries yet'}
           </p>
-          <p className="text-[11px] text-slate-400 mb-3">
+          <p className="text-[11px] text-slate-400 mb-3 max-w-sm mx-auto">
             {isRtl
-              ? 'شارك صور السبورة أو ملاحظاتك المفيدة لتساعد زملاءك في دراسة هذه المحاضرة'
-              : 'Share whiteboard snapshots or notes to help your peers'}
+              ? 'شارك صور السبورة، ملخصاتك، أو ملفات الترجمة (PDF) لتساعد زملاءك في دراسة هذه المحاضرة'
+              : 'Share whiteboard photos, summaries, or translated PDFs to help your peers'}
           </p>
           {user && (
             <button
               onClick={() => setIsUploadOpen(true)}
               className="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-all shadow-sm cursor-pointer"
             >
-              {isRtl ? 'رفع أول صورة للمحاضرة' : 'Upload First Image'}
+              {isRtl ? 'رفع أول مرفق / ملخص' : 'Upload First Attachment'}
             </button>
           )}
         </div>
       )}
 
-      {/* Approved Attachments Gallery Grid / Locked Paywall Blur View */}
+      {/* Approved Attachments Gallery Grid (with 75% blur & floating CTA for non-subscribers) */}
       {!loading && approvedList.length > 0 && (
-        !isUnlocked ? (
-          <div className="relative rounded-2xl sm:rounded-3xl overflow-hidden border border-amber-200/70 dark:border-amber-900/40 p-1 sm:p-1.5 bg-gradient-to-b from-amber-50/40 to-slate-50 dark:from-zinc-900/80 dark:to-zinc-950/90 shadow-sm">
-            {/* The blurred background grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-2.5 filter blur-md sm:blur-lg opacity-35 dark:opacity-25 select-none pointer-events-none scale-102 transition-all">
-              {approvedList.slice(0, 4).map((item) => (
-                <div key={item.id} className="aspect-[4/3] rounded-xl overflow-hidden bg-slate-200 dark:bg-zinc-800">
-                  <img src={item.url} alt="" className="w-full h-full object-cover" />
-                </div>
-              ))}
-            </div>
-
-            {/* Frosted Glass Overlay with Lock & Contributor Challenge */}
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-3 sm:p-5 text-center backdrop-blur-xs bg-white/75 dark:bg-zinc-900/85 rounded-2xl z-10 space-y-2.5 sm:space-y-3">
-              <div className="inline-flex p-2.5 sm:p-3 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-white shadow-lg shadow-amber-500/25">
-                <Lock className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
-              </div>
-
-              <div className="max-w-md space-y-0.5 sm:space-y-1">
-                <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                  <h5 className="text-sm sm:text-base font-black text-slate-900 dark:text-stone-100">
-                    {isRtl ? 'ملحقات وصور المحاضرة' : 'Lecture Attachments'}
-                  </h5>
-                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
-                    {isRtl ? 'ميزة حصرية للمشتركين' : 'PRO Only'}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {isRtl
-                    ? `تتوفر ${approvedList.length} صور وملحقات مفيدة لهذه المحاضرة.`
-                    : `${approvedList.length} photos and study attachments available for this lecture.`}
-                </p>
-              </div>
-
-              {/* Community Contributor Progress Bar (Unlock via 5 approved uploads) */}
-              <div className="w-full max-w-xs bg-slate-50/90 dark:bg-zinc-800/90 rounded-2xl p-2.5 sm:p-3 border border-slate-200/80 dark:border-zinc-700/60 shadow-xs space-y-1.5">
-                <div className="flex items-center justify-between text-xs font-bold">
-                  <span className="text-slate-800 dark:text-stone-200 flex items-center gap-1">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    <span>{isRtl ? 'افتح ملحقات المادة مجاناً' : 'Unlock Course Free'}</span>
-                  </span>
-                  <span className="text-amber-600 dark:text-amber-400 font-black">
-                    {approvedUploadsCount} / 5 {isRtl ? 'معتمد' : 'approved'}
-                  </span>
-                </div>
-
-                {/* Progress bar */}
-                <div className="w-full h-2 bg-slate-200 dark:bg-zinc-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-500"
-                    style={{ width: `${Math.min(100, (approvedUploadsCount / 5) * 100)}%` }}
-                  />
-                </div>
-
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight text-start">
-                  {isRtl
-                    ? `ارفع 5 ملحقات معتمدة لفتح ملحقات مادة ${lecture.subjectNameAr || 'هذه المادة'} مجاناً (متبقي: ${Math.max(0, 5 - approvedUploadsCount)})`
-                    : `Upload 5 approved attachments to unlock all attachments for this course for free (${Math.max(0, 5 - approvedUploadsCount)} left)`}
-                </p>
-              </div>
-
-              {/* Action buttons */}
-              <div className="flex items-center gap-2 flex-wrap justify-center pt-0.5">
-                <button
-                  onClick={() => onShowPaywall?.()}
-                  className="inline-flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white text-xs font-black shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isRtl ? 'الاشتراك لفتح جميع الملحقات' : 'Subscribe to Unlock'}</span>
-                </button>
-
-                {user && (
-                  <button
-                    onClick={() => setIsUploadOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-stone-300 border border-slate-200 dark:border-zinc-700 text-xs font-bold active:scale-95 transition-all cursor-pointer shadow-xs"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>{isRtl ? 'مشاركة صورة (+1)' : 'Contribute photo'}</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
+        <div className="relative space-y-3">
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-2.5">
             {approvedList.map((item, index) => {
-              const displayName = item.isAnonymous
-                ? isStaff
-                  ? `${item.uploaderName} (${isRtl ? 'مجهول' : 'anon'})`
-                  : isRtl
-                  ? 'طالب (مجهول)'
-                  : 'Anonymous'
-                : item.uploaderName || (isRtl ? 'طالب' : 'Student');
-
+              const itemIsLocked = !item.isFree && !isUnlocked;
               return (
-                <div
+                <AttachmentGridCard
                   key={item.id}
+                  item={item}
+                  index={index}
+                  isLocked={itemIsLocked}
+                  onToggleFree={isStaff ? handleToggleFree : undefined}
                   onClick={() => {
+                    if (itemIsLocked) {
+                      onShowPaywall?.();
+                      return;
+                    }
                     const idx = attachments.findIndex((a) => a.id === item.id);
                     if (idx !== -1) setViewerIndex(idx);
                   }}
-                  className="group relative rounded-xl sm:rounded-2xl overflow-hidden border border-slate-200 dark:border-zinc-700/80 bg-slate-50 dark:bg-zinc-800 aspect-[4/3] cursor-pointer hover:shadow-lg hover:border-sky-300 dark:hover:border-sky-500 transition-all select-none"
-                >
-                  <img
-                    src={item.url}
-                    alt={item.title || 'Attachment'}
-                    loading="lazy"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-
-                  {/* Gradient overlay on hover */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 text-white">
-                    {item.title && (
-                      <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">
-                        {item.title}
-                      </p>
-                    )}
-                    <div className="flex items-center justify-between text-[9px] text-white/80">
-                      <span className="flex items-center gap-1 truncate max-w-[80px]">
-                        {item.isAnonymous ? (
-                          <EyeOff className="w-2.5 h-2.5 text-amber-300 flex-shrink-0" />
-                        ) : (
-                          <User className="w-2.5 h-2.5 text-sky-300 flex-shrink-0" />
-                        )}
-                        <span className="truncate">{displayName}</span>
-                      </span>
-                      <ExternalLink className="w-3 h-3 opacity-70" />
-                    </div>
-                  </div>
-                </div>
+                  onOpenPdf={(pdfItem) => {
+                    if (itemIsLocked) {
+                      onShowPaywall?.();
+                      return;
+                    }
+                    handleOpenPdfAttachment(pdfItem);
+                  }}
+                  isRtl={isRtl}
+                  isStaff={isStaff}
+                />
               );
             })}
           </div>
-        )
+
+          {/* Floating Subtle Unlock CTA for non-subscribers (only if there are locked items) */}
+          {!isUnlocked && approvedList.some((item) => !item.isFree) && (
+            <div className="sticky bottom-2 z-30 flex justify-center pt-2 pb-1 pointer-events-none">
+              <button
+                type="button"
+                onClick={onShowPaywall}
+                className="pointer-events-auto inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/90 dark:bg-stone-100/95 text-white dark:text-zinc-900 shadow-xl shadow-black/25 hover:scale-105 active:scale-95 transition-all text-xs font-bold border border-white/20 dark:border-zinc-800 cursor-pointer backdrop-blur-md"
+              >
+                <div className="p-1 rounded-full bg-amber-400 text-slate-950">
+                  <Lock className="w-3 h-3" />
+                </div>
+                <span>
+                  {isRtl ? 'اشترك لفتح جميع المرفقات بالكامل' : 'Subscribe to unlock all attachments'}
+                </span>
+                <span className="text-[10px] text-amber-300 dark:text-amber-600 font-extrabold flex items-center gap-0.5">
+                  <Sparkles className="w-3 h-3" />
+                  {isRtl ? 'ترقية' : 'Upgrade'}
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Reject Reason Modal */}
@@ -469,8 +678,8 @@ export default function LectureAttachmentsSection({
 
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               {isRtl
-                ? 'سيتم حذف الصورة نهائياً وإرسال إشعار فوري للطالب بالسبب لتوضيح عدم قبولها.'
-                : 'The image will be permanently deleted and the student will be notified.'}
+                ? 'سيتم حذف المرفق نهائياً وإرسال إشعار فوري للطالب بالسبب لتوضيح عدم قبوله.'
+                : 'The attachment will be permanently deleted and the student will be notified.'}
             </p>
 
             <div className="space-y-1.5">
@@ -479,9 +688,9 @@ export default function LectureAttachmentsSection({
               </label>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {[
-                  isRtl ? 'الصورة غير واضحة أو مشوشة' : 'Image is blurry',
-                  isRtl ? 'مكررة وموجودة مسبقاً' : 'Duplicate attachment',
-                  isRtl ? 'غير متعلقة بالمحاضرة' : 'Not related to lecture',
+                  isRtl ? 'الملف غير واضح أو مشوش' : 'File is blurry/corrupt',
+                  isRtl ? 'مكرر وموجود مسبقاً' : 'Duplicate attachment',
+                  isRtl ? 'غير متعلق بالمحاضرة' : 'Not related to lecture',
                 ].map((preset) => (
                   <button
                     key={preset}
@@ -549,6 +758,7 @@ export default function LectureAttachmentsSection({
           user={user}
           lang={lang}
           onDelete={handleDeleteAttachment}
+          onOpenReader={handleOpenPdfAttachment}
         />
       )}
     </div>

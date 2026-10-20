@@ -1,10 +1,18 @@
+import { calculateCampusDistance, type CampusDistanceResult } from './campusLocation.js';
+
 export const ATTENDANCE_DISCIPLINARY_BANNER = 'تحذير أمني: يخضع تسجيل الحضور للتدقيق التلقائي عبر إحداثيات الموقع الجغرافي والبصمة الزمنية المشفرة للجهاز. أي محاولة لتسجيل الحضور من خارج القاعة الدراسية أو التحايل على النظام تُعد مخالفة انضباطية جسيمة وتُعرّض صاحبها للمساءلات القانونية وعقوبة الفصل.';
+
+export type AttendanceLocationStatus = CampusDistanceResult['locationStatus'] | 'gps_on_indoor_timeout';
+
+export type AttendanceScanLocationEvidence =
+  | ({ state: 'available'; phase: 'scan'; latitude: number; longitude: number } & CampusDistanceResult)
+  | { state: 'gps_on_indoor_timeout'; phase: 'scan'; locationStatus: 'gps_on_indoor_timeout' };
 
 export interface AttendanceTelemetry {
   capturedOffline?: boolean;
   sameRuntimeElapsedSeconds?: number;
-  location?: {
-    state: 'not_requested' | 'available' | 'permission_unavailable' | 'timeout' | 'unavailable';
+  location?: AttendanceScanLocationEvidence | {
+    state: 'not_requested' | 'permission_unavailable' | 'timeout' | 'unavailable';
     phase: 'scan';
     latitude?: number;
     longitude?: number;
@@ -12,20 +20,15 @@ export interface AttendanceTelemetry {
   };
 }
 
-export interface CampusBoundary {
-  latitude: number;
-  longitude: number;
-  radiusMeters: number;
-}
-
 export interface AttendanceAdvisory {
   flags: string[];
   timingConfidence: 'unknown' | 'untrusted_same_runtime';
   reportedDistanceMeters?: number;
   accuracyMeters?: number;
+  locationStatus?: AttendanceLocationStatus;
 }
 
-export function summarizeAttendanceTelemetry(raw: unknown, campus?: CampusBoundary): AttendanceAdvisory {
+export function summarizeAttendanceTelemetry(raw: unknown): AttendanceAdvisory {
   const telemetry = raw && typeof raw === 'object' ? raw as Record<string, any> : {};
   const duration = telemetry.sameRuntimeElapsedSeconds;
   const hasDuration = typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 604800;
@@ -33,21 +36,32 @@ export function summarizeAttendanceTelemetry(raw: unknown, campus?: CampusBounda
   if (telemetry.capturedOffline === true && hasDuration && duration < 300) result.flags.push('rapid_reconnect');
   const location = telemetry.location;
   if (!location || location.phase !== 'scan') return result;
+  if (location.state === 'gps_on_indoor_timeout') {
+    result.locationStatus = 'gps_on_indoor_timeout';
+    return result;
+  }
   if (location.state === 'permission_unavailable') result.flags.push('location_permission_unavailable');
   if (location.state === 'timeout' || location.state === 'unavailable') result.flags.push('location_unavailable');
   const { latitude, longitude, accuracyMeters } = location;
   if (location.state !== 'available' || ![latitude, longitude, accuracyMeters].every(value => typeof value === 'number' && Number.isFinite(value))
     || Math.abs(latitude) > 90 || Math.abs(longitude) > 180 || accuracyMeters < 0 || accuracyMeters > 100000) return result;
-  result.accuracyMeters = Math.round(accuracyMeters);
-  if (!campus) return result;
-  const radians = (degrees: number) => degrees * Math.PI / 180;
-  const haversine = Math.sin(radians(latitude - campus.latitude) / 2) ** 2
-    + Math.cos(radians(campus.latitude)) * Math.cos(radians(latitude)) * Math.sin(radians(longitude - campus.longitude) / 2) ** 2;
-  const distance = 6371000 * 2 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, haversine))));
-  result.reportedDistanceMeters = Math.round(distance / 100) * 100;
-  if (accuracyMeters <= 200 && distance - accuracyMeters > campus.radiusMeters + 100) result.flags.push('reported_off_campus');
-  else if (accuracyMeters > 200) result.flags.push('location_low_accuracy');
+  const summary = calculateCampusDistance(latitude, longitude, accuracyMeters);
+  result.reportedDistanceMeters = summary.distanceMeters;
+  result.accuracyMeters = summary.accuracyMeters;
+  result.locationStatus = summary.locationStatus;
+  if (summary.locationStatus === 'off_campus') result.flags.push('reported_off_campus');
   return result;
+}
+
+export function attendanceLocationBadge(advisory: AttendanceAdvisory | undefined, arabic: boolean): string | null {
+  if (!advisory?.locationStatus) return null;
+  if (advisory.locationStatus === 'on_campus') return arabic ? '📍 داخل الكلية' : '📍 On campus';
+  if (advisory.locationStatus === 'gps_on_indoor_timeout') {
+    return arabic ? '📍 الموقع غير متاح — الإذن وخدمات الموقع مفعلة' : '📍 Location unavailable — permission and location services enabled';
+  }
+  if (typeof advisory.reportedDistanceMeters !== 'number' || !Number.isFinite(advisory.reportedDistanceMeters)) return null;
+  const kilometres = (advisory.reportedDistanceMeters / 1000).toFixed(1);
+  return arabic ? `⚠️ خارج الكلية (يبعد ${kilometres} كم)` : `⚠️ Off campus (${kilometres} km away)`;
 }
 
 export function attendanceDeviceMessage(receipt: {

@@ -172,8 +172,8 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   const review = (requestId: string, enrollDevice: boolean, decision: 'confirm' | 'reject', allowLateConfirmation?: boolean) => run(async () => {
     if (!snapshot) return;
     const reason = window.prompt(isRtl ? 'سبب القرار والتحقق من هوية الطالب:' : 'Decision reason and identity check:')?.trim();
-    if (!reason) return;
-    await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, allowLateConfirmation: allowLateConfirmation === true, expectedRevision: snapshot.session.revision, requestId: secureRequestId() });
+    const targetReceipt = snapshot.reviewReceipts.find(r => r.requestId === requestId);
+    await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, allowLateConfirmation: allowLateConfirmation === true, expectedRevision: targetReceipt?.reviewRevision || 1, requestId: secureRequestId() });
     setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
   });
   return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, prepare, start, saveSession, students, updateCell, review, refresh: () => run(refresh) };

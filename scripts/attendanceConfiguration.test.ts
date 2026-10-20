@@ -172,42 +172,22 @@ async function runTests() {
     });
   });
 
-  await check('12. All campus variables absent produces disabled without failing readiness', () => {
+  await check('12. Campus boundary uses the fixed Al-Safwa coordinates', () => {
     resetEnv();
     delete process.env.ATTENDANCE_CAMPUS_LATITUDE;
     delete process.env.ATTENDANCE_CAMPUS_LONGITUDE;
     delete process.env.ATTENDANCE_CAMPUS_RADIUS_METERS;
     const campus = validateCampusBoundary();
-    assert.equal(campus.status, 'disabled');
+    assert.equal(campus.status, 'ok');
+    assert.deepEqual(campus.boundary, { latitude: 32.623889, longitude: 44.006667, radiusMeters: 450 });
   });
 
-  await check('13. Partial campus configuration fails readiness', () => {
+  await check('13. Environment overrides cannot move the fixed campus boundary', () => {
     resetEnv();
-    process.env.ATTENDANCE_CAMPUS_LATITUDE = '33.3152';
-    delete process.env.ATTENDANCE_CAMPUS_LONGITUDE;
-    delete process.env.ATTENDANCE_CAMPUS_RADIUS_METERS;
-    assert.throws(() => validateCampusBoundary(), (err: any) => {
-      return err instanceof AttendanceConfigError && err.configCode === 'attendance_campus_boundary_invalid';
-    });
-  });
-
-  await check('14. Invalid latitude, longitude, or radius fails readiness', () => {
-    resetEnv();
-    // Latitude > 90
     process.env.ATTENDANCE_CAMPUS_LATITUDE = '95.0';
     process.env.ATTENDANCE_CAMPUS_LONGITUDE = '44.3661';
-    process.env.ATTENDANCE_CAMPUS_RADIUS_METERS = '500';
-    assert.throws(() => validateCampusBoundary(), (err: any) => {
-      return err instanceof AttendanceConfigError && err.configCode === 'attendance_campus_boundary_invalid';
-    });
-
-    // Negative radius
-    process.env.ATTENDANCE_CAMPUS_LATITUDE = '33.3152';
-    process.env.ATTENDANCE_CAMPUS_LONGITUDE = '44.3661';
     process.env.ATTENDANCE_CAMPUS_RADIUS_METERS = '-10';
-    assert.throws(() => validateCampusBoundary(), (err: any) => {
-      return err instanceof AttendanceConfigError && err.configCode === 'attendance_campus_boundary_invalid';
-    });
+    assert.deepEqual(validateCampusBoundary().boundary, { latitude: 32.623889, longitude: 44.006667, radiusMeters: 450 });
   });
 
   await check('15. Valid configuration passes an in-memory sign/verify round trip', () => {
@@ -236,7 +216,7 @@ async function runTests() {
         rpcSurface: 'ok',
         qrSigning: 'ok',
         installationSecret: 'ok',
-        campusBoundary: 'disabled',
+        campusBoundary: 'ok',
       },
     };
     assert.equal(isReadinessResultSafe(sampleResult), true);
@@ -303,7 +283,7 @@ async function runTests() {
         rpcSurface: 'ok',
         qrSigning: 'ok',
         installationSecret: 'ok',
-        campusBoundary: 'disabled',
+        campusBoundary: 'ok',
       },
     };
     assert.equal(healthy.ready, true);
@@ -316,7 +296,7 @@ async function runTests() {
         rpcSurface: 'ok',
         qrSigning: 'missing',
         installationSecret: 'ok',
-        campusBoundary: 'disabled',
+        campusBoundary: 'ok',
       },
     };
     assert.equal(unhealthy.ready, false);

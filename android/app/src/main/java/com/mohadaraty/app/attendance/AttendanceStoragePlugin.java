@@ -13,6 +13,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -52,11 +53,17 @@ public class AttendanceStoragePlugin extends Plugin {
     public void initialize(PluginCall call) {
         try {
             ensureInitialized();
+            String ownerUid = call.getString("ownerUid", "");
+            JSONObject health = dbHelper.getHealth(ownerUid, keyManager);
             JSObject res = new JSObject();
-            res.put("storageType", "native_sqlite");
-            res.put("isDurable", true);
-            res.put("unresolvedReceiptsCount", dbHelper.getUnresolvedReceiptsCount(null));
-            res.put("unresolvedCommandsCount", dbHelper.getUnresolvedCommandsCount(null));
+            res.put("storageType", health.optString("storageType", "native_sqlite"));
+            res.put("isDurable", health.optBoolean("isDurable", true));
+            res.put("healthState", health.optString("healthState", "ready"));
+            res.put("unresolvedReceiptsCount", health.optInt("unresolvedReceiptsCount", 0));
+            res.put("unresolvedCommandsCount", health.optInt("unresolvedCommandsCount", 0));
+            res.put("unreadableRecordsCount", health.optInt("unreadableRecordsCount", 0));
+            res.put("oldestPendingAgeMs", health.optLong("oldestPendingAgeMs", 0));
+            res.put("legacyMigrationPending", health.optBoolean("legacyMigrationPending", false));
             call.resolve(res);
         } catch (Exception e) {
             call.reject("Failed to initialize native storage: " + e.getMessage(), e);
@@ -202,8 +209,141 @@ public class AttendanceStoragePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void transitionReceipt(PluginCall call) {
+        try {
+            ensureInitialized();
+            String requestId = call.getString("requestId");
+            String status = call.getString("status");
+            if (requestId == null || status == null) {
+                call.reject("requestId and status required");
+                return;
+            }
+            String resolution = call.getString("resolution");
+            String reason = call.getString("reason");
+            Integer recordRevision = call.getInt("recordRevision");
+            JSONObject updated = dbHelper.transitionReceipt(requestId, status, resolution, reason, recordRevision, keyManager);
+            JSObject res = new JSObject();
+            if (updated != null) res.put("receipt", updated.toString());
+            call.resolve(res);
+        } catch (Exception e) {
+            call.reject("transitionReceipt failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void acquireUploadLease(PluginCall call) {
+        try {
+            ensureInitialized();
+            String ownerUid = call.getString("ownerUid", "");
+            int limit = call.getInt("limit", 25);
+            long durationMs = call.getInt("leaseDurationMs", 60000);
+            JSONObject result = dbHelper.acquireUploadLease(ownerUid, limit, durationMs, keyManager);
+            JSObject res = new JSObject();
+            res.put("leaseId", result.getString("leaseId"));
+            res.put("receipts", result.getJSONArray("receipts"));
+            call.resolve(res);
+        } catch (Exception e) {
+            call.reject("acquireUploadLease failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void acknowledgeBatch(PluginCall call) {
+        try {
+            ensureInitialized();
+            JSArray acksArr = call.getArray("acknowledgements");
+            if (acksArr == null) {
+                call.reject("acknowledgements parameter required");
+                return;
+            }
+            JSONArray acks = new JSONArray();
+            for (int i = 0; i < acksArr.length(); i++) {
+                acks.put(acksArr.getJSONObject(i));
+            }
+            dbHelper.acknowledgeBatch(acks, keyManager);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("acknowledgeBatch failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void releaseUploadLease(PluginCall call) {
+        try {
+            ensureInitialized();
+            String leaseId = call.getString("leaseId");
+            if (leaseId != null) {
+                dbHelper.releaseUploadLease(leaseId);
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("releaseUploadLease failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void getMetadata(PluginCall call) {
+        try {
+            ensureInitialized();
+            String key = call.getString("key");
+            String ownerUid = call.getString("ownerUid");
+            if (key == null) {
+                call.reject("key parameter required");
+                return;
+            }
+            String value = dbHelper.getMetadata(key, ownerUid, keyManager);
+            JSObject res = new JSObject();
+            res.put("value", value);
+            call.resolve(res);
+        } catch (Exception e) {
+            call.reject("getMetadata failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void setMetadata(PluginCall call) {
+        try {
+            ensureInitialized();
+            String key = call.getString("key");
+            String value = call.getString("value");
+            String ownerUid = call.getString("ownerUid");
+            if (key == null || value == null) {
+                call.reject("invalid_metadata_parameters");
+                return;
+            }
+            dbHelper.setMetadata(key, value, ownerUid, keyManager);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("setMetadata failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void deleteMetadata(PluginCall call) {
+        try {
+            ensureInitialized();
+            String key = call.getString("key");
+            String ownerUid = call.getString("ownerUid");
+            if (key == null) {
+                call.reject("key parameter required");
+                return;
+            }
+            dbHelper.deleteMetadata(key, ownerUid);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("deleteMetadata failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
     public void recoverInterruptedWork(PluginCall call) {
-        call.resolve();
+        try {
+            ensureInitialized();
+            dbHelper.recoverInterruptedWork();
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("recoverInterruptedWork failed: " + e.getMessage(), e);
+        }
     }
 
     @PluginMethod
@@ -211,11 +351,16 @@ public class AttendanceStoragePlugin extends Plugin {
         try {
             ensureInitialized();
             String ownerUid = call.getString("ownerUid", "");
+            JSONObject health = dbHelper.getHealth(ownerUid, keyManager);
             JSObject res = new JSObject();
-            res.put("storageType", "native_sqlite");
-            res.put("isDurable", true);
-            res.put("unresolvedReceiptsCount", dbHelper.getUnresolvedReceiptsCount(ownerUid));
-            res.put("unresolvedCommandsCount", dbHelper.getUnresolvedCommandsCount(ownerUid));
+            res.put("storageType", health.optString("storageType", "native_sqlite"));
+            res.put("isDurable", health.optBoolean("isDurable", true));
+            res.put("healthState", health.optString("healthState", "ready"));
+            res.put("unresolvedReceiptsCount", health.optInt("unresolvedReceiptsCount", 0));
+            res.put("unresolvedCommandsCount", health.optInt("unresolvedCommandsCount", 0));
+            res.put("unreadableRecordsCount", health.optInt("unreadableRecordsCount", 0));
+            res.put("oldestPendingAgeMs", health.optLong("oldestPendingAgeMs", 0));
+            res.put("legacyMigrationPending", health.optBoolean("legacyMigrationPending", false));
             call.resolve(res);
         } catch (Exception e) {
             call.reject("getHealth failed: " + e.getMessage(), e);
@@ -240,13 +385,16 @@ public class AttendanceStoragePlugin extends Plugin {
     public void signReceipt(PluginCall call) {
         try {
             ensureInitialized();
-            String receiptStr = call.getString("receipt");
-            if (receiptStr == null) {
-                call.reject("receipt parameter required");
-                return;
+            String message = call.getString("message");
+            if (message == null) {
+                String receiptStr = call.getString("receipt");
+                if (receiptStr == null) {
+                    call.reject("receipt or message parameter required");
+                    return;
+                }
+                JSONObject receipt = new JSONObject(receiptStr);
+                message = buildDeviceMessage(receipt);
             }
-            JSONObject receipt = new JSONObject(receiptStr);
-            String message = buildDeviceMessage(receipt);
             String signature = keyManager.signMessage(message);
             JSObject res = new JSObject();
             res.put("signature", signature);
@@ -260,25 +408,34 @@ public class AttendanceStoragePlugin extends Plugin {
     public void signDoctorQr(PluginCall call) {
         try {
             ensureInitialized();
+            String permit = call.getString("permit");
             String claimsStr = call.getString("claims");
             if (claimsStr == null) {
                 call.reject("claims parameter required");
                 return;
             }
             JSONObject claims = new JSONObject(claimsStr);
-            String permit = claims.optString("permit", "");
+            if (permit == null || permit.isEmpty()) {
+                permit = claims.optString("permit", "");
+            }
+            claims.remove("permit");
 
             JSONObject header = new JSONObject();
             header.put("alg", "ES256");
             header.put("typ", "JWT");
             header.put("permit", permit);
 
-            String encodedHeader = base64Url(header.toString().getBytes("UTF-8"));
-            String encodedClaims = base64Url(claims.toString().getBytes("UTF-8"));
+            String encodedHeader = base64Url(header.toString().getBytes(StandardCharsets.UTF_8));
+            String encodedClaims = base64Url(claims.toString().getBytes(StandardCharsets.UTF_8));
             String message = encodedHeader + "." + encodedClaims;
 
             String sig = keyManager.signMessage(message);
             String token = message + "." + sig;
+
+            if (token.getBytes(StandardCharsets.UTF_8).length > 2330) {
+                call.reject("doctor_qr_payload_exceeds_limit");
+                return;
+            }
 
             JSObject res = new JSObject();
             res.put("signature", token);
@@ -330,13 +487,15 @@ public class AttendanceStoragePlugin extends Plugin {
     }
 
     private static String buildDeviceMessage(JSONObject receipt) {
-        return "MYLECTURE_ATTENDANCE_RECEIPT_V1\n" +
-            receipt.optString("ownerUid", "") + "\n" +
-            receipt.optString("qrToken", "") + "\n" +
-            receipt.optString("sessionId", "") + "\n" +
-            receipt.optString("occurrenceId", "") + "\n" +
-            receipt.optString("installationId", "") + "\n" +
-            receipt.optString("capturedAtClient", "");
+        JSONArray arr = new JSONArray();
+        arr.put(receipt.optString("requestId", ""));
+        arr.put(receipt.optString("ownerUid", ""));
+        arr.put(receipt.optString("sessionId", ""));
+        arr.put(receipt.optString("occurrenceId", ""));
+        arr.put(receipt.optString("qrToken", ""));
+        arr.put(receipt.optString("installationId", ""));
+        arr.put(receipt.optBoolean("localDeviceConflict", false));
+        return arr.toString();
     }
 
     private static List<String> toStringList(JSArray arr) {

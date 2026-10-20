@@ -36,7 +36,7 @@ import AdminLogsScreen from './components/AdminLogsScreen';
 import SimosanAdminScreen from './components/SimosanAdminScreen';
 import TelegramMirrorModal from './components/TelegramMirrorModal';
 import BottomNav, { Tab } from './components/BottomNav';
-import { canManage, canManageAntiCheat, canManageMcqSystem, canViewStaffInbox } from './lib/permissions';
+import { canManage, canManageAntiCheat, canManageMcqSystem, canViewStaffInbox, isMasterAdmin } from './lib/permissions';
 import AnnouncementsScreen from './components/AnnouncementsScreen';
 import WeeklyListScreen from './components/WeeklyListScreen';
 import ProfileScreen from './components/ProfileScreen';
@@ -821,11 +821,16 @@ export default function App() {
 
         // Check latest admin alert
         if (canViewStaffInbox(user)) {
-          const adQuery = query(collection(db, 'adminAlerts'), orderBy('createdAt', 'desc'), limit(1));
+          const adQuery = query(collection(db, 'adminAlerts'), orderBy('createdAt', 'desc'), limit(5));
           const adSnap = await getDocs(adQuery);
-          if (!adSnap.empty) {
-             const t = adSnap.docs[0].data().createdAt?.toMillis?.() || 0;
-             if (t > latestTime) latestTime = t;
+          for (const docSnap of adSnap.docs) {
+            const data = docSnap.data();
+            if (data.type === 'ai_quota_exhausted' && !isMasterAdmin(user) && !canManageMcqSystem(user)) {
+              continue;
+            }
+            const t = data.createdAt?.toMillis?.() || 0;
+            if (t > latestTime) latestTime = t;
+            break;
           }
         }
 

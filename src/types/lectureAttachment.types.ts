@@ -2,6 +2,8 @@ import type { UserProfile } from '../types';
 
 export type AttachmentStatus = 'approved' | 'pending';
 
+export type AttachmentFileType = 'image' | 'pdf';
+
 export interface LectureAttachment {
   id: string;
   lectureId: string;
@@ -19,6 +21,10 @@ export interface LectureAttachment {
   uploaderRole?: UserProfile['role'];
   isAnonymous: boolean;
   status: AttachmentStatus;
+  isFree?: boolean;
+  fileType?: AttachmentFileType;
+  thumbnailUrl?: string;
+  aspectRatio?: number;
   createdAt: any;
   reviewedAt?: any;
   reviewedBy?: string;

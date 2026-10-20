@@ -69,7 +69,7 @@ public class AttendanceKeyManager {
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
             .build();
-            kg.initialize(spec);
+            kg.init(spec);
             kg.generateKey();
         }
     }

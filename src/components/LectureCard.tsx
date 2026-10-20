@@ -12,6 +12,8 @@ import { useMCQStatus } from '../hooks/useMCQStatus';
 import { shareFile } from '../lib/shareFile';
 import { exportPdfToDevice } from '../lib/deviceExport';
 import LectureAttachmentsSection from './lecture/LectureAttachmentsSection';
+import { usePdfThumbnail } from '../hooks/usePdfThumbnail';
+import PdfThumbnailCard from './pdf/PdfThumbnailCard';
 
 interface LectureCardProps {
   lecture: Lecture;
@@ -49,6 +51,12 @@ export default React.memo(function LectureCard({
   const [isSharing, setIsSharing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
+
+  const { thumbnail, aspectRatio: thumbRatio, isLoading: isThumbLoading, error: thumbError } = usePdfThumbnail(
+    lecture.id,
+    lecture.pdfUrl,
+    showPreview
+  );
   
   /**
    * Export the lecture's PDF directly to device files / downloads.
@@ -575,7 +583,7 @@ export default React.memo(function LectureCard({
               </div>
 
               {/* Scrollable Content */}
-              <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-4">
+              <div className="flex-1 overflow-y-auto px-5 sm:px-6 pt-4 pb-12 sm:pb-14 space-y-4">
                 
                 {/* Embedded YouTube Player (if video URL exists) */}
                 {lecture.youtubeUrl && (
@@ -601,8 +609,21 @@ export default React.memo(function LectureCard({
                 <div className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100/70 dark:from-zinc-800/70 dark:to-zinc-800/30 border border-slate-200/80 dark:border-zinc-700/60 shadow-sm flex flex-col items-center text-center">
                   
                   {isDownloading ? (
+
                     // State 1: Downloading in progress
                     <div className="w-full flex flex-col items-center py-2 space-y-3">
+                      {thumbnail && (
+                        <div
+                          style={{ aspectRatio: `${thumbRatio || 16 / 9}` }}
+                          className="w-full max-w-xs sm:max-w-sm mx-auto rounded-2xl overflow-hidden bg-slate-900/5 dark:bg-zinc-950/60 border border-slate-200/90 dark:border-zinc-700 shadow-md relative opacity-85 mb-1 flex items-center justify-center"
+                        >
+                          <img
+                            src={thumbnail}
+                            alt="Lecture Preview"
+                            className="w-full h-full object-contain select-none pointer-events-none"
+                          />
+                        </div>
+                      )}
                       <div className="relative w-14 h-14 flex items-center justify-center">
                         <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
                           <path
@@ -639,9 +660,23 @@ export default React.memo(function LectureCard({
                   ) : isDownloaded ? (
                     // State 2: Downloaded -> Read in App
                     <div className="w-full flex flex-col items-center space-y-3">
-                      <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-                        <BookOpen className="w-6 h-6" />
-                      </div>
+                      <PdfThumbnailCard
+                        thumbnail={thumbnail}
+                        aspectRatio={thumbRatio}
+                        isLoading={isThumbLoading}
+                        error={thumbError}
+                        onClick={() => {
+                          setShowPreview(false);
+                          if (onOpenReader) onOpenReader(lecture);
+                        }}
+                        actionBadge={<BookOpen className="w-4 h-4 text-white" />}
+                        actionLabel={isRtl ? 'قراءة المحاضرة' : 'Read Lecture'}
+                        fallback={
+                          <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                            <BookOpen className="w-6 h-6" />
+                          </div>
+                        }
+                      />
                       <div>
                         <h4 className="text-base sm:text-lg font-bold text-slate-900 dark:text-stone-100">
                           {isRtl ? 'المحاضرة جاهزة للقراءة' : 'Lecture Ready to Read'}
@@ -678,9 +713,20 @@ export default React.memo(function LectureCard({
                   ) : (
                     // State 3: Not Downloaded -> Download First
                     <div className="w-full flex flex-col items-center space-y-3">
-                      <div className="w-12 h-12 rounded-2xl bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400 flex items-center justify-center">
-                        <CloudDownload className="w-6 h-6" />
-                      </div>
+                      <PdfThumbnailCard
+                        thumbnail={thumbnail}
+                        aspectRatio={thumbRatio}
+                        isLoading={isThumbLoading}
+                        error={thumbError}
+                        onClick={downloadPDF}
+                        actionBadge={<CloudDownload className="w-4 h-4 text-white" />}
+                        actionLabel={isRtl ? 'تنزيل للقراءة' : 'Download to Read'}
+                        fallback={
+                          <div className="w-12 h-12 rounded-2xl bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400 flex items-center justify-center">
+                            <CloudDownload className="w-6 h-6" />
+                          </div>
+                        }
+                      />
                       <div>
                         <h4 className="text-base sm:text-lg font-bold text-slate-900 dark:text-stone-100">
                           {isRtl ? 'تنزيل المحاضرة' : 'Download Lecture'}
@@ -815,6 +861,7 @@ export default React.memo(function LectureCard({
                     user={user}
                     lang={lang}
                     onShowPaywall={onShowPaywall}
+                    onOpenReader={onOpenReader}
                   />
                 </div>
 

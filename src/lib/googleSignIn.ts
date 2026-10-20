@@ -150,7 +150,7 @@ async function signInWithGoogleNative(): Promise<any> {
 
   let first = '';
   try {
-    return await FirebaseAuthentication.signInWithGoogle();
+    return await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
   } catch (error: any) {
     first = String(error?.message ?? error ?? '');
     if (/cancel/i.test(first)) throw error;
@@ -158,7 +158,7 @@ async function signInWithGoogleNative(): Promise<any> {
   }
 
   try {
-    return await FirebaseAuthentication.signInWithGoogle({ useCredentialManager: false });
+    return await FirebaseAuthentication.signInWithGoogle({ useCredentialManager: false, skipNativeAuth: true });
   } catch (error: any) {
     const second = String(error?.message ?? error ?? '');
     if (/cancel/i.test(second)) throw error;
@@ -252,9 +252,6 @@ export async function getGoogleToken(): Promise<GoogleTokenResult> {
       photoUrl: result.user?.photoUrl ?? null,
     };
 
-    // The plugin creates a native Firebase session as a side effect; drop it so
-    // nothing but our own custom-token session is ever in play.
-    await FirebaseAuthentication.signOut().catch(() => {});
     return { body: { googleIdToken }, profile };
   }
 

@@ -4,4 +4,5 @@
     <exclude domain="database" path="attendance_native.db-wal" />
     <exclude domain="database" path="attendance_native.db-shm" />
     <exclude domain="database" path="attendance_native.db-journal" />
+    <exclude domain="sharedpref" path="attendance_device_meta.xml" />
 </full-backup-content>

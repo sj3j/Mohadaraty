@@ -73,7 +73,7 @@ export function createMcqHandlers(deps: McqDeps) {
             : `MCQ generation failed (${reason}).`;
     try {
       await admin.messaging().send({
-        topic: 'admins',
+        topic: 'master_admin',
         notification: { title: 'MCQ generation', body },
       });
     } catch (e) {

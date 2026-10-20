@@ -6,7 +6,7 @@ import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
 import { replyToQuestionReport } from '../services/questionBankService';
-import { canManageLectures, canViewStaffInbox } from '../lib/permissions';
+import { canManageLectures, canViewStaffInbox, isMasterAdmin, canManageMcqSystem } from '../lib/permissions';
 
 const formatTimeAgo = (timestamp: number, isRtl: boolean) => {
   const diffInSeconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -138,6 +138,9 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
              const adminSysSnap = await getDocs(adminSysQuery);
              adminSysSnap.forEach(docSnap => {
                const data = docSnap.data();
+               if (data.type === 'ai_quota_exhausted' && !isMasterAdmin(user) && !canManageMcqSystem(user)) {
+                 return;
+               }
                let title = isRtl ? 'تنبيه نظام' : 'System Alert';
                let body = data.reason ? `السبب: ${data.reason}` : 'هناك تنبيه يتطلب المراجعة';
                let itemType: 'system' | 'report' | 'support_ticket' | 'attachment' = 'system';

@@ -13,10 +13,11 @@ let repositoryInstance: AttendanceRepository | null = null;
 let signerInstance: AttendanceSigner | null = null;
 
 export function isNativeAttendanceAvailable(): boolean {
-  return Capacitor.isNativePlatform();
+  return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable('AttendanceStorage');
 }
 
 export function getAttendanceRepository(): AttendanceRepository {
+  if (Capacitor.isNativePlatform() && !isNativeAttendanceAvailable()) throw new Error('attendance_storage_unavailable');
   if (repositoryInstance) return repositoryInstance;
   if (isNativeAttendanceAvailable()) {
     repositoryInstance = new NativeAttendanceRepository();
@@ -27,6 +28,7 @@ export function getAttendanceRepository(): AttendanceRepository {
 }
 
 export function getAttendanceSigner(): AttendanceSigner {
+  if (Capacitor.isNativePlatform() && !isNativeAttendanceAvailable()) throw new Error('attendance_storage_unavailable');
   if (signerInstance) return signerInstance;
   if (isNativeAttendanceAvailable()) {
     signerInstance = new NativeAttendanceSigner();

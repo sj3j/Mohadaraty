@@ -219,17 +219,45 @@ export function commitDoctorAttendanceSession<T extends { requestId: string; own
   return openDb().then(database => new Promise<void>((resolve, reject) => {
     const transaction = attendanceTransaction(database, [STORE_META, STORE_ATTENDANCE_COMMANDS]);
     const store = transaction.objectStore(STORE_META);
-    const order = store.get('attendance-command-sequence');
-    order.onsuccess = () => {
-      const sequence = Number(order.result?.value || 0) + 1;
-      store.put({ key: 'attendance-command-sequence', value: sequence });
-      store.put(meta);
-      transaction.objectStore(STORE_ATTENDANCE_COMMANDS).put({ ...command, localOrder: sequence });
+    const commands = transaction.objectStore(STORE_ATTENDANCE_COMMANDS);
+    const existing = commands.get(command.requestId);
+    existing.onsuccess = () => {
+      const order = store.get('attendance-command-sequence');
+      order.onsuccess = () => {
+        const sequence = existing.result?.localOrder ?? Number(order.result?.value || 0) + 1;
+        if (!existing.result) store.put({ key: 'attendance-command-sequence', value: sequence });
+        store.put({ ...meta, ownerUid: command.ownerUid });
+        commands.put({ ...command, localOrder: sequence });
+      };
     };
     transaction.oncomplete = () => resolve();
     transaction.onabort = () => reject(transaction.error || new Error('attendance_not_saved'));
     transaction.onerror = () => reject(transaction.error || new Error('attendance_not_saved'));
   }));
+}
+
+/** The callback must be synchronous: keep lease selection and writes in one transaction. */
+export async function transactAttendanceReceipts<T>(
+  mutate: (receipts: LocalAttendanceReceipt[], put: (receipt: LocalAttendanceReceipt) => void) => T,
+): Promise<T> {
+  const db = await openDb();
+  return new Promise<T>((resolve, reject) => {
+    const tx = attendanceTransaction(db, STORE_ATTENDANCE_OUTBOX);
+    const store = tx.objectStore(STORE_ATTENDANCE_OUTBOX);
+    let result: T;
+    let failure: unknown;
+    store.getAll().onsuccess = event => {
+      try {
+        result = mutate((event.target as IDBRequest).result, receipt => { store.put(receipt); });
+      } catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(failure || tx.error || new Error('attendance_not_saved'));
+    tx.onerror = () => reject(tx.error || new Error('attendance_not_saved'));
+  });
 }
 
 export const listAttendanceReceipts = <T>(ownerUid: string) =>

@@ -1,6 +1,41 @@
 import UIKit
 import Capacitor
 import FirebaseCore
+import CoreLocation
+
+@objc(SettingsLauncherPlugin)
+public class SettingsLauncherPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "SettingsLauncherPlugin"
+    public let jsName = "SettingsLauncher"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "isLocationServicesEnabled", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openAppSettings", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func isLocationServicesEnabled(_ call: CAPPluginCall) {
+        call.resolve(["enabled": CLLocationManager.locationServicesEnabled()])
+    }
+
+    @objc func openAppSettings(_ call: CAPPluginCall) {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else {
+            call.reject("settings_unavailable")
+            return
+        }
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if opened { call.resolve() }
+                else { call.reject("settings_unavailable") }
+            }
+        }
+    }
+}
+
+public class MyLectureBridgeViewController: CAPBridgeViewController {
+    public override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(SettingsLauncherPlugin())
+        bridge?.registerPluginInstance(AttendanceStoragePlugin())
+    }
+}
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
