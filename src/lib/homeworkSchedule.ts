@@ -11,6 +11,7 @@
 import type { DayIndex, TimetableSession } from '../../shared/timetable';
 import { DAY_LABELS } from '../../shared/timetable';
 import type { Homework, HomeworkGroupDeadline } from '../types';
+import { parseSubgroup } from '../../shared/groups';
 
 /* ------------------------------------------------------------------ *
  * Date and Week Utilities (Saturday Anchored)
@@ -339,6 +340,75 @@ export function computeGroupDeadlines(
   };
 }
 
+/**
+ * Calculates date & time deadlines for theoretical groups (A, B, C...)
+ * based on admin-specified dates and times.
+ */
+export function computeTheoreticalGroupDeadlines(
+  entries: Record<string, { date: string; time: string }>
+): GroupDeadlineComputation {
+  const groupDeadlines: Record<string, HomeworkGroupDeadline> = {};
+  let earliest: Date | null = null;
+  let latest: Date | null = null;
+  const distinctDays = new Set<string>();
+
+  for (const [groupId, val] of Object.entries(entries)) {
+    if (!val || !val.date || !val.time) continue;
+    const [year, month, day] = val.date.split('-').map(Number);
+    const [hours, minutes] = val.time.split(':').map(Number);
+    if (isNaN(year) || isNaN(month) || isNaN(day)) continue;
+
+    const dueDate = new Date(
+      year,
+      month - 1,
+      day,
+      isNaN(hours) ? 8 : hours,
+      isNaN(minutes) ? 30 : minutes,
+      0,
+      0
+    );
+
+    if (isNaN(dueDate.getTime())) continue;
+
+    if (!earliest || dueDate < earliest) earliest = dueDate;
+    if (!latest || dueDate > latest) latest = dueDate;
+
+    const dayIndex = dueDate.getDay() as DayIndex;
+    const dayInfo = DAY_LABELS[dayIndex] || { ar: 'غير محدد', en: 'Unknown' };
+    distinctDays.add(val.date);
+
+    groupDeadlines[groupId] = {
+      group: groupId,
+      dueDate,
+      dayNameAr: dayInfo.ar,
+      dayNameEn: dayInfo.en,
+      time: val.time,
+    };
+  }
+
+  const dateRangeStrAr = earliest && latest
+    ? (earliest.getTime() !== latest.getTime()
+        ? `${DAY_LABELS[earliest.getDay() as DayIndex]?.ar || ''} ${formatFriendlyDate(earliest, 'ar')} - ${DAY_LABELS[latest.getDay() as DayIndex]?.ar || ''} ${formatFriendlyDate(latest, 'ar')}`
+        : `${DAY_LABELS[earliest.getDay() as DayIndex]?.ar || ''} ${formatFriendlyDate(earliest, 'ar')}`)
+    : '';
+
+  const dateRangeStrEn = earliest && latest
+    ? (earliest.getTime() !== latest.getTime()
+        ? `${DAY_LABELS[earliest.getDay() as DayIndex]?.en || ''} ${formatFriendlyDate(earliest, 'en')} - ${DAY_LABELS[latest.getDay() as DayIndex]?.en || ''} ${formatFriendlyDate(latest, 'en')}`
+        : `${DAY_LABELS[earliest.getDay() as DayIndex]?.en || ''} ${formatFriendlyDate(earliest, 'en')}`)
+    : '';
+
+  return {
+    groupDeadlines,
+    earliestDate: earliest,
+    latestDate: latest,
+    totalGroups: Object.keys(groupDeadlines).filter(k => k !== '*').length,
+    distinctDaysCount: distinctDays.size,
+    dateRangeStrAr,
+    dateRangeStrEn,
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Student Deadline Resolution
  * ------------------------------------------------------------------ */
@@ -371,8 +441,10 @@ export function resolveStudentDeadline(
 ): StudentDeadlineResolution {
   const normGroup = (studentGroup || '').trim();
 
-  // Mode 1: Timetable per-group
-  if (homework.deadlineMode === 'timetable' && homework.groupDeadlines) {
+  // Mode 1: Timetable per-group or Theoretical Groups
+  const isGroupMode = (homework.deadlineMode === 'timetable' || homework.deadlineMode === 'theoretical_groups') && !!homework.groupDeadlines;
+
+  if (isGroupMode && homework.groupDeadlines) {
     // 1. Direct group match
     if (normGroup && homework.groupDeadlines[normGroup]) {
       const g = homework.groupDeadlines[normGroup];
@@ -386,7 +458,22 @@ export function resolveStudentDeadline(
       };
     }
 
-    // 2. Universal session ("*")
+    // 2. Parent theoretical group match (e.g. student is in subgroup "A1", matches theoretical group "A")
+    const parsed = parseSubgroup(normGroup);
+    const parentLetter = parsed?.group || (normGroup.length === 1 ? normGroup.toUpperCase() : (normGroup.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase() || ''));
+    if (parentLetter && homework.groupDeadlines[parentLetter]) {
+      const g = homework.groupDeadlines[parentLetter];
+      return {
+        effectiveDate: coerceToDate(g.dueDate),
+        isGroupSpecific: true,
+        groupLabel: parentLetter,
+        time: g.time,
+        dayNameAr: g.dayNameAr,
+        dayNameEn: g.dayNameEn,
+      };
+    }
+
+    // 3. Universal session ("*")
     if (homework.groupDeadlines['*']) {
       const g = homework.groupDeadlines['*'];
       return {
@@ -398,7 +485,7 @@ export function resolveStudentDeadline(
       };
     }
 
-    // 3. Fallback to earliest deadline
+    // 4. Fallback to earliest deadline
     const fallbackDate = coerceToDate(homework.earliestDeadline) || coerceToDate(homework.dueDate);
     return {
       effectiveDate: fallbackDate,
@@ -444,5 +531,60 @@ export function sanitizeForFirestore<T>(data: T): T {
   }
   return data;
 }
+
+/**
+ * Resolves the numeric timestamp (in ms) of the effective deadline for a homework given a student's group.
+ * Follows the exact resolution and fallback chain:
+ * 1. Student group-specific or timetable fallback date via resolveStudentDeadline
+ * 2. hw.dueDate
+ * 3. hw.createdAt + 7 days
+ * 4. Number.MAX_SAFE_INTEGER if unresolvable
+ */
+export function getHomeworkEffectiveDeadlineTime(
+  hw: Homework,
+  studentGroup?: string | null
+): number {
+  const resolution = resolveStudentDeadline(hw, studentGroup);
+  if (resolution.effectiveDate) {
+    const t = resolution.effectiveDate.getTime();
+    if (!isNaN(t)) return t;
+  }
+
+  const due = coerceToDate(hw.dueDate);
+  if (due) {
+    const t = due.getTime();
+    if (!isNaN(t)) return t;
+  }
+
+  const created = coerceToDate(hw.createdAt);
+  if (created) {
+    return created.getTime() + 7 * 24 * 60 * 60 * 1000;
+  }
+
+  return Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * Sorts an array of homeworks chronologically ascending by effective group deadline
+ * (closest from today / overdue first -> today -> tomorrow -> future).
+ * Stable tie-breaking by createdAt timestamp ascending.
+ */
+export function sortHomeworksByStudentDeadline(
+  homeworks: Homework[],
+  studentGroup?: string | null
+): Homework[] {
+  return [...homeworks].sort((a, b) => {
+    const timeA = getHomeworkEffectiveDeadlineTime(a, studentGroup);
+    const timeB = getHomeworkEffectiveDeadlineTime(b, studentGroup);
+    if (timeA !== timeB) return timeA - timeB;
+
+    const createdA = coerceToDate(a.createdAt)?.getTime() || 0;
+    const createdB = coerceToDate(b.createdAt)?.getTime() || 0;
+    if (createdA !== createdB) return createdA - createdB;
+
+    return (a.id || '').localeCompare(b.id || '');
+  });
+}
+
 
 

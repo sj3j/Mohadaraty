@@ -14,6 +14,9 @@ import {
   computeGroupDeadlines,
   resolveStudentDeadline,
   sanitizeForFirestore,
+  getHomeworkEffectiveDeadlineTime,
+  sortHomeworksByStudentDeadline,
+  computeTheoreticalGroupDeadlines,
 } from '../src/lib/homeworkSchedule';
 import type { TimetableSession } from '../shared/timetable';
 import type { Homework } from '../src/types';
@@ -300,6 +303,209 @@ console.log('\n--- 7. Firestore Sanitizer ---');
   check('Strips nested undefined fields (sessionTitle)', !('sessionTitle' in cleaned.groupDeadlines.A1));
   check('Preserves nested valid fields', cleaned.groupDeadlines.A2.location === 'Hall B');
   check('Cleans undefined in arrays', Array.isArray(cleaned.list) && cleaned.list.length === 2 && cleaned.list[0] === 1 && cleaned.list[1] === 3);
+}
+
+console.log('\n--- 8. Homework Sorting by Group Deadline ---');
+{
+  // HW1: Timetable mode - Group A1 is Oct 14, Group B1 is Oct 16
+  const hw1: Homework = {
+    id: 'hw-chem',
+    subject: 'chemistry',
+    type: 'practical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 1),
+    deadlineMode: 'timetable',
+    earliestDeadline: new Date(2025, 9, 14, 8, 30),
+    latestDeadline: new Date(2025, 9, 16, 10, 30),
+    groupDeadlines: {
+      A1: {
+        group: 'A1',
+        dueDate: new Date(2025, 9, 14, 8, 30),
+        dayNameAr: 'الثلاثاء',
+        dayNameEn: 'Tuesday',
+        time: '08:30',
+      },
+      B1: {
+        group: 'B1',
+        dueDate: new Date(2025, 9, 16, 10, 30),
+        dayNameAr: 'الخميس',
+        dayNameEn: 'Thursday',
+        time: '10:30',
+      },
+    },
+  };
+
+  // HW2: Timetable mode - Group A1 is Oct 15, Group B1 is Oct 13
+  const hw2: Homework = {
+    id: 'hw-pharm',
+    subject: 'pharmacology',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 2),
+    deadlineMode: 'timetable',
+    earliestDeadline: new Date(2025, 9, 13, 11, 0),
+    latestDeadline: new Date(2025, 9, 15, 9, 0),
+    groupDeadlines: {
+      A1: {
+        group: 'A1',
+        dueDate: new Date(2025, 9, 15, 9, 0),
+        dayNameAr: 'الأربعاء',
+        dayNameEn: 'Wednesday',
+        time: '09:00',
+      },
+      B1: {
+        group: 'B1',
+        dueDate: new Date(2025, 9, 13, 11, 0),
+        dayNameAr: 'الاثنين',
+        dayNameEn: 'Monday',
+        time: '11:00',
+      },
+    },
+  };
+
+  // HW3: Fixed mode - Oct 12 (earlier than both)
+  const hw3: Homework = {
+    id: 'hw-bio',
+    subject: 'biology',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 3),
+    deadlineMode: 'fixed',
+    dueDate: new Date(2025, 9, 12, 23, 59),
+  };
+
+  // HW4: Fixed mode - Oct 20 (later than both)
+  const hw4: Homework = {
+    id: 'hw-ethics',
+    subject: 'ethics',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 4),
+    deadlineMode: 'fixed',
+    dueDate: new Date(2025, 9, 20, 23, 59),
+  };
+
+  const list = [hw4, hw1, hw2, hw3];
+
+  // Test 1: For student in Group A1:
+  // hw3 (Oct 12) < hw1 (Oct 14) < hw2 (Oct 15) < hw4 (Oct 20)
+  const sortedA1 = sortHomeworksByStudentDeadline(list, 'A1');
+  check('Group A1 orders [hw3, hw1, hw2, hw4]',
+    sortedA1.map(h => h.id).join(',') === 'hw-bio,hw-chem,hw-pharm,hw-ethics'
+  );
+
+  // Test 2: For student in Group B1:
+  // hw3 (Oct 12) < hw2 (Oct 13) < hw1 (Oct 16) < hw4 (Oct 20)
+  // Notice hw2 comes BEFORE hw1 for Group B1, whereas hw1 was before hw2 for Group A1!
+  const sortedB1 = sortHomeworksByStudentDeadline(list, 'B1');
+  check('Group B1 flips hw1 and hw2 order [hw3, hw2, hw1, hw4]',
+    sortedB1.map(h => h.id).join(',') === 'hw-bio,hw-pharm,hw-chem,hw-ethics'
+  );
+
+  // Test 3: For student with no group:
+  // Falls back to earliest deadline:
+  // hw3: Oct 12, hw2: earliest Oct 13, hw1: earliest Oct 14, hw4: Oct 20
+  const sortedNoGroup = sortHomeworksByStudentDeadline(list, undefined);
+  check('No-group student falls back to earliest deadline [hw3, hw2, hw1, hw4]',
+    sortedNoGroup.map(h => h.id).join(',') === 'hw-bio,hw-pharm,hw-chem,hw-ethics'
+  );
+
+  // Test 4: Overdue tasks sorting (earlier timestamp) precedes upcoming tasks
+  const overdueHw: Homework = {
+    id: 'hw-overdue',
+    subject: 'old_subject',
+    type: 'practical',
+    lectures: [],
+    createdAt: new Date(2025, 8, 1),
+    deadlineMode: 'fixed',
+    dueDate: new Date(2025, 8, 15), // September 15 (overdue relative to Oct)
+  };
+  const listWithOverdue = [hw1, overdueHw, hw3];
+  const sortedWithOverdue = sortHomeworksByStudentDeadline(listWithOverdue, 'A1');
+  check('Overdue tasks appear first (chronological ascending urgency)',
+    sortedWithOverdue[0].id === 'hw-overdue'
+  );
+
+  // Test 5: Immutability check - original array is not modified
+  const original = [hw1, hw2];
+  const sortedCopy = sortHomeworksByStudentDeadline(original, 'B1');
+  check('sortHomeworksByStudentDeadline is pure and immutable',
+    original[0].id === 'hw-chem' && sortedCopy[0].id === 'hw-pharm'
+  );
+}
+
+console.log('\n--- 9. Theoretical Groups Scheduling & Resolution ---');
+{
+  const entries = {
+    A: { date: '2025-10-26', time: '09:00' }, // Sunday Oct 26, 2025
+    B: { date: '2025-10-26', time: '11:30' },
+  };
+
+  const computation = computeTheoreticalGroupDeadlines(entries);
+  check('Computes theoretical group deadlines for 2 groups', computation.totalGroups === 2);
+  check('Group A is Oct 26 at 09:00', computation.groupDeadlines.A.time === '09:00' && computation.groupDeadlines.A.dayNameAr === 'الأحد');
+  check('Group B is Oct 26 at 11:30', computation.groupDeadlines.B.time === '11:30');
+  check('Earliest date matches Group A', computation.earliestDate?.getTime() === computation.groupDeadlines.A.dueDate.getTime());
+  check('Latest date matches Group B', computation.latestDate?.getTime() === computation.groupDeadlines.B.dueDate.getTime());
+
+  const theoHw: Homework = {
+    id: 'hw-theo-exam',
+    subject: 'pharmacology',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 1),
+    deadlineMode: 'theoretical_groups',
+    earliestDeadline: computation.earliestDate,
+    latestDeadline: computation.latestDate,
+    dueDate: computation.earliestDate,
+    groupDeadlines: computation.groupDeadlines,
+  };
+
+  // Student in subgroup A1 matches Group A
+  const resA1 = resolveStudentDeadline(theoHw, 'A1');
+  check('Student in subgroup A1 matches theoretical group A', resA1.isGroupSpecific && resA1.groupLabel === 'A');
+  check('Student in A1 gets 09:00 on Sunday', resA1.time === '09:00' && resA1.dayNameAr === 'الأحد');
+
+  // Student in subgroup A2 matches Group A
+  const resA2 = resolveStudentDeadline(theoHw, 'A2');
+  check('Student in subgroup A2 matches theoretical group A', resA2.isGroupSpecific && resA2.groupLabel === 'A');
+
+  // Student in subgroup B1 matches Group B
+  const resB1 = resolveStudentDeadline(theoHw, 'B1');
+  check('Student in subgroup B1 matches theoretical group B', resB1.isGroupSpecific && resB1.groupLabel === 'B' && resB1.time === '11:30');
+
+  // Student with bare group A matches Group A
+  const resBareA = resolveStudentDeadline(theoHw, 'A');
+  check('Student with bare group A matches Group A', resBareA.isGroupSpecific && resBareA.groupLabel === 'A');
+
+  // Student with no group falls back to earliest deadline (09:00)
+  const resNoGroup = resolveStudentDeadline(theoHw, null);
+  check('Student with no group gets earliest deadline (Group A 09:00)', !resNoGroup.isGroupSpecific && resNoGroup.fallbackReason === 'no_group' && resNoGroup.effectiveDate?.getTime() === computation.earliestDate?.getTime());
+
+  // Sorting works with theoretical groups
+  const laterFixedHw: Homework = {
+    id: 'hw-later',
+    subject: 'ethics',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 2),
+    deadlineMode: 'fixed',
+    dueDate: new Date(2025, 9, 28),
+  };
+  const earlierFixedHw: Homework = {
+    id: 'hw-earlier',
+    subject: 'biology',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 3),
+    deadlineMode: 'fixed',
+    dueDate: new Date(2025, 9, 25),
+  };
+
+  const sorted = sortHomeworksByStudentDeadline([laterFixedHw, theoHw, earlierFixedHw], 'B1');
+  check('sortHomeworksByStudentDeadline properly positions theoretical group hw',
+    sorted.map(h => h.id).join(',') === 'hw-earlier,hw-theo-exam,hw-later'
+  );
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

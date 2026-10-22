@@ -179,6 +179,9 @@ export const canManageStreakSystem = (user?: UserProfile | null): boolean =>
 export const canManageMcqSystem = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageMcqSystem');
 
+export const canManagePaidMcq = (user?: UserProfile | null): boolean =>
+  canManage(user, 'managePaidMcq');
+
 export const canManageAntiCheat = (user?: UserProfile | null): boolean =>
   canManage(user, 'manageAntiCheat');
 

@@ -19,9 +19,9 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than anything already
-        // uploaded; code 16 has been built, so this release is code 17.
-        versionCode 17
-        versionName "1.2.1"
+        // uploaded; code 17 has been built, so this release is code 18.
+        versionCode 18
+        versionName "1.2.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

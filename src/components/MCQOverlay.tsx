@@ -43,6 +43,8 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
   const [requesting, setRequesting] = useState(false);
   const [requestState, setRequestState] = useState<'idle' | 'sent' | 'already' | 'error'>('idle');
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateErrorCode, setGenerateErrorCode] = useState<string | null>(null);
+  const [isGeneratingPaid, setIsGeneratingPaid] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -122,16 +124,32 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
    * end a student has. The server route already existed and already admitted
    * admin / moderator / master_admin - nothing here widens access.
    */
-  const handleGenerate = async () => {
+  const handleGenerate = async (options?: { usePaidKey?: boolean }) => {
     if (lecture.version === 'translated') return;
-    setGenerateError(null);
+    const isPaid = options?.usePaidKey === true;
+    if (isPaid) {
+      setIsGeneratingPaid(true);
+    } else {
+      setGenerateError(null);
+      setGenerateErrorCode(null);
+    }
     setRoute('loading');
     try {
-      const generated = await generateMCQsForLecture(lecture.id);
+      const generated = await generateMCQsForLecture(lecture.id, { usePaidKey: isPaid });
       setQuestions(generated);
+      setGenerateError(null);
+      setGenerateErrorCode(null);
       setRoute('intro');
     } catch (err: any) {
       console.error(err);
+      let rawCode = '';
+      if (err instanceof AIUnavailableError) {
+        rawCode = err.code;
+      } else {
+        rawCode = err?.message || '';
+      }
+      setGenerateErrorCode(rawCode);
+
       // Neutral for provider faults; the raw code would name the vendor.
       // For other failures, show the staff a message they can act on rather
       // than a single catch-all that hides what went wrong.
@@ -143,6 +161,12 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
       } else {
         const code = err?.message || '';
         switch (code) {
+          case 'forbidden_paid_ai':
+            msg = 'غير مصرح لك باستخدام الـ API المدفوع.';
+            break;
+          case 'paid_api_not_configured':
+            msg = 'مفتاح الـ API المدفوع (GEMINI_API_KEY) غير مكوّن في الخادم.';
+            break;
           case 'pdf_unreachable':
             msg = 'تعذّر الوصول إلى ملف PDF. تأكد أن الرابط صالح وأعد المحاولة.';
             break;
@@ -180,6 +204,8 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
       }
       setGenerateError(msg);
       setRoute('intro');
+    } finally {
+      setIsGeneratingPaid(false);
     }
   };
 
@@ -336,6 +362,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
             requestState={requestState}
             onGenerate={handleGenerate}
             generateError={generateError}
+            generateErrorCode={generateErrorCode}
+            onGeneratePaid={() => handleGenerate({ usePaidKey: true })}
+            isGeneratingPaid={isGeneratingPaid}
             onClose={onClose}
             user={user}
             userId={user.uid}

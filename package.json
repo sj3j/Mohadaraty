@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.2",
   "type": "module",
   "scripts": {
     "dev": "tsx watch server.ts",
@@ -38,6 +38,7 @@
     "test:stage-transfer": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/stageTransfer.test.ts\"",
     "test:progression": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/progression.test.ts\"",
     "test:google": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/googleLogin.test.ts\"",
+    "test:play-auth": "npx tsx scripts/googlePlayAuthDiagnostic.test.ts",
     "test:signup": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/signup.test.ts\"",
     "test:richtext": "npx tsx scripts/richText.test.ts",
     "test:anchor": "npx tsx scripts/pdfAnchor.test.ts",

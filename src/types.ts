@@ -440,7 +440,7 @@ export interface Homework {
   stageId?: string;
 
   /** Deadline mode: 'fixed' (general single date) or 'timetable' (per-group lecture time). */
-  deadlineMode?: 'fixed' | 'timetable';
+  deadlineMode?: 'fixed' | 'timetable' | 'theoretical_groups';
   /** The Saturday date string (YYYY-MM-DD) starting the academic week for timetable mode. */
   targetWeekStart?: string;
   /** The title of the session in timetable.sessions that this homework was linked to. */
@@ -577,7 +577,11 @@ export const TRANSLATIONS = {
     both: 'عملي ونظري',
     dueDate: 'تاريخ التسليم / الامتحان',
     deadlineModeFixed: 'موعد موحد (للدفعة كاملة)',
-    deadlineModeTimetable: 'بحسب موعد المحاضرة لكل كروب',
+    deadlineModeTimetable: 'بحسب موعد المحاضرة (جدول العملي)',
+    deadlineModeTheoreticalGroups: 'توقيت لكل مجموعة نظرية',
+    applyDateToAll: 'تطبيق التاريخ على جميع المجموعات',
+    theoreticalGroup: 'المجموعة النظرية',
+    theoreticalGroupsSchedule: 'مواعيد المجموعات النظرية',
     selectWeek: 'الأسبوع الدراسي (يبدأ السبت)',
     thisWeek: 'الأسبوع الحالي',
     nextWeek: 'الأسبوع القادم',
@@ -756,6 +760,10 @@ export const TRANSLATIONS = {
     dueDate: 'Due / Exam Date',
     deadlineModeFixed: 'General Deadline (All Groups)',
     deadlineModeTimetable: 'By Group Lecture Time',
+    deadlineModeTheoreticalGroups: 'By Theoretical Group',
+    applyDateToAll: 'Apply Date to All Groups',
+    theoreticalGroup: 'Theoretical Group',
+    theoreticalGroupsSchedule: 'Theoretical Groups Schedule',
     selectWeek: 'Academic Week (Starts Saturday)',
     thisWeek: 'This Week',
     nextWeek: 'Next Week',

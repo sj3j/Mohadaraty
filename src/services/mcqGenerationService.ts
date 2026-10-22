@@ -108,15 +108,19 @@ export async function updateLectureMCQSet(lectureId: string, updatedQuestions: M
  * Vercel caps request bodies near 4.5MB and because a caller-supplied URL would
  * let anyone point the server at an arbitrary host.
  */
-export async function generateMCQsForLecture(lectureId: string): Promise<MCQQuestion[]> {
-  trackEvent('mcq_generation_started', { lectureId });
+export async function generateMCQsForLecture(
+  lectureId: string,
+  options?: { usePaidKey?: boolean },
+): Promise<MCQQuestion[]> {
+  const usePaidKey = options?.usePaidKey === true;
+  trackEvent('mcq_generation_started', { lectureId, usePaidKey });
   try {
-    await postJson('/api/mcq/generate', { lectureId });
+    await postJson('/api/mcq/generate', { lectureId, usePaidKey });
     const questions = await getExistingMCQsForLecture(lectureId);
-    trackEvent('mcq_generation_success', { lectureId, questionCount: questions.length });
+    trackEvent('mcq_generation_success', { lectureId, questionCount: questions.length, usePaidKey });
     return questions;
   } catch (e: any) {
-    trackEvent('mcq_generation_failed', { lectureId, error: e?.code || e?.message });
+    trackEvent('mcq_generation_failed', { lectureId, error: e?.code || e?.message, usePaidKey });
     throw e;
   }
 }

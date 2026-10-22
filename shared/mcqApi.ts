@@ -31,12 +31,17 @@ export interface McqDeps {
   admin: any;
   /** Free-tier key, server-only. Separate from Simosan's paid GEMINI_API_KEY. */
   apiKey?: string;
+  paidApiKey?: string;
+  ai?: any;
+  paidAi?: any;
 }
 
 export function createMcqHandlers(deps: McqDeps) {
   const { admin } = deps;
   const apiKey = deps.apiKey || process.env.GEMINI_FREE_TIER_API_KEY;
-  const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+  const paidApiKey = deps.paidApiKey || process.env.GEMINI_API_KEY;
+  const ai = deps.ai !== undefined ? deps.ai : (apiKey ? new GoogleGenAI({ apiKey }) : null);
+  const paidAi = deps.paidAi !== undefined ? deps.paidAi : (paidApiKey ? new GoogleGenAI({ apiKey: paidApiKey }) : null);
 
   const staff = (req: any) => req.staff || {};
 
@@ -86,12 +91,23 @@ export function createMcqHandlers(deps: McqDeps) {
    * ---------------------------------------------------------------- */
   async function generate(req: any, res: any) {
     const db = admin.firestore();
-    const { lectureId } = req.body || {};
+    const { lectureId, usePaidKey } = req.body || {};
     if (!lectureId) return res.status(400).json({ error: 'lectureId is required' });
-    if (!ai) {
+    if (usePaidKey) {
+      const callerStaff = staff(req);
+      const isMaster = callerStaff.isMasterAdmin === true || callerStaff.role === 'master_admin';
+      const hasPermission = isMaster || hasStaffCapability(callerStaff, 'managePaidMcq');
+      if (!hasPermission) {
+        return res.status(403).json({ error: 'forbidden_paid_ai' });
+      }
+      if (!paidAi) {
+        return res.status(503).json({ error: 'paid_api_not_configured' });
+      }
+    } else if (!ai) {
       await raiseAlert('not_configured', { lectureId });
       return res.status(503).json({ error: 'not_configured' });
     }
+    const activeAi = usePaidKey ? paidAi : ai;
 
     const mcqRef = db.collection('mcqs').doc(lectureId);
 
@@ -173,7 +189,7 @@ export function createMcqHandlers(deps: McqDeps) {
       if (buf.length <= MAX_INLINE_PDF_BYTES) {
         pdfPart = { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } };
       } else {
-        const uploaded = await ai.files.upload({
+        const uploaded = await activeAi.files.upload({
           file: new Blob([buf], { type: 'application/pdf' }),
           config: { mimeType: 'application/pdf', displayName: `lecture-${lectureId}` },
         });
@@ -183,7 +199,7 @@ export function createMcqHandlers(deps: McqDeps) {
         const deadline = Date.now() + 30_000;
         while (file.state === 'PROCESSING' && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 700));
-          file = await ai.files.get({ name: file.name as string });
+          file = await activeAi.files.get({ name: file.name as string });
         }
         if (file.state !== 'ACTIVE' || !file.uri) {
           throw new Error('pdf_too_large');
@@ -196,7 +212,7 @@ export function createMcqHandlers(deps: McqDeps) {
       let response: any;
       try {
         response = await generateWithRetry(async () => {
-          return await ai.models.generateContent({
+          return await activeAi.models.generateContent({
             model: MCQ_MODEL,
             contents: [{
               role: 'user',
@@ -213,7 +229,7 @@ export function createMcqHandlers(deps: McqDeps) {
         }, startTime);
       } finally {
         if (uploadedFile?.name) {
-          ai.files.delete({ name: uploadedFile.name }).catch(() => {});
+          activeAi.files.delete({ name: uploadedFile.name }).catch(() => {});
         }
       }
 
@@ -237,11 +253,33 @@ export function createMcqHandlers(deps: McqDeps) {
         stageId: lecture.stageId || '',
         questions,
         generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        generatedBy: 'gemini-ai',
+        generatedBy: usePaidKey ? 'gemini-paid' : 'gemini-ai',
+        paidFallbackUsed: usePaidKey === true,
+        paidTriggeredBy: usePaidKey ? ((req.user as any)?.uid || null) : null,
+        paidTriggeredByEmail: usePaidKey ? ((req.user as any)?.email || null) : null,
         status: 'ready',
         totalQuestions: questions.length,
         failureReason: admin.firestore.FieldValue.delete(),
       }, { merge: true });
+
+      if (usePaidKey) {
+        try {
+          await db.collection('adminAlerts').add({
+            type: 'ai_paid_generation',
+            source: 'mcq',
+            lectureId,
+            lectureTitle: lecture?.title || null,
+            stageId: lecture?.stageId || null,
+            triggeredByUid: (req.user as any)?.uid || null,
+            triggeredByEmail: (req.user as any)?.email || null,
+            note: `MCQ generated using paid GEMINI_API_KEY by ${(req.user as any)?.email || 'staff'}`,
+            resolved: true,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } catch (alertErr) {
+          console.warn('[mcq] could not write paid generation adminAlert', alertErr);
+        }
+      }
 
       res.json({ ok: true, count: questions.length });
     } catch (e: any) {

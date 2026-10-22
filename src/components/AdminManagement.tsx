@@ -49,6 +49,7 @@ const PERMISSION_LABELS = [
   { id: 'manageAdmins', labelEn: 'Manage Assistants', labelAr: 'إدارة المساعدين' },
   { id: 'manageStreakSystem', labelEn: 'Streak System', labelAr: 'إدارة الستريك' },
   { id: 'manageMcqSystem', labelEn: 'MCQ System', labelAr: 'إدارة بنك الأسئلة' },
+  { id: 'managePaidMcq', labelEn: 'Paid AI MCQ Generation', labelAr: 'توليد الأسئلة بالـ API المدفوع' },
   { id: 'manageAntiCheat', labelEn: 'Anti-cheat', labelAr: 'مكافحة الغش' },
   // إدارة الاشتراكات. The label is READ from TRANSLATIONS rather than written
   // out here: it arrives through src/i18n/payments.ts, which vite.config.ts
@@ -148,6 +149,7 @@ const defaultPermissionsFor = (role: AssistantRole): Record<string, boolean> =>
       manageAdmins: false,
       manageStreakSystem: false,
       manageMcqSystem: false,
+      managePaidMcq: false,
       manageAntiCheat: false,
       manageSubscriptions: false,
       canActivate: false,

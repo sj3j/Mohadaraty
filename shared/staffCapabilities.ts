@@ -15,6 +15,7 @@ export const REPRESENTATIVE_ONLY_CAPABILITIES = [
 export const SYSTEM_CAPABILITIES = [
   'manageStreakSystem',
   'manageMcqSystem',
+  'managePaidMcq',
   'manageAntiCheat',
   'manageSubscriptions',
 ] as const;

@@ -115,6 +115,7 @@ jdk21.zip
 scratch/
 ios assest/
 store-assets/
+scripts/lib/*.jar
 
 
 

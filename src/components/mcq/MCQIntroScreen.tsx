@@ -4,7 +4,7 @@ import { Lecture, UserProfile } from '../../types';
 import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock, RotateCcw, Crown, Sparkles, GraduationCap } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
-import { canManageAntiCheat, canManageLectures, canManageMcqSystem } from '../../lib/permissions';
+import { canManageAntiCheat, canManageLectures, canManageMcqSystem, canManagePaidMcq } from '../../lib/permissions';
 
 interface Props {
   lecture: Lecture;
@@ -25,10 +25,34 @@ interface Props {
   /** Staff generate directly. The server is the real gate - see canGenerate. */
   onGenerate: () => void;
   generateError: string | null;
+  generateErrorCode?: string | null;
+  onGeneratePaid?: () => void;
+  isGeneratingPaid?: boolean;
   isQuizLocked: boolean;
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onStartDoctorQuiz, isSubscribed = false, onShowPaywall, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked }: Props) {
+export default function MCQIntroScreen({
+  lecture,
+  questionsCount,
+  bankQuestions = [],
+  firstAttemptStatus,
+  onStart,
+  onStartDoctorQuiz,
+  isSubscribed = false,
+  onShowPaywall,
+  onClose,
+  user,
+  userId,
+  onRequestGeneration,
+  requesting,
+  requestState,
+  onGenerate,
+  generateError,
+  generateErrorCode,
+  onGeneratePaid,
+  isGeneratingPaid = false,
+  isQuizLocked,
+}: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
@@ -60,6 +84,9 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
    * and guards the question bank and cheating monitor, not generation.
    */
   const canGenerate = !isTranslated && canManageLectures(user);
+  const canUsePaid = !isTranslated && canManagePaidMcq(user);
+  const isRecoverableWithPaid = ['free_tier_limit', 'quota', 'unavailable'].includes(generateErrorCode || '');
+  const [showPaidCautionModal, setShowPaidCautionModal] = useState(false);
 
   useEffect(() => {
     if (!isRetake && userId) {
@@ -264,12 +291,23 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
                   <button
                     type="button"
                     onClick={onGenerate}
-                    disabled={retryCountdown > 0}
+                    disabled={retryCountdown > 0 || isGeneratingPaid}
                     className="w-full py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    {retryCountdown > 0 ? `إعادة المحاولة (${retryCountdown}s)` : 'إعادة المحاولة الآن'}
+                    {retryCountdown > 0 ? `إعادة المحاولة (${retryCountdown}s)` : 'إعادة المحاولة مجاناً'}
                   </button>
+                  {isRecoverableWithPaid && canUsePaid && onGeneratePaid && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPaidCautionModal(true)}
+                      disabled={isGeneratingPaid}
+                      className="w-full py-2.5 px-3 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-700 text-white text-xs font-black rounded-lg flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.99] border border-amber-400/40"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-100" />
+                      <span>توليد بالـ API المدفوع (GEMINI_API_KEY)</span>
+                    </button>
+                  )}
                 </div>
               )}
             </>
@@ -393,6 +431,58 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
         )}
 
       </div>
+
+      {showPaidCautionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="bg-white dark:bg-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-amber-200 dark:border-amber-700/50 space-y-4"
+          >
+            <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div className="text-center space-y-2">
+              <h3 className="text-lg font-black text-slate-900 dark:text-white">
+                تنبيه التكلفة المالية
+              </h3>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                أنت على وشك توليد الأسئلة باستخدام مفتاح الذكاء الاصطناعي المدفوع (<span className="font-mono font-bold text-amber-600 dark:text-amber-400">GEMINI_API_KEY</span>).
+              </p>
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 rounded-xl text-right text-xs text-amber-900 dark:text-amber-200 space-y-1">
+                <p className="font-bold flex items-center gap-1.5">
+                  ⚠️ يترتب على هذا الإجراء تكلفة مالية فعلية
+                </p>
+                <p className="text-[11px] text-amber-800/80 dark:text-amber-300/80">
+                  يتم احتساب تكلفة الرموز (Tokens) مباشرة على حساب الفوترة الخاص بالمشروع في Google Cloud. يُرجى استخدام هذا الخيار فقط عند الضرورة القصوى وبعد استنفاد الحصة المجانية.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowPaidCautionModal(false)}
+                className="flex-1 py-2.5 px-4 rounded-xl border border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPaidCautionModal(false);
+                  onGeneratePaid?.();
+                }}
+                disabled={isGeneratingPaid}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold shadow-md transition-colors flex items-center justify-center gap-1.5"
+              >
+                {isGeneratingPaid ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                تأكيد واستمرار
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </motion.div>
   );
 }
