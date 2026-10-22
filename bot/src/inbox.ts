@@ -370,12 +370,12 @@ function classifyProcessingFailure(error: unknown): { code: string; retryable: b
 }
 
 async function finishWork(work: ClaimedWork, status: 'completed' | 'ignored'): Promise<void> {
-  await db.runTransaction(async tx => {
+  const committed = await db.runTransaction(async tx => {
     const refs = work.claimedIds.map(updateRef);
     const snaps = await Promise.all(refs.map(ref => tx.get(ref)));
     if (snaps.some(snap => snap.data()?.workerToken !== work.workerToken || snap.data()?.status !== 'processing')) {
       log.warn('telegram.update.completion_fenced', { updateIds: work.claimedIds });
-      return;
+      return false;
     }
     for (const ref of refs) {
       tx.update(ref, {
@@ -397,9 +397,12 @@ async function finishWork(work: ClaimedWork, status: 'completed' | 'ignored'): P
         completedBy: work.workerToken,
       });
     }
+    return true;
   });
+  if (!committed) return;
   metrics.lastProcessedAt = Date.now();
   metrics.pendingEstimate = Math.max(0, metrics.pendingEstimate - work.claimedIds.length);
+  if (metrics.pendingEstimate === 0) metrics.oldestPendingReceivedAt = null;
   publishMetrics();
   bump(status === 'completed' ? 'inboxCompleted' : 'inboxIgnored');
   for (const updateId of work.claimedIds) {
@@ -411,12 +414,12 @@ async function failWork(work: ClaimedWork, error: unknown): Promise<void> {
   const failure = classifyProcessingFailure(error);
   const dead = !failure.retryable || work.attempt >= MAX_ATTEMPTS;
   const nextAttemptAtMs = Date.now() + retryDelayMs(work.attempt);
-  await db.runTransaction(async tx => {
+  const committed = await db.runTransaction(async tx => {
     const refs = work.claimedIds.map(updateRef);
     const snaps = await Promise.all(refs.map(ref => tx.get(ref)));
     if (snaps.some(snap => snap.data()?.workerToken !== work.workerToken || snap.data()?.status !== 'processing')) {
       log.warn('telegram.update.failure_fenced', { updateIds: work.claimedIds });
-      return;
+      return false;
     }
     for (const ref of refs) {
       tx.update(ref, {
@@ -435,7 +438,9 @@ async function failWork(work: ClaimedWork, error: unknown): Promise<void> {
         lastError: failure,
       });
     }
+    return true;
   });
+  if (!committed) return;
 
   if (dead) {
     metrics.deadLetterCount += work.claimedIds.length;

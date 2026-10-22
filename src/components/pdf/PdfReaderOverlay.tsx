@@ -411,9 +411,9 @@ export default function PdfReaderOverlay({
         zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight });
       } else {
         zones.push({
-          left: window.innerWidth / 2 - 180,
-          top: window.innerHeight - 90,
-          right: window.innerWidth / 2 + 180,
+          left: 0,
+          top: Math.max(0, window.innerHeight - 110),
+          right: window.innerWidth,
           bottom: window.innerHeight,
         });
       }
@@ -445,6 +445,18 @@ export default function PdfReaderOverlay({
     activeDrawingTool,
     selectionPos,
   ]);
+
+  // Toggle html/body transparency for native viewer
+  useEffect(() => {
+    if (isNative) {
+      document.documentElement.classList.add('pdf-native-transparent');
+    } else {
+      document.documentElement.classList.remove('pdf-native-transparent');
+    }
+    return () => {
+      document.documentElement.classList.remove('pdf-native-transparent');
+    };
+  }, [isNative]);
 
   // ---- Native PDF Engine Initialization (Android & iOS) -----------------
   useEffect(() => {

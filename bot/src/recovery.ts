@@ -60,7 +60,7 @@ async function main(): Promise<void> {
           manualRetryBy: env.firebase.clientEmail,
         });
       }
-      if (albumRef) {
+      if (albumRef && albumSnap?.exists) {
         tx.update(albumRef, {
           status: 'assembling',
           nextAttemptAtMs: Date.now(),

@@ -452,6 +452,8 @@ export interface Homework {
   groupDeadlines?: Record<string, HomeworkGroupDeadline>;
   earliestDeadline?: any;
   latestDeadline?: any;
+  /** Subgroups excluded from this exam/homework (e.g. ['A3', 'B2']) */
+  excludedGroups?: string[];
 }
 
 export type Language = 'ar' | 'en';
@@ -586,6 +588,14 @@ export const TRANSLATIONS = {
     deadlineModeFixed: 'موعد موحد (للدفعة كاملة)',
     deadlineModeTimetable: 'بحسب موعد المحاضرة (جدول العملي)',
     deadlineModeTheoreticalGroups: 'توقيت لكل مجموعة نظرية',
+    practicalExamTime: 'موعد الامتحان العملي',
+    excludePracticalGroups: 'استثناء مجموعات عملية',
+    excludedFromExam: 'مجموعتك غير مشمولة بهذا الامتحان',
+    excludedBadge: 'غير مشمول',
+    clickToExclude: 'انقر على المجموعة لاستثنائها من هذا الامتحان',
+    excludedCount: 'مجموعات مستثناة',
+    includeAllGroups: 'شمل الكل',
+    excludeAllGroups: 'استثناء الكل',
     applyDateToAll: 'تطبيق التاريخ على جميع المجموعات',
     theoreticalGroup: 'المجموعة النظرية',
     theoreticalGroupsSchedule: 'مواعيد المجموعات النظرية',
@@ -772,6 +782,14 @@ export const TRANSLATIONS = {
     deadlineModeFixed: 'General Deadline (All Groups)',
     deadlineModeTimetable: 'By Group Lecture Time',
     deadlineModeTheoreticalGroups: 'By Theoretical Group',
+    practicalExamTime: 'Practical Exam Time',
+    excludePracticalGroups: 'Exclude Practical Groups',
+    excludedFromExam: 'Your group is excluded from this exam',
+    excludedBadge: 'Excluded',
+    clickToExclude: 'Click a group to exclude it from this exam',
+    excludedCount: 'excluded groups',
+    includeAllGroups: 'Include All',
+    excludeAllGroups: 'Exclude All',
     applyDateToAll: 'Apply Date to All Groups',
     theoreticalGroup: 'Theoretical Group',
     theoreticalGroupsSchedule: 'Theoretical Groups Schedule',

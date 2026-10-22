@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { verifyAllNativeLibraries } from './verify16KbPageAlignment.mjs';
 
 const root = process.cwd();
 const requiredOutputs = [
@@ -39,4 +40,9 @@ if (!existsSync(binaryProfile) || statSync(binaryProfile).size === 0) {
   throw new Error(`Baseline Profile verification failed: missing or empty ${binaryProfile}`);
 }
 
-console.log(`verify-android-optimization: R8 outputs, code ${expectedCode} manifest, and compiled Baseline Profile are present.`);
+verifyAllNativeLibraries([
+  'android/app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib',
+  'android/app/build/intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib',
+]);
+
+console.log(`verify-android-optimization: R8 outputs, code ${expectedCode} manifest, compiled Baseline Profile, and 16 KB page-aligned native libs are verified.`);

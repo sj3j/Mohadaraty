@@ -1200,6 +1200,7 @@ export default function App() {
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
   const isAnyOverlayOpen = showOnboarding || showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
+  const isReaderOpen = (readerLecture !== null) || (localReaderFile !== null);
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the
@@ -1218,18 +1219,18 @@ export default function App() {
     // half-screen under the last card. A screen that needs more room now says so
     // by its own content, not by re-padding.
     <div
-      className={`min-h-screen bg-stone-50 dark:bg-zinc-900 text-slate-900 dark:text-stone-100 ${composingAnnouncements ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
+      className={`min-h-screen ${isReaderOpen ? 'bg-transparent !pt-0' : 'bg-stone-50 dark:bg-zinc-900'} text-slate-900 dark:text-stone-100 ${composingAnnouncements || isReaderOpen ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
       dir={isRtl ? 'rtl' : 'ltr'}
     >
 
-      {progressionNotice && (
+      {!isReaderOpen && progressionNotice && (
         <div className="fixed top-[calc(12px+env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-[200] w-[min(92vw,520px)] rounded-2xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-4 py-3 text-sm font-bold text-amber-900 dark:text-amber-100 shadow-xl">
           {progressionNotice}
         </div>
       )}
 
-      {user && permission === 'default' && !hideNotificationBanner && (
+      {!isReaderOpen && user && permission === 'default' && !hideNotificationBanner && (
         <div className="bg-sky-600 text-white px-4 py-3 sm:px-6 lg:px-8 flex items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <AlertCircle className="w-5 h-5 shrink-0" />
@@ -1255,7 +1256,7 @@ export default function App() {
         </div>
       )}
 
-      {user && !examCodeResolved && shouldAskForExamCode(user) && (
+      {!isReaderOpen && user && !examCodeResolved && shouldAskForExamCode(user) && (
         <ExamCodePrompt
           user={user}
           lang={lang}
@@ -1263,7 +1264,7 @@ export default function App() {
         />
       )}
 
-      {['home', 'lectures', 'weekly', 'records', 'leaderboard', 'downloads'].includes(currentTab) && (
+      {!isReaderOpen && ['home', 'lectures', 'weekly', 'records', 'leaderboard', 'downloads'].includes(currentTab) && (
         <HomeScreen 
           user={user} 
           lang={lang} 
@@ -1287,20 +1288,20 @@ export default function App() {
           onShowPaywall={() => setShowPaywall(true)}
         />
       )}
-      {currentTab === 'announcements' && (
+      {!isReaderOpen && currentTab === 'announcements' && (
         <AnnouncementsScreen user={user} lang={lang} lectures={lectures} onOpenMCQ={handleOpenMCQ} onOpenReader={handleOpenReader} onBack={() => setCurrentTab('home')} />
       )}
-      {currentTab === 'simosan' && (
+      {!isReaderOpen && currentTab === 'simosan' && (
         activeSimosanService === 'attendance'
           ? <SimosanPage user={user} lang={lang} stageId={effectiveStageId || user.stageId || ''} onBack={() => setActiveSimosanService('hub')} />
           : <SimosanSoonScreen lang={lang} onSelectService={service => {
               if (service === 'attendance') setActiveSimosanService('attendance');
             }} />
       )}
-      {currentTab === 'subscription' && (
+      {!isReaderOpen && currentTab === 'subscription' && (
         <SubscriptionScreen user={user} lang={lang} />
       )}
-      {currentTab === 'profile' && (
+      {!isReaderOpen && currentTab === 'profile' && (
         <ProfileScreen 
           user={user} 
           lang={lang} 
@@ -1318,7 +1319,7 @@ export default function App() {
           bars stay usable. Opening an admin tool from here leaves currentTab on
           'settings', so closing that tool returns to settings rather than
           dumping the user back on the profile. */}
-      {currentTab === 'settings' && (
+      {!isReaderOpen && currentTab === 'settings' && (
         <SettingsScreen
           onBack={() => setCurrentTab('profile')}
           user={user}

@@ -41,9 +41,13 @@ function scheduleRetry(announcementId: string, stageId: string): void {
   const timer = setTimeout(() => {
     retryTimers.delete(announcementId);
     void db.collection('announcements').doc(announcementId).get()
-      .then(snap => snap.exists && outboundChannelFor(stageId)
-        ? handleUpsert(snap.id, snap.data()!, stageId)
-        : undefined)
+      .then(snap => {
+        if (snap.exists && outboundChannelFor(stageId)) {
+          return handleUpsert(snap.id, snap.data()!, stageId);
+        }
+        clearRetry(announcementId);
+        return undefined;
+      })
       .catch(error => {
         log.error('tg.out.retry_failed', { stageId, announcementId, ...errFields(error) });
         scheduleRetry(announcementId, stageId);
@@ -70,26 +74,33 @@ async function handleUpsert(id: string, data: Record<string, unknown>, stageId: 
   // The per-post opt-out. `enabled: false` means the moderator deliberately
   // kept this one inside the app.
   if (doc.telegramMirror?.enabled === false) {
+    clearRetry(id);
     log.debug('tg.out.skipped', { reason: 'opted_out', announcementId: id });
     return;
   }
 
   // A post the bot itself ingested is already in the channel by definition.
-  if (doc.telegramMirror?.origin === 'telegram' && isUpToDate(doc)) return;
+  if (doc.telegramMirror?.origin === 'telegram' && isUpToDate(doc)) {
+    clearRetry(id);
+    return;
+  }
 
   if (isUpToDate(doc)) {
+    clearRetry(id);
     log.debug('tg.out.skipped', { reason: 'hash_unchanged', announcementId: id });
     return;
   }
 
   const age = Date.now() - createdAtMs(data);
   if (age > env.mirrorMaxAgeMs) {
+    clearRetry(id);
     log.debug('tg.out.skipped', { reason: 'too_old', announcementId: id, ageMs: age });
     return;
   }
 
   const channel = outboundChannelFor(stageId);
   if (!channel) {
+    clearRetry(id);
     log.debug('tg.out.skipped', { reason: 'stage_unmapped', announcementId: id, stageId });
     return;
   }

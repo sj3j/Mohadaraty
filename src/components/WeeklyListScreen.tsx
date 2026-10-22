@@ -3,7 +3,8 @@ import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDoc
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework, ExamFormat } from '../types';
-import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles, WifiOff } from 'lucide-react';
+import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles, WifiOff, UserX, Ban } from 'lucide-react';
+import { subgroupOptions, FALLBACK_GROUP_CONFIG } from '../../shared/groups';
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
 import { useStageContext } from '../contexts/StageContext';
@@ -123,6 +124,28 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     return groupConfig?.groups?.map(g => g.id as string) || ['A', 'B'];
   }, [groupConfig]);
 
+  // Practical groups available in stage (A1, A2, B1...)
+  const availableSubgroups = useMemo(() => {
+    return subgroupOptions(groupConfig || FALLBACK_GROUP_CONFIG);
+  }, [groupConfig]);
+
+  const [enableGroupExclusion, setEnableGroupExclusion] = useState(false);
+  const [excludedGroups, setExcludedGroups] = useState<string[]>([]);
+
+  const toggleSubgroupExclusion = (subgroup: string) => {
+    setExcludedGroups(prev =>
+      prev.includes(subgroup) ? prev.filter(g => g !== subgroup) : [...prev, subgroup]
+    );
+  };
+
+  const handleExcludeAllSubgroups = () => {
+    setExcludedGroups([...availableSubgroups]);
+  };
+
+  const handleIncludeAllSubgroups = () => {
+    setExcludedGroups([]);
+  };
+
   const [theoreticalSchedules, setTheoreticalSchedules] = useState<Record<string, { date: string; time: string }>>({});
   const [batchTheoreticalDate, setBatchTheoreticalDate] = useState<string>('');
 
@@ -142,8 +165,8 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
 
   const computedTheoreticalSchedule = useMemo(() => {
     if (deadlineMode !== 'theoretical_groups') return null;
-    return computeTheoreticalGroupDeadlines(theoreticalSchedules);
-  }, [deadlineMode, theoreticalSchedules]);
+    return computeTheoreticalGroupDeadlines(theoreticalSchedules, availableTheoreticalGroups);
+  }, [deadlineMode, theoreticalSchedules, availableTheoreticalGroups]);
 
   useEffect(() => {
     if (deadlineMode === 'theoretical_groups') {
@@ -456,12 +479,18 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setExamFormat(hw.examFormat || '');
     setNote(hw.note || '');
     setSelectedLectures(hw.lectures);
+    const hasExclusions = Array.isArray(hw.excludedGroups) && hw.excludedGroups.length > 0;
+    setEnableGroupExclusion(hasExclusions);
+    setExcludedGroups(hasExclusions ? [...(hw.excludedGroups || [])] : []);
     if (hw.deadlineMode === 'theoretical_groups') {
       setDeadlineMode('theoretical_groups');
       setIsCustomWeek(false);
       if (hw.groupDeadlines) {
         const entries: Record<string, { date: string; time: string }> = {};
         for (const [k, v] of Object.entries(hw.groupDeadlines)) {
+          if (availableTheoreticalGroups.length > 0 && !availableTheoreticalGroups.includes(k) && k.length > 2) {
+            continue;
+          }
           const dateObj = v.dueDate?.toDate ? v.dueDate.toDate() : (v.dueDate ? new Date(v.dueDate) : null);
           if (dateObj) {
             entries[k] = {
@@ -475,6 +504,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       setDueDate('');
     } else if (hw.deadlineMode === 'timetable') {
       setDeadlineMode('timetable');
+      setTheoreticalSchedules({});
       if (hw.targetWeekStart) {
         setSelectedWeekSaturday(hw.targetWeekStart);
         const isStandardWeek = upcomingWeeks.some(w => w.saturdayDate === hw.targetWeekStart);
@@ -512,6 +542,8 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setBatchTheoreticalDate('');
     setIsCustomWeek(false);
     setMatchedSessionTitle('');
+    setEnableGroupExclusion(false);
+    setExcludedGroups([]);
     setShowAdminForm(false);
   };
 
@@ -604,10 +636,16 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         homeworkData.dueDate = computedSchedule.earliestDate;
       }
 
+      if (enableGroupExclusion && excludedGroups.length > 0) {
+        homeworkData.excludedGroups = excludedGroups;
+      } else if (editingId) {
+        homeworkData.excludedGroups = deleteField();
+      }
+
       const payload = sanitizeForFirestore(homeworkData);
 
       if (editingId) {
-        await setDoc(doc(db, 'homeworks', editingId), payload, { merge: true });
+        await updateDoc(doc(db, 'homeworks', editingId), payload);
         alert(isRtl ? 'تم التعديل بنجاح!' : 'Edited successfully!');
       } else {
         payload.createdAt = serverTimestamp();
@@ -1392,6 +1430,106 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
               </div>
 
               <div>
+              {/* Practical Group Exclusion */}
+              <div className="p-4 rounded-2xl bg-slate-50/80 dark:bg-zinc-900/40 border border-slate-200/80 dark:border-zinc-700/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <UserX className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                    <div>
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                        {t.excludePracticalGroups || (isRtl ? 'استثناء مجموعات عملية' : 'Exclude Practical Groups')}
+                      </label>
+                      <p className="text-[11px] text-slate-400">
+                        {isRtl ? 'اختياري — تحديد مجموعات عملية معينة غير مشمولة بهذا الامتحان' : 'Optional — mark specific practical groups as excluded'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !enableGroupExclusion;
+                      setEnableGroupExclusion(next);
+                      if (!next) setExcludedGroups([]);
+                    }}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      enableGroupExclusion ? 'bg-sky-600' : 'bg-slate-200 dark:bg-zinc-700'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        enableGroupExclusion ? (isRtl ? '-translate-x-5' : 'translate-x-5') : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {enableGroupExclusion && (
+                  <div className="space-y-3 pt-2 border-t border-slate-200/60 dark:border-zinc-800">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {t.clickToExclude || (isRtl ? 'انقر على المجموعة لاستثنائها من هذا الامتحان:' : 'Click a group to exclude it from this exam:')}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {excludedGroups.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleIncludeAllSubgroups}
+                            className="text-xs text-sky-600 dark:text-sky-400 hover:underline font-semibold"
+                          >
+                            {t.includeAllGroups || (isRtl ? 'شمل الكل' : 'Include All')}
+                          </button>
+                        )}
+                        {excludedGroups.length < availableSubgroups.length && (
+                          <button
+                            type="button"
+                            onClick={handleExcludeAllSubgroups}
+                            className="text-xs text-rose-600 dark:text-rose-400 hover:underline font-semibold"
+                          >
+                            {t.excludeAllGroups || (isRtl ? 'استثناء الكل' : 'Exclude All')}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {availableSubgroups.map(subgroup => {
+                        const isSubgroupExcluded = excludedGroups.includes(subgroup);
+                        return (
+                          <button
+                            key={subgroup}
+                            type="button"
+                            onClick={() => toggleSubgroupExclusion(subgroup)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
+                              isSubgroupExcluded
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border-rose-300 dark:border-rose-800 line-through'
+                                : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-zinc-700 hover:border-sky-300 shadow-2xs'
+                            }`}
+                          >
+                            {isSubgroupExcluded ? (
+                              <X className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                            ) : (
+                              <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            )}
+                            <span>{subgroup}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {excludedGroups.length > 0 && (
+                      <div className="p-2.5 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-900/60 text-xs text-rose-800 dark:text-rose-300 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                        <span>
+                          {isRtl
+                            ? `تم استثناء ${excludedGroups.length} مجموعات: (${excludedGroups.join(', ')})`
+                            : `Excluded ${excludedGroups.length} groups: (${excludedGroups.join(', ')})`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{t.examLectures}</label>
                 
                 {/* Selected Lectures */}
@@ -1485,6 +1623,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
             {incompleteHomeworks.map((hw, index) => {
               const isGroupMode = (hw.deadlineMode === 'timetable' || hw.deadlineMode === 'theoretical_groups') && !!hw.groupDeadlines;
               const studentResolution = resolveStudentDeadline(hw, user?.group);
+              const isStudentExcluded = !!studentResolution.isExcluded;
 
               const createdAt = hw.createdAt?.toMillis ? hw.createdAt.toMillis() : Date.now();
               const deadlineObj = studentResolution.effectiveDate
@@ -1528,11 +1667,24 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                          {hw.type === 'theoretical' ? t.theoretical : hw.type === 'practical' ? t.practical : (t.both || (isRtl ? 'عملي ونظري' : 'Both'))}
                        </span>
                        {renderExamFormatBadge(hw.examFormat, 'normal')}
+                       {canManage(user, 'manageHomeworks') && Array.isArray(hw.excludedGroups) && hw.excludedGroups.length > 0 && (
+                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60">
+                           <UserX className="w-3 h-3" />
+                           <span>{isRtl ? 'مستثنى:' : 'Excluded:'} {hw.excludedGroups.join(', ')}</span>
+                         </span>
+                       )}
                     </div>
 
                     {/* Deadline and Group Schedule Info */}
                     <div className="flex flex-wrap items-center gap-2">
                       {/* Deadline Countdown Chip */}
+                      {isStudentExcluded && (
+                        <div id={index === 0 ? "homework-deadline-chip-0" : undefined} className="inline-flex items-center w-fit gap-1 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 dark:bg-zinc-700/60 dark:text-slate-300 border border-slate-200 dark:border-zinc-700">
+                          <Ban className="w-3.5 h-3.5 text-slate-500" />
+                          <span>{t.excludedBadge || (isRtl ? 'غير مشمول' : 'Excluded')}</span>
+                        </div>
+                      )}
+                      {!isStudentExcluded && (
                       <div id={index === 0 ? "homework-deadline-chip-0" : undefined} className={`inline-flex items-center w-fit gap-1 px-3 py-1 rounded-full text-xs font-bold ${chipColor}`}>
                         <Calendar className="w-3.5 h-3.5" />
                         {daysLeft < 0 ? (isRtl ? `متأخر ${Math.abs(daysLeft)} أيام` : `Overdue by ${Math.abs(daysLeft)} days`) : 
@@ -1540,6 +1692,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                          daysLeft === 1 ? (isRtl ? 'غداً' : 'Tomorrow') :
                          (isRtl ? `يتبقى ${daysLeft} أيام` : `${daysLeft} days left`)}
                       </div>
+                      )}
 
                       {/* Timetable-specific, Theoretical Groups or Fixed Date detail */}
                       {isGroupMode ? (
@@ -1550,16 +1703,17 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                             <span>{formatFriendlyDate(deadlineDate, isRtl ? 'ar' : 'en')}</span>
                             <span>· {studentResolution.time}</span>
                             <span className="bg-sky-200 dark:bg-sky-800 text-sky-900 dark:text-sky-100 px-1.5 py-0.2 rounded text-[11px]">
-                              {hw.deadlineMode === 'theoretical_groups'
-                                ? (isRtl ? `المجموعة ${studentResolution.groupLabel}` : `Group ${studentResolution.groupLabel}`)
-                                : studentResolution.groupLabel}
+                              {isRtl
+                                ? (studentResolution.groupLabel?.startsWith('المجموعة') ? studentResolution.groupLabel : `المجموعة ${studentResolution.groupLabel}`)
+                                : (studentResolution.groupLabel?.startsWith('Group') ? studentResolution.groupLabel : `Group ${studentResolution.groupLabel}`)}
                             </span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-200/80 dark:border-amber-800/60" title={t.noGroupWarning}>
                             <Clock className="w-3.5 h-3.5 text-amber-500" />
+                            {studentResolution.dayNameAr && <span>{isRtl ? studentResolution.dayNameAr : studentResolution.dayNameEn}</span>}
                             <span>{formatFriendlyDate(deadlineDate, isRtl ? 'ar' : 'en')}</span>
-                            <span>· {studentResolution.time || ''}</span>
+                            {studentResolution.time && <span>· {studentResolution.time}</span>}
                             <span className="text-[11px] opacity-80">
                               ({isRtl ? 'موعد مبدئي - حدد مجموعتك' : 'Early fallback'})
                             </span>
@@ -1572,6 +1726,13 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                         </span>
                       )}
                     </div>
+
+                    {isStudentExcluded && (
+                      <div className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 flex items-center gap-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
+                        <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                        <span>{t.excludedFromExam || (isRtl ? 'مجموعتك غير مشمولة بهذا الامتحان' : 'Your group is excluded from this exam')}</span>
+                      </div>
+                    )}
 
                     {/* Admin Expandable Group Deadlines */}
                     {canManage(user, 'manageHomeworks') && isGroupMode && hw.groupDeadlines && (
@@ -1588,7 +1749,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                               : (t.viewGroupDeadlines || (isRtl ? 'عرض مواعيد المجموعات' : 'View Group Deadlines'))}
                           </span>
                           <span className="text-[10px] bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 px-1.5 py-0.5 rounded-full font-bold">
-                            {Object.keys(hw.groupDeadlines).filter(k => k !== '*').length} {isRtl ? 'مجموعات' : 'groups'}
+                            {Object.keys(hw.groupDeadlines).filter(k => k !== '*' && (hw.deadlineMode !== 'theoretical_groups' || availableTheoreticalGroups.includes(k) || k.length === 1)).length} {isRtl ? 'مجموعات' : 'groups'}
                           </span>
                           {expandedGroupSchedules[hw.id] ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                         </button>
@@ -1602,19 +1763,38 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                               className="overflow-hidden mt-2"
                             >
                               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 bg-slate-50 dark:bg-zinc-900/60 rounded-2xl border border-slate-100 dark:border-zinc-800">
-                                {Object.values(hw.groupDeadlines).map(gd => (
-                                  <div key={gd.group} className="bg-white dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200/60 dark:border-zinc-700/60 flex flex-col gap-1 shadow-xs">
+                                {Object.values(hw.groupDeadlines)
+                                  .filter(gd => hw.deadlineMode !== 'theoretical_groups' || availableTheoreticalGroups.includes(gd.group) || gd.group.length === 1)
+                                  .map(gd => {
+                                  const isThisGroupExcluded = Array.isArray(hw.excludedGroups) && hw.excludedGroups.includes(gd.group);
+                                  return (
+                                  <div key={gd.group} className={`p-2.5 rounded-xl border flex flex-col gap-1 shadow-xs ${
+                                    isThisGroupExcluded
+                                      ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-200/60 dark:border-rose-900/40'
+                                      : 'bg-white dark:bg-zinc-800 border-slate-200/60 dark:border-zinc-700/60'
+                                  }`}>
                                     <div className="flex items-center justify-between font-bold">
-                                      <span className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-[11px]">
-                                        {gd.group === '*' ? (isRtl ? 'الكل' : 'All') : (hw.deadlineMode === 'theoretical_groups' ? (isRtl ? `المجموعة ${gd.group}` : `Group ${gd.group}`) : gd.group)}
+                                      <span className={`px-1.5 py-0.5 rounded text-[11px] ${
+                                        isThisGroupExcluded
+                                          ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300 line-through'
+                                          : 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300'
+                                      }`}>
+                                        {gd.group === '*'
+                                          ? (isRtl ? 'الكل' : 'All')
+                                          : (isRtl
+                                              ? (gd.group.startsWith('المجموعة') ? gd.group : `المجموعة ${gd.group}`)
+                                              : (gd.group.startsWith('Group') ? gd.group : `Group ${gd.group}`))}
                                       </span>
-                                      <span className="text-slate-700 dark:text-slate-300 text-xs">{gd.time}</span>
+                                      <span className="text-slate-700 dark:text-slate-300 text-xs">
+                                        {gd.time}
+                                        {isThisGroupExcluded && <span className="text-[10px] text-rose-500 ms-1 font-normal">({isRtl ? 'مستثنى' : 'Excluded'})</span>}
+                                      </span>
                                     </div>
                                     <div className="text-[11px] text-slate-500 dark:text-slate-400">
                                       {isRtl ? gd.dayNameAr : gd.dayNameEn} {formatFriendlyDate(new Date(gd.dueDate?.toDate ? gd.dueDate.toDate() : gd.dueDate), isRtl ? 'ar' : 'en')}
                                     </div>
                                   </div>
-                                ))}
+                                )})}
                               </div>
                             </motion.div>
                           )}
@@ -1644,7 +1824,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                         </button>
                       </>
                     )}
-                    {user && (
+                    {user && !isStudentExcluded && (
                       <button
                         onClick={() => handleToggleComplete(hw.id)}
                         className="p-2 rounded-full transition-colors bg-slate-50 dark:bg-zinc-700 text-slate-400 hover:bg-[#2196F3]/10 hover:text-[#2196F3]"

@@ -463,16 +463,16 @@ console.log('\n--- 9. Theoretical Groups Scheduling & Resolution ---');
 
   // Student in subgroup A1 matches Group A
   const resA1 = resolveStudentDeadline(theoHw, 'A1');
-  check('Student in subgroup A1 matches theoretical group A', resA1.isGroupSpecific && resA1.groupLabel === 'A');
+  check('Student in subgroup A1 matches theoretical group A', resA1.isGroupSpecific && resA1.matchedTheoreticalGroup === 'A' && resA1.groupLabel === 'A1');
   check('Student in A1 gets 09:00 on Sunday', resA1.time === '09:00' && resA1.dayNameAr === 'الأحد');
 
   // Student in subgroup A2 matches Group A
   const resA2 = resolveStudentDeadline(theoHw, 'A2');
-  check('Student in subgroup A2 matches theoretical group A', resA2.isGroupSpecific && resA2.groupLabel === 'A');
+  check('Student in subgroup A2 matches theoretical group A', resA2.isGroupSpecific && resA2.matchedTheoreticalGroup === 'A' && resA2.groupLabel === 'A2');
 
   // Student in subgroup B1 matches Group B
   const resB1 = resolveStudentDeadline(theoHw, 'B1');
-  check('Student in subgroup B1 matches theoretical group B', resB1.isGroupSpecific && resB1.groupLabel === 'B' && resB1.time === '11:30');
+  check('Student in subgroup B1 matches theoretical group B', resB1.isGroupSpecific && resB1.matchedTheoreticalGroup === 'B' && resB1.groupLabel === 'B1' && resB1.time === '11:30');
 
   // Student with bare group A matches Group A
   const resBareA = resolveStudentDeadline(theoHw, 'A');
@@ -559,6 +559,92 @@ console.log('\n--- 12. Exam Format Tag (Written, MCQ, Oral) ---');
 
   const cleanNone = sanitizeForFirestore({ ...hwNoFormat, examFormat: undefined });
   check('sanitizeForFirestore omits undefined examFormat', !('examFormat' in cleanNone));
+}
+
+console.log('\n--- 13. Practical Exam by Theoretical Group & Practical Group Exclusion ---');
+{
+  const practicalTheoHw: Homework = {
+    id: 'hw-prac-theo-exam',
+    subject: 'pharmacology',
+    type: 'practical',
+    lectures: [],
+    createdAt: new Date(2025, 9, 1),
+    deadlineMode: 'theoretical_groups',
+    groupDeadlines: {
+      A: {
+        group: 'A',
+        dueDate: new Date(2025, 9, 26, 9, 0),
+        dayNameAr: 'الأحد',
+        dayNameEn: 'Sunday',
+        time: '09:00',
+      },
+      B: {
+        group: 'B',
+        dueDate: new Date(2025, 9, 27, 10, 30),
+        dayNameAr: 'الاثنين',
+        dayNameEn: 'Monday',
+        time: '10:30',
+      },
+    },
+    earliestDeadline: new Date(2025, 9, 26, 9, 0),
+    latestDeadline: new Date(2025, 9, 27, 10, 30),
+    excludedGroups: ['A3', 'B2'],
+  };
+
+  // 1. Included subgroup A1 resolves to Group A timing with isExcluded undefined / false
+  const resA1 = resolveStudentDeadline(practicalTheoHw, 'A1');
+  check('Included student in A1 gets Group A time', resA1.time === '09:00');
+  check('Included student in A1 has groupLabel A1', resA1.groupLabel === 'A1');
+  check('Included student in A1 has matchedTheoreticalGroup A', resA1.matchedTheoreticalGroup === 'A');
+  check('Included student in A1 is not excluded', !resA1.isExcluded);
+
+  // 2. Excluded subgroup A3 resolves to Group A timing AND has isExcluded: true
+  const resA3 = resolveStudentDeadline(practicalTheoHw, 'A3');
+  check('Excluded student in A3 is flagged isExcluded', resA3.isExcluded === true);
+  check('Excluded student in A3 resolves groupLabel A3', resA3.groupLabel === 'A3');
+  check('Excluded student in A3 has matchedTheoreticalGroup A', resA3.matchedTheoreticalGroup === 'A');
+  check('Excluded student in A3 has theoretical time', resA3.time === '09:00');
+
+  // 3. Case-insensitive matching for excluded groups (e.g. 'a3' matches 'A3')
+  const resA3Lower = resolveStudentDeadline(practicalTheoHw, 'a3');
+  check('Excluded matching is case-insensitive for a3', resA3Lower.isExcluded === true);
+
+  // 4. Excluded subgroup B2
+  const resB2 = resolveStudentDeadline(practicalTheoHw, 'B2');
+  check('Excluded student in B2 is flagged isExcluded', resB2.isExcluded === true);
+
+  // 5. Included subgroup B1
+  const resB1 = resolveStudentDeadline(practicalTheoHw, 'B1');
+  check('Included student in B1 is not excluded', !resB1.isExcluded);
+  check('Included student in B1 has time 10:30', resB1.time === '10:30');
+
+  // 6. Sanitizer preserves excludedGroups array
+  const cleanPrac = sanitizeForFirestore(practicalTheoHw);
+  check('sanitizeForFirestore preserves excludedGroups', Array.isArray(cleanPrac.excludedGroups) && cleanPrac.excludedGroups.length === 2);
+
+  // 7. Contaminated homework with timetable practical groups (A3: Saturday 08:30) must be ignored when deadlineMode is theoretical_groups
+  const contaminatedHw: Homework = {
+    ...practicalTheoHw,
+    groupDeadlines: {
+      ...practicalTheoHw.groupDeadlines,
+      A3: {
+        group: 'A3',
+        dueDate: new Date(2025, 9, 25, 8, 30), // Saturday 08:30 from timetable
+        dayNameAr: 'السبت',
+        dayNameEn: 'Saturday',
+        time: '08:30',
+      },
+    },
+  };
+  const resContaminatedA3 = resolveStudentDeadline(contaminatedHw, 'A3');
+  check('Contaminated timetable lecture time is ignored for theoretical groups', resContaminatedA3.time === '09:00' && resContaminatedA3.dayNameAr === 'الأحد');
+  check('Contaminated timetable subgroup A3 displays groupLabel A3', resContaminatedA3.groupLabel === 'A3');
+  check('computeTheoreticalGroupDeadlines filters out subgroup keys when allowedGroupIds provided',
+    computeTheoreticalGroupDeadlines(
+      { A: { date: '2025-10-26', time: '09:00' }, B: { date: '2025-10-27', time: '10:30' }, A1: { date: '2025-10-25', time: '08:30' }, A3: { date: '2025-10-25', time: '08:30' } },
+      ['A', 'B']
+    ).totalGroups === 2
+  );
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

@@ -4,6 +4,7 @@ import {
 } from '../src/reliabilityCore.ts';
 import { classifyLeaseError } from '../src/state.ts';
 import { isGrowingAlbum, isPromotableSkip } from '../src/sync/inboundPolicy.ts';
+import { FileIngestError, ingestTelegramFile } from '../src/sync/media.ts';
 import { resolveChannelForStage, resolveStageForChat, type TelegramConfig } from '../../shared/telegramMirror.ts';
 import type { TgUpdate } from '../src/telegram/types.ts';
 
@@ -110,6 +111,14 @@ check('Firestore unavailable is classified as transient service failure',
   classifyLeaseError(Object.assign(new Error('down'), { code: 14 })) === 'LEASE_SERVICE_UNAVAILABLE');
 check('retry delay grows but remains bounded',
   retryDelayMs(1, 0) === 2_000 && retryDelayMs(20, 1) <= 375_000);
+const oversized = await ingestTelegramFile({
+  fileId: 'unused', fileUniqueId: 'too-large', kind: 'file', name: 'large.pdf',
+  size: 21 * 1024 * 1024, mime: 'application/pdf',
+}, 'stage_1');
+check('a genuinely oversized file is explicitly classified without a download attempt',
+  oversized.oversize?.name === 'large.pdf');
+check('a transient attachment failure remains retryable rather than becoming oversize',
+  new FileIngestError('DOWNLOAD_TIMEOUT', 'timeout', true).retryable);
 
 const stageConfig: TelegramConfig = {
   enabled: true,
@@ -128,6 +137,20 @@ check('five inbound chats resolve to five distinct stages',
 check('an inbound-only stage does not require an outbound watcher',
   resolveStageForChat(stageConfig, -1001) === 'stage_1'
     && resolveChannelForStage(stageConfig, 'stage_1') === null);
+
+console.log('\nGraceful queue shutdown');
+const shutdownQueue = new SerialQueue('shutdown-test');
+let releaseShutdown!: () => void;
+const shutdownGate = new Promise<void>(resolve => { releaseShutdown = resolve; });
+let shutdownRan = false;
+const shutdownJob = shutdownQueue.push('in-flight', async () => {
+  await shutdownGate;
+  shutdownRan = true;
+});
+const stopping = shutdownQueue.stop();
+releaseShutdown();
+await Promise.all([shutdownJob, stopping]);
+check('shutdown drains work that was already accepted', shutdownRan);
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed === 0 ? 0 : 1);

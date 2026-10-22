@@ -52,12 +52,9 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-    }
-
-    packagingOptions {
-        jniLibs {
-            keepDebugSymbols += ['**/*.so']
+            ndk {
+                debugSymbolLevel 'FULL'
+            }
         }
     }
 }
@@ -78,7 +75,7 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
-    implementation 'com.github.mhiew:android-pdf-viewer:3.2.0-beta.3'
+    implementation 'io.github.oothp:android-pdf-viewer:3.2.0-beta06'
     baselineProfile project(':baselineprofile')
 }
 

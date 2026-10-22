@@ -61,7 +61,7 @@ writeFileSync(resolve(stage, 'package.json'), JSON.stringify({
   scripts: { start: 'node index.js', recovery: 'node recovery.js' },
   // Copied from bot/package.json so the two cannot drift.
   dependencies: botPkg.dependencies,
-  engines: { node: '>=20' },
+  engines: botPkg.engines,
 }, null, 2) + '\n');
 
 const readme = resolve(root, 'bot/DEPLOY.txt');

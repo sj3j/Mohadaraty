@@ -17,6 +17,7 @@
     "check:android-insets": "node scripts/androidEdgeToEdge.test.mjs",
     "check:indexes": "node scripts/checkIndexDrift.mjs --verbose",
     "check:rules": "node scripts/checkRulesDeployed.mjs",
+    "check:16kb-alignment": "node scripts/verify16KbPageAlignment.mjs",
     "android:sync": "npm run check:android-insets && npm run build:native && node scripts/pruneNativeWebDir.mjs dist && npx cap sync android",
     "android:apk": "npm run android:sync && npm run check:payment-surface && node scripts/androidGradle.mjs assembleRelease",
     "android:profile": "node scripts/androidGradle.mjs :app:generateReleaseBaselineProfile",

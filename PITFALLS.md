@@ -491,3 +491,4 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   try/catch. Sharing the board's catch means one missing index throws away the
   twenty rows already fetched, and the screen reads "no students in this stage"
   rather than "rank unavailable".
+- A native PDF view inserted behind Capacitor's WebView is occluded if background screens (HomeScreen) or root containers remain rendered and opaque; unmount background screens and apply transparent body/#root styling when the native overlay opens, with automatic restoration on close or fallback.

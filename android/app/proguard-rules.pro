@@ -33,3 +33,4 @@
 # Android PDF Viewer (PDFium)
 -keep class com.github.barteksc.pdfviewer.** { *; }
 -keep class com.shockwave.** { *; }
+-keep class io.github.oothp.** { *; }

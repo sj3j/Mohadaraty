@@ -22,9 +22,9 @@ HOW TO DEPLOY
 
    If the panel offers "Main File" / "JS File" instead, set it to:  index.js
 
-3. Set the Node version to 20 or newer - 22 is what the bundle is built for.
+3. Set the Node version to 22 or newer - 22 is what the bundle is built for.
    On a Pterodactyl-style panel this is the egg's Docker image or a "Node
-   version" startup variable. On Node 19 and below every dependency install
+   version" startup variable. On Node 21 and below every dependency install
    prints EBADENGINE warnings and the bot warns at boot; it may run, but
    firebase's own packages do not support it.
 
@@ -34,6 +34,22 @@ HOW TO DEPLOY
        npm install
 
 5. Start the server.
+
+ROLLBACK
+--------
+Before upload, download the currently deployed index.js, package.json and any
+lockfile into a dated local folder. If the new process fails its boot checks:
+
+1. Stop the server. Do not reset admin_config/telegram_state and do not delete
+   telegramInboundUpdates or telegramInboundAlbums.
+2. Preserve the new console log and the release checksum shown by the operator.
+3. Prefer fixing forward while the service is stopped. The previous poller has
+   known message-loss paths and should not be restarted merely to make the panel
+   look healthy.
+4. If restoration absolutely requires the prior build, restore the downloaded
+   files, reinstall their locked dependencies, and start one instance only.
+   Keep the durable inbox and checkpoint untouched so a later fixed build can
+   resume them.
 
 
 ENVIRONMENT VARIABLES  (you said these are already set — check them anyway)
@@ -230,9 +246,10 @@ be read: ..."
 
     The fix that ends this permanently is FIREBASE_SERVICE_ACCOUNT_B64.
 
-"[env] Node vNN is below the supported >=20"
-    A warning, not a failure - the bot keeps running. The bundle is built for
-    node22 and firebase's own packages declare >=20, so raise the Node
+"[env] Node vNN is below the supported >=22"
+    A warning when the old runtime can still load the SDK; operation there is
+    unsupported. The bundle is built for node22 and firebase-admin v14
+    declares >=22, so raise the Node
     version in the panel's startup/image settings. On an old Node the failure,
     when it comes, will not mention the version.
 

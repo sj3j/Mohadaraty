@@ -106,6 +106,22 @@ const albumMappings = await Promise.all([801, 802].map(id =>
 check('members split across polls create one album announcement', albumAnnouncement.exists);
 check('every album member is mapped to the same announcement',
   albumMappings.every(snap => snap.data()?.announcementId === telegramAnnouncementId(chatId, 801)));
+check('the mapping targets the member that actually carries the caption',
+  albumMappings.every(snap => snap.data()?.captionMessageId === 802));
+
+console.log('\nLease fencing');
+await db.collection('admin_config').doc('telegram_state').set({
+  lease: { instanceId: 'replacement', generation: 2 },
+}, { merge: true });
+let fenced = false;
+try {
+  await persistInboundBatch([update(900, message(900, 'must not persist'))], 901);
+} catch {
+  fenced = true;
+}
+check('an expired owner cannot persist with an old lease generation', fenced);
+check('a fenced write creates no inbox record',
+  !(await db.collection(INBOX_COLLECTION).doc('900').get()).exists);
 
 unwatch();
 await releaseLease();

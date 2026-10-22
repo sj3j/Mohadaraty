@@ -110,13 +110,11 @@ function readCredentials(): ServiceAccount {
 /**
  * The supported Node version, warned about rather than enforced.
  *
- * firebase-admin itself declares `>=18` and loads fine below 20, so exiting
- * would take down a bot that works. Its transitive @firebase/* packages declare
- * `>=20`, the bundle is built `target: node22`, and a panel left on an old
- * default is the kind of thing that produces an unexplained failure months
- * later - so it is said out loud, once, at boot.
+ * firebase-admin v14 and this bundle require Node 22 or newer. A panel left on
+ * an old default otherwise fails before the bot can produce useful operational
+ * diagnostics, so the version mismatch is said out loud once at boot.
  */
-const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MAJOR = 22;
 
 function warnOnOldNode(): void {
   const major = Number(process.versions.node.split('.')[0]);

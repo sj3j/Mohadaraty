@@ -23,7 +23,7 @@ export const NotewisePagePill: React.FC<Props> = ({
   return (
     <div
       className={`fixed left-4 sm:left-5 z-40 pointer-events-none transition-all duration-200 ${
-        isAnnotationMode ? 'bottom-20 sm:bottom-20' : 'bottom-5'
+        isAnnotationMode ? 'hidden sm:flex bottom-20' : 'bottom-5'
       }`}
       style={{
         bottom: isAnnotationMode

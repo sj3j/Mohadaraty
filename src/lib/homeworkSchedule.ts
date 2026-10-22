@@ -345,7 +345,8 @@ export function computeGroupDeadlines(
  * based on admin-specified dates and times.
  */
 export function computeTheoreticalGroupDeadlines(
-  entries: Record<string, { date: string; time: string }>
+  entries: Record<string, { date: string; time: string }>,
+  allowedGroupIds?: string[]
 ): GroupDeadlineComputation {
   const groupDeadlines: Record<string, HomeworkGroupDeadline> = {};
   let earliest: Date | null = null;
@@ -353,6 +354,9 @@ export function computeTheoreticalGroupDeadlines(
   const distinctDays = new Set<string>();
 
   for (const [groupId, val] of Object.entries(entries)) {
+    if (allowedGroupIds && allowedGroupIds.length > 0 && !allowedGroupIds.includes(groupId)) {
+      continue;
+    }
     if (!val || !val.date || !val.time) continue;
     const [year, month, day] = val.date.split('-').map(Number);
     const [hours, minutes] = val.time.split(':').map(Number);
@@ -417,10 +421,12 @@ export interface StudentDeadlineResolution {
   effectiveDate: Date | null;
   isGroupSpecific: boolean;
   groupLabel?: string;
+  matchedTheoreticalGroup?: string;
   time?: string;
   dayNameAr?: string;
   dayNameEn?: string;
   fallbackReason?: 'no_group' | 'group_not_scheduled' | 'fixed';
+  isExcluded?: boolean;
 }
 
 function coerceToDate(val: any): Date | null {
@@ -440,36 +446,82 @@ export function resolveStudentDeadline(
   studentGroup?: string | null
 ): StudentDeadlineResolution {
   const normGroup = (studentGroup || '').trim();
+  const upperGroup = normGroup.toUpperCase();
+  const isExcluded = !!(
+    upperGroup &&
+    Array.isArray(homework.excludedGroups) &&
+    homework.excludedGroups.some(g => (g || '').trim().toUpperCase() === upperGroup)
+  );
 
   // Mode 1: Timetable per-group or Theoretical Groups
   const isGroupMode = (homework.deadlineMode === 'timetable' || homework.deadlineMode === 'theoretical_groups') && !!homework.groupDeadlines;
 
   if (isGroupMode && homework.groupDeadlines) {
-    // 1. Direct group match
-    if (normGroup && homework.groupDeadlines[normGroup]) {
-      const g = homework.groupDeadlines[normGroup];
+    const isTheoreticalMode = homework.deadlineMode === 'theoretical_groups';
+
+    // In theoretical_groups mode, ALWAYS resolve to parent theoretical group (e.g. A3 -> A)
+    // and ignore any timetable practical subgroup keys!
+    if (isTheoreticalMode) {
+      const parsed = parseSubgroup(normGroup);
+      const parentLetter = parsed?.group || (normGroup.length === 1 ? upperGroup : (normGroup.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase() || ''));
+      const parentKey = parentLetter && (
+        homework.groupDeadlines[parentLetter]
+          ? parentLetter
+          : Object.keys(homework.groupDeadlines).find(k => k.toUpperCase() === parentLetter)
+      );
+      if (parentKey && homework.groupDeadlines[parentKey]) {
+        const g = homework.groupDeadlines[parentKey];
+        return {
+          effectiveDate: coerceToDate(g.dueDate),
+          isGroupSpecific: true,
+          groupLabel: upperGroup || normGroup || parentKey,
+          matchedTheoreticalGroup: parentKey,
+          time: g.time,
+          dayNameAr: g.dayNameAr,
+          dayNameEn: g.dayNameEn,
+          ...(isExcluded ? { isExcluded: true } : {}),
+        };
+      }
+    }
+
+    // 1. Direct group match (exact or case-insensitive)
+    const directKey = normGroup && (
+      homework.groupDeadlines[normGroup]
+        ? normGroup
+        : Object.keys(homework.groupDeadlines).find(k => k.toUpperCase() === upperGroup)
+    );
+    if (directKey && homework.groupDeadlines[directKey]) {
+      const g = homework.groupDeadlines[directKey];
       return {
         effectiveDate: coerceToDate(g.dueDate),
         isGroupSpecific: true,
-        groupLabel: normGroup,
+        groupLabel: upperGroup || directKey,
         time: g.time,
         dayNameAr: g.dayNameAr,
         dayNameEn: g.dayNameEn,
+        ...(isExcluded ? { isExcluded: true } : {}),
       };
     }
 
     // 2. Parent theoretical group match (e.g. student is in subgroup "A1", matches theoretical group "A")
     const parsed = parseSubgroup(normGroup);
-    const parentLetter = parsed?.group || (normGroup.length === 1 ? normGroup.toUpperCase() : (normGroup.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase() || ''));
-    if (parentLetter && homework.groupDeadlines[parentLetter]) {
-      const g = homework.groupDeadlines[parentLetter];
+    const parentLetter = parsed?.group || (normGroup.length === 1 ? upperGroup : (normGroup.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase() || ''));
+    const parentKey = parentLetter && (
+      homework.groupDeadlines[parentLetter]
+        ? parentLetter
+        : Object.keys(homework.groupDeadlines).find(k => k.toUpperCase() === parentLetter)
+    );
+    if (parentKey && homework.groupDeadlines[parentKey]) {
+      const g = homework.groupDeadlines[parentKey];
       return {
         effectiveDate: coerceToDate(g.dueDate),
         isGroupSpecific: true,
-        groupLabel: parentLetter,
+        groupLabel: upperGroup || normGroup || parentKey,
+        matchedTheoreticalGroup: parentKey,
         time: g.time,
         dayNameAr: g.dayNameAr,
         dayNameEn: g.dayNameEn,
+        ...(isExcluded ? { isExcluded: true } : {}),
       };
     }
 
@@ -482,6 +534,7 @@ export function resolveStudentDeadline(
         time: g.time,
         dayNameAr: g.dayNameAr,
         dayNameEn: g.dayNameEn,
+        ...(isExcluded ? { isExcluded: true } : {}),
       };
     }
 
@@ -491,6 +544,7 @@ export function resolveStudentDeadline(
       effectiveDate: fallbackDate,
       isGroupSpecific: false,
       fallbackReason: normGroup ? 'group_not_scheduled' : 'no_group',
+      ...(isExcluded ? { isExcluded: true } : {}),
     };
   }
 
@@ -500,6 +554,7 @@ export function resolveStudentDeadline(
     effectiveDate: fixedDate,
     isGroupSpecific: false,
     fallbackReason: 'fixed',
+    ...(isExcluded ? { isExcluded: true } : {}),
   };
 }
 

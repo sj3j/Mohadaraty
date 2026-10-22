@@ -112,6 +112,13 @@
   .theme-black body {
     background-color: #000000;
   }
+
+  html.pdf-native-transparent,
+  html.pdf-native-transparent body,
+  html.pdf-native-transparent #root {
+    background-color: transparent !important;
+    background: transparent !important;
+  }
 }
 
 @layer utilities {
