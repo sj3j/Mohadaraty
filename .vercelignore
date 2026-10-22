@@ -1,0 +1,22 @@
+node_modules
+**/node_modules
+.git
+.agents
+android
+ios
+jdk21
+jdk21.zip
+bot
+functions
+graphify-out
+build-output
+ios assest
+scratch
+dist
+coverage
+*.apk
+*.aab
+*.ipa
+.env
+.env.local
+supabase/.temp

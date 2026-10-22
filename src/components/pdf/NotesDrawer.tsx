@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { AlertCircle, Download, Search, Trash2, X } from 'lucide-react';
+import { AlertCircle, Download, Search, Trash2, X, Type } from 'lucide-react';
 import { HIGHLIGHT_COLORS, type PdfAnnotation } from '../../types/pdfAnnotation.types';
 
 interface Props {
@@ -25,6 +25,7 @@ export default function NotesDrawer({
     const match = (a: PdfAnnotation) =>
       !q ||
       (a.note ?? '').toLowerCase().includes(q) ||
+      (a.text ?? '').toLowerCase().includes(q) ||
       (a.anchor?.exact ?? '').toLowerCase().includes(q);
 
     const rows = annotations.filter(match);
@@ -50,22 +51,33 @@ export default function NotesDrawer({
     >
       <button onClick={() => onGoTo(a)} className="flex-1 min-w-0 text-start">
         <div className="flex items-center gap-2 mb-1">
-          <span
-            className="w-3 h-3 rounded-full shrink-0 ring-1 ring-black/10"
-            style={{ background: HIGHLIGHT_COLORS[a.color] }}
-          />
+          {a.kind === 'text' ? (
+            <div className="w-5 h-5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+              <Type className="w-3 h-3" />
+            </div>
+          ) : (
+            <span
+              className="w-3 h-3 rounded-full shrink-0 ring-1 ring-black/10"
+              style={{ background: HIGHLIGHT_COLORS[a.color] }}
+            />
+          )}
           <span className="text-[11px] font-bold text-slate-400">
             {isRtl ? `صفحة ${a.page}` : `Page ${a.page}`}
           </span>
+          {a.kind === 'text' && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400">
+              {isRtl ? 'نص' : 'Text'}
+            </span>
+          )}
         </div>
         {a.anchor?.exact && (
           <p dir="auto" className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2">
             {a.anchor.exact}
           </p>
         )}
-        {a.note && (
-          <p dir="auto" className="mt-1 text-sm font-semibold text-sky-600 dark:text-sky-400 line-clamp-3">
-            {a.note}
+        {(a.text || a.note) && (
+          <p dir="auto" className={`mt-1 text-sm font-semibold line-clamp-3 ${a.kind === 'text' ? 'text-slate-900 dark:text-zinc-100' : 'text-sky-600 dark:text-sky-400'}`}>
+            {a.text || a.note}
           </p>
         )}
       </button>

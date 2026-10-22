@@ -1,17 +1,22 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import {
-  AlertTriangle, ChevronLeft, ChevronRight, Loader2, Minus, NotebookPen, Plus, RotateCw,
-  Search, Sparkles, X, Image as ImageIcon,
-} from 'lucide-react';
+import { AlertTriangle, Loader2 } from 'lucide-react';
 import PdfPage, { type PageHandle } from './PdfPage';
-import SelectionToolbar from './SelectionToolbar';
 import PdfSearchPanel from './PdfSearchPanel';
 import NoteEditorSheet from './NoteEditorSheet';
 import NotesDrawer from './NotesDrawer';
 import PdfAttachmentsDrawer from './PdfAttachmentsDrawer';
 import PdfTranslationSheet from './PdfTranslationSheet';
+import NotewiseHeaderPill from './NotewiseHeaderPill';
+import NotewisePagePill from './NotewisePagePill';
+import NotewiseDocumentSheet from './NotewiseDocumentSheet';
+import NotewiseOverviewModal from './NotewiseOverviewModal';
+import NotewiseSelectionCapsule from './NotewiseSelectionCapsule';
+import NotewiseAnnotationDock from './NotewiseAnnotationDock';
+import PdfDrawingLayer from './PdfDrawingLayer';
+import { PdfTextBoxOverlay } from './PdfTextBoxOverlay';
+import type { DrawingTool, StrokeWidth, PdfStroke } from '../../types/pdfDrawing.types';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { loadPdfjs, fetchPdfBytes, freshBytes, PDFJS_DOC_OPTIONS } from '../../lib/pdfjs';
 import { readStoredPdf } from '../../hooks/useOfflinePDF';
@@ -26,9 +31,11 @@ import { useBackDismiss } from '../../hooks/useBackDismiss';
 import SimosanDrawer from './SimosanDrawer';
 import { exportLecture, getDocMeta, setDocMeta } from '../../services/pdfAnnotationService';
 import { fetchSimosanState } from '../../services/simosanService';
-import { getUserFileBlob } from '../../lib/localDb';
+import { getUserFileBlob, getLecturePageStrokes, saveLecturePageStrokes } from '../../lib/localDb';
 import { secureRequestId } from '../../lib/secureRandom';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
+import { NativePdf, isNativePdfSupported, type InteractiveZone } from '../../lib/nativePdfViewer';
+import { getNativePdfFilePath, cacheNativePdfBytes } from '../../lib/nativePdfRepository';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language, UserProfile } from '../../types';
 import '../../styles/pdf-text-layer.css';
@@ -61,60 +68,30 @@ interface SelectionSnapshot {
   fragments: SelectionFragment[];
 }
 
-// Stable identity so a page without annotations does not defeat PdfPage memo.
 const NO_ANNOTATIONS: PdfAnnotation[] = [];
-
-/** A query matching more than this is already unusable as a list. */
 const MAX_MATCHES = 500;
-
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 
-/**
- * Pinch physics.
- *
- * RESIST is a power law in LOG space, which is why one constant serves both
- * ends: an additive band tuned to feel right at MAX 3 feels like nothing at
- * MIN 0.5. It cannot run away either - 16x past the limit still only reads 6.
- *
- * RUBBER is the translate band, where a hard asymptote IS what is wanted:
- * overscroll approaches RUBBER x the viewport and never passes it.
- *
- * SPRING is quoted per 60Hz frame and normalised by real dt at the point of
- * use. 90/120Hz Android panels are common, and a raw per-frame factor would
- * settle twice as fast on a Pixel as on a budget phone.
- */
 const RESIST = 0.25;
 const RUBBER = 0.55;
 const SPRING = 0.2;
-/** Past this the spring is force-committed rather than chasing an epsilon. */
 const SPRING_TIMEOUT_MS = 600;
-/** How far the canvas raster trails the layout scale. */
 const RASTER_DEBOUNCE_MS = 200;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-/** Elastic resistance past the scale limits. Continuous at the boundary. */
 function elasticScale(s: number): number {
   const out =
     s > MAX_SCALE ? MAX_SCALE * Math.pow(s / MAX_SCALE, RESIST) :
     s < MIN_SCALE ? MIN_SCALE * Math.pow(s / MIN_SCALE, RESIST) : s;
-  // Belt and braces, so a wild pointer reading can never reach the bounds maths.
   return clamp(out, MIN_SCALE / 1.8, MAX_SCALE * 1.8);
 }
 
-/** Asymptotic overscroll: approaches span * RUBBER, never passes it. */
 function rubber(d: number, span: number): number {
   return (d * RUBBER) / (1 + (Math.abs(d) * RUBBER) / Math.max(1, span));
 }
 
-/**
- * Clamp with elastic give.
- *
- * When lo > hi the content is smaller than the window, so there is no valid
- * range at all - centre it rather than pinning it to an edge, which is what
- * left a zoomed-out page stuck against the left margin.
- */
 function band(v: number, lo: number, hi: number, span: number): number {
   if (lo > hi) { const m = (lo + hi) / 2; return m + rubber(v - m, span); }
   if (v > hi) return hi + rubber(v - hi, span);
@@ -122,51 +99,105 @@ function band(v: number, lo: number, hi: number, span: number): number {
   return v;
 }
 
-export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stageId, subjectId, lang, onClose, onOpenSubscription, isLocalFile, user }: Props) {
+export default function PdfReaderOverlay({
+  lectureId, lectureTitle, pdfUrl, stageId, subjectId, lang,
+  onClose, onOpenSubscription, isLocalFile, user,
+}: Props) {
   const isRtl = lang === 'ar';
   const hasTranslationAccess = hasSubscriptionAccess(user);
 
+  // Native vs Web state
+  const [isNative, setIsNative] = useState(() => isNativePdfSupported());
+  const [nativeLoading, setNativeLoading] = useState(false);
+
+  // PDF & UI States
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [pageCount, setPageCount] = useState(0);
   const [pageSizes, setPageSizes] = useState<{ w: number; h: number }[]>([]);
   const [scale, setScale] = useState(1);
-  /**
-   * Scale the page canvases are rasterised at, trailing `scale` by a debounce.
-   *
-   * Committing both together meant every zoom step tore down three canvases and
-   * three text layers at once, and PdfPage blanked each canvas synchronously
-   * while the replacement was still awaiting - which is what flashed the reader
-   * white on every pinch. Now the layout resizes immediately and the existing
-   * bitmap stretches to fill it until the sharp one lands.
-   */
   const [rasterScale, setRasterScale] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [current, setCurrent] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [staleFile, setStaleFile] = useState(false);
 
+  // Notewise Mode & UI States
+  const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const [activeHighlightColor, setActiveHighlightColor] = useState<HighlightColor>('yellow');
+  const [activeDrawingTool, setActiveDrawingTool] = useState<DrawingTool>('pencil');
+  const [activeDrawColor, setActiveDrawColor] = useState<string>('#4f46e5');
+  const [activeDrawWidth, setActiveDrawWidth] = useState<StrokeWidth>('medium');
+  const [pageStrokes, setPageStrokes] = useState<Record<number, PdfStroke[]>>({});
+  const [history, setHistory] = useState<Record<number, { past: PdfStroke[][]; future: PdfStroke[][] }>>({});
+
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const [isNightMode, setIsNightMode] = useState(() => {
+    if (typeof document === 'undefined') return false;
+    return document.documentElement.classList.contains('dark');
+  });
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [docSheetOpen, setDocSheetOpen] = useState(false);
+  const [jumpModalOpen, setJumpModalOpen] = useState(false);
+  const [jumpTargetPage, setJumpTargetPage] = useState('');
+
+  // Find in PDF search states
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [indexing, setIndexing] = useState(false);
+  const [indexed, setIndexed] = useState(0);
+  const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [matchIndex, setMatchIndex] = useState(0);
+  const [listOpen, setListOpen] = useState(false);
+
+  // Selection & Actions
   const [selection, setSelection] = useState<SelectionSnapshot | null>(null);
+  const [selectionPos, setSelectionPos] = useState<{ x: number; y: number } | null>(null);
   const [editing, setEditing] = useState<PdfAnnotation | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [orphanIds, setOrphanIds] = useState<Set<string>>(new Set());
-  /** Transient confirmation for the selection actions. It lives here rather
-   *  than inside SelectionToolbar because every one of those actions clears the
-   *  selection, which unmounts the toolbar before it could show anything. */
   const [toast, setToast] = useState<string | null>(null);
 
+  const [translationOpen, setTranslationOpen] = useState(false);
   const [translationTarget, setTranslationTarget] = useState<string | null>(null);
-  const closeTranslation = useCallback(() => setTranslationTarget(null), []);
+  const closeTranslation = useCallback(() => {
+    setTranslationOpen(false);
+    setTranslationTarget(null);
+  }, []);
+  const openTranslation = useCallback((text?: string) => {
+    setTranslationTarget(text ?? selection?.text ?? '');
+    setTranslationOpen(true);
+  }, [selection]);
 
   const [simosanOpen, setSimosanOpen] = useState(false);
   const [simosanSeed, setSimosanSeed] = useState<string | null>(null);
-  /** Null until the access probe returns. The entry points stay hidden rather
-   *  than rendering an action that would only be refused. */
   const [simosanReady, setSimosanReady] = useState(false);
 
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachmentsCount, setAttachmentsCount] = useState(0);
+
+  // Bookmarks state (persisted per lecture)
+  const [bookmarkedPages, setBookmarkedPages] = useState<Set<number>>(() => {
+    try {
+      const saved = localStorage.getItem(`pdf_bookmarks_${lectureId}`);
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggleBookmark = useCallback((pageNum: number) => {
+    setBookmarkedPages(prev => {
+      const next = new Set(prev);
+      if (next.has(pageNum)) next.delete(pageNum);
+      else next.add(pageNum);
+      try {
+        localStorage.setItem(`pdf_bookmarks_${lectureId}`, JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+  }, [lectureId]);
 
   useEffect(() => {
     if (!lectureId) return;
@@ -177,113 +208,24 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     });
   }, [lectureId, user]);
 
-  /** Tracks the calculated fit-width scale of the current document */
   const fitScaleRef = useRef(1);
-  /** Floating page indicator badge state */
-  const [showPagePill, setShowPagePill] = useState(false);
-  const pillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Single-touch pan tracking when zoomed past fit scale */
-  const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; active: boolean } | null>(null);
-  /** Double-tap detection tracking */
-  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
-  const doubleTapAnimRef = useRef<number | null>(null);
-
-  /**
-   * The active pinch, or null.
-   *
-   * `O` is the zoom layer's UNTRANSFORMED top-left in client coordinates and
-   * `p0` the anchor point in layer-local coordinates. Together they are what
-   * keeps content under the fingers: with transform-origin at 0 0 the visual
-   * position of `p0` is O + t + k*p0, so solving that for the live focal point
-   * gives the translate directly - at any scale, however far the fingers drift.
-   *
-   * The container metrics are snapshotted once here and never re-read mid
-   * gesture. The CSS scrollable overflow region takes transformed descendant
-   * boxes into account, so scrollWidth/scrollHeight stop meaning anything the
-   * moment the transform goes live.
-   */
-  const gesture = useRef<{
-    idA: number; idB: number;
-    startDist: number; sBase: number;
-    O: { x: number; y: number };
-    p0: { x: number; y: number };
-    F: { x: number; y: number };
-    S0x: number; S0y: number;
-    sw: number; sh: number; w: number; h: number;
-    rectLeft: number; rectTop: number;
-  } | null>(null);
-
-  /**
-   * The live transform is deliberately NOT React state.
-   *
-   * It used to be, and a setState on every pointermove re-rendered this whole
-   * component - which maps over `layout` and mounts canvas-backed PdfPages. On a
-   * mid-range phone that re-render cannot keep up with the pointer stream, so the
-   * transform landed at a low, irregular rate and the zoom read as jumping in
-   * steps rather than gliding. Writing the transform straight to the node inside
-   * a rAF keeps the gesture at display rate and renders nothing.
-   *
-   * `s` is an ABSOLUTE scale rather than a factor, so a pinch that begins while
-   * the release spring is still running composes with what is already applied
-   * instead of snapping back to 1 first.
-   */
-  const live = useRef({ s: 1, tx: 0, ty: 0 });
-  const spring = useRef<number | null>(null);
-  const zoomLayerRef = useRef<HTMLDivElement>(null);
-  const zoomLabelRef = useRef<HTMLSpanElement>(null);
-  const zoomRaf = useRef<number | null>(null);
-  /** Committed scale, readable from rAF callbacks without re-binding them. */
-  const scaleRef = useRef(scale);
-  scaleRef.current = scale;
-
-  /** Paints the live transform once per frame. */
-  const paintZoom = useCallback(() => {
-    zoomRaf.current = null;
-    const layer = zoomLayerRef.current;
-    const { s, tx, ty } = live.current;
-    const k = s / scaleRef.current;
-
-    if (import.meta.env.DEV && !(Number.isFinite(k) && Number.isFinite(tx) && Number.isFinite(ty))) {
-      // A transform containing NaN is dropped by CSS silently, so without this
-      // the gesture would simply stop moving with nothing logged anywhere. There
-      // are no React types in this project, so a typo'd ref field reaches here
-      // as undefined rather than as a compile error.
-      console.error('[pdf] non-finite transform', { s, tx, ty, scale: scaleRef.current });
-      return;
-    }
-
-    if (layer) {
-      layer.style.transform = k === 1 && tx === 0 && ty === 0
-        ? ''
-        : `translate3d(${tx}px, ${ty}px, 0) scale(${k})`;
-    }
-    // The readout tracked the committed scale only, so during a pinch the number
-    // sat frozen and then snapped on release. Written here it counts smoothly.
-    const label = zoomLabelRef.current;
-    if (label) label.textContent = `${Math.round(s * 100)}%`;
-  }, []);
-
-  const scheduleZoomPaint = useCallback(() => {
-    if (zoomRaf.current == null) zoomRaf.current = requestAnimationFrame(paintZoom);
-  }, [paintZoom]);
-
+  const pendingPage = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, PageHandle>());
   const fingerprint = useRef('');
-  const pendingPage = useRef<number | null>(null);
 
   const { annotations, byPage, upsert, remove, removeAll } = useLectureAnnotations(lectureId);
 
+  // Back dismissals registered in order of priority
   useBackDismiss(true, onClose, 'pdfReader');
   useBackDismiss(drawerOpen, () => setDrawerOpen(false), 'pdfNotes');
   useBackDismiss(!!editing, () => setEditing(null), 'pdfNote');
-  // Registered last so it sits on top of the shared layer stack - a back press
-  // while Simosan is open must close Simosan, not the notes drawer beneath it.
   useBackDismiss(simosanOpen, () => setSimosanOpen(false), 'pdfSimosan');
-  useBackDismiss(!!translationTarget, closeTranslation, 'pdfTranslation');
+  useBackDismiss(translationOpen || !!translationTarget, closeTranslation, 'pdfTranslation');
+  useBackDismiss(overviewOpen, () => setOverviewOpen(false), 'pdfOverview');
+  useBackDismiss(docSheetOpen, () => setDocSheetOpen(false), 'pdfDocSheet');
+  useBackDismiss(jumpModalOpen, () => setJumpModalOpen(false), 'pdfJump');
 
-  // One probe per open. The server is the authority on both subscription and
-  // the global kill switch, so this only decides whether to draw the button.
   useEffect(() => {
     if (isLocalFile) {
       setSimosanReady(false);
@@ -313,8 +255,284 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     });
   }, []);
 
-  // ---- document loading -------------------------------------------------
+  // Jump to specific page across Native and Web
+  const goToPage = useCallback((pageNum: number) => {
+    const p = Math.max(1, Math.min(pageCount || 1, pageNum));
+    setCurrent(p);
+    if (isNative) {
+      NativePdf.goToPage({ page: p }).catch(() => {});
+    } else {
+      const handle = pages.current.get(p);
+      if (handle?.el) {
+        handle.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }, [isNative, pageCount]);
+
+  // Load strokes on mount or page change
   useEffect(() => {
+    if (!lectureId || !current) return;
+    if (pageStrokes[current] !== undefined) return;
+    getLecturePageStrokes(lectureId, current)
+      .then((strokes) => {
+        setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
+      })
+      .catch(() => {});
+  }, [lectureId, current, pageStrokes]);
+
+  const handleAddStroke = useCallback(
+    (pageNum: number, stroke: PdfStroke) => {
+      const s = { ...stroke, lectureId };
+      setPageStrokes((prev) => {
+        const currentList = prev[pageNum] || [];
+        const nextList = [...currentList, s];
+        saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
+        return { ...prev, [pageNum]: nextList };
+      });
+      setHistory((prev) => {
+        const pageHist = prev[pageNum] || { past: [], future: [] };
+        const currentList = pageStrokes[pageNum] || [];
+        return {
+          ...prev,
+          [pageNum]: {
+            past: [...pageHist.past, currentList],
+            future: [],
+          },
+        };
+      });
+    },
+    [lectureId, pageStrokes],
+  );
+
+  const handleEraseStroke = useCallback(
+    (pageNum: number, strokeId: string) => {
+      setPageStrokes((prev) => {
+        const currentList = prev[pageNum] || [];
+        const nextList = currentList.filter((s) => s.id !== strokeId);
+        if (nextList.length === currentList.length) return prev;
+        saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
+        return { ...prev, [pageNum]: nextList };
+      });
+      setHistory((prev) => {
+        const pageHist = prev[pageNum] || { past: [], future: [] };
+        const currentList = pageStrokes[pageNum] || [];
+        return {
+          ...prev,
+          [pageNum]: {
+            past: [...pageHist.past, currentList],
+            future: [],
+          },
+        };
+      });
+    },
+    [lectureId, pageStrokes],
+  );
+
+  const handleUndo = useCallback(() => {
+    const pageHist = history[current];
+    if (!pageHist || pageHist.past.length === 0) return;
+    const previous = pageHist.past[pageHist.past.length - 1];
+    const newPast = pageHist.past.slice(0, -1);
+    const present = pageStrokes[current] || [];
+
+    setHistory((prev) => ({
+      ...prev,
+      [current]: {
+        past: newPast,
+        future: [present, ...(prev[current]?.future || [])],
+      },
+    }));
+
+    setPageStrokes((prev) => {
+      saveLecturePageStrokes(lectureId, current, previous).catch(() => {});
+      return { ...prev, [current]: previous };
+    });
+  }, [current, history, pageStrokes, lectureId]);
+
+  const handleRedo = useCallback(() => {
+    const pageHist = history[current];
+    if (!pageHist || pageHist.future.length === 0) return;
+    const next = pageHist.future[0];
+    const newFuture = pageHist.future.slice(1);
+    const present = pageStrokes[current] || [];
+
+    setHistory((prev) => ({
+      ...prev,
+      [current]: {
+        past: [...(prev[current]?.past || []), present],
+        future: newFuture,
+      },
+    }));
+
+    setPageStrokes((prev) => {
+      saveLecturePageStrokes(lectureId, current, next).catch(() => {});
+      return { ...prev, [current]: next };
+    });
+  }, [current, history, pageStrokes, lectureId]);
+
+  const canUndo = (history[current]?.past?.length ?? 0) > 0;
+  const canRedo = (history[current]?.future?.length ?? 0) > 0;
+
+  // Sync interactive touch zones to Native Plugin on Android & iOS
+  useEffect(() => {
+    if (!isNative) return;
+    const isAnyDrawerOpen =
+      searchOpen ||
+      drawerOpen ||
+      simosanOpen ||
+      attachmentsOpen ||
+      overviewOpen ||
+      docSheetOpen ||
+      jumpModalOpen ||
+      !!editing ||
+      translationOpen ||
+      !!translationTarget;
+
+    if (isAnyDrawerOpen) {
+      NativePdf.setInteractiveZones({
+        zones: [{ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }],
+      }).catch(() => {});
+      return;
+    }
+
+    const zones: InteractiveZone[] = [];
+    if (chromeVisible) {
+      zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: 85 });
+      zones.push({ left: 0, top: window.innerHeight - 80, right: 190, bottom: window.innerHeight });
+    }
+
+    if (isAnnotationMode) {
+      if (
+        activeDrawingTool === 'pencil' ||
+        activeDrawingTool === 'free_highlighter' ||
+        activeDrawingTool === 'eraser' ||
+        activeDrawingTool === 'text'
+      ) {
+        zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight });
+      } else {
+        zones.push({
+          left: window.innerWidth / 2 - 180,
+          top: window.innerHeight - 90,
+          right: window.innerWidth / 2 + 180,
+          bottom: window.innerHeight,
+        });
+      }
+    }
+
+    if (selectionPos) {
+      zones.push({
+        left: Math.max(0, selectionPos.x - 180),
+        top: Math.max(0, selectionPos.y - 120),
+        right: Math.min(window.innerWidth, selectionPos.x + 180),
+        bottom: selectionPos.y + 20,
+      });
+    }
+
+    NativePdf.setInteractiveZones({ zones }).catch(() => {});
+  }, [
+    isNative,
+    chromeVisible,
+    drawerOpen,
+    simosanOpen,
+    attachmentsOpen,
+    overviewOpen,
+    docSheetOpen,
+    jumpModalOpen,
+    editing,
+    translationOpen,
+    searchOpen,
+    isAnnotationMode,
+    activeDrawingTool,
+    selectionPos,
+  ]);
+
+  // ---- Native PDF Engine Initialization (Android & iOS) -----------------
+  useEffect(() => {
+    if (!isNative || !lectureId) return;
+    let active = true;
+
+    (async () => {
+      try {
+        setNativeLoading(true);
+        let localPath = await getNativePdfFilePath(lectureId, pdfUrl);
+
+        if (!localPath) {
+          const localBlob = isLocalFile ? await getUserFileBlob(lectureId) : null;
+          let buf: ArrayBuffer | null = localBlob ? await localBlob.arrayBuffer() : null;
+          if (!buf) {
+            buf = (await readStoredPdf(pdfUrl, lectureId)) ?? (await fetchPdfBytes(pdfUrl));
+          }
+          if (buf && active) {
+            localPath = await cacheNativePdfBytes(lectureId, buf);
+          }
+        }
+
+        if (!localPath || !active) return;
+
+        const meta = await getDocMeta(lectureId);
+        const initPage = meta?.lastPage && meta.lastPage > 1 ? meta.lastPage : 1;
+
+        await NativePdf.openPdf({
+          filePath: localPath,
+          initialPage: initPage,
+          nightMode: isNightMode,
+        });
+
+        if (active) {
+          setNativeLoading(false);
+          setCurrent(initPage);
+        }
+      } catch (err) {
+        console.error('[PdfReaderOverlay] Native PDFium failed, falling back to Web:', err);
+        if (active) {
+          setIsNative(false);
+          setNativeLoading(false);
+        }
+      }
+    })();
+
+    const subPage = NativePdf.addListener('onPageChange', (data) => {
+      setCurrent(data.page);
+      if (data.pageCount) setPageCount(data.pageCount);
+    });
+
+    const subTap = NativePdf.addListener('onDocumentTap', () => {
+      if (!isAnnotationMode) {
+        setChromeVisible((prev) => !prev);
+      }
+      setSelection(null);
+      setSelectionPos(null);
+    });
+
+    const subLongPress = NativePdf.addListener('onDocumentLongPress', (data) => {
+      setSelectionPos({ x: data.x, y: data.y });
+      setSelection({
+        text: lectureTitle,
+        fragments: [],
+      });
+    });
+
+    return () => {
+      active = false;
+      subPage.then((h) => h.remove()).catch(() => {});
+      subTap.then((h) => h.remove()).catch(() => {});
+      subLongPress.then((h) => h.remove()).catch(() => {});
+      NativePdf.closePdf().catch(() => {});
+    };
+  }, [isNative, lectureId, pdfUrl, isLocalFile, isNightMode, isAnnotationMode, lectureTitle]);
+
+  // Night Mode handler
+  const handleToggleNightMode = useCallback(() => {
+    const next = !isNightMode;
+    setIsNightMode(next);
+    if (isNative) {
+      NativePdf.setNightMode({ nightMode: next }).catch(() => {});
+    }
+  }, [isNightMode, isNative]);
+
+  // ---- Web Fallback Document Loading (Browser / Dev) --------------------
+  useEffect(() => {
+    if (isNative) return;
     let cancelled = false;
     const ac = new AbortController();
 
@@ -328,11 +546,9 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
 
         let buf: ArrayBuffer | null = localBlob ? await localBlob.arrayBuffer() : null;
         if (!buf) {
-          // Prefer the downloaded copy: it works offline and skips the network
-          // entirely for a lecture the student already saved.
           const local = await readStoredPdf(pdfUrl, lectureId);
           if (cancelled) return;
-          buf = local ?? await fetchPdfBytes(pdfUrl, ac.signal);
+          buf = local ?? (await fetchPdfBytes(pdfUrl, ac.signal));
         }
         if (cancelled || !buf) return;
 
@@ -352,34 +568,20 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
 
         fingerprint.current = doc.fingerprints?.[0] ?? '';
 
-        // Warn rather than silently misplace highlights if the file changed.
         const meta = await getDocMeta(lectureId);
         if (meta?.fingerprint && meta.fingerprint !== fingerprint.current) setStaleFile(true);
-
-        // Claim the remembered page BEFORE any state update below. `layout` is
-        // derived from pageSizes, so the effect that consumes this fires as soon
-        // as setPageSizes lands - and anything set after a later `await` would
-        // arrive too late to be seen.
         if (meta?.lastPage && meta.lastPage > 1) pendingPage.current = meta.lastPage;
 
         setPdfDoc(doc);
         setPageCount(doc.numPages);
         setPageSizes(sizes);
 
-        // Always open at fit-width. These are wide lecture slides, and the
-        // PDF's natural size overflows a phone screen and clips the text.
-        // Zoom is deliberately NOT restored: persisting it meant one bad stored
-        // value stuck forever, and reopening at readable width is what every
-        // PDF reader does. Page position is still remembered.
         const avail = (scrollRef.current?.clientWidth ?? window.innerWidth) - 16;
-        const widest = Math.max(...sizes.map(z => z.w));
+        const widest = Math.max(...sizes.map((z) => z.w));
         if (widest > 0) {
           const fit = +Math.max(MIN_SCALE, Math.min(MAX_SCALE, avail / widest)).toFixed(2);
           fitScaleRef.current = fit;
           setScale(fit);
-          // Prime the raster with it as well. Left to the debounce, opening a
-          // lecture would rasterise three canvases at scale 1 and throw them
-          // away 200ms later - the fit scale is not a gesture and needs no lag.
           setRasterScale(fit);
         }
 
@@ -387,7 +589,6 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
           fingerprint: fingerprint.current,
           pageCount: doc.numPages,
         });
-
       } catch (e: any) {
         if (cancelled || e?.name === 'AbortError') return;
         console.error('PDF load failed', e);
@@ -403,20 +604,19 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
       cancelled = true;
       ac.abort();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfUrl, lectureId]);
+  }, [isNative, pdfUrl, lectureId, isLocalFile, isRtl]);
 
-  // Tear the document down explicitly - the worker holds page resources.
-  useEffect(() => () => { try { (pdfDoc as any)?.destroy(); } catch { /* already gone */ } }, [pdfDoc]);
+  // Teardown web doc
+  useEffect(() => () => { try { (pdfDoc as any)?.destroy(); } catch {} }, [pdfDoc]);
 
-  // Remember where the reader was left.
+  // Remember read position
   useEffect(() => {
-    if (!pdfDoc) return;
+    if (!current || !lectureId) return;
     const id = setTimeout(() => setDocMeta(lectureId, { lastPage: current }), 400);
     return () => clearTimeout(id);
-  }, [current, lectureId, pdfDoc]);
+  }, [current, lectureId]);
 
-  // ---- layout / virtualization -----------------------------------------
+  // Layout for Web Fallback
   const layout = useMemo(() => {
     const swap = rotation % 180 !== 0;
     let y = 0;
@@ -424,571 +624,24 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
       const w = (swap ? s.h : s.w) * scale;
       const h = (swap ? s.w : s.h) * scale;
       const top = y;
-      y += h + 24; // matches the my-3 gap on each page
+      y += h + 24;
       return { top, w, h };
     });
   }, [pageSizes, scale, rotation]);
 
-  /**
-   * Let the raster catch up once the zoom stops moving.
-   *
-   * Rotation needs no special case here. It is a raster dep of PdfPage in its
-   * own right, so a rotation rebuilds the canvas and the text layer immediately
-   * whatever this holds - and special-casing it here only had the effect of
-   * disabling the debounce for good once the reader was rotated.
-   */
-  useEffect(() => {
-    const id = setTimeout(() => setRasterScale(scale), RASTER_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [scale]);
-
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || layout.length === 0) return;
-    // A pinch pins scrollTop and writes a transform instead, so anything firing
-    // here mid-gesture is the browser clamping, not the user moving. Acting on
-    // it would setCurrent every frame - the exact re-render storm the live
-    // transform exists to avoid.
-    if (gesture.current) return;
     const mid = el.scrollTop + el.clientHeight / 2;
     let n = 1;
     for (let i = 0; i < layout.length; i++) {
       if (layout[i].top <= mid) n = i + 1; else break;
     }
     setCurrent(n);
-
-    // Show floating page badge while scrolling
-    setShowPagePill(true);
-    if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
-    pillTimerRef.current = setTimeout(() => setShowPagePill(false), 1200);
   }, [layout]);
 
-  /**
-   * Two-finger pinch zoom, with focal tracking, two-finger pan and elastic
-   * limits on both scale and translate.
-   *
-   * The live gesture only sets a CSS transform on the page column - re-rendering
-   * canvases on every pointermove would drop frames badly on a mid-range phone.
-   * The real `scale` is committed once the release spring settles, which is also
-   * when the pages re-rasterise crisply.
-   *
-   * The page viewport meta sets user-scalable=no, so the browser's own pinch is
-   * off and these gestures arrive as plain pointer events with nothing to fight.
-   *
-   * Note there is deliberately no preventDefault() in here. Per the Pointer
-   * Events spec it has no defined effect on panning and Chrome ignores it;
-   * touch-action is the only thing that suppresses the WebView's own scroll.
-   */
-  const pointers = useRef(new Map<number, { x: number; y: number }>());
-
-  /** Anchor to hold still across a committed scale or rotation change. */
-  const zoomAnchor = useRef<
-    { el: HTMLElement; relX: number; relY: number; wantX: number; wantY: number } | null
-  >(null);
-  const prevScale = useRef(scale);
-  const prevRotation = useRef(rotation);
-
-  /** Midpoint of the two PINNED pointers, in client coordinates. */
-  const focal = () => {
-    const g = gesture.current!;
-    const a = pointers.current.get(g.idA)!;
-    const b = pointers.current.get(g.idB)!;
-    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  };
-
-  const dist = () => {
-    const g = gesture.current!;
-    const a = pointers.current.get(g.idA)!;
-    const b = pointers.current.get(g.idB)!;
-    return Math.hypot(a.x - b.x, a.y - b.y);
-  };
-
-  /**
-   * Translate limits for a given live factor.
-   *
-   * The usable span is k*scrollWidth - clientWidth: the SCALED SCROLLABLE
-   * extent, meaning every mounted page and placeholder, not the viewport box. A
-   * single-element formula like rect.width * (k - 1) is right for one
-   * transformed div and out by orders of magnitude down a 100-page lecture.
-   */
-  const bounds = (g: NonNullable<typeof gesture.current>, k: number) => {
-    const cMinX = (g.rectLeft - g.S0x) - g.O.x;
-    const cMinY = (g.rectTop - g.S0y) - g.O.y;
-    return {
-      txMax: g.rectLeft - g.O.x - k * cMinX,
-      txMin: g.rectLeft + g.w - g.O.x - k * (cMinX + g.sw),
-      tyMax: g.rectTop - g.O.y - k * cMinY,
-      tyMin: g.rectTop + g.h - g.O.y - k * (cMinY + g.sh),
-    };
-  };
-
-  /** The mounted page under a client point, or the nearest one. */
-  const pageAt = (x: number, y: number) => {
-    let nearest: { el: HTMLElement; pr: DOMRect; d: number } | null = null;
-    for (const h of pages.current.values()) {
-      const pr = h.el.getBoundingClientRect();
-      if (pr.height <= 0 || pr.width <= 0) continue;
-      if (y >= pr.top && y <= pr.bottom) return { el: h.el, pr };
-      const d = Math.abs((pr.top + pr.bottom) / 2 - y);
-      if (!nearest || d < nearest.d) nearest = { el: h.el, pr, d };
-    }
-    return nearest ? { el: nearest.el, pr: nearest.pr } : null;
-  };
-
-  const anchorAt = (x: number, y: number) => {
-    const hit = pageAt(x, y);
-    if (!hit) return null;
-    return {
-      el: hit.el,
-      relX: (x - hit.pr.left) / hit.pr.width,
-      relY: (y - hit.pr.top) / hit.pr.height,
-      wantX: x, wantY: y,
-    };
-  };
-
-  /** Anchor on the viewport centre - what the +/- and rotate buttons use. */
-  const captureCentreAnchor = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const R = el.getBoundingClientRect();
-    zoomAnchor.current = anchorAt(R.left + el.clientWidth / 2, R.top + el.clientHeight / 2);
-  }, []);
-
-  /**
-   * Fold the live transform into the committed scale and native scroll.
-   *
-   * The transform is cleared BEFORE the commit, not in a layout effect here.
-   * React runs a child's effects before its parent's, so deferring the clear
-   * would let PdfPage's paint() measure getClientRects() through a live
-   * transform - and every highlight would land k times too far out.
-   */
-  const commitGesture = useCallback((g: NonNullable<typeof gesture.current>) => {
-    const el = scrollRef.current;
-    const layer = zoomLayerRef.current;
-    if (!el || !layer) return;
-    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
-
-    const { s, tx, ty } = live.current;
-    const committed = scaleRef.current;
-
-    // Pure two-finger pan: the scale never really moved, so no render is needed
-    // at all. Fold the translate into scroll and drop the transform in one tick.
-    if (Math.abs(s - committed) < 0.005) {
-      layer.style.transform = '';
-      layer.style.willChange = '';
-      live.current = { s: committed, tx: 0, ty: 0 };
-      // Content sits at +t; scrolling by -t leaves it exactly where it looks.
-      el.scrollLeft = clamp(g.S0x - tx, 0, el.scrollWidth - el.clientWidth);
-      el.scrollTop = clamp(g.S0y - ty, 0, el.scrollHeight - el.clientHeight);
-      onScroll();
-      return;
-    }
-
-    zoomAnchor.current = anchorAt(g.F.x, g.F.y);
-    layer.style.transform = '';
-    live.current = { s, tx: 0, ty: 0 };
-
-    // flushSync so React commits the new scale and lays the pages out before the
-    // browser paints. The scroll correction in the layout effect below then runs
-    // in the same frame, and no intermediate position is ever shown.
-    flushSync(() => setScale(+clamp(s, MIN_SCALE, MAX_SCALE).toFixed(3)));
-    layer.style.willChange = '';
-  }, [onScroll]);
-
-  /**
-   * Settle scale and translate back into range, then commit.
-   *
-   * Both are sprung in one loop because the translate limits are a function of
-   * the live scale: a target computed once at release would be out of bounds
-   * again by the time the scale finished moving.
-   */
-  const startSpring = useCallback((g: NonNullable<typeof gesture.current>) => {
-    const sEnd = clamp(live.current.s, MIN_SCALE, MAX_SCALE);
-    const t0 = performance.now();
-    let last = t0;
-
-    const step = (now: number) => {
-      // Clamped so a backgrounded tab does not resume with one enormous step.
-      const dt = Math.min(64, Math.max(1, now - last));
-      last = now;
-      const f = 1 - Math.pow(1 - SPRING, dt / 16.667);
-
-      live.current.s += (sEnd - live.current.s) * f;
-      const k = live.current.s / scaleRef.current;
-      const b = bounds(g, k);
-      const tEndX = b.txMin > b.txMax
-        ? (b.txMin + b.txMax) / 2
-        : clamp(live.current.tx, b.txMin, b.txMax);
-      const tEndY = b.tyMin > b.tyMax
-        ? (b.tyMin + b.tyMax) / 2
-        : clamp(live.current.ty, b.tyMin, b.tyMax);
-      live.current.tx += (tEndX - live.current.tx) * f;
-      live.current.ty += (tEndY - live.current.ty) * f;
-      paintZoom();
-
-      const settled =
-        Math.abs(live.current.s - sEnd) < 0.002 &&
-        Math.abs(tEndX - live.current.tx) < 0.5 &&
-        Math.abs(tEndY - live.current.ty) < 0.5;
-
-      if (settled || now - t0 > SPRING_TIMEOUT_MS) {
-        live.current.s = sEnd;
-        live.current.tx = tEndX;
-        live.current.ty = tEndY;
-        spring.current = null;
-        commitGesture(g);
-        return;
-      }
-      spring.current = requestAnimationFrame(step);
-    };
-    spring.current = requestAnimationFrame(step);
-  }, [paintZoom, commitGesture]);
-
-  /**
-   * Drop everything the gesture owns.
-   *
-   * Backgrounding mid-pinch is routine on Android, and without this the
-   * touch-action override stayed on the node - which killed panning for the
-   * rest of the session.
-   */
-  const abortGesture = useCallback(() => {
-    const el = scrollRef.current;
-    const layer = zoomLayerRef.current;
-    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
-    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
-    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
-    gesture.current = null;
-    pointers.current.clear();
-    panRef.current = null;
-    if (el) el.style.touchAction = '';
-    if (layer) { layer.style.transform = ''; layer.style.willChange = ''; }
-    live.current = { s: scaleRef.current, tx: 0, ty: 0 };
-    const label = zoomLabelRef.current;
-    if (label) label.textContent = `${Math.round(scaleRef.current * 100)}%`;
-  }, []);
-
-  useEffect(() => {
-    const onHide = () => { if (document.visibilityState === 'hidden') abortGesture(); };
-    document.addEventListener('visibilitychange', onHide);
-    window.addEventListener('pagehide', abortGesture);
-    return () => {
-      document.removeEventListener('visibilitychange', onHide);
-      window.removeEventListener('pagehide', abortGesture);
-      abortGesture();
-    };
-  }, [abortGesture]);
-
-  /**
-   * Smoothly animates zoom level on double-tap between fit-to-width and 2.2x zoom,
-   * centered on the tapped coordinates.
-   */
-  const handleDoubleTapZoom = useCallback((clientX: number, clientY: number) => {
-    const el = scrollRef.current;
-    const layer = zoomLayerRef.current;
-    if (!el || !layer) return;
-
-    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
-    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
-    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
-
-    const curScale = scaleRef.current;
-    const fitScale = fitScaleRef.current;
-    const targetScale = curScale > fitScale + 0.1
-      ? fitScale
-      : +Math.min(MAX_SCALE, Math.max(2.0, fitScale * 1.8)).toFixed(2);
-
-    const lr = layer.getBoundingClientRect();
-    const F0 = { x: clientX, y: clientY };
-    const O = { x: lr.left, y: lr.top };
-    const p0 = { x: F0.x - O.x, y: F0.y - O.y };
-
-    const startScale = curScale;
-    const startTime = performance.now();
-    const duration = 220;
-
-    layer.style.willChange = 'transform';
-
-    const step = (now: number) => {
-      const elapsed = Math.min(duration, now - startTime);
-      const progress = elapsed / duration;
-      const ease = 1 - Math.pow(1 - progress, 3);
-      const s = startScale + (targetScale - startScale) * ease;
-      const k = s / curScale;
-
-      const tx = (1 - k) * p0.x;
-      const ty = (1 - k) * p0.y;
-
-      live.current = { s, tx, ty };
-      layer.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${k.toFixed(4)})`;
-
-      const label = zoomLabelRef.current;
-      if (label) label.textContent = `${Math.round(s * 100)}%`;
-
-      if (progress < 1) {
-        doubleTapAnimRef.current = requestAnimationFrame(step);
-      } else {
-        doubleTapAnimRef.current = null;
-        layer.style.transform = '';
-        layer.style.willChange = '';
-        live.current = { s: targetScale, tx: 0, ty: 0 };
-        zoomAnchor.current = anchorAt(clientX, clientY);
-        flushSync(() => setScale(targetScale));
-        setShowPagePill(true);
-        if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
-        pillTimerRef.current = setTimeout(() => setShowPagePill(false), 1200);
-      }
-    };
-
-    doubleTapAnimRef.current = requestAnimationFrame(step);
-  }, [anchorAt]);
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    // Single-pointer double-tap detection and pan preparation
-    if (pointers.current.size === 1) {
-      const now = performance.now();
-      const last = lastTapRef.current;
-      if (last && now - last.time < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 32) {
-        lastTapRef.current = null;
-        panRef.current = null;
-        handleDoubleTapZoom(e.clientX, e.clientY);
-        return;
-      }
-      lastTapRef.current = { time: now, x: e.clientX, y: e.clientY };
-
-      const el = scrollRef.current;
-      if (el && scaleRef.current > fitScaleRef.current + 0.05) {
-        panRef.current = {
-          startX: e.clientX,
-          startY: e.clientY,
-          scrollLeft: el.scrollLeft,
-          scrollTop: el.scrollTop,
-          active: false,
-        };
-      } else {
-        panRef.current = null;
-      }
-    } else {
-      lastTapRef.current = null;
-      panRef.current = null;
-    }
-
-    if (pointers.current.size !== 2 || gesture.current) return;
-
-    const el = scrollRef.current;
-    const layer = zoomLayerRef.current;
-    if (!el || !layer) return;
-
-    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
-    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
-
-    const [idA, idB] = [...pointers.current.keys()];
-    const a = pointers.current.get(idA)!;
-    const b = pointers.current.get(idB)!;
-    const F0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-
-    const { tx, ty, s } = live.current;
-    const kPrev = s / scale;
-    const lr = layer.getBoundingClientRect();
-    const O = { x: lr.left - tx, y: lr.top - ty };
-    const R = el.getBoundingClientRect();
-
-    gesture.current = {
-      idA, idB,
-      startDist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
-      sBase: s,
-      O,
-      p0: { x: (F0.x - O.x - tx) / kPrev, y: (F0.y - O.y - ty) / kPrev },
-      F: F0,
-      S0x: el.scrollLeft, S0y: el.scrollTop,
-      sw: el.scrollWidth, sh: el.scrollHeight,
-      w: el.clientWidth, h: el.clientHeight,
-      rectLeft: R.left, rectTop: R.top,
-    };
-
-    el.style.touchAction = 'none';
-    layer.style.willChange = 'transform';
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!pointers.current.has(e.pointerId)) return;
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    const g = gesture.current;
-    if (g) {
-      if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
-
-      const F = focal();
-      g.F = F;
-      live.current.s = elasticScale(g.sBase * (dist() / g.startDist));
-
-      const k = live.current.s / scaleRef.current;
-      const b = bounds(g, k);
-      live.current.tx = band(F.x - g.O.x - k * g.p0.x, b.txMin, b.txMax, g.w);
-      live.current.ty = band(F.y - g.O.y - k * g.p0.y, b.tyMin, b.tyMax, g.h);
-
-      const el = scrollRef.current;
-      if (el) {
-        if (el.scrollLeft !== g.S0x) el.scrollLeft = g.S0x;
-        if (el.scrollTop !== g.S0y) el.scrollTop = g.S0y;
-      }
-
-      scheduleZoomPaint();
-      return;
-    }
-
-    const pan = panRef.current;
-    if (pan && e.buttons === 1) {
-      const dx = e.clientX - pan.startX;
-      const dy = e.clientY - pan.startY;
-      if (Math.hypot(dx, dy) > 6) {
-        pan.active = true;
-        const el = scrollRef.current;
-        if (el) {
-          el.scrollLeft = clamp(pan.scrollLeft - dx, 0, el.scrollWidth - el.clientWidth);
-          el.scrollTop = clamp(pan.scrollTop - dy, 0, el.scrollHeight - el.clientHeight);
-        }
-      }
-    }
-  };
-
-  const endPointer = (e: React.PointerEvent) => {
-    pointers.current.delete(e.pointerId);
-    if (panRef.current) panRef.current = null;
-    const g = gesture.current;
-    if (!g) return;
-    if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
-
-    gesture.current = null;
-    const el = scrollRef.current;
-    if (el) {
-      el.style.touchAction = '';
-    }
-    startSpring(g);
-  };
-
-  // Global listeners for pointer release outside container and native multi-touch suppression
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length >= 2) {
-        e.preventDefault();
-      }
-    };
-
-    const handleGlobalUp = (e: PointerEvent) => {
-      if (pointers.current.has(e.pointerId)) {
-        pointers.current.delete(e.pointerId);
-        if (panRef.current) panRef.current = null;
-        const g = gesture.current;
-        if (g && (e.pointerId === g.idA || e.pointerId === g.idB)) {
-          gesture.current = null;
-          el.style.touchAction = '';
-          startSpring(g);
-        }
-      }
-    };
-
-    // Suppress WebKit/iOS Safari proprietary gesture events (pinch-to-zoom at viewport level)
-    const preventNativeGesture = (e: Event) => {
-      e.preventDefault();
-    };
-
-    el.addEventListener('touchmove', handleTouchMove, { passive: false });
-    el.addEventListener('gesturestart', preventNativeGesture);
-    el.addEventListener('gesturechange', preventNativeGesture);
-    window.addEventListener('pointerup', handleGlobalUp);
-    window.addEventListener('pointercancel', handleGlobalUp);
-
-    return () => {
-      el.removeEventListener('touchmove', handleTouchMove);
-      el.removeEventListener('gesturestart', preventNativeGesture);
-      el.removeEventListener('gesturechange', preventNativeGesture);
-      window.removeEventListener('pointerup', handleGlobalUp);
-      window.removeEventListener('pointercancel', handleGlobalUp);
-      if (pillTimerRef.current) clearTimeout(pillTimerRef.current);
-      if (doubleTapAnimRef.current != null) cancelAnimationFrame(doubleTapAnimRef.current);
-    };
-  }, [startSpring]);
-
-  const scrollToPage = useCallback((n: number) => {
-    const el = scrollRef.current;
-    if (!el || !layout[n - 1]) return;
-    el.scrollTo({ top: Math.max(0, layout[n - 1].top - 8), behavior: 'smooth' });
-  }, [layout]);
-
-  /**
-   * Hold position across a zoom or rotation.
-   *
-   * Changing scale makes every page taller but does not move scrollTop and does
-   * not fire a scroll event - so the viewport silently lands on a different page
-   * while `current` still points at the old one, and the pages actually on
-   * screen fall outside the mounted window and render as blank placeholders.
-   *
-   * The anchor is a RATIO inside a real page element, measured before the change
-   * and re-measured after. Ratios are transform-invariant, so this is exact by
-   * construction - where the factor arithmetic it replaces was wrong three ways:
-   * it centred horizontally on the viewport rather than on the gesture, it
-   * assumed scrollHeight scales with the zoom when the 24px page gaps do not,
-   * and it leaned on a `layout` that over-counts those gaps because adjacent
-   * my-3 margins collapse to 12px rather than summing to 24.
-   *
-   * useLayoutEffect, not useEffect: this runs inside the commit's flushSync and
-   * has to land before the browser paints, or the correction is visible as a jump.
-   */
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (prevScale.current === scale && prevRotation.current === rotation) return;
-    prevScale.current = scale;
-    prevRotation.current = rotation;
-
-    // Idle state has to track the committed scale, or the next pinch would start
-    // from a stale absolute and jump on the first frame.
-    if (!gesture.current && spring.current == null) live.current = { s: scale, tx: 0, ty: 0 };
-
-    const a = zoomAnchor.current;
-    zoomAnchor.current = null;
-    if (layout.length === 0) return;
-
-    if (a) {
-      const pr = a.el.getBoundingClientRect();
-      if (pr.height > 0 && pr.width > 0) {
-        // have - want is how far the anchor moved down/right; scrolling by that
-        // much puts it back exactly where the fingers left it.
-        el.scrollTop = clamp(
-          el.scrollTop + (pr.top + a.relY * pr.height) - a.wantY,
-          0, el.scrollHeight - el.clientHeight,
-        );
-        el.scrollLeft = clamp(
-          el.scrollLeft + (pr.left + a.relX * pr.width) - a.wantX,
-          0, el.scrollWidth - el.clientWidth,
-        );
-      }
-    }
-
-    onScroll();
-  }, [scale, rotation, layout, onScroll]);
-
-  // Once the page boxes exist, honour a remembered page.
-  useEffect(() => {
-    if (pendingPage.current && layout.length > 0) {
-      const n = pendingPage.current;
-      pendingPage.current = null;
-      requestAnimationFrame(() => scrollToPage(n));
-    }
-  }, [layout, scrollToPage]);
-
-  /** Only the visible page and its neighbours are mounted - the rest are boxes. */
-  const isLive = (n: number) => Math.abs(n - current) <= 1;
-
-  // ---- selection --------------------------------------------------------
-  /** DOM position -> canonical offset within a page. */
-  const canonicalOffset = (h: PageHandle, node: Node, offset: number): number | null => {
+  // DOM position -> canonical offset within a page
+  const canonicalOffset = useCallback((h: PageHandle, node: Node, offset: number): number | null => {
     const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement);
     const span = el?.closest('[data-item-index]') as HTMLElement | null;
     if (!span) return null;
@@ -996,16 +649,14 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     const r = h.canonical.itemRanges[itemIndex];
     if (!r) return null;
     return r.start + canonicalOffsetWithin(span.textContent ?? '', offset);
-  };
+  }, []);
 
-  const fragmentFor = (range: Range, h: PageHandle): SelectionFragment | null => {
+  const fragmentFor = useCallback((range: Range, h: PageHandle): SelectionFragment | null => {
     if (!range.intersectsNode(h.textLayerEl)) return null;
 
     const spans = [...h.spanByItem.values()];
     if (spans.length === 0) return null;
 
-    // Clamp the selection to this page: if it started or ended on another page,
-    // use this page's own first/last text node instead.
     const sub = document.createRange();
     const startsHere = h.textLayerEl.contains(range.startContainer);
     const endsHere = h.textLayerEl.contains(range.endContainer);
@@ -1039,275 +690,149 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
       pageH: h.pageH,
       canonicalText: h.canonical.text,
     };
-  };
+  }, [canonicalOffset]);
 
-  /**
-   * Snapshot the selection the moment it happens.
-   *
-   * iOS collapses the selection on the first DOM mutation, so reading
-   * window.getSelection() later - inside the toolbar's click handler - returns
-   * nothing. Everything the toolbar needs is captured here instead.
-   */
-  const captureSelection = useCallback(() => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) { setSelection(null); return; }
-
-    const range = sel.getRangeAt(0);
-    const text = sel.toString().trim();
-    if (!text) { setSelection(null); return; }
-
-    const fragments: SelectionFragment[] = [];
-    for (const h of pages.current.values()) {
-      const f = fragmentFor(range, h);
-      if (f) fragments.push(f);
-    }
-    if (fragments.length === 0) { setSelection(null); return; }
-
-    setSelection({
-      text,
-      fragments: fragments.sort((a, b) => a.pageNumber - b.pageNumber),
-    });
-  }, []);
-
+  // Web Text Selection listener
   useEffect(() => {
-    let t: ReturnType<typeof setTimeout>;
-    const onChange = () => {
-      clearTimeout(t);
-      // Never snapshot mid-gesture. captureSelection measures getClientRects()
-      // and stores the result as PDF-space quads, so a snapshot taken through a
-      // live transform would be persisted wrong by the live factor. Re-arm
-      // instead of dropping it, so a selection made just before a pinch is not lost.
-      t = setTimeout(function run() {
-        if (gesture.current || spring.current != null) { t = setTimeout(run, 140); return; }
-        captureSelection();
-      }, 140);
-    };
-    document.addEventListener('selectionchange', onChange);
-    return () => { document.removeEventListener('selectionchange', onChange); clearTimeout(t); };
-  }, [captureSelection]);
-
-  const clearSelection = () => {
-    window.getSelection()?.removeAllRanges();
-    setSelection(null);
-  };
-
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 1800);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  /**
-   * Run one selection action, then clear.
-   *
-   * The text is read BEFORE clearing for the same reason captureSelection
-   * exists: the selection is gone by the time an awaited call resolves.
-   */
-  const runSelectionAction = (
-    act: (text: string) => Promise<'ok' | 'copied' | 'failed'>,
-    messages: { ok: string; copied?: string; failed: string },
-  ) => {
-    const text = selection?.text;
-    if (!text) return;
-    clearSelection();
-    void act(text).then((r) => {
-      if (r === 'ok') setToast(messages.ok);
-      else if (r === 'copied') setToast(messages.copied ?? messages.ok);
-      else setToast(messages.failed);
-    });
-  };
-
-  /* ---------------------------------------------------------------- search */
-
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [matches, setMatches] = useState<SearchMatch[]>([]);
-  const [matchIndex, setMatchIndex] = useState(0);
-  const [listOpen, setListOpen] = useState(false);
-  const [indexing, setIndexing] = useState(false);
-  const [indexed, setIndexed] = useState(0);
-  /** pageNumber -> its searchable text. Survives closing and reopening search. */
-  const searchIndex = useRef<Map<number, PageSearchIndex>>(new Map());
-
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false);
-    setQuery('');
-    setMatches([]);
-    setMatchIndex(0);
-    setListOpen(false);
-  }, []);
-
-  useBackDismiss(searchOpen, closeSearch, 'pdfSearch');
-
-  /**
-   * Pull every page's text once, in page order.
-   *
-   * It cannot come from the mounted text layers: only a window of three pages
-   * is mounted at a time, so the DOM knows nothing about page 40 while page 2
-   * is on screen. getTextContent() is the only source that sees the whole
-   * document, and it is cheap next to rendering - no canvas, no fonts.
-   *
-   * Results are published page by page rather than at the end, so a hit on page
-   * 2 is usable while page 200 is still being read.
-   */
-  useEffect(() => {
-    if (!searchOpen || !pdfDoc) return;
-
-    const total: number = pdfDoc.numPages;
-    if (searchIndex.current.size >= total) { setIndexed(total); return; }
-
-    let cancelled = false;
-    setIndexing(true);
-
-    void (async () => {
-      for (let n = 1; n <= total; n++) {
-        if (cancelled) return;
-        if (!searchIndex.current.has(n)) {
-          try {
-            const page = await pdfDoc.getPage(n);
-            const tc = await page.getTextContent();
-            searchIndex.current.set(n, buildPageSearchIndex(n, tc.items));
-          } catch {
-            // A page that will not yield text contributes no matches. Indexing
-            // the rest still beats failing the whole search.
-          }
-        }
-        if (cancelled) return;
-        setIndexed(n);
+    if (isNative) return;
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim() || sel.rangeCount === 0) {
+        setSelection(null);
+        setSelectionPos(null);
+        return;
       }
-      setIndexing(false);
-    })();
 
-    return () => { cancelled = true; setIndexing(false); };
-  }, [searchOpen, pdfDoc]);
+      const text = sel.toString().trim();
+      try {
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          setSelectionPos({ x: rect.left + rect.width / 2, y: rect.top });
+          const fragments: SelectionFragment[] = [];
+          for (const h of pages.current.values()) {
+            const f = fragmentFor(range, h);
+            if (f) fragments.push(f);
+          }
+          setSelection({
+            text,
+            fragments: fragments.sort((a, b) => a.pageNumber - b.pageNumber),
+          });
+        }
+      } catch {}
+    };
 
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(query), 180);
-    return () => clearTimeout(t);
-  }, [query]);
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [isNative, fragmentFor]);
 
-  /**
-   * Highest page already searched for the CURRENT query.
-   *
-   * Results extend as indexing advances rather than being recomputed from page
-   * one each time. Recomputing looked simpler but was wrong twice over: it made
-   * the whole search quadratic in a long lecture, and because the debounce
-   * restarted on every indexed page, a two-hundred-page PDF showed no results
-   * at all until indexing finished.
-   */
-  const searchedUpTo = useRef(0);
-
-  useEffect(() => {
-    searchedUpTo.current = 0;
-    setMatches([]);
-    setMatchIndex(0);
-  }, [debouncedQuery]);
-
-  useEffect(() => {
-    if (!searchOpen || searchedUpTo.current >= indexed) return;
-
-    const from = searchedUpTo.current + 1;
-    searchedUpTo.current = indexed;
-
-    const found: SearchMatch[] = [];
-    for (let n = from; n <= indexed; n++) {
-      const idx = searchIndex.current.get(n);
-      if (idx) found.push(...searchPageIndex(idx, debouncedQuery));
-    }
-    if (found.length === 0) return;
-
-    setMatches(prev => (prev.length >= MAX_MATCHES ? prev : [...prev, ...found].slice(0, MAX_MATCHES)));
-  }, [debouncedQuery, indexed, searchOpen]);
-
-  const activeHit = matches[matchIndex] ?? null;
-
-  /**
-   * Follow the active hit.
-   *
-   * Keyed on the hit's identity rather than on the index, so retyping a query
-   * that happens to keep the same index still scrolls, and a re-render that
-   * changes neither does not.
-   */
-  const jumpedTo = useRef('');
-  useEffect(() => {
-    if (!activeHit) { jumpedTo.current = ''; return; }
-    const key = `${activeHit.pageNumber}:${activeHit.start}`;
-    if (jumpedTo.current === key) return;
-    jumpedTo.current = key;
-    scrollToPage(activeHit.pageNumber);
-  }, [activeHit, scrollToPage]);
-
-  const stepMatch = (delta: number) => {
-    if (matches.length === 0) return;
-    setMatchIndex(i => (i + delta + matches.length) % matches.length);
-  };
-
-  /** One annotation per page the selection touched, tied by a shared groupId. */
-  const createHighlight = async (color: HighlightColor, openNote: boolean) => {
+  // Create Highlight & Note
+  const handleHighlight = async (color: HighlightColor) => {
+    if (!selection) return;
     const snap = selection;
-    if (!snap) return;
-
-    const groupId = snap.fragments.length > 1 ? secureRequestId() : undefined;
     const now = Date.now();
-    let first: PdfAnnotation | null = null;
+    const groupId = snap.fragments.length > 1 ? secureRequestId() : undefined;
 
-    for (const f of snap.fragments) {
+    if (snap.fragments.length > 0) {
+      for (const f of snap.fragments) {
+        const a: PdfAnnotation = {
+          id: secureRequestId(),
+          lectureId,
+          docFingerprint: fingerprint.current,
+          kind: 'highlight',
+          page: f.pageNumber,
+          color,
+          groupId,
+          createdAt: now,
+          updatedAt: now,
+          anchor: buildAnchor({
+            text: f.canonicalText,
+            start: f.start,
+            end: f.end,
+            quads: f.quads,
+            pageW: f.pageW,
+            pageH: f.pageH,
+          }),
+          schema: 1,
+        };
+        await upsert(a);
+      }
+    } else {
       const a: PdfAnnotation = {
         id: secureRequestId(),
         lectureId,
         docFingerprint: fingerprint.current,
         kind: 'highlight',
-        page: f.pageNumber,
+        page: current,
         color,
-        groupId,
-        anchor: buildAnchor({
-          text: f.canonicalText,
-          start: f.start,
-          end: f.end,
-          quads: f.quads,
-          pageW: f.pageW,
-          pageH: f.pageH,
-        }),
         createdAt: now,
         updatedAt: now,
+        anchor: {
+          pageW: 0,
+          pageH: 0,
+          start: 0,
+          end: 0,
+          exact: snap.text.slice(0, 300),
+          prefix: '',
+          suffix: '',
+          quads: [],
+          algo: 1,
+        },
         schema: 1,
       };
-      if (!first) first = a;
       await upsert(a);
     }
 
-    clearSelection();
-    if (openNote && first) setEditing(first);
+    setSelection(null);
+    setSelectionPos(null);
+    window.getSelection()?.removeAllRanges();
+    setToast(isRtl ? 'تم التظليل' : 'Highlighted');
+    setTimeout(() => setToast(null), 1200);
   };
 
-  const addPin = async (pageNumber: number, point: { x: number; y: number }) => {
-    // Same reason as captureSelection: convertToPdfPoint reads a rect measured
-    // through the live transform, so a pin dropped during the release spring
-    // would be stored at a completely different point on the page.
-    if (gesture.current || spring.current != null) return;
+  const handleAddNote = async () => {
+    const noteId = secureRequestId();
     const now = Date.now();
+    const f = selection?.fragments?.[0];
     const a: PdfAnnotation = {
-      id: secureRequestId(),
+      id: noteId,
       lectureId,
       docFingerprint: fingerprint.current,
       kind: 'pin',
-      page: pageNumber,
-      color: 'yellow',
-      point,
+      page: f ? f.pageNumber : current,
+      color: activeHighlightColor,
       createdAt: now,
       updatedAt: now,
+      anchor: f
+        ? buildAnchor({
+            text: f.canonicalText,
+            start: f.start,
+            end: f.end,
+            quads: f.quads,
+            pageW: f.pageW,
+            pageH: f.pageH,
+          })
+        : selection?.text
+        ? {
+            pageW: 0,
+            pageH: 0,
+            start: 0,
+            end: 0,
+            exact: selection.text.slice(0, 300),
+            prefix: '',
+            suffix: '',
+            quads: [],
+            algo: 1,
+          }
+        : undefined,
+      note: '',
       schema: 1,
     };
     await upsert(a);
+    setSelection(null);
+    setSelectionPos(null);
+    window.getSelection()?.removeAllRanges();
     setEditing(a);
-  };
-
-  const goTo = (a: PdfAnnotation) => {
-    setDrawerOpen(false);
-    scrollToPage(a.page);
-    setFlashId(a.id);
-    setTimeout(() => setFlashId(null), 1400);
   };
 
   const doExport = async () => {
@@ -1323,256 +848,384 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const Back = isRtl ? ChevronRight : ChevronLeft;
-  const Fwd = isRtl ? ChevronLeft : ChevronRight;
-  const noteCount = annotations.length;
+  const shareLecture = async () => {
+    try {
+      const { Share } = await import('@capacitor/share');
+      if ((await Share.canShare()).value) {
+        await Share.share({
+          title: lectureTitle,
+          url: pdfUrl,
+          dialogTitle: isRtl ? 'مشاركة المحاضرة' : 'Share Lecture',
+        });
+      }
+    } catch {
+      await copyText(pdfUrl);
+      setToast(isRtl ? 'تم نسخ الرابط' : 'Link copied');
+      setTimeout(() => setToast(null), 1200);
+    }
+  };
 
   return (
     <div
       dir={isRtl ? 'rtl' : 'ltr'}
-      className="pdfReaderSurface fixed inset-0 z-[160] bg-white dark:bg-zinc-900 flex flex-col overflow-hidden"
+      className={`pdfReaderSurface fixed inset-0 z-[160] flex flex-col overflow-hidden select-none ${
+        isNative ? 'bg-transparent' : isNightMode ? 'bg-zinc-950 text-white' : 'bg-slate-100 dark:bg-zinc-950'
+      }`}
     >
-      <header className="shrink-0 flex items-center gap-2 px-3 pt-[max(env(safe-area-inset-top),0.5rem)] pb-2 border-b border-slate-200 dark:border-zinc-800">
-        <button
-          onClick={onClose}
-          aria-label={isRtl ? 'إغلاق' : 'Close'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <X className="w-6 h-6" />
-        </button>
-
-        <h1 dir="auto" className="flex-1 min-w-0 truncate font-bold text-slate-900 dark:text-stone-100">
-          {lectureTitle}
-        </h1>
-
-        <button
-          onClick={() => setSearchOpen(true)}
-          aria-label={isRtl ? 'بحث في المحاضرة' : 'Search this lecture'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <Search className="w-6 h-6" />
-        </button>
-
-        {simosanReady && (
-          <button
-            onClick={() => openSimosan()}
-            aria-label={isRtl ? 'اسأل سيموسان' : 'Ask Simosan'}
-            className="p-2 rounded-full text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-950/40 transition-colors"
-          >
-            <Sparkles className="w-6 h-6" />
-          </button>
-        )}
-
-        <button
-          onClick={() => setAttachmentsOpen(true)}
-          aria-label={isRtl ? 'مرفقات المحاضرة' : 'Lecture attachments'}
-          className="relative p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-          title={isRtl ? 'مرفقات وصور المحاضرة' : 'Lecture attachments'}
-        >
-          <ImageIcon className="w-6 h-6" />
-          {attachmentsCount > 0 && (
-            <span className="absolute -top-0.5 -end-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-indigo-500 text-white text-[10px] font-black flex items-center justify-center">
-              {attachmentsCount}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setDrawerOpen(true)}
-          aria-label={isRtl ? 'ملاحظاتي' : 'My notes'}
-          className="relative p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <NotebookPen className="w-6 h-6" />
-          {noteCount > 0 && (
-            <span className="absolute -top-0.5 -end-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-sky-500 text-white text-[10px] font-black flex items-center justify-center">
-              {noteCount}
-            </span>
-          )}
-        </button>
-      </header>
-
-      {staleFile && (
-        <div className="shrink-0 flex items-start gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-400 text-xs font-bold">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>
-            {isRtl
-              ? 'هذه الملاحظات كُتبت على نسخة أقدم من هذا الملف، وقد لا تكون في مواضعها.'
-              : 'These notes were made on an older version of this file and may not line up.'}
-          </span>
-        </div>
-      )}
-
-      {/* Floating glassmorphic page badge */}
+      {/* Notewise Floating Header Pill (Hidden when search is open) */}
       <AnimatePresence>
-        {showPagePill && (
+        {chromeVisible && !searchOpen && (
           <motion.div
-            initial={{ opacity: 0, y: -8, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.95 }}
-            transition={{ duration: 0.18 }}
-            className="absolute top-16 left-1/2 -translate-x-1/2 z-30 pointer-events-none"
+            initial={{ y: -30, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -30, opacity: 0 }}
+            transition={{ duration: 0.16 }}
+            className="contents"
           >
-            <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-slate-900/80 dark:bg-zinc-900/85 backdrop-blur-md text-white text-xs font-semibold shadow-lg shadow-black/20 border border-white/10 tracking-wide select-none">
-              <span>{isRtl ? `صفحة ${current} من ${pageCount || '-'}` : `Page ${current} of ${pageCount || '-'}`}</span>
-            </div>
+            <NotewiseHeaderPill
+              isRtl={isRtl}
+              isAnnotationMode={isAnnotationMode}
+              onToggleMode={() => {
+                setIsAnnotationMode(!isAnnotationMode);
+                setChromeVisible(true);
+              }}
+              onBack={onClose}
+              onOpenOverview={() => setOverviewOpen(true)}
+              onOpenSearch={() => setSearchOpen(true)}
+              onOpenTranslation={() => openTranslation()}
+              onOpenDocSheet={() => setDocSheetOpen(true)}
+              onOpenSimosan={() => openSimosan()}
+              simosanAvailable={simosanReady}
+            />
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        dir="ltr"
-        style={{ touchAction: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch' }}
-        className="flex-1 overflow-y-auto overflow-x-auto bg-slate-200 dark:bg-zinc-950 px-2"
-      >
-        {error && (
-          <div className="flex flex-col items-center justify-center h-full gap-3 px-8 text-center">
-            <AlertTriangle className="w-12 h-12 text-amber-500" />
-            <p dir={isRtl ? 'rtl' : 'ltr'} className="text-slate-600 dark:text-slate-300 font-bold">{error}</p>
-          </div>
-        )}
-
-        {!error && !pdfDoc && (
-          <div className="flex items-center justify-center h-full">
-            <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
-          </div>
-        )}
-
-        {pdfDoc && (
-        <div
-          ref={zoomLayerRef}
-          style={{ transformOrigin: '0 0' }}
-          className="min-w-fit flex flex-col items-center"
-        >
-        {layout.map((box, i) => {
-          const n = i + 1;
-          return isLive(n) ? (
-            <PdfPage
-              key={n}
-              pdfDoc={pdfDoc}
-              pageNumber={n}
-              scale={scale}
-              rasterScale={rasterScale}
-              rotation={rotation}
-              boxW={box.w}
-              boxH={box.h}
-              annotations={byPage.get(n) ?? NO_ANNOTATIONS}
-              registerPage={registerPage}
-              onHighlightTap={setEditing}
-              onOrphan={markOrphan}
-              onPinPoint={addPin}
-              flashId={flashId}
-              searchMatch={searchOpen && activeHit?.pageNumber === n ? activeHit : null}
-            />
-          ) : (
-            // Placeholder keeps the scroll height honest while unmounted, so
-            // scrolling a 100-page lecture does not shift under the finger.
-            <div
-              key={n}
-              className="mx-auto my-3 bg-white/60 dark:bg-zinc-800/40 rounded"
-              style={{ width: box.w, height: box.h }}
-            />
-          );
-        })}
+      {/* Stale file warning banner */}
+      {staleFile && (
+        <div className="fixed top-18 left-4 right-4 z-40 p-2.5 rounded-xl bg-amber-500/90 text-white text-xs font-bold shadow-lg backdrop-blur flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>
+            {isRtl
+              ? 'هذه الملاحظات كُتبت على نسخة أقدم من هذا الملف.'
+              : 'These notes were made on an older version of this file.'}
+          </span>
         </div>
-        )}
-      </div>
+      )}
 
-      <footer className="shrink-0 flex items-center justify-center gap-1 px-3 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] border-t border-slate-200 dark:border-zinc-800">
-        <button
-          onClick={() => scrollToPage(Math.max(1, current - 1))}
-          disabled={current <= 1}
-          aria-label={isRtl ? 'السابق' : 'Previous'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+      {/* Web Fallback Scroll View (Only rendered when native engine is off) */}
+      {!isNative && (
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          onClick={() => {
+            if (!isAnnotationMode) setChromeVisible((prev) => !prev);
+          }}
+          dir="ltr"
+          className="flex-1 overflow-y-auto bg-slate-100 dark:bg-zinc-950 pt-20 pb-20 px-2"
+          style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}
         >
-          <Back className="w-5 h-5" />
-        </button>
+          {error && (
+            <div className="flex flex-col items-center justify-center h-full gap-3 px-8 text-center">
+              <AlertTriangle className="w-12 h-12 text-amber-500" />
+              <p className="text-slate-600 dark:text-zinc-300 font-bold">{error}</p>
+            </div>
+          )}
 
-        <span dir="ltr" className="min-w-[72px] text-center text-sm font-bold text-slate-600 dark:text-slate-300 tabular-nums">
-          {current} / {pageCount || '-'}
-        </span>
+          {!error && !pdfDoc && (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+            </div>
+          )}
 
-        <button
-          onClick={() => scrollToPage(Math.min(pageCount, current + 1))}
-          disabled={current >= pageCount}
-          aria-label={isRtl ? 'التالي' : 'Next'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <Fwd className="w-5 h-5" />
-        </button>
+          {pdfDoc && (
+            <div className="flex flex-col items-center gap-4">
+              {layout.map((box, i) => {
+                const n = i + 1;
+                return (
+                  <div
+                    key={n}
+                    className="relative my-3 shadow-lg shadow-black/20 shrink-0"
+                    style={{
+                      width: box.w,
+                      height: box.h,
+                      filter: isNightMode ? 'invert(0.9) contrast(0.95) hue-rotate(180deg)' : 'none',
+                      transition: 'filter 0.2s ease-in-out',
+                    }}
+                  >
+                    <PdfPage
+                      pdfDoc={pdfDoc}
+                      pageNumber={n}
+                      scale={scale}
+                      rasterScale={rasterScale}
+                      rotation={rotation}
+                      boxW={box.w}
+                      boxH={box.h}
+                      annotations={byPage.get(n) ?? NO_ANNOTATIONS}
+                      registerPage={registerPage}
+                      onHighlightTap={setEditing}
+                      onOrphan={markOrphan}
+                      flashId={flashId}
+                      noMargin
+                    />
+                    <PdfDrawingLayer
+                      pageNumber={n}
+                      pageWidth={box.w}
+                      pageHeight={box.h}
+                      scale={scale}
+                      strokes={pageStrokes[n] || []}
+                      activeTool={activeDrawingTool}
+                      activeColor={activeDrawColor}
+                      activeWidth={activeDrawWidth}
+                      isAnnotationMode={isAnnotationMode}
+                      onAddStroke={(s) => handleAddStroke(n, s)}
+                      onEraseStroke={(id) => handleEraseStroke(n, id)}
+                    />
+                    <PdfTextBoxOverlay
+                      pageNumber={n}
+                      pageWidth={box.w}
+                      pageHeight={box.h}
+                      scale={scale}
+                      annotations={annotations}
+                      activeTool={activeDrawingTool}
+                      activeColor={activeDrawColor}
+                      isAnnotationMode={isAnnotationMode}
+                      onSaveText={upsert}
+                      onDeleteText={remove}
+                      isRtl={isRtl}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
-        <span className="w-px h-6 bg-slate-200 dark:bg-zinc-700 mx-2" />
-
-        <button
-          onClick={() => { captureCentreAnchor(); setScale(s => Math.max(MIN_SCALE, +(s - 0.25).toFixed(2))); }}
-          disabled={scale <= MIN_SCALE}
-          aria-label={isRtl ? 'تصغير' : 'Zoom out'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+      {/* Native Mode Drawing & Text Overlay */}
+      {isNative && !nativeLoading && (
+        <div
+          className={`absolute inset-0 z-10 ${
+            isAnnotationMode &&
+            (activeDrawingTool === 'pencil' ||
+              activeDrawingTool === 'free_highlighter' ||
+              activeDrawingTool === 'eraser' ||
+              activeDrawingTool === 'text')
+              ? 'pointer-events-auto'
+              : 'pointer-events-none'
+          }`}
         >
-          <Minus className="w-5 h-5" />
-        </button>
-        <span
-          ref={zoomLabelRef}
-          className="min-w-[46px] text-center text-xs font-bold text-slate-500 tabular-nums"
-        >
-          {Math.round(scale * 100)}%
-        </span>
-        <button
-          onClick={() => { captureCentreAnchor(); setScale(s => Math.min(MAX_SCALE, +(s + 0.25).toFixed(2))); }}
-          disabled={scale >= MAX_SCALE}
-          aria-label={isRtl ? 'تكبير' : 'Zoom in'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-        </button>
-        <button
-          onClick={() => { captureCentreAnchor(); setRotation(r => (r + 90) % 360); }}
-          aria-label={isRtl ? 'تدوير' : 'Rotate'}
-          className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-          <RotateCw className="w-5 h-5" />
-        </button>
-      </footer>
-
-      <AnimatePresence>
-        {selection && (
-          <SelectionToolbar
-            isRtl={isRtl}
-            onPick={(c) => createHighlight(c, false)}
-            onNote={() => createHighlight('yellow', true)}
-            onCopy={() => runSelectionAction(copyText, {
-              ok: isRtl ? 'تم النسخ' : 'Copied',
-              failed: isRtl ? 'تعذّر النسخ' : 'Could not copy',
-            })}
-            onTranslate={() => {
-              const text = selection.text;
-              clearSelection();
-              setTranslationTarget(text);
-            }}
-            onSearchWeb={() => runSelectionAction(webSearchText, {
-              ok: isRtl ? 'جارٍ فتح البحث' : 'Opening search',
-              failed: isRtl ? 'تعذّر فتح البحث' : 'Could not open search',
-            })}
-            onShare={() => runSelectionAction((t) => shareText(t, lectureTitle), {
-              ok: isRtl ? 'تمت المشاركة' : 'Shared',
-              copied: isRtl ? 'تم النسخ بدل المشاركة' : 'Copied instead',
-              failed: isRtl ? 'تعذّرت المشاركة' : 'Could not share',
-            })}
-            onDismiss={clearSelection}
-            onAskSimosan={simosanReady ? () => {
-              const seed = selection.text;
-              clearSelection();
-              openSimosan(seed);
-            } : undefined}
+          <PdfDrawingLayer
+            pageNumber={current}
+            pageWidth={window.innerWidth}
+            pageHeight={window.innerHeight}
+            scale={1}
+            strokes={pageStrokes[current] || []}
+            activeTool={activeDrawingTool}
+            activeColor={activeDrawColor}
+            activeWidth={activeDrawWidth}
+            isAnnotationMode={isAnnotationMode}
+            onAddStroke={(s) => handleAddStroke(current, s)}
+            onEraseStroke={(id) => handleEraseStroke(current, id)}
           />
+          <PdfTextBoxOverlay
+            pageNumber={current}
+            pageWidth={window.innerWidth}
+            pageHeight={window.innerHeight}
+            scale={1}
+            annotations={annotations}
+            activeTool={activeDrawingTool}
+            activeColor={activeDrawColor}
+            isAnnotationMode={isAnnotationMode}
+            onSaveText={upsert}
+            onDeleteText={remove}
+            isRtl={isRtl}
+          />
+        </div>
+      )}
+
+      {/* Native Loading Spinner */}
+      {isNative && nativeLoading && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-stone-500">
+          <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+          <span className="text-xs font-semibold">{isRtl ? 'جارٍ تحميل المحاضرة...' : 'Loading lecture...'}</span>
+        </div>
+      )}
+
+      {/* Notewise Floating Page Pill (Page X/Y, Zoom, Night Mode) */}
+      <AnimatePresence>
+        {chromeVisible && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.16 }}
+            className="contents"
+          >
+            <NotewisePagePill
+              currentPage={current}
+              pageCount={pageCount}
+              scalePercent={Math.round(scale * 100)}
+              isNightMode={isNightMode}
+              isAnnotationMode={isAnnotationMode}
+              onToggleNightMode={handleToggleNightMode}
+              onOpenPageJump={() => {
+                setJumpTargetPage(String(current));
+                setJumpModalOpen(true);
+              }}
+            />
+          </motion.div>
         )}
       </AnimatePresence>
 
+      {/* Notewise Annotation Dock (Active only in Annotation Mode) */}
+      <NotewiseAnnotationDock
+        isVisible={isAnnotationMode}
+        activeTool={activeDrawingTool}
+        activeColor={activeDrawColor}
+        activeWidth={activeDrawWidth}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onSelectTool={setActiveDrawingTool}
+        onChangeColor={setActiveDrawColor}
+        onChangeWidth={setActiveDrawWidth}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onAddNote={handleAddNote}
+        onOpenSimosan={() => openSimosan()}
+        onCloseDock={() => setIsAnnotationMode(false)}
+        isRtl={isRtl}
+        simosanAvailable={simosanReady}
+      />
+
+      {/* Floating Selection Capsule Menu (with Simosan AI) */}
+      <NotewiseSelectionCapsule
+        position={selectionPos}
+        selectedText={selection?.text || ''}
+        isRtl={isRtl}
+        onAskSimosan={(txt) => {
+          setSelection(null);
+          setSelectionPos(null);
+          openSimosan(txt);
+        }}
+        onHighlight={handleHighlight}
+        onAddNote={handleAddNote}
+        onCopy={async () => {
+          if (selection?.text) {
+            await copyText(selection.text);
+            setSelection(null);
+            setSelectionPos(null);
+            setToast(isRtl ? 'تم النسخ' : 'Copied');
+            setTimeout(() => setToast(null), 1200);
+          }
+        }}
+        onTranslate={() => {
+          if (selection?.text) {
+            const txt = selection.text;
+            setSelection(null);
+            setSelectionPos(null);
+            openTranslation(txt);
+          }
+        }}
+        onShare={() => {
+          if (selection?.text) {
+            shareText(selection.text, lectureTitle);
+            setSelection(null);
+            setSelectionPos(null);
+          }
+        }}
+        simosanAvailable={simosanReady}
+      />
+
+      {/* Notewise 3-Column Page Overview Modal */}
+      <NotewiseOverviewModal
+        isOpen={overviewOpen}
+        onClose={() => setOverviewOpen(false)}
+        pageCount={pageCount}
+        currentPage={current}
+        annotations={annotations}
+        isRtl={isRtl}
+        onSelectPage={goToPage}
+        onToggleBookmark={toggleBookmark}
+        bookmarkedPages={bookmarkedPages}
+      />
+
+      {/* Notewise Document Bottom Sheet */}
+      <NotewiseDocumentSheet
+        isOpen={docSheetOpen}
+        onClose={() => setDocSheetOpen(false)}
+        lectureTitle={lectureTitle}
+        pageCount={pageCount}
+        currentPage={current}
+        notesCount={annotations.length}
+        attachmentsCount={attachmentsCount}
+        isNightMode={isNightMode}
+        isRtl={isRtl}
+        onToggleNightMode={handleToggleNightMode}
+        onShare={shareLecture}
+        onExportNotes={doExport}
+        onOpenAttachments={() => setAttachmentsOpen(true)}
+        onOpenNotes={() => setDrawerOpen(true)}
+        onOpenTranslation={() => openTranslation()}
+        onOpenSimosan={() => openSimosan()}
+        onOpenPageJump={() => {
+          setJumpTargetPage(String(current));
+          setJumpModalOpen(true);
+        }}
+        simosanAvailable={simosanReady}
+      />
+
+      {/* Jump to Page Modal */}
+      {jumpModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm pointer-events-auto">
+          <div className="w-full max-w-xs bg-white dark:bg-zinc-900 rounded-3xl p-5 shadow-2xl border border-zinc-200 dark:border-zinc-800 text-center">
+            <h4 className="text-sm font-bold text-slate-900 dark:text-zinc-100 mb-1">
+              {isRtl ? 'الانتقال إلى صفحة' : 'Go to Page'}
+            </h4>
+            <p className="text-xs text-slate-500 dark:text-zinc-400 mb-4">
+              {isRtl ? `أدخل رقم الصفحة (1 - ${pageCount || 1})` : `Enter page number (1 - ${pageCount || 1})`}
+            </p>
+            <input
+              type="number"
+              min={1}
+              max={pageCount || 1}
+              value={jumpTargetPage}
+              onChange={(e) => setJumpTargetPage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const p = parseInt(jumpTargetPage, 10);
+                  if (!isNaN(p)) goToPage(p);
+                  setJumpModalOpen(false);
+                }
+              }}
+              autoFocus
+              className="w-full px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 text-center text-lg font-bold mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setJumpModalOpen(false)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-zinc-700"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = parseInt(jumpTargetPage, 10);
+                  if (!isNaN(p)) goToPage(p);
+                  setJumpModalOpen(false);
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-600/30"
+              >
+                {isRtl ? 'انتقال' : 'Go'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search in PDF Panel */}
       <AnimatePresence>
         {searchOpen && (
           <PdfSearchPanel
@@ -1585,32 +1238,32 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
             matches={matches}
             activeIndex={matchIndex}
             listOpen={listOpen}
-            onToggleList={() => setListOpen(o => !o)}
-            onPrev={() => stepMatch(-1)}
-            onNext={() => stepMatch(1)}
-            onPick={(i) => { setMatchIndex(i); setListOpen(false); }}
-            onClose={closeSearch}
+            onToggleList={() => setListOpen((o) => !o)}
+            onPrev={() => {
+              if (matches.length > 0) {
+                const next = (matchIndex - 1 + matches.length) % matches.length;
+                setMatchIndex(next);
+                goToPage(matches[next].pageNumber);
+              }
+            }}
+            onNext={() => {
+              if (matches.length > 0) {
+                const next = (matchIndex + 1) % matches.length;
+                setMatchIndex(next);
+                goToPage(matches[next].pageNumber);
+              }
+            }}
+            onPick={(i) => {
+              setMatchIndex(i);
+              setListOpen(false);
+              goToPage(matches[i].pageNumber);
+            }}
+            onClose={() => setSearchOpen(false)}
           />
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 12 }}
-            dir={isRtl ? 'rtl' : 'ltr'}
-            role="status"
-            className="absolute inset-x-0 bottom-24 z-[6] flex justify-center pointer-events-none"
-          >
-            <span className="rounded-full bg-zinc-900/95 text-white text-xs font-bold px-4 py-2 shadow-lg backdrop-blur">
-              {toast}
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
+      {/* Note Editor Sheet */}
       <AnimatePresence>
         {editing && (
           <NoteEditorSheet
@@ -1623,13 +1276,19 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
         )}
       </AnimatePresence>
 
+      {/* Notes & Highlights Drawer */}
       <AnimatePresence>
         {drawerOpen && (
           <NotesDrawer
             annotations={annotations}
             orphanIds={orphanIds}
             isRtl={isRtl}
-            onGoTo={goTo}
+            onGoTo={(a) => {
+              setDrawerOpen(false);
+              goToPage(a.page);
+              setFlashId(a.id);
+              setTimeout(() => setFlashId(null), 1400);
+            }}
             onDelete={remove}
             onExport={doExport}
             onDeleteAll={() => setConfirmWipe(true)}
@@ -1638,6 +1297,7 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
         )}
       </AnimatePresence>
 
+      {/* Attachments Drawer */}
       <AnimatePresence>
         {attachmentsOpen && (
           <PdfAttachmentsDrawer
@@ -1661,23 +1321,25 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
         )}
       </AnimatePresence>
 
+      {/* Simosan AI Drawer */}
       <AnimatePresence>
         {simosanOpen && (
           <SimosanDrawer
             isRtl={isRtl}
             lectureId={lectureId}
             seedSelection={simosanSeed}
-            onJumpToPage={scrollToPage}
+            onJumpToPage={goToPage}
             onClose={() => setSimosanOpen(false)}
             onOpenSubscription={onOpenSubscription}
           />
         )}
       </AnimatePresence>
 
+      {/* Translation Sheet */}
       <AnimatePresence>
-        {translationTarget && (
+        {(translationOpen || translationTarget !== null) && (
           <PdfTranslationSheet
-            sourceText={translationTarget}
+            sourceText={translationTarget || ''}
             isRtl={isRtl}
             hasAccess={hasTranslationAccess}
             onOpenSubscription={onOpenSubscription}
@@ -1686,15 +1348,39 @@ export default function PdfReaderOverlay({ lectureId, lectureTitle, pdfUrl, stag
         )}
       </AnimatePresence>
 
+      {/* Confirm Wipe Modal */}
       <ConfirmModal
         isOpen={confirmWipe}
         onClose={() => setConfirmWipe(false)}
-        onConfirm={() => { removeAll(); setConfirmWipe(false); setDrawerOpen(false); }}
+        onConfirm={() => {
+          removeAll();
+          setConfirmWipe(false);
+          setDrawerOpen(false);
+        }}
         title={isRtl ? 'حذف كل الملاحظات' : 'Delete all notes'}
-        message={isRtl
-          ? 'سيتم حذف كل التظليلات والملاحظات في هذه المحاضرة من هذا الجهاز. لا يمكن التراجع.'
-          : 'Every highlight and note for this lecture will be removed from this device. This cannot be undone.'}
+        message={
+          isRtl
+            ? 'سيتم حذف كل التظليلات والملاحظات في هذه المحاضرة من هذا الجهاز. لا يمكن التراجع.'
+            : 'Every highlight and note for this lecture will be removed from this device. This cannot be undone.'
+        }
       />
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            role="status"
+            className="fixed inset-x-0 bottom-24 z-50 flex justify-center pointer-events-none"
+          >
+            <span className="rounded-full bg-zinc-900/95 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-bold px-4 py-2 shadow-xl backdrop-blur">
+              {toast}
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

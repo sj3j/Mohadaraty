@@ -8,8 +8,8 @@ interface SubjectModeModalProps {
   subjects: DoctorSubject[];
   selectedSubject: DoctorSubject;
   onSelectSubject: (sub: DoctorSubject) => void;
-  selectedMode: 'theoretical' | 'practical' | 'both';
-  onSelectMode: (mode: 'theoretical' | 'practical' | 'both') => void;
+  selectedMode: LectureMode;
+  onSelectMode: (mode: LectureMode) => void;
   isRtl: boolean;
 }
 
@@ -24,6 +24,9 @@ export default function SubjectModeModal({
   isRtl,
 }: SubjectModeModalProps) {
   if (!isOpen) return null;
+
+  const canTheoretical = selectedSubject.type === 'both' || selectedSubject.type === 'theoretical';
+  const canPractical = selectedSubject.type === 'both' || selectedSubject.type === 'practical';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
@@ -109,29 +112,42 @@ export default function SubjectModeModal({
             </div>
           </div>
 
-          {/* Mode selection (Theoretical vs Practical vs Both) */}
+          {/* Mode selection (Strictly Theoretical vs Practical, never Both) */}
           <div className="space-y-3">
-            <label className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-zinc-500">
-              {isRtl ? 'نمط المحاضرات المعروضة الآن' : 'Active Attendance Mode'}
-            </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-zinc-500">
+                {isRtl ? 'نمط المحاضرات المعروضة الآن' : 'Active Attendance Mode'}
+              </label>
+              <span className="text-[11px] font-bold text-slate-400 dark:text-zinc-500">
+                {isRtl ? '(منفصل دائماً: نظري أو عملي)' : '(Strictly split: Theory or Lab)'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               {[
-                { id: 'both', labelAr: 'الكل (نظري + عملي)', labelEn: 'All Lectures' },
-                { id: 'theoretical', labelAr: 'النظري فقط', labelEn: 'Theoretical' },
-                { id: 'practical', labelAr: 'العملي فقط', labelEn: 'Practical' },
+                { id: 'theoretical' as const, labelAr: 'النظري فقط', labelEn: 'Theoretical', enabled: canTheoretical },
+                { id: 'practical' as const, labelAr: 'العملي فقط', labelEn: 'Practical', enabled: canPractical },
               ].map((modeOption) => {
                 const isSelected = selectedMode === modeOption.id;
+                const isEnabled = modeOption.enabled;
                 return (
                   <button
                     key={modeOption.id}
-                    onClick={() => onSelectMode(modeOption.id as any)}
-                    className={`py-3 px-2 rounded-xl text-xs font-black border transition-all text-center ${
-                      isSelected
+                    disabled={!isEnabled}
+                    onClick={() => isEnabled && onSelectMode(modeOption.id)}
+                    className={`py-3.5 px-3 rounded-2xl text-xs font-black border transition-all text-center flex items-center justify-center gap-2 ${
+                      !isEnabled
+                        ? 'opacity-40 border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-600'
+                        : isSelected
                         ? 'border-teal-500 bg-teal-600 text-white shadow-md shadow-teal-600/20'
                         : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700'
                     }`}
                   >
-                    {isRtl ? modeOption.labelAr : modeOption.labelEn}
+                    <span>{isRtl ? modeOption.labelAr : modeOption.labelEn}</span>
+                    {!isEnabled && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-zinc-700 dark:text-zinc-400">
+                        {isRtl ? 'غير متاح' : 'N/A'}
+                      </span>
+                    )}
                   </button>
                 );
               })}

@@ -49,8 +49,10 @@ interface StageContextType {
    * Every stage-scoped query should filter on this, never on currentAppStage.
    */
   effectiveStageId: string | null;
-  /** Called by App once the user profile is known, so the provider can resolve effectiveStageId. */
-  setActiveUser: (user: UserProfile | null) => void;
+  /** True only after the Firebase session belongs to the displayed profile. */
+  isAuthenticated: boolean;
+  /** Called by App once the user profile and matching Firebase session are known. */
+  setActiveUser: (user: UserProfile | null, isAuthenticated: boolean) => void;
   /** Group/subgroup structure of the effective stage. Never null - falls back to
    *  DEFAULT_GROUP_CONFIG so stages that were never configured behave as before. */
   groupConfig: StageGroupConfig;
@@ -80,6 +82,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
   const { calendar } = useAcademicPhase();
   const [stages, setStages] = useState<Stage[]>(DEFAULT_STAGES);
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentAppStage, setCurrentAppStage] = useState<string | null>(() => {
     return localStorage.getItem('selectedAdminStage') || null;
   });
@@ -127,7 +130,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
   }, [activeUser?.role, activeUser?.managedStageId]);
 
   useEffect(() => {
-    if (!activeUid) {
+    if (!activeUid || !isAuthenticated) {
       // On the login screen or before auth is ready, do NOT query Firestore.
       // firestore.rules refuses `stages` reads to unauthenticated callers, which
       // would log an expected permission-denied error. Default stages are used
@@ -215,7 +218,7 @@ export function StageProvider({ children }: { children: ReactNode }) {
 
     fetchStages();
     return () => { cancelled = true; };
-  }, [activeUid, applyStageList]);
+  }, [activeUid, isAuthenticated, applyStageList]);
 
   const handleSetCurrentStage = (stageId: string | null) => {
     setCurrentAppStage(stageId);
@@ -309,13 +312,19 @@ export function StageProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const setActiveUserWithAuth = useCallback((user: UserProfile | null, authenticated: boolean) => {
+    setActiveUser(user);
+    setIsAuthenticated(authenticated);
+  }, []);
+
   return (
     <StageContext.Provider value={{
       stages,
       currentAppStage,
       setCurrentAppStage: handleSetCurrentStage,
       effectiveStageId,
-      setActiveUser,
+      isAuthenticated,
+      setActiveUser: setActiveUserWithAuth,
       groupConfig,
       saveGroupConfig,
       activeCourseId,

@@ -2,7 +2,7 @@ import React, { useReducer, useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Lecture } from '../../types';
 import { MCQQuestion } from '../../types/mcq.types';
-import { Check, X, ChevronUp, ArrowUp, Loader2, ShieldAlert, AlertTriangle, CheckCircle, MessageSquare, Edit2, ImagePlus } from 'lucide-react';
+import { Check, X, ChevronUp, ArrowUp, Loader2, ShieldAlert, AlertTriangle, CheckCircle, MessageSquare, Edit2, ImagePlus, Lock, Crown, Sparkles } from 'lucide-react';
 import { trackEvent } from '../../lib/analytics';
 import { auth, db } from '../../lib/firebase';
 import { doc, getDoc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
@@ -19,6 +19,8 @@ interface Props {
   onFinish: (answers: Record<string, { selected: string, isCorrect: boolean }>, correctCount: number, score: number) => void;
   onClose: () => void;
   user?: any;
+  isSubscribed?: boolean;
+  onShowPaywall?: () => void;
 }
 
 type QuizState = {
@@ -70,7 +72,7 @@ function quizReducer(state: QuizState, action: QuizAction): QuizState {
   }
 }
 
-export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, user, onQuestionsUpdated }: Props) {
+export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, user, onQuestionsUpdated, isSubscribed = false, onShowPaywall }: Props) {
   const [state, dispatch] = useReducer(quizReducer, {
     answers: {},
     answeredCount: 0,
@@ -88,7 +90,7 @@ export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, u
 
   useEffect(() => {
     const user = auth.currentUser;
-    if (user) {
+    if (user && isSubscribed) {
       enableAntiScreenshot(user.uid, lecture.id, () => {
         setShowAntiCheatAlert(true);
       });
@@ -99,11 +101,15 @@ export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, u
         disableAntiScreenshot(user.uid, lecture.id);
       }
     };
-  }, [lecture.id]);
+  }, [lecture.id, isSubscribed]);
 
   useEffect(() => {
     // Check if it's a retake and fetch locked answers if it's the first attempt
     const checkAttempt = async () => {
+      if (!isSubscribed) {
+        setIsRetake(false);
+        return;
+      }
       const user = auth.currentUser;
       if (!user) return;
       try {
@@ -124,7 +130,7 @@ export default function MCQQuizScreen({ lecture, questions, onFinish, onClose, u
       }
     };
     checkAttempt();
-  }, [lecture.id]);
+  }, [lecture.id, isSubscribed]);
 
   const allAnswered = state.answeredCount === questions.length;
 
@@ -291,8 +297,8 @@ ${questionText}`;
     
     let isCorrect = choiceLabel === expectedAnswer;
     
-    // Only lock per-question for the first attempt
-    if (isRetake === false) {
+    // Only lock per-question for the first attempt and only for active subscribers
+    if (isRetake === false && isSubscribed) {
       setLoadingQuestionId(questionId);
       try {
         const user = auth.currentUser;
@@ -328,6 +334,16 @@ ${questionText}`;
     trackEvent('mcq_question_answered', { questionId, isCorrect });
     
     dispatch({ type: 'SELECT_ANSWER', payload: { questionId, selected: choiceLabel, isCorrect } });
+
+    // For non-subscribers: after answering question 2 (index 1 or reaching 2 answers),
+    // automatically pop up the subscription paywall after brief delay so student sees feedback.
+    const newAnsweredCount = state.answeredCount + 1;
+    if (!isSubscribed && (index === 1 || newAnsweredCount >= 2)) {
+      setTimeout(() => {
+        onShowPaywall?.();
+      }, 850);
+      return;
+    }
 
     // Auto scroll to next unanswered after 400ms
     setTimeout(() => {
@@ -421,7 +437,9 @@ ${questionText}`;
         </div>
         
         <div className="flex items-center justify-between text-xs font-bold">
-           {isRetake === null ? (
+           {!isSubscribed ? (
+              <span className="px-2.5 py-1 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 rounded-lg flex items-center gap-1">🎁 تجربة مجانية</span>
+           ) : isRetake === null ? (
               <div className="w-20 h-5 bg-slate-100 dark:bg-zinc-700 animate-pulse rounded" />
            ) : isRetake ? (
               <span className="px-2.5 py-1 bg-slate-100 text-slate-600 dark:bg-zinc-700 dark:text-slate-400 rounded-lg">إعادة — لا تؤثر على ترتيبك</span>
@@ -429,13 +447,26 @@ ${questionText}`;
               <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center gap-1">🏆 أول محاولة</span>
            )}
            <div className="flex items-center gap-2">
-             <span className="text-slate-500 dark:text-slate-400">أجبت على {state.answeredCount} من {questions.length}</span>
-             {!isRetake && state.answeredCount > 0 && !allAnswered && (
+             <span className="text-slate-500 dark:text-slate-400">
+               {!isSubscribed 
+                 ? `أجبت على ${Math.min(state.answeredCount, 2)} من 2 تجريبية` 
+                 : `أجبت على ${state.answeredCount} من ${questions.length}`}
+             </span>
+             {!isRetake && state.answeredCount > 0 && !allAnswered && isSubscribed && (
                <button 
                  onClick={() => setShowExitConfirm(true)}
                  className="px-2 py-0.5 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 rounded hover:bg-sky-200 transition-colors"
                >
                  إنهاء واحتساب
+               </button>
+             )}
+             {!isSubscribed && (
+               <button 
+                 onClick={onShowPaywall}
+                 className="px-2.5 py-1 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-lg text-xs flex items-center gap-1 shadow-xs hover:brightness-105 transition-all"
+               >
+                 <Crown className="w-3 h-3" />
+                 فتح الاختبار الكامل
                </button>
              )}
            </div>
@@ -452,12 +483,15 @@ ${questionText}`;
           {localQuestions.map((question, index) => {
             const answerState = state.answers[question.id];
             const isAnswered = !!answerState;
+            const isLockedPreview = !isSubscribed && index >= 2;
 
             return (
               <div 
                 key={question.id} 
                 ref={el => { questionRefs.current[index] = el; }}
-                className="bg-white dark:bg-zinc-800 rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-100 dark:border-zinc-700 relative overflow-hidden"
+                className={`bg-white dark:bg-zinc-800 rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-100 dark:border-zinc-700 relative overflow-hidden transition-all ${
+                  isLockedPreview ? 'opacity-50 select-none' : ''
+                }`}
               >
                 {/* Meta details */}
                 <div className="flex items-center justify-between mb-4">
@@ -493,7 +527,7 @@ ${questionText}`;
                     )}
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleReport(question); }}
-                      className="text-xs font-bold text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2 py-1 flex items-center gap-1 rounded-md transition-colors"
+                      className="text-slate-400 hover:text-red-500 text-xs flex items-center gap-1 p-1 rounded transition-colors"
                       title="الإبلاغ عن خطأ"
                     >
                       <AlertTriangle className="w-3 h-3" />
@@ -529,7 +563,7 @@ ${questionText}`;
                 )}
 
                 {/* Choices */}
-                <div className="space-y-2">
+                <div className={`space-y-2 ${isLockedPreview ? 'pointer-events-none filter blur-[0.6px]' : ''}`}>
                   {question.type === 'true_false' ? (
                     <>
                       <ChoiceRow 
@@ -554,6 +588,33 @@ ${questionText}`;
                     ))
                   )}
                 </div>
+
+                {/* Locked Preview Badge & Unlock CTA */}
+                {isLockedPreview && (
+                  <div className="mt-4 p-3.5 rounded-xl border border-dashed border-sky-300 dark:border-sky-800/80 bg-sky-50/80 dark:bg-sky-950/40 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-right">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-sky-100 dark:bg-sky-900/60 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-xs text-slate-800 dark:text-slate-100">
+                          هذا السؤال وباقي الأسئلة متاحة لمشتركي باقة التفوق
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          افتح الأسئلة الكاملة مع الشروحات الذكية بنقرة واحدة
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onShowPaywall}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white text-xs font-bold rounded-lg shadow-sm shadow-sky-500/20 active:scale-95 transition-all flex items-center gap-1.5 shrink-0"
+                    >
+                      <Crown className="w-3.5 h-3.5 fill-current" />
+                      افتح كل الأسئلة 🚀
+                    </button>
+                  </div>
+                )}
 
                 {/* Explanation */}
                 <AnimatePresence>
@@ -586,7 +647,7 @@ ${questionText}`;
 
       {/* Sticky Footer */}
       <AnimatePresence>
-         {allAnswered && (
+         {allAnswered && isSubscribed && (
             <motion.div 
                initial={{ y: 150 }}
                animate={{ y: 0 }}
@@ -604,6 +665,35 @@ ${questionText}`;
                      className={`w-full py-4 bg-sky-500 text-white font-bold text-lg rounded-xl shadow-md shadow-sky-500/20 transition-transform ${isFinishing ? 'opacity-70 cursor-wait' : 'hover:bg-sky-600 active:scale-95'}`}
                   >
                      {isFinishing ? <Loader2 className="w-6 h-6 animate-spin mx-auto" /> : 'إنهاء وعرض النتيجة'}
+                  </button>
+               </div>
+            </motion.div>
+         )}
+
+         {!isSubscribed && state.answeredCount >= 2 && (
+            <motion.div 
+               initial={{ y: 150 }}
+               animate={{ y: 0 }}
+               exit={{ y: 150 }}
+               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+               className="absolute bottom-0 left-0 w-full bg-white/95 dark:bg-zinc-800/95 backdrop-blur-md border-t border-slate-100 dark:border-zinc-700 p-4 sm:p-5 z-40 rounded-t-3xl shadow-[0_-10px_25px_rgba(0,0,0,0.1)]"
+            >
+               <div className="max-w-2xl mx-auto flex flex-col items-center gap-2.5">
+                  <div className="flex items-center gap-2">
+                     <Sparkles className="w-5 h-5 text-amber-500" />
+                     <span className="font-black text-slate-800 dark:text-slate-100 text-sm sm:text-base">
+                        🎉 أكملت التجربة المجانية بنجاح!
+                     </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+                     اشترك الآن لفتح كافة أسئلة المحاضرة ({Math.max(0, questions.length - 2)} سؤال متبقٍ) مع الشروحات ودخول لوحة الصدارة.
+                  </p>
+                  <button 
+                     onClick={onShowPaywall}
+                     className="w-full py-3.5 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white font-black text-base rounded-xl shadow-lg shadow-orange-500/25 hover:brightness-105 active:scale-98 transition-all flex items-center justify-center gap-2"
+                  >
+                     <Crown className="w-5 h-5 fill-current" />
+                     <span>افتح كافة الأسئلة واشترك الآن</span>
                   </button>
                </div>
             </motion.div>
@@ -652,19 +742,30 @@ ${questionText}`;
 
               <div className="grid grid-cols-5 sm:grid-cols-10 gap-3" dir="ltr">
                 {questions.map((q, idx) => {
+                   const isLockedQ = !isSubscribed && idx >= 2;
                    const ans = state.answers[q.id];
                    let circleClass = "bg-slate-100 dark:bg-zinc-700 text-slate-400";
                    if (ans) {
                      circleClass = ans.isCorrect ? "bg-green-500 text-white shadow-md shadow-green-500/20" : "bg-red-500 text-white shadow-md shadow-red-500/20";
+                   } else if (isLockedQ) {
+                     circleClass = "bg-slate-100/70 dark:bg-zinc-800 text-slate-400 opacity-60 border border-dashed border-slate-300 dark:border-zinc-700";
                    }
                    
                    return (
                      <button
                        key={q.id}
-                       onClick={() => jumpTo(idx)}
-                       className={`w-12 h-12 rounded-xl font-bold flex items-center justify-center transition-all ${circleClass}`}
+                       onClick={() => {
+                         if (isLockedQ) {
+                           setShowDrawer(false);
+                           onShowPaywall?.();
+                         } else {
+                           jumpTo(idx);
+                         }
+                       }}
+                       className={`w-12 h-12 rounded-xl font-bold flex flex-col items-center justify-center transition-all ${circleClass}`}
                      >
-                       {idx + 1}
+                       <span className="text-xs">{idx + 1}</span>
+                       {isLockedQ && <Lock className="w-2.5 h-2.5 text-amber-500" />}
                      </button>
                    );
                 })}

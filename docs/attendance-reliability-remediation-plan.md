@@ -2,6 +2,14 @@
 
 Prepared: 18 October 2026. Audited baseline: `31bf287`.
 
+## Implementation update — 22 October 2026
+
+The following work is now implemented and deployed: native initialization failures are surfaced, the receipt/lease acknowledgement contract retains record identity and voided revisions, doctor commands retain their local order, signed receipt proof version 2 binds scan-time location evidence, and the server confirms eligible signed on-campus scans while atomically enrolling a first device. Missing, unusable, or off-campus location remains `needs_review`; a late receipt still requires an explicit, reasoned doctor approval.
+
+The linked Supabase project has applied migrations through `20261021173355_attendance_auto_confirm_signed_location.sql`; authenticated readiness returned healthy schema, RPC, signing, installation-secret, and campus-boundary checks. The matching Vercel production deployment is `mohadaraty-kxaq7vkbo-sj3js-projects.vercel.app` (aliases include `mohadaraty.vercel.app`). `npm run lint` and `npm run test:attendance` passed on this revision.
+
+The following remain explicitly unverified: physical Android/iOS lifecycle behavior, iOS release compilation on macOS, OS-scheduled background uploading, 1,000-submission real-PostgreSQL load testing, and designated-account production attendance exercises. Do not represent those as completed certification.
+
 This is a remediation plan, not a claim that the implementation or physical-device certification is complete. No application code, production data, or configuration was changed during this audit.
 
 ## 1. Decisions and acceptance contract

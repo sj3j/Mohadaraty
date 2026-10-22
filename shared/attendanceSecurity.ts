@@ -8,9 +8,17 @@ export type AttendanceScanLocationEvidence =
   | ({ state: 'available'; phase: 'scan'; latitude: number; longitude: number } & CampusDistanceResult)
   | { state: 'gps_on_indoor_timeout'; phase: 'scan'; locationStatus: 'gps_on_indoor_timeout' };
 
+export interface AttendanceScanTimeEvidence {
+  capturedAt: string;
+  timeZone: string;
+  utcOffsetMinutes: number;
+  formattedLocalTime?: string;
+}
+
 export interface AttendanceTelemetry {
   capturedOffline?: boolean;
   sameRuntimeElapsedSeconds?: number;
+  scanTime?: AttendanceScanTimeEvidence;
   location?: AttendanceScanLocationEvidence | {
     state: 'not_requested' | 'permission_unavailable' | 'timeout' | 'unavailable';
     phase: 'scan';
@@ -26,6 +34,7 @@ export interface AttendanceAdvisory {
   reportedDistanceMeters?: number;
   accuracyMeters?: number;
   locationStatus?: AttendanceLocationStatus;
+  scanTime?: AttendanceScanTimeEvidence;
 }
 
 export function summarizeAttendanceTelemetry(raw: unknown): AttendanceAdvisory {
@@ -34,6 +43,19 @@ export function summarizeAttendanceTelemetry(raw: unknown): AttendanceAdvisory {
   const hasDuration = typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 604800;
   const result: AttendanceAdvisory = { flags: [], timingConfidence: hasDuration ? 'untrusted_same_runtime' : 'unknown' };
   if (telemetry.capturedOffline === true && hasDuration && duration < 300) result.flags.push('rapid_reconnect');
+
+  if (telemetry.scanTime && typeof telemetry.scanTime === 'object') {
+    const { capturedAt, timeZone, utcOffsetMinutes, formattedLocalTime } = telemetry.scanTime;
+    if (typeof capturedAt === 'string' && typeof timeZone === 'string' && typeof utcOffsetMinutes === 'number' && Number.isFinite(utcOffsetMinutes)) {
+      result.scanTime = {
+        capturedAt,
+        timeZone,
+        utcOffsetMinutes,
+        formattedLocalTime: typeof formattedLocalTime === 'string' ? formattedLocalTime : undefined,
+      };
+    }
+  }
+
   const location = telemetry.location;
   if (!location || location.phase !== 'scan') return result;
   if (location.state === 'gps_on_indoor_timeout') {
@@ -64,9 +86,29 @@ export function attendanceLocationBadge(advisory: AttendanceAdvisory | undefined
   return arabic ? `⚠️ خارج الكلية (يبعد ${kilometres} كم)` : `⚠️ Off campus (${kilometres} km away)`;
 }
 
+export function attendanceScanTimeBadge(advisory: AttendanceAdvisory | undefined, arabic: boolean): string | null {
+  const scanTime = advisory?.scanTime;
+  if (!scanTime) return null;
+  const timeStr = scanTime.formattedLocalTime || (scanTime.capturedAt ? new Date(scanTime.capturedAt).toLocaleTimeString(arabic ? 'ar-IQ' : 'en-GB', { timeZone: scanTime.timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
+  const offsetHours = Math.round(scanTime.utcOffsetMinutes / 60);
+  const sign = offsetHours >= 0 ? '+' : '';
+  const gmtStr = `GMT${sign}${offsetHours}`;
+  const tzName = scanTime.timeZone;
+  if (arabic) {
+    return `⏰ وقت المسح: ${timeStr} (${tzName} ${gmtStr})`;
+  }
+  return `⏰ Scan Time: ${timeStr} (${tzName} ${gmtStr})`;
+}
+
 export function attendanceDeviceMessage(receipt: {
   requestId: string; ownerUid: string; sessionId: string; occurrenceId: string; qrToken: string; installationId: string; localDeviceConflict?: boolean;
+  deviceProofVersion?: number; locationProof?: AttendanceTelemetry['location'];
 }): string {
+  if (receipt.deviceProofVersion === 2) {
+    return JSON.stringify(['MYLECTURE_ATTENDANCE_RECEIPT_V2', receipt.requestId, receipt.ownerUid,
+      receipt.sessionId, receipt.occurrenceId, receipt.qrToken, receipt.installationId,
+      receipt.localDeviceConflict === true, receipt.locationProof || null]);
+  }
   return JSON.stringify([receipt.requestId, receipt.ownerUid, receipt.sessionId, receipt.occurrenceId, receipt.qrToken, receipt.installationId, receipt.localDeviceConflict === true]);
 }
 

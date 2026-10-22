@@ -55,12 +55,18 @@ const mockStore: Record<string, string> = {};
 
 const mockFs = {
   mkdir: async () => {},
-  readFile: async (opts: { path: string }) => {
+  readFile: async (opts: { path: string; encoding?: string }) => {
+    if ((opts.path.endsWith('.json') || opts.path.endsWith('.flag')) && opts.encoding !== 'utf8') {
+      throw new Error('Text files must specify UTF-8 encoding');
+    }
     const data = mockStore[opts.path];
     if (data === undefined) throw new Error('File not found');
     return { data };
   },
-  writeFile: async (opts: { path: string; data: string }) => {
+  writeFile: async (opts: { path: string; data: string; encoding?: string }) => {
+    if ((opts.path.endsWith('.json') || opts.path.endsWith('.flag')) && opts.encoding !== 'utf8') {
+      throw new Error('Text files must specify UTF-8 encoding');
+    }
     mockStore[opts.path] = opts.data;
     return { uri: `file:///data/${opts.path}` };
   },

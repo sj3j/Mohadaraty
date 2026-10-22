@@ -4,6 +4,8 @@
 **Branch:** `main`  
 **Repository Cleanliness:** Clean working tree (All changes committed).
 
+> **Superseded status (22 October 2026):** This checkpoint predates the current attendance completion work and must not be used as a release certificate. The working tree now contains uncommitted attendance changes. Supabase migrations through `20261021173355` are deployed and the Vercel production deployment is healthy, but physical-device lifecycle tests, iOS/macOS verification, and real PostgreSQL load tests remain unverified.
+
 ---
 
 ## 1. Summary of Completed Work

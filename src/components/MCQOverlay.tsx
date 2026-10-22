@@ -24,9 +24,11 @@ interface MCQOverlayProps {
   user: UserProfile;
   lang: Language;
   onClose: () => void;
+  isSubscribed?: boolean;
+  onShowPaywall?: () => void;
 }
 
-export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayProps) {
+export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed = false, onShowPaywall }: MCQOverlayProps) {
   const isRtl = lang === 'ar';
   const { isPendingProgression } = useStageContext();
   const [route, setRoute] = useState<MCQStackRoute>('init_loading');
@@ -192,6 +194,11 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
   };
   
   const handleFinishQuiz = async (answersState: any, correctCount: number, score: number) => {
+    // If user is not subscribed, preview answers shouldn't pollute the leaderboard
+    if (!isSubscribed) {
+      onShowPaywall?.();
+      return;
+    }
     // Process submission
     try {
       let result;
@@ -215,16 +222,35 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
     }
   };
 
+  const handleStartDoctorQuiz = () => {
+    if (isPendingProgression) return;
+    if (!isSubscribed) {
+      onShowPaywall?.();
+      return;
+    }
+    const doctorQuestions = bankQuestions.filter(q => q.tags?.includes('سؤال_الدكتور'));
+    if (doctorQuestions.length === 0) {
+      alert(isRtl ? 'لا توجد أسئلة دكتور مضافة لهذه المحاضرة بعد.' : 'No doctor questions available for this lecture yet.');
+      return;
+    }
+    setBankQuizQuestions(doctorQuestions);
+    setRoute('bank_quiz');
+  };
+
   useEffect(() => {
     const handleQuizSetup = (e: any) => {
       if (isPendingProgression) return;
+      if (!isSubscribed) {
+        onShowPaywall?.();
+        return;
+      }
       setRoute('bank_quiz_setup');
     };
     window.addEventListener('open-bank-quiz', handleQuizSetup);
     return () => {
       window.removeEventListener('open-bank-quiz', handleQuizSetup);
     }
-  }, [isPendingProgression]);
+  }, [isPendingProgression, isSubscribed, onShowPaywall]);
 
   return (
     <div className="fixed inset-0 h-[100dvh] z-[100] bg-white dark:bg-zinc-900 flex flex-col overflow-hidden" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -302,6 +328,9 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             bankQuestions={bankQuestions}
             firstAttemptStatus={firstAttemptStatus}
             onStart={handleStartQuiz}
+            onStartDoctorQuiz={handleStartDoctorQuiz}
+            isSubscribed={isSubscribed}
+            onShowPaywall={onShowPaywall}
             onRequestGeneration={handleRequestGeneration}
             requesting={requesting}
             requestState={requestState}
@@ -322,6 +351,8 @@ export default function MCQOverlay({ lecture, user, lang, onClose }: MCQOverlayP
             onClose={onClose}
             user={user}
             onQuestionsUpdated={setQuestions}
+            isSubscribed={isSubscribed}
+            onShowPaywall={onShowPaywall}
           />
         )}
 

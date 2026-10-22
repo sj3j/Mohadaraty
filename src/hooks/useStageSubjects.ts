@@ -11,14 +11,14 @@ import { useStageContext } from '../contexts/StageContext';
  * callers should fall back to the legacy CATEGORIES picker in that case.
  */
 export function useStageSubjects() {
-  const { effectiveStageId } = useStageContext();
+  const { effectiveStageId, isAuthenticated } = useStageContext();
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (!effectiveStageId) {
+      if (!effectiveStageId || !isAuthenticated) {
         setSubjects([]);
         setIsLoading(false);
         return;
@@ -43,7 +43,7 @@ export function useStageSubjects() {
     };
     load();
     return () => { cancelled = true; };
-  }, [effectiveStageId]);
+  }, [effectiveStageId, isAuthenticated]);
 
   return { subjects, isLoading };
 }

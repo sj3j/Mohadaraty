@@ -20,6 +20,7 @@ import {
 } from '../../services/attendanceService';
 import { attendanceFlagLabel, attendanceLocationBadge } from '../../../shared/attendanceSecurity';
 import { secureRequestId } from '../../lib/secureRandom';
+import AttendanceQrDisplay from '../attendance/AttendanceQrDisplay';
 
 interface ProfessorSimosanViewProps {
   lang: Language;
@@ -237,7 +238,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
             <div><h2 className="font-black">{snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')}</h2><p className="text-xs text-slate-500">{snapshot?.session.occurrence.lectureDate} · {snapshot?.session.occurrence.startTime}</p></div>
             <button onClick={() => projectorRef.current?.requestFullscreen()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'ملء الشاشة' : 'Fullscreen'}><Expand className="h-5 w-5" /></button>
           </div>
-          {snapshot?.session.status !== 'active' && snapshot ? <p>{isRtl ? 'أُغلق عرض الرمز' : 'QR display closed'}</p> : qrImage ? <img src={qrImage} alt="Attendance QR" className="mx-auto aspect-square w-full max-w-xl rounded-2xl bg-white p-3" /> : <Loader2 className="mx-auto my-20 h-8 w-8 animate-spin" />}
+          {snapshot?.session.status !== 'active' && snapshot ? <p>{isRtl ? 'أُغلق عرض الرمز' : 'QR display closed'}</p> : qrToken ? <AttendanceQrDisplay token={qrToken} title={snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')} subtitle={`${snapshot?.session.occurrence.lectureDate || ''} · ${snapshot?.session.occurrence.startTime || ''}`} countLabel={snapshot ? `${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}` : undefined} isRtl={isRtl} unavailableLabel={isRtl ? 'تعذر عرض الرمز' : 'Could not display QR'} /> : <Loader2 className="mx-auto my-20 h-8 w-8 animate-spin" />}
           <p className="mt-3 text-xs font-bold text-slate-500">{isRtl ? 'لا يعتمد الرمز على ساعة جهاز الطالب.' : 'This code does not depend on the student device clock.'}</p>
         </section>
 

@@ -113,12 +113,25 @@ export async function captureAttendanceQr(
       },
       installationId: identity.installationId,
       devicePublicKey: identity.publicKey,
+      deviceProofVersion: 2,
+      locationProof: scanLocation,
       capturedAtClient: new Date(now).toISOString(),
       savedAt: now,
       updatedAt: now,
       status: 'pending',
       attemptCount: 0,
-      telemetry: { capturedOffline: navigator.onLine === false, location: scanLocation },
+      telemetry: {
+        capturedOffline: navigator.onLine === false,
+        location: scanLocation,
+        scanTime: {
+          capturedAt: new Date(now).toISOString(),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Baghdad',
+          utcOffsetMinutes: -new Date(now).getTimezoneOffset(),
+          formattedLocalTime: new Intl.DateTimeFormat('ar-IQ', {
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+          }).format(new Date(now)),
+        },
+      },
     };
     const [normalSignature, conflictSignature] = await Promise.all([
       signer.signReceipt(receipt),
@@ -190,6 +203,8 @@ async function runSync(ownerUid?: string): Promise<void> {
     localDeviceConflict: receipt.localDeviceConflict,
     devicePublicKey: receipt.devicePublicKey,
     deviceSignature: receipt.deviceSignature,
+    deviceProofVersion: receipt.deviceProofVersion,
+    locationProof: receipt.locationProof,
     telemetry: { ...receipt.telemetry, sameRuntimeElapsedSeconds: capturedMonotonic.has(receipt.requestId) ? Math.max(0, (performance.now() - capturedMonotonic.get(receipt.requestId)!) / 1000) : undefined },
   }));
 

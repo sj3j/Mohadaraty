@@ -350,6 +350,14 @@ function occurrenceFromRow(row: any): AttendanceOccurrenceCandidate {
 }
 
 function recordFromRow(row: any): AttendanceRecordView {
+  const advisory = row.advisory ? { ...row.advisory } : undefined;
+  if (advisory && !advisory.scanTime && row.client_reported_at) {
+    advisory.scanTime = {
+      capturedAt: row.client_reported_at,
+      timeZone: 'Asia/Baghdad',
+      utcOffsetMinutes: 180,
+    };
+  }
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -360,7 +368,7 @@ function recordFromRow(row: any): AttendanceRecordView {
     receivedAt: row.received_at,
     decidedAt: row.decided_at,
     reviewFlags: row.review_flags || [],
-    advisory: row.advisory || undefined,
+    advisory,
     revision: Number(row.revision),
   };
 }
@@ -606,6 +614,14 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
             throw new Error('receipt_claim_mismatch');
           }
           const device = verifyAttendanceDevice(receipt);
+          const rawScanTime = receipt.telemetry?.scanTime;
+          const signedTelemetry = {
+            ...(device.proofVersion === 2 ? { location: device.locationProof } : {}),
+            ...(rawScanTime && typeof rawScanTime === 'object' ? { scanTime: rawScanTime } : {}),
+            capturedOffline: receipt.telemetry?.capturedOffline,
+            sameRuntimeElapsedSeconds: receipt.telemetry?.sameRuntimeElapsedSeconds,
+          };
+          const advisory = summarizeAttendanceTelemetry(signedTelemetry);
           const clientReportedAt = typeof receipt.capturedAtClient === 'string'
             && Number.isFinite(new Date(receipt.capturedAtClient).getTime())
             ? receipt.capturedAtClient
@@ -621,6 +637,8 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
               occurrenceId: receipt.occurrenceId,
               installationId: receipt.installationId,
               deviceDigest: device.deviceDigest,
+              deviceProofVersion: device.proofVersion,
+              locationProof: device.locationProof,
               localDeviceConflict: receipt.localDeviceConflict === true,
             })),
             p_session_id: claims.sessionId,
@@ -629,7 +647,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
             p_installation_digest: device.installationDigest,
             p_device_digest: device.deviceDigest,
             p_local_device_conflict: receipt.localDeviceConflict === true,
-            p_advisory: summarizeAttendanceTelemetry(receipt.telemetry),
+            p_advisory: { ...advisory, signedLocationProofVersion: device.proofVersion },
             p_client_reported_at: clientReportedAt,
           });
           if (error) throw error;

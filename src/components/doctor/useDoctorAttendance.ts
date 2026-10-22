@@ -134,14 +134,18 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   const sessions = [...(workspace?.sessions || []).filter(session => session.id !== snapshot?.session.id), ...(snapshot ? [snapshot.session] : [])];
   const students: StudentAttendanceRow[] = (workspace?.roster || []).map(student => {
     const attendance: StudentAttendanceRow['attendance'] = {};
+    const studentRecords: Record<string, AttendanceRecordView> = {};
     for (const session of sessions) {
       const record = records.find(item => item.sessionId === session.id && item.rosterStudentId === student.studentId);
       const queued = commands.find(command => (!command.kind || command.kind === 'manual') && command.sessionId === session.id && command.input.studentId === student.studentId && command.status !== 'synced');
-      if (record) attendance[session.occurrenceId] = record.status === 'confirmed' ? 'present' : 'voided';
+      if (record) {
+        studentRecords[session.occurrenceId] = record;
+        attendance[session.occurrenceId] = record.status === 'confirmed' ? 'present' : 'voided';
+      }
       else if (queued) attendance[session.occurrenceId] = 'pending';
       else if (!workspace?.offline && session.status === 'finalized' && (!session.occurrence.audienceGroups.length || session.occurrence.audienceGroups.includes(student.subgroup))) attendance[session.occurrenceId] = 'absent';
     }
-    return { studentId: student.studentId, name: student.officialName, group: student.subgroup, examCode: student.rosterIdentifier, attendance };
+    return { studentId: student.studentId, name: student.officialName, group: student.subgroup, examCode: student.rosterIdentifier, attendance, records: studentRecords };
   });
   const updateCell = (studentId: string, targetOccurrenceId: string, status: AttendanceCellStatus) => run(async () => {
     const reason = window.prompt(isRtl ? 'سبب التعديل (يسجل في سجل التدقيق):' : 'Reason for correction (audited):')?.trim();

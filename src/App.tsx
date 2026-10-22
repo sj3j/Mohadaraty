@@ -19,6 +19,8 @@ import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks
 import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
+import { resolveLectureLoadDecision, type LectureLoadState } from './lib/lectureLoadState';
+import { recordNativeDiagnostic } from './lib/nativeDiagnostics';
 import { canAttemptStreakActivity, createSingleFlight } from './lib/streakActivity';
 import { resolveProgressionUiState, ProgressionRound } from '../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../shared/masterAdmins';
@@ -150,6 +152,9 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const safeIsAuthReady = useAuthWatchdog(isAuthReady);
   const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [lectureLoadState, setLectureLoadState] = useState<LectureLoadState>('waiting-auth');
+  const [lectureRetry, setLectureRetry] = useState(0);
+  const lectureScopeRef = useRef<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
   const [selectedType, setSelectedType] = useState<LectureType | 'all'>('all');
@@ -881,14 +886,23 @@ export default function App() {
   // Hand the profile to StageContext so it can resolve effectiveStageId for
   // students and representatives, not just the master-admin stage picker.
   useEffect(() => {
-    setActiveUser(user);
-  }, [user, setActiveUser]);
+    setActiveUser(user, Boolean(isAuthReady && authenticatedUid === user?.uid));
+  }, [user, authenticatedUid, isAuthReady, setActiveUser]);
 
   // Lectures Listener
   useEffect(() => {
+    const decision = resolveLectureLoadDecision({
+      profileUid: user?.uid,
+      authenticatedUid,
+      isAuthReady,
+      effectiveStageId,
+      canBrowseLectures: Boolean(user && (user.group || user.role !== 'student')),
+    });
+
     if (!user || (!user.group && user.role === 'student')) {
       setLectures([]);
       setIsLoading(false);
+      setLectureLoadState(decision.state);
       return;
     }
 
@@ -898,9 +912,31 @@ export default function App() {
     if (!effectiveStageId) {
       setLectures([]);
       setIsLoading(false);
+      setLectureLoadState(decision.state);
       return;
     }
 
+    const scope = decision.scope!;
+    if (lectureScopeRef.current !== scope) {
+      lectureScopeRef.current = scope;
+      setLectures([]);
+    }
+
+    // A cached profile may render before Firebase restores its native session.
+    // Do not start an unauthenticated query; restart as soon as the matching
+    // UID is available, even if group and stage did not change.
+    if (!decision.shouldSubscribe) {
+      setIsLoading(true);
+      setLectureLoadState(decision.state);
+      recordNativeDiagnostic({
+        phase: 'lecture-load', outcome: decision.state,
+        authenticated: Boolean(isAuthReady && authenticatedUid === user.uid),
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    setLectureLoadState(decision.state);
     const q = query(collection(db, 'lectures'), where('stageId', '==', effectiveStageId), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const docs = snapshot.docs
@@ -912,14 +948,31 @@ export default function App() {
         .filter(l => !(l as any).archived);
       setLectures(docs);
       setIsLoading(false);
+      // An empty cache is not proof that the server has no lectures. Keep it
+      // distinct from a confirmed empty query so iOS users can retry.
+      setLectureLoadState(snapshot.metadata.fromCache && docs.length === 0 ? 'error' : 'ready');
+      recordNativeDiagnostic({
+        phase: 'lecture-load',
+        outcome: snapshot.metadata.fromCache && docs.length === 0 ? 'cache-empty' : 'snapshot',
+        authenticated: true,
+        fromCache: snapshot.metadata.fromCache,
+        count: docs.length,
+      });
     }, (error) => {
       console.warn("Could not listen to lectures (may lack permissions):", error);
       setIsLoading(false);
+      setLectureLoadState('error');
+      recordNativeDiagnostic({
+        phase: 'lecture-load', outcome: 'listener-error',
+        code: (error as { code?: string }).code || 'unknown', authenticated: true,
+      });
       handleFirestoreError(error, OperationType.LIST, 'lectures');
     });
 
     return () => unsubscribe();
-  }, [user?.group, user?.role, effectiveStageId]);
+  }, [user?.uid, user?.group, user?.role, effectiveStageId, authenticatedUid, isAuthReady, lectureRetry]);
+
+  const retryLectures = useCallback(() => setLectureRetry(value => value + 1), []);
 
   const filteredLectures = React.useMemo(() => {
     let base = lectures.filter(lecture => {
@@ -986,12 +1039,8 @@ export default function App() {
   }, [localBlobUrl]);
 
   const handleOpenMCQ = useCallback((l: Lecture) => {
-    if (hasMCQAccess(user)) {
-      setMcqLecture(l);
-    } else {
-      setShowPaywall(true);
-    }
-  }, [user]);
+    setMcqLecture(l);
+  }, []);
 
   // Google Play and Apple App Store public routes (/privacy, /terms, /delete-account, /support)
   // must be reachable without an account and render completely standalone ahead of auth,
@@ -1155,6 +1204,8 @@ export default function App() {
           setSearchQuery={setSearchQuery}
           onShowUpload={() => setShowUpload(true)}
           isLoading={isLoading} 
+          lectureLoadState={lectureLoadState}
+          onRetryLectures={retryLectures}
           onEdit={handleEditLecture} 
           onOpenMCQ={handleOpenMCQ}
           onOpenReader={handleOpenReader}
@@ -1307,6 +1358,8 @@ export default function App() {
           lecture={mcqLecture} 
           user={user} 
           lang={lang} 
+          isSubscribed={hasMCQAccess(user)}
+          onShowPaywall={() => setShowPaywall(true)}
           onClose={() => setMcqLecture(null)} 
         />
       )}

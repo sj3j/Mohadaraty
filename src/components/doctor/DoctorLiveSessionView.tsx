@@ -6,14 +6,17 @@ import {
 } from 'lucide-react';
 import { DoctorSubject, LectureColumn, StudentAttendanceRow } from './types';
 import type { useDoctorAttendance } from './useDoctorAttendance';
-import { attendanceFlagLabel } from '../../../shared/attendanceSecurity';
+import { attendanceFlagLabel, attendanceLocationBadge, attendanceScanTimeBadge } from '../../../shared/attendanceSecurity';
 import { getLectureDayName, formatLectureTime } from './DoctorExcelTimetableView';
+import AttendanceQrDisplay from '../attendance/AttendanceQrDisplay';
 
 interface DoctorLiveSessionViewProps {
   subject: DoctorSubject;
   lectures: LectureColumn[];
   students: StudentAttendanceRow[];
   isRtl: boolean;
+  selectedLectureId: string;
+  onSelectLecture: (lectureId: string) => void;
   onStudentMarkedPresent: (studentId: string, lectureId: string) => void;
   attendance: ReturnType<typeof useDoctorAttendance>;
 }
@@ -24,9 +27,8 @@ export default function DoctorLiveSessionView({
   students,
   isRtl,
   onStudentMarkedPresent,
-  attendance,
+  attendance, selectedLectureId, onSelectLecture,
 }: DoctorLiveSessionViewProps) {
-  const [selectedLectureId, setSelectedLectureId] = useState('');
   const [expectedHeadcount, setExpectedHeadcount] = useState(60);
   const [searchQuery, setSearchQuery] = useState('');
   const [includeAllStudents, setIncludeAllStudents] = useState(false);
@@ -40,10 +42,7 @@ export default function DoctorLiveSessionView({
   useEffect(() => {
     let live = true;
     setQrDataUrl('');
-    if (currentQr) void QRCode.toDataURL(currentQr, {
-      width: 800, margin: 2, errorCorrectionLevel: 'M',
-      color: { dark: '#042f2e', light: '#ffffff' },
-    }).then(image => { if (live) setQrDataUrl(image); }).catch(() => { if (live) setQrDataUrl(''); });
+    if (currentQr) void QRCode.toDataURL(currentQr, { width: 1200, margin: 4, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } }).then(image => { if (live) setQrDataUrl(image); });
     return () => { live = false; };
   }, [currentQr]);
   const toggleFullscreen = () => {
@@ -110,7 +109,7 @@ export default function DoctorLiveSessionView({
             </div>
             <select
               value={selectedLectureId}
-              onChange={(e) => { setSelectedLectureId(e.target.value); attendance.selectOccurrence(e.target.value); }}
+              onChange={(e) => { onSelectLecture(e.target.value); attendance.selectOccurrence(e.target.value); }}
               className="mt-1 font-black text-slate-900 bg-transparent dark:text-zinc-100 text-sm md:text-base border-none focus:ring-0 p-0 cursor-pointer"
             >
               <option value="" disabled>{isRtl ? 'اختر المحاضرة بتاريخها' : 'Select a dated lecture'}</option>
@@ -206,15 +205,18 @@ export default function DoctorLiveSessionView({
           </div>
 
           {/* QR Code Container */}
-          <div className="relative my-4 flex items-center justify-center p-6 sm:p-8 rounded-3xl bg-white border border-slate-100 shadow-xl max-w-sm sm:max-w-md w-full aspect-square">
-            {qrDataUrl ? (
-              <img 
-                src={qrDataUrl} 
-                alt="Attendance QR" 
-                className="w-full h-full object-contain rounded-2xl"
+          <div className="relative my-4 flex items-center justify-center w-full">
+            {currentQr ? (
+              <AttendanceQrDisplay
+                token={currentQr}
+                title={selectedLecture?.title || ''}
+                subtitle={`${selectedLecture?.date || ''} · ${selectedLecture?.time || ''}`}
+                countLabel={`${confirmedCount} / ${totalCount}`}
+                isRtl={isRtl}
+                unavailableLabel={isRtl ? 'ابدأ الجلسة لعرض الرمز' : 'Start the session to display the QR'}
               />
             ) : (
-              <div className="text-center p-6 space-y-3">
+              <div className="flex flex-col items-center justify-center p-8 rounded-3xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-md max-w-sm sm:max-w-md w-full aspect-square text-center space-y-3">
                 <QrCode className="h-16 w-16 mx-auto text-slate-300 dark:text-zinc-700 animate-pulse" />
                 <p className="text-sm font-bold text-slate-400">
                   {isRtl ? 'ابدأ الجلسة أو جدد الرمز لعرض رمز موقع صالح' : 'Start the session or refresh to show a signed QR'}
@@ -386,11 +388,23 @@ export default function DoctorLiveSessionView({
       </div>
       {activeSession && <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
         <h3 className="font-black">{isRtl ? 'مراجعة الحضور والإيصالات' : 'Attendance and receipt review'}</h3>
-        <p className="text-xs text-slate-500">{isRtl ? 'يعرض وقت استلام الخادم، وليس وقت المسح دون اتصال.' : 'Times show server receipt, not an offline scan time.'}</p>
+        <p className="text-xs text-slate-500">{isRtl ? 'يعرض توقيت المسح بالمنطقة الزمنية لهاتف الطالب ووقت المزامنة مع الخادم.' : 'Shows student phone scan time & timezone alongside server sync time.'}</p>
         <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
           {[...activeSession.records].sort((a, b) => Number(!!a.reviewFlags.length) - Number(!!b.reviewFlags.length) || a.receivedAt.localeCompare(b.receivedAt)).map(record => <div key={record.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-2 text-xs">
             <div><strong>{record.officialName}</strong> · {record.status === 'confirmed' ? (isRtl ? 'مؤكد' : 'Confirmed') : (isRtl ? 'ملغى' : 'Voided')}
-              <p>{new Date(record.receivedAt).toLocaleString(isRtl ? 'ar-IQ' : 'en-GB', { timeZone: 'Asia/Baghdad' })}</p>
+              <p className="text-slate-500">{new Date(record.receivedAt).toLocaleString(isRtl ? 'ar-IQ' : 'en-GB', { timeZone: 'Asia/Baghdad' })}</p>
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                {attendanceLocationBadge(record.advisory, isRtl) && (
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-zinc-300">
+                    {attendanceLocationBadge(record.advisory, isRtl)}
+                  </span>
+                )}
+                {attendanceScanTimeBadge(record.advisory, isRtl) && (
+                  <span className="text-[11px] font-bold text-teal-700 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-2 py-0.5 rounded-lg border border-teal-200/50 dark:border-teal-800/50">
+                    {attendanceScanTimeBadge(record.advisory, isRtl)}
+                  </span>
+                )}
+              </div>
               <p className="text-amber-700">{record.reviewFlags.map(flag => attendanceFlagLabel(flag, isRtl)).join(' · ')}</p>
             </div>
             <button disabled={attendance.busy} className="rounded-lg border px-2 py-1" onClick={() => void attendance.updateCell(record.rosterStudentId, selectedLecture.id, record.status === 'confirmed' ? 'voided' : 'present')}>{record.status === 'confirmed' ? (isRtl ? 'إلغاء' : 'Void') : (isRtl ? 'استعادة' : 'Restore')}</button>
@@ -403,6 +417,18 @@ export default function DoctorLiveSessionView({
                 </span>
               )}
               <strong>{activeSession.roster.find(student => student.studentId === receipt.rosterStudentId)?.officialName || receipt.rosterStudentId}</strong>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              {attendanceLocationBadge(receipt.advisory, isRtl) && (
+                <span className="text-[11px] font-bold text-amber-900">
+                  {attendanceLocationBadge(receipt.advisory, isRtl)}
+                </span>
+              )}
+              {attendanceScanTimeBadge(receipt.advisory, isRtl) && (
+                <span className="text-[11px] font-bold text-teal-800 bg-teal-100/70 px-2 py-0.5 rounded-lg">
+                  {attendanceScanTimeBadge(receipt.advisory, isRtl)}
+                </span>
+              )}
             </div>
             <p className="mt-1">{attendanceFlagLabel(receipt.reason, isRtl)} · {receipt.requestId}</p>
             <div className="mt-2">

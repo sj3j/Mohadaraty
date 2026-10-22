@@ -29,3 +29,7 @@
 -dontwarn com.facebook.FacebookCallback
 -dontwarn com.facebook.login.LoginManager
 -dontwarn com.facebook.login.widget.LoginButton
+
+# Android PDF Viewer (PDFium)
+-keep class com.github.barteksc.pdfviewer.** { *; }
+-keep class com.shockwave.** { *; }

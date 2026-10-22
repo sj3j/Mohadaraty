@@ -19,6 +19,7 @@ before(async () => {
     'supabase/migrations/20261018160000_attendance_late_receipts_key_rotation.sql',
     'supabase/migrations/20261021000000_attendance_review_revisions_key_rotation.sql',
     'supabase/migrations/20261021000001_attendance_review_retry_integrity.sql',
+    'supabase/migrations/20261021173355_attendance_auto_confirm_signed_location.sql',
   ]) {
     try {
       await database.exec(readFileSync(path, 'utf8'));
@@ -44,11 +45,11 @@ function input(sessionIndex: number, student = 'student-a', installation: string
   return { requestId: randomUUID(), sessionIndex, student, installation, enrolledDevice };
 }
 
-async function submit(receipt: ReturnType<typeof input>, flags: string[] = []) {
+async function submit(receipt: ReturnType<typeof input>, flags: string[] = [], locationStatus: 'on_campus' | 'off_campus' | 'unavailable' = 'on_campus') {
   const session = sessions[receipt.sessionIndex];
   const result = await database.query<{ result: any }>('select attendance_submit_receipt($1,$2,$3,$4,$5,$6,$7,$8,null,$9,false,$10) as result', [
     receipt.requestId, receipt.student, receipt.student, createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), session.id,
-    session.challenge, session.tokenHash, receipt.installation, receipt.enrolledDevice, JSON.stringify({ flags, timingConfidence: 'unknown' }),
+    session.challenge, session.tokenHash, receipt.installation, receipt.enrolledDevice, JSON.stringify({ flags, timingConfidence: 'unknown', locationStatus, signedLocationProofVersion: 2 }),
   ]);
   return result.rows[0].result;
 }
@@ -58,11 +59,11 @@ async function review(receiptId: string, enrollDevice: boolean, requestId = rand
   return result.rows[0].result;
 }
 
-test('first device requires supervised enrollment; subsequent lectures work', async () => {
+test('first eligible on-campus scan enrolls the device and confirms attendance atomically', async () => {
   const first = input(0);
-  assert.equal((await submit(first)).reason, 'device_enrollment_required');
-  await assert.rejects(review(first.requestId, false), /device_enrollment_required/);
-  assert.equal((await review(first.requestId, true)).recordStatus, 'confirmed');
+  assert.equal((await submit(first)).resolution, 'confirmed');
+  const enrolled = await database.query<{ device_digest: string }>("select device_digest from attendance_enrolled_devices where roster_student_id='student-a'");
+  assert.equal(enrolled.rows[0].device_digest, device);
   for (const sessionIndex of [1, 2]) assert.equal((await submit(input(sessionIndex))).resolution, 'confirmed');
   const count = await database.query<{ total: number }>("select count(*)::int total from attendance_records where roster_student_id='student-a'");
   assert.equal(count.rows[0].total, 3);
@@ -91,10 +92,14 @@ test('retries return current voided state without restoring attendance', async (
   assert.equal(count.rows[0].total, 1);
 });
 
-test('GPS and reconnect warnings do not block an approved device', async () => {
+test('signed on-campus evidence confirms, while off-campus evidence stays in review and cannot enroll a device', async () => {
   assert.equal((await submit(input(4), ['reported_off_campus', 'rapid_reconnect', 'location_permission_unavailable'])).resolution, 'confirmed');
   const result = await database.query<{ review_flags: string[] }>('select review_flags from attendance_records where session_id=$1', [sessions[4].id]);
   assert.ok(result.rows[0].review_flags.includes('reported_off_campus'));
+  const offCampus = input(4, 'student-b', 'g'.repeat(64), 'h'.repeat(64));
+  assert.equal((await submit(offCampus, [], 'off_campus')).reason, 'reported_off_campus');
+  const enrollment = await database.query("select 1 from attendance_enrolled_devices where roster_student_id='student-b' and device_digest=$1", ['h'.repeat(64)]);
+  assert.equal(enrollment.rows.length, 0);
 });
 
 test('another phone cannot acquire trust just by logging in', async () => {
@@ -134,7 +139,7 @@ test('36-hour deadline is fixed to scheduled end and closure never extends it', 
   assert.equal(lateResult.reason, 'late_arrival');
   assert.equal(lateResult.resolution, 'needs_review');
   await assert.rejects(review(late.requestId, true, randomUUID(), false), /late_receipt_requires_explicit_confirmation/);
-  const lateReviewed = await review(late.requestId, true, randomUUID(), true);
+  const lateReviewed = await review(late.requestId, false, randomUUID(), true);
   assert.equal(lateReviewed.recordStatus, 'confirmed');
   const result = await database.query<{ result: any }>("select attendance_manual_record($1,$2,'doctor','student-b','Independent lecturer evidence',1) result", [randomUUID(), sessions[5].id]);
   assert.equal(result.rows[0].result.record.entry_method, 'manual');
@@ -152,12 +157,12 @@ test('receipt committed at exact deadline is eligible; acknowledged retry after 
     await database.exec('commit');
   } catch (error) { await database.exec('rollback'); throw error; }
   assert.equal((await submit(receipt)).recordStatus, 'confirmed');
-  assert.equal((await submit(input(6, 'student-b'))).reason, 'late_arrival');
+  assert.equal((await submit(input(6, 'student-b'))).reason, 'device_session_conflict');
 });
 
 test('review uses receipt arrival, not professor review time', async () => {
   const timely = input(7, 'student-b', 'f'.repeat(64), 'f'.repeat(64));
-  assert.equal((await submit(timely)).reason, 'device_enrollment_required');
+  assert.equal((await submit(timely, [], 'unavailable')).reason, 'location_unavailable');
   await database.exec('alter table attendance_sessions disable trigger attendance_fixed_deadline');
   await database.query('update attendance_sessions set reconciliation_deadline=(select received_at from attendance_receipts where request_id=$1) where id=$2', [timely.requestId, sessions[7].id]);
   await database.exec('alter table attendance_sessions enable trigger attendance_fixed_deadline');
@@ -233,7 +238,7 @@ test('key rotation preserves enrolled device identity and resolves alias to cano
       "select attendance_commit_key_rotation($1, 'student-a', 'student-a', $2, $3, $4) as result",
       [challengeId, device, newDevice, JSON.stringify({})]
     ),
-    /challenge_already_consumed/
+    /idempotency_conflict/
   );
 
   // Identical retry of completed rotation returns recorded result

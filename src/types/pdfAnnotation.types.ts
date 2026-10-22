@@ -55,15 +55,19 @@ export interface PdfAnnotation {
   lectureId: string;
   /** pdfDoc.fingerprints[0] - detects the PDF being replaced at the same URL. */
   docFingerprint: string;
-  kind: 'highlight' | 'pin';
+  kind: 'highlight' | 'pin' | 'text';
   /** 1-based, matching what the reader shows the student. */
   page: number;
   color: HighlightColor;
-  /** Presence of a note is what earns the highlight a badge. */
+  /** Direct text content for kind === 'text' */
+  text?: string;
+  /** Font size for kind === 'text': 'sm' (14px), 'base' (18px), 'lg' (24px) */
+  fontSize?: 'sm' | 'base' | 'lg';
+  /** Presence of a note is what earns the highlight a badge or mirrors text for search */
   note?: string;
   /** Required when kind === 'highlight'. */
   anchor?: TextAnchor;
-  /** PDF user space. Required when kind === 'pin' (scanned pages with no text layer). */
+  /** PDF user space or normalized coordinates (0.0 - 1.0). Required for 'pin' and 'text'. */
   point?: { x: number; y: number };
   /** Ties the per-page fragments of one selection that crossed a page boundary. */
   groupId?: string;

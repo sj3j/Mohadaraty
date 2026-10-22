@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Lecture, UserProfile } from '../../types';
-import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock, RotateCcw } from 'lucide-react';
+import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, Library, ShieldAlert, FileText, Loader2, Check, Send, Lock, RotateCcw, Crown, Sparkles, GraduationCap } from 'lucide-react';
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
 import { canManageAntiCheat, canManageLectures, canManageMcqSystem } from '../../lib/permissions';
@@ -12,6 +12,9 @@ interface Props {
   bankQuestions?: BankQuestion[];
   firstAttemptStatus: { hasCompleted: boolean; score: number | null };
   onStart: () => void;
+  onStartDoctorQuiz?: () => void;
+  isSubscribed?: boolean;
+  onShowPaywall?: () => void;
   onClose: () => void;
   user: UserProfile | null;
   userId: string;
@@ -25,7 +28,7 @@ interface Props {
   isQuizLocked: boolean;
 }
 
-export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked }: Props) {
+export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions = [], firstAttemptStatus, onStart, onStartDoctorQuiz, isSubscribed = false, onShowPaywall, onClose, user, userId, onRequestGeneration, requesting, requestState, onGenerate, generateError, isQuizLocked }: Props) {
   const isRetake = firstAttemptStatus.hasCompleted;
   const isTranslated = lecture.version === 'translated';
   const [lockedCount, setLockedCount] = useState(0);
@@ -159,13 +162,91 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
               </p>
             </div>
           ) : questionsCount > 0 ? (
-            <button
-              onClick={onStart}
-              className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-2"
-            >
-              {lockedCount > 0 && !isRetake ? 'أكمل اختبار AI' : 'ابدأ اختبار AI'}
-              <ArrowLeft className="w-4 h-4" />
-            </button>
+            <>
+              {!isSubscribed && (
+                <div className="flex items-center justify-between px-3 py-2 bg-sky-50/80 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/40 rounded-xl mb-2 text-xs text-sky-800 dark:text-sky-300 font-bold">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+                    معاينة مجانية متاحة
+                  </span>
+                  <span className="bg-sky-600 text-white text-[10px] px-2 py-0.5 rounded-full font-black">
+                    أول سؤالين مجاناً 🎁
+                  </span>
+                </div>
+              )}
+              <button
+                onClick={onStart}
+                className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors mt-1 shadow-sm"
+              >
+                {lockedCount > 0 && !isRetake ? 'أكمل اختبار AI' : 'ابدأ اختبار AI'}
+                <ArrowLeft className="w-4 h-4 rtl:rotate-0" />
+              </button>
+
+              {/* أسئلة الدكتور choice locked below ابدأ اختبار Ai */}
+              {!isSubscribed ? (
+                <button
+                  type="button"
+                  onClick={onShowPaywall}
+                  className="w-full mt-3 p-3.5 rounded-xl border border-purple-200 dark:border-purple-800/60 bg-gradient-to-r from-purple-50/90 via-indigo-50/40 to-purple-50/90 dark:from-purple-950/25 dark:via-zinc-800/90 dark:to-purple-950/25 hover:border-purple-300 dark:hover:border-purple-700 transition-all flex items-center justify-between text-right group shadow-xs active:scale-[0.99]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                      <GraduationCap className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-sm text-slate-900 dark:text-white">
+                          أسئلة الدكتور
+                        </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-600 text-[10px] font-black text-white shadow-xs">
+                          <Crown className="w-2.5 h-2.5 fill-current" />
+                          باقة التفوق
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {bankQuestions.filter(q => q.tags?.includes('سؤال_الدكتور')).length > 0
+                          ? `${bankQuestions.filter(q => q.tags?.includes('سؤال_الدكتور')).length} سؤال من امتحانات وملاحظات الدكتور`
+                          : 'أسئلة حصرية مأخوذة من شرح وملاحظات الدكتور'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-purple-600 dark:text-purple-400 font-bold text-xs bg-white dark:bg-zinc-800 px-2.5 py-1.5 rounded-lg border border-purple-200/80 dark:border-purple-900/60 shrink-0 shadow-xs">
+                    <Lock className="w-3.5 h-3.5 text-purple-500" />
+                    <span>مغلق</span>
+                  </div>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onStartDoctorQuiz}
+                  disabled={bankQuestions.filter(q => q.tags?.includes('سؤال_الدكتور')).length === 0}
+                  className="w-full mt-3 p-3.5 rounded-xl border border-purple-200 dark:border-purple-800/60 bg-gradient-to-r from-purple-50 via-white to-purple-50 dark:from-purple-950/20 dark:via-zinc-800 dark:to-purple-950/20 hover:border-purple-400 dark:hover:border-purple-600 transition-all flex items-center justify-between text-right group shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                      <GraduationCap className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-sm text-slate-900 dark:text-white">
+                          أسئلة الدكتور
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 text-[10px] font-bold">
+                          {bankQuestions.filter(q => q.tags?.includes('سؤال_الدكتور')).length} سؤال
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        أسئلة حصرية مأخوذة من شرح وملاحظات الدكتور
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-bold text-xs bg-white dark:bg-zinc-800 px-3 py-1.5 rounded-lg border border-purple-200 dark:border-purple-800 group-hover:bg-purple-600 group-hover:text-white transition-colors shrink-0">
+                    <span>ابدأ</span>
+                    <ArrowLeft className="w-3.5 h-3.5 rtl:rotate-0" />
+                  </div>
+                </button>
+              )}
+            </>
           ) : canGenerate ? (
             <>
               <button
@@ -269,6 +350,15 @@ export default function MCQIntroScreen({ lecture, questionsCount, bankQuestions 
                     لا يمكن خوض اختبارات بنك الأسئلة أثناء فترة انتظار تأكيد النتيجة.
                   </p>
                 </div>
+              ) : !isSubscribed ? (
+                <button 
+                  onClick={onShowPaywall}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors relative shadow-sm"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>ابدأ اختبار ببنك الأسئلة</span>
+                  <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium">باقة التفوق</span>
+                </button>
               ) : (
                 <button 
                   onClick={() => window.dispatchEvent(new CustomEvent('open-bank-quiz', { detail: { bankQuestions, lectureId: lecture.id } }))}

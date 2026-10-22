@@ -377,6 +377,9 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - An overlay/drawer that must support pinch-zoom or transform-based gestures
   on a sibling element must stay a DOM sibling, not a child — a child's
   transform becomes the sibling's containing block.
+- A search overlay inside a reader chrome must have a higher z-index than header capsules (use `z-50` over `z-40`) and hide the header pill while open, or touches hit occluded navigation buttons.
+- A floating page counter pill at `bottom-5` collides with a centered bottom annotation dock on mobile — elevate the page pill to `bottom-20` when annotation mode is active.
+- A full-screen `WKWebView` over native `PDFView` on iOS intercepts all gestures despite transparent backgrounds — swizzle `WKWebView.hitTest` to return `nil` outside registered `interactiveZones` so 120Hz pinch/scroll reaches UIKit.
 
 - A cross-platform push plugin returns a DIFFERENT KIND of token per platform:
   `@capacitor/push-notifications` yields an FCM token on Android and a raw APNs

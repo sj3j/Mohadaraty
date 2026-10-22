@@ -7,9 +7,9 @@ function digest(value: string): string {
   return crypto.createHmac('sha256', secret).update(value).digest('hex');
 }
 
-export function verifyAttendanceDevice(receipt: any): { deviceDigest: string | null; installationDigest: string | null } {
+export function verifyAttendanceDevice(receipt: any): { deviceDigest: string | null; installationDigest: string | null; proofVersion: 1 | 2; locationProof?: unknown } {
   const key = receipt.devicePublicKey;
-  if (!key || !receipt.deviceSignature) return { deviceDigest: null, installationDigest: null };
+  if (!key || !receipt.deviceSignature) return { deviceDigest: null, installationDigest: null, proofVersion: 1 };
   if (key.kty !== 'EC' || key.crv !== 'P-256' || typeof key.x !== 'string' || typeof key.y !== 'string'
     || !/^[A-Za-z0-9_-]{43}$/.test(key.x) || !/^[A-Za-z0-9_-]{43}$/.test(key.y)
     || typeof receipt.deviceSignature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(receipt.deviceSignature)) throw new Error('invalid_device_proof');
@@ -22,7 +22,9 @@ export function verifyAttendanceDevice(receipt: any): { deviceDigest: string | n
   }
   if (!verified) throw new Error('invalid_device_proof');
   const fingerprint = JSON.stringify(['P-256', key.x, key.y]);
-  return { deviceDigest: digest(`device:${fingerprint}`), installationDigest: digest(`session:${receipt.sessionId}:${fingerprint}`) };
+  const proofVersion = receipt.deviceProofVersion === 2 ? 2 : 1;
+  if (proofVersion === 2 && (!receipt.locationProof || typeof receipt.locationProof !== 'object')) throw new Error('invalid_location_proof');
+  return { deviceDigest: digest(`device:${fingerprint}`), installationDigest: digest(`session:${receipt.sessionId}:${fingerprint}`), proofVersion, locationProof: receipt.locationProof };
 }
 
 export function deviceFingerprint(key: any): string {

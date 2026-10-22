@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Languages,
   RotateCw,
+  Search,
   Sparkles,
   Volume2,
   VolumeX,
@@ -23,7 +24,7 @@ import {
 import { copyText } from '../../lib/textActions';
 
 export interface PdfTranslationSheetProps {
-  sourceText: string;
+  sourceText?: string;
   isRtl: boolean;
   hasAccess?: boolean;
   onOpenSubscription?: () => void;
@@ -37,13 +38,14 @@ export interface PdfTranslationSheetProps {
  * sibling of the PDF reader viewport to prevent scroll/pinch transform corruption.
  */
 export default function PdfTranslationSheet({
-  sourceText,
+  sourceText = '',
   isRtl,
   hasAccess = true,
   onOpenSubscription,
   onClose,
 }: PdfTranslationSheetProps) {
-  const initialSourceIsArabic = isArabicText(sourceText);
+  const [inputText, setInputText] = useState(sourceText || '');
+  const initialSourceIsArabic = isArabicText(inputText);
   const [targetLang, setTargetLang] = useState<'ar' | 'en'>(
     initialSourceIsArabic ? 'en' : 'ar',
   );
@@ -60,7 +62,14 @@ export default function PdfTranslationSheet({
   const cancelSpeechRef = useRef<(() => void) | null>(null);
 
   const fetchTranslation = useCallback(
-    async (target: 'ar' | 'en') => {
+    async (target: 'ar' | 'en', overrideText?: string) => {
+      const text = (overrideText !== undefined ? overrideText : inputText).trim();
+      if (!text) {
+        setTranslatedText(null);
+        setIsLoading(false);
+        return;
+      }
+
       if (abortRef.current) {
         abortRef.current.abort();
       }
@@ -72,7 +81,7 @@ export default function PdfTranslationSheet({
       setError(null);
 
       try {
-        const result = await translateText(sourceText, target, ac.signal);
+        const result = await translateText(text, target, ac.signal);
         setTranslatedText(result);
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
@@ -86,22 +95,29 @@ export default function PdfTranslationSheet({
         abortRef.current = null;
       }
     },
-    [sourceText, isRtl],
+    [inputText, isRtl],
   );
+
+  // Sync prop changes
+  useEffect(() => {
+    if (sourceText) {
+      setInputText(sourceText);
+    }
+  }, [sourceText]);
 
   // Trigger translation on mount or targetLang change (if user has access)
   useEffect(() => {
-    if (!hasAccess) {
+    if (!hasAccess || !inputText.trim()) {
       setIsLoading(false);
       return;
     }
-    fetchTranslation(targetLang);
+    fetchTranslation(targetLang, inputText);
 
     return () => {
       if (abortRef.current) abortRef.current.abort();
       if (cancelSpeechRef.current) cancelSpeechRef.current();
     };
-  }, [fetchTranslation, targetLang, hasAccess]);
+  }, [targetLang, hasAccess]);
 
   // Clean speech synthesis on unmount
   useEffect(() => {
@@ -144,6 +160,8 @@ export default function PdfTranslationSheet({
   };
 
   const handleSpeakOriginal = () => {
+    const text = inputText.trim();
+    if (!text) return;
     if (speakingOriginal) {
       if (cancelSpeechRef.current) cancelSpeechRef.current();
       setSpeakingOriginal(false);
@@ -153,14 +171,14 @@ export default function PdfTranslationSheet({
     if (cancelSpeechRef.current) cancelSpeechRef.current();
     setSpeaking(false);
 
-    const sourceLang = detectLanguage(sourceText);
-    cancelSpeechRef.current = speakText(sourceText, sourceLang, setSpeakingOriginal);
+    const sourceLang = detectLanguage(text);
+    cancelSpeechRef.current = speakText(text, sourceLang, setSpeakingOriginal);
   };
 
-  const isLongSource = sourceText.length > 140;
+  const isLongSource = inputText.length > 140;
   const displayedSource = isLongSource && !showFullSource
-    ? `${sourceText.slice(0, 140)}...`
-    : sourceText;
+    ? `${inputText.slice(0, 140)}...`
+    : inputText;
 
   return (
     <>
@@ -213,7 +231,7 @@ export default function PdfTranslationSheet({
               {hasAccess ? <Languages className="w-4.5 h-4.5" /> : <Sparkles className="w-4.5 h-4.5 text-amber-500" />}
             </div>
             <div className="flex items-center gap-1.5 min-w-0">
-              <h3 className="font-black text-slate-900 dark:text-stone-100 text-sm truncate">
+              <h3 className="font-black text-slate-900 dark:text-zinc-100 text-sm truncate">
                 {isRtl ? 'الترجمة المباشرة' : 'Translation'}
               </h3>
               {!hasAccess && (
@@ -229,7 +247,7 @@ export default function PdfTranslationSheet({
             <button
               onClick={handleToggleLang}
               title={isRtl ? 'تبديل اتجاه اللغة' : 'Swap language direction'}
-              className="h-8 px-2.5 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-xs font-black text-slate-700 dark:text-stone-200 flex items-center gap-1.5 transition active:scale-95"
+              className="h-8 px-2.5 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-xs font-black text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 transition active:scale-95"
             >
               <span>{targetLang === 'ar' ? 'EN ➔ AR' : 'AR ➔ EN'}</span>
               <ArrowLeftRight className="w-3.5 h-3.5 text-slate-400" />
@@ -276,42 +294,70 @@ export default function PdfTranslationSheet({
 
         {/* Body content */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3.5 overscroll-contain touch-pan-y">
-          {/* Source Text Card */}
-          <div className="rounded-2xl bg-slate-50 dark:bg-zinc-800/60 p-3 border border-slate-100 dark:border-zinc-800/80">
-            <div className="flex items-center justify-between gap-2 mb-1.5">
-              <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500">
-                {isRtl ? 'النص الأصلي المحدّد' : 'Selected Passage'}
-              </span>
+          {/* Medical Term / Passage Input & Search */}
+          <div className="flex items-center gap-2 p-2 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-200 dark:border-zinc-700">
+            <Search className="w-4 h-4 text-slate-400 shrink-0 mx-1" />
+            <input
+              type="text"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && inputText.trim()) {
+                  fetchTranslation(targetLang, inputText.trim());
+                }
+              }}
+              placeholder={isRtl ? 'اكتب أو الصق مصطلحاً طبياً للترجمة...' : 'Type or paste a medical/lecture term...'}
+              className="flex-1 bg-transparent text-xs text-slate-900 dark:text-zinc-100 placeholder-slate-400 outline-none"
+            />
+            {inputText.trim() && (
               <button
-                onClick={handleSpeakOriginal}
-                title={speakingOriginal ? (isRtl ? 'إيقاف' : 'Stop') : (isRtl ? 'استماع للأصل' : 'Listen to original')}
-                className={`text-[11px] font-bold flex items-center gap-1 transition ${
-                  speakingOriginal ? 'text-sky-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
-                }`}
+                type="button"
+                onClick={() => fetchTranslation(targetLang, inputText.trim())}
+                className="px-3 py-1 bg-sky-500 hover:bg-sky-600 active:scale-95 text-white text-xs font-bold rounded-xl transition shadow-sm"
               >
-                {speakingOriginal ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
-                <span>{speakingOriginal ? (isRtl ? 'إيقاف' : 'Stop') : (isRtl ? 'استماع' : 'Listen')}</span>
-              </button>
-            </div>
-
-            <p
-              dir={initialSourceIsArabic ? 'rtl' : 'ltr'}
-              className="text-xs font-medium text-slate-700 dark:text-slate-300 leading-relaxed break-words"
-            >
-              {displayedSource}
-            </p>
-
-            {isLongSource && (
-              <button
-                onClick={() => setShowFullSource((v) => !v)}
-                className="mt-1 text-[11px] font-bold text-sky-500 hover:underline"
-              >
-                {showFullSource
-                  ? (isRtl ? 'عرض أقل' : 'Show less')
-                  : (isRtl ? 'عرض النص كاملاً' : 'Show full text')}
+                {isRtl ? 'ترجم' : 'Translate'}
               </button>
             )}
           </div>
+
+          {/* Source Text Card */}
+          {inputText && (
+            <div className="rounded-2xl bg-slate-50 dark:bg-zinc-800/60 p-3 border border-slate-100 dark:border-zinc-800/80">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500">
+                  {isRtl ? 'النص المطلوب' : 'Source Passage'}
+                </span>
+                <button
+                  onClick={handleSpeakOriginal}
+                  title={speakingOriginal ? (isRtl ? 'إيقاف' : 'Stop') : (isRtl ? 'استماع للأصل' : 'Listen to original')}
+                  className={`text-[11px] font-bold flex items-center gap-1 transition ${
+                    speakingOriginal ? 'text-sky-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                  }`}
+                >
+                  {speakingOriginal ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                  <span>{speakingOriginal ? (isRtl ? 'إيقاف' : 'Stop') : (isRtl ? 'استماع' : 'Listen')}</span>
+                </button>
+              </div>
+
+              <p
+                dir={initialSourceIsArabic ? 'rtl' : 'ltr'}
+                className="text-xs font-medium text-slate-700 dark:text-slate-300 leading-relaxed break-words"
+              >
+                {displayedSource}
+              </p>
+
+              {isLongSource && (
+                <button
+                  onClick={() => setShowFullSource((v) => !v)}
+                  className="mt-1 text-[11px] font-bold text-sky-500 hover:underline"
+                >
+                  {showFullSource
+                    ? (isRtl ? 'عرض أقل' : 'Show less')
+                    : (isRtl ? 'عرض النص كاملاً' : 'Show full text')}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Translated Result Output / Subscription Paywall Gate */}
           <div className="px-1">
@@ -388,7 +434,7 @@ export default function PdfTranslationSheet({
                 ) : (
                   <div
                     dir={targetLang === 'ar' ? 'rtl' : 'ltr'}
-                    className="select-text text-base font-bold text-slate-900 dark:text-stone-100 leading-relaxed break-words"
+                    className="select-text text-base font-bold text-slate-900 dark:text-zinc-100 leading-relaxed break-words"
                   >
                     {translatedText}
                   </div>

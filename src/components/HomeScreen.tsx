@@ -23,6 +23,8 @@ interface HomeScreenProps {
   /** Opens the lecture uploader. Staff only - see canManage(user, 'manageLectures'). */
   onShowUpload: () => void;
   isLoading: boolean;
+  lectureLoadState?: 'loading' | 'ready' | 'error' | 'waiting-auth' | 'missing-stage';
+  onRetryLectures?: () => void;
   onEdit: (l: Lecture) => void;
   onOpenMCQ?: (l: Lecture) => void;
   onOpenReader?: (l: Lecture) => void;
@@ -44,6 +46,8 @@ export default function HomeScreen({
   setSearchQuery,
   onShowUpload,
   isLoading,
+  lectureLoadState,
+  onRetryLectures,
   onEdit,
   onOpenMCQ,
   onOpenReader,
@@ -270,6 +274,8 @@ export default function HomeScreen({
                 user={user}
                 searchQuery={searchQuery}
                 isLoading={isLoading}
+                lectureLoadState={lectureLoadState}
+                onRetryLectures={onRetryLectures}
                 onEdit={onEdit}
                 onOpenMCQ={onOpenMCQ}
                 onOpenReader={onOpenReader}
@@ -292,6 +298,8 @@ export default function HomeScreen({
                     user={user}
                     searchQuery={searchQuery}
                     isLoading={isLoading}
+                    lectureLoadState={lectureLoadState}
+                    onRetryLectures={onRetryLectures}
                     onEdit={onEdit}
                     onOpenMCQ={onOpenMCQ}
                     onOpenReader={onOpenReader}

@@ -74,6 +74,9 @@ export interface LocalAttendanceReceipt {
   localDeviceConflict?: boolean;
   devicePublicKey?: JsonWebKey;
   deviceSignature?: string;
+  /** V2 binds scan-time location evidence to the device signature. */
+  deviceProofVersion?: 1 | 2;
+  locationProof?: AttendanceTelemetry['location'];
   telemetry?: AttendanceTelemetry;
   capturedAtClient?: string;
   savedAt: number;

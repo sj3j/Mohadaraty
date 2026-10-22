@@ -836,7 +836,7 @@ service cloud.firestore {
 
 
     match /stages/{stageId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, delete: if isMasterAdmin();
       // A representative configures groups/subgroups for their own stage only,
       // and may not touch any other field on the stage document.
@@ -847,7 +847,7 @@ service cloud.firestore {
     }
 
     match /subjects/{subjectId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create: if isMasterAdmin() || isRepresentativeFor(request.resource.data.stageId);
       allow update, delete: if isMasterAdmin() || isRepresentativeFor(resource.data.stageId);
     }

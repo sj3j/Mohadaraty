@@ -40,10 +40,14 @@ export async function isNativePlatform(): Promise<boolean> {
  */
 async function getFs() {
   if ((globalThis as any).__mockFs) {
-    return { Filesystem: (globalThis as any).__mockFs, Directory: { Data: 'DATA', Cache: 'CACHE' } };
+    return {
+      Filesystem: (globalThis as any).__mockFs,
+      Directory: { Data: 'DATA', Cache: 'CACHE' },
+      Encoding: { UTF8: 'utf8' },
+    };
   }
-  const { Filesystem, Directory } = await import('@capacitor/filesystem');
-  return { Filesystem, Directory };
+  const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+  return { Filesystem, Directory, Encoding };
 }
 
 /**
@@ -106,10 +110,11 @@ async function ensureDirectoriesExist(): Promise<void> {
  */
 export async function loadNativeManifest(): Promise<Record<string, OfflineLecture>> {
   try {
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const result = await Filesystem.readFile({
       path: MANIFEST_FILE,
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
     const content = typeof result.data === 'string' ? result.data : '';
     return content ? JSON.parse(content) : {};
@@ -122,7 +127,7 @@ export async function loadNativeManifest(): Promise<Record<string, OfflineLectur
  * Atomically saves the offline lectures manifest using a temporary file.
  */
 export async function saveNativeManifest(manifest: Record<string, OfflineLecture>): Promise<void> {
-  const { Filesystem, Directory } = await getFs();
+  const { Filesystem, Directory, Encoding } = await getFs();
   const tempPath = `${MANIFEST_FILE}.tmp`;
   const data = JSON.stringify(manifest, null, 2);
 
@@ -130,6 +135,7 @@ export async function saveNativeManifest(manifest: Record<string, OfflineLecture
     path: tempPath,
     data,
     directory: Directory.Data,
+    encoding: Encoding.UTF8,
     recursive: true,
   });
 
@@ -186,17 +192,21 @@ export async function downloadAndPublishLecture(
   lecture: Omit<OfflineLecture, 'savedAt'>,
   onProgress?: ProgressCallback,
 ): Promise<DownloadResult> {
-  await ensureDirectoriesExist();
-  const { Filesystem, Directory } = await getFs();
-  const { FileTransfer } = await getTransfer();
-
   const timestamp = Date.now();
   const stagingPath = `${STAGING_DIR}/${lecture.id}_${timestamp}.tmp`;
   const publishedPath = `${LECTURES_DIR}/${lecture.id}.pdf`;
 
   let listenerHandle: any = null;
+  let Filesystem: any;
+  let Directory: any;
+  let published = false;
 
   try {
+    // Plugin loading and directory setup can fail on a malformed native build.
+    // Keep that failure on the same recoverable path as a failed transfer.
+    await ensureDirectoriesExist();
+    ({ Filesystem, Directory } = await getFs());
+    const { FileTransfer } = await getTransfer();
     const { uri: destinationUri } = await Filesystem.getUri({
       path: stagingPath,
       directory: Directory.Data,
@@ -233,6 +243,7 @@ export async function downloadAndPublishLecture(
       to: publishedPath,
       directory: Directory.Data,
     });
+    published = true;
 
     // Update manifest
     const manifest = await loadNativeManifest();
@@ -246,13 +257,25 @@ export async function downloadAndPublishLecture(
   } catch (err: any) {
     console.error('[NativePdfRepository] Download failed:', err);
     // Cleanup temporary file
-    try {
-      await Filesystem.deleteFile({
-        path: stagingPath,
-        directory: Directory.Data,
-      });
-    } catch {
-      // Ignore cleanup error
+    if (Filesystem && Directory) {
+      try {
+        await Filesystem.deleteFile({
+          path: stagingPath,
+          directory: Directory.Data,
+        });
+      } catch {
+        // Ignore cleanup error
+      }
+      if (published) {
+        try {
+          await Filesystem.deleteFile({
+            path: publishedPath,
+            directory: Directory.Data,
+          });
+        } catch {
+          // Ignore cleanup error
+        }
+      }
     }
     return { success: false, error: err?.message || 'Download failed' };
   } finally {
@@ -380,10 +403,11 @@ export async function getNativeShareUri(
 
 export async function listNativeAnnotations(lectureId: string): Promise<PdfAnnotation[]> {
   try {
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const result = await Filesystem.readFile({
       path: `${ANNOTATIONS_DIR}/${lectureId}.json`,
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
     const content = typeof result.data === 'string' ? result.data : '';
     return content ? JSON.parse(content) : [];
@@ -395,7 +419,7 @@ export async function listNativeAnnotations(lectureId: string): Promise<PdfAnnot
 export async function saveNativeAnnotation(annotation: PdfAnnotation): Promise<boolean> {
   try {
     await ensureDirectoriesExist();
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const existing = await listNativeAnnotations(annotation.lectureId);
     const index = existing.findIndex(a => a.id === annotation.id);
     const updated = [...existing];
@@ -409,6 +433,7 @@ export async function saveNativeAnnotation(annotation: PdfAnnotation): Promise<b
       path: `${ANNOTATIONS_DIR}/${annotation.lectureId}.json`,
       data: JSON.stringify(updated, null, 2),
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
       recursive: true,
     });
     return true;
@@ -420,7 +445,7 @@ export async function saveNativeAnnotation(annotation: PdfAnnotation): Promise<b
 
 export async function deleteNativeAnnotation(id: string, lectureId: string): Promise<boolean> {
   try {
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const existing = await listNativeAnnotations(lectureId);
     const filtered = existing.filter(a => a.id !== id);
 
@@ -428,6 +453,7 @@ export async function deleteNativeAnnotation(id: string, lectureId: string): Pro
       path: `${ANNOTATIONS_DIR}/${lectureId}.json`,
       data: JSON.stringify(filtered, null, 2),
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
       recursive: true,
     });
     return true;
@@ -457,10 +483,11 @@ export async function deleteAllNativeAnnotations(lectureId: string): Promise<num
 
 export async function getNativeDocMeta(lectureId: string): Promise<DocMeta | null> {
   try {
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const result = await Filesystem.readFile({
       path: `${ANNOTATIONS_DIR}/meta_${lectureId}.json`,
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
     const content = typeof result.data === 'string' ? result.data : '';
     return content ? JSON.parse(content) : null;
@@ -472,7 +499,7 @@ export async function getNativeDocMeta(lectureId: string): Promise<DocMeta | nul
 export async function setNativeDocMeta(lectureId: string, meta: Partial<DocMeta>): Promise<void> {
   try {
     await ensureDirectoriesExist();
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     const prev = await getNativeDocMeta(lectureId);
     const merged = { ...prev, ...meta, updatedAt: Date.now() };
 
@@ -480,6 +507,7 @@ export async function setNativeDocMeta(lectureId: string, meta: Partial<DocMeta>
       path: `${ANNOTATIONS_DIR}/meta_${lectureId}.json`,
       data: JSON.stringify(merged, null, 2),
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
       recursive: true,
     });
   } catch (err) {
@@ -501,7 +529,7 @@ export async function migrateLegacyIndexedDbToNative(): Promise<{
   if (!(await isNativePlatform())) return result;
 
   try {
-    const { Filesystem, Directory } = await getFs();
+    const { Filesystem, Directory, Encoding } = await getFs();
     // Check if migration already ran
     try {
       const check = await Filesystem.stat({
@@ -607,6 +635,7 @@ export async function migrateLegacyIndexedDbToNative(): Promise<{
             path: `${ANNOTATIONS_DIR}/${lectureId}.json`,
             data: JSON.stringify(items, null, 2),
             directory: Directory.Data,
+            encoding: Encoding.UTF8,
             recursive: true,
           });
           result.migratedAnnotations += items.length;
@@ -621,6 +650,7 @@ export async function migrateLegacyIndexedDbToNative(): Promise<{
       path: MIGRATION_FLAG_FILE,
       data: JSON.stringify({ completedAt: Date.now(), result }),
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
   } catch (err) {
     console.error('[Migration] Migration error:', err);
@@ -628,3 +658,75 @@ export async function migrateLegacyIndexedDbToNative(): Promise<{
 
   return result;
 }
+
+/**
+ * Returns the native local file path/URI for a downloaded lecture PDF, or null if not saved.
+ */
+export async function getNativePdfFilePath(lectureId?: string, url?: string): Promise<string | null> {
+  if (!(await isNativePlatform())) return null;
+
+  try {
+    const { Filesystem, Directory } = await getFs();
+    if (lectureId) {
+      const publishedPath = `${LECTURES_DIR}/${lectureId}.pdf`;
+      try {
+        const stat = await Filesystem.stat({ path: publishedPath, directory: Directory.Data });
+        if (stat && (stat.size ?? 0) > 0) {
+          const { uri } = await Filesystem.getUri({ path: publishedPath, directory: Directory.Data });
+          return uri;
+        }
+      } catch {}
+    }
+
+    if (url) {
+      const manifest = await loadNativeManifest();
+      for (const [id, item] of Object.entries(manifest)) {
+        if (item.pdfUrl === url) {
+          const publishedPath = `${LECTURES_DIR}/${id}.pdf`;
+          try {
+            const stat = await Filesystem.stat({ path: publishedPath, directory: Directory.Data });
+            if (stat && (stat.size ?? 0) > 0) {
+              const { uri } = await Filesystem.getUri({ path: publishedPath, directory: Directory.Data });
+              return uri;
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[NativePdfRepository] getNativePdfFilePath failed:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Caches an in-memory PDF buffer into the native cache directory and returns its native file path/URI.
+ */
+export async function cacheNativePdfBytes(lectureId: string, buffer: ArrayBuffer): Promise<string | null> {
+  if (!(await isNativePlatform())) return null;
+
+  try {
+    const { Filesystem, Directory } = await getFs();
+    const cacheFileName = `temp_${lectureId || Date.now()}.pdf`;
+    const base64Data = arrayBufferToBase64(buffer);
+
+    await Filesystem.writeFile({
+      path: cacheFileName,
+      data: base64Data,
+      directory: Directory.Cache,
+      recursive: true,
+    });
+
+    const { uri } = await Filesystem.getUri({
+      path: cacheFileName,
+      directory: Directory.Cache,
+    });
+
+    return uri;
+  } catch (err) {
+    console.error('[NativePdfRepository] cacheNativePdfBytes failed:', err);
+    return null;
+  }
+}
+

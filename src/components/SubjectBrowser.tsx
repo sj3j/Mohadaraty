@@ -15,6 +15,7 @@ import { isNativePlatform, downloadAndPublishLecture, readNativePdfBytes } from 
 import { safeFileName } from '../lib/shareFileName';
 import { forceDownload } from '../lib/utils';
 import { shareMultipleFiles, type ShareFileInput } from '../lib/shareFile';
+import { useStageSubjects } from '../hooks/useStageSubjects';
 
 interface SubjectBrowserProps {
   lectures: Lecture[];
@@ -27,9 +28,32 @@ interface SubjectBrowserProps {
   isLoading?: boolean;
   onRemoveDownload?: (lecture: Lecture) => void;
   onShowPaywall?: () => void;
+  lectureLoadState?: 'loading' | 'ready' | 'error' | 'waiting-auth' | 'missing-stage';
+  onRetryLectures?: () => void;
 }
 
-export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload, onShowPaywall }: SubjectBrowserProps) {
+function LectureLoadFailure({ isRtl, onRetry }: { isRtl: boolean; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center px-4 bg-white dark:bg-zinc-800 rounded-3xl border border-amber-200 dark:border-amber-900/60 border-dashed">
+      <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4">
+        <BookOpen className="w-8 h-8 text-amber-600 dark:text-amber-400" />
+      </div>
+      <h3 className="text-lg font-bold text-slate-900 dark:text-stone-100 mb-1">
+        {isRtl ? 'تعذّر تحديث المحاضرات الآن' : 'Lectures could not be refreshed'}
+      </h3>
+      <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md">
+        {isRtl ? 'تحقق من الاتصال ثم أعد المحاولة. ستبقى الملفات التي نزّلتها متاحة.' : 'Check your connection and try again. Your downloaded files remain available.'}
+      </p>
+      {onRetry && (
+        <button type="button" onClick={onRetry} className="mt-4 px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-xl text-sm font-bold transition-colors">
+          {isRtl ? 'إعادة المحاولة' : 'Retry'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload, onShowPaywall, lectureLoadState = 'ready', onRetryLectures }: SubjectBrowserProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   
@@ -198,32 +222,11 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
   };
 
   const { effectiveStageId, activeCourseId } = useStageContext();
-  const [subjects, setSubjects] = useState<any[]>([]);
-  const [isSubjectsLoading, setIsSubjectsLoading] = useState(true);
+  const { subjects, isLoading: isSubjectsLoading } = useStageSubjects();
 
   useEffect(() => {
     localStorage.setItem('gridColumns', gridColumns.toString());
   }, [gridColumns]);
-
-  useEffect(() => {
-    const fetchSubjects = async () => {
-      setIsSubjectsLoading(true);
-      try {
-        const q = query(collection(db, 'subjects'), where('stageId', '==', effectiveStageId));
-        const snap = await getDocs(q);
-        const fetchedSubjects = snap.docs
-          .map(d => d.data() as any)
-          .filter(sub => sub.isActive !== false)
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        setSubjects(fetchedSubjects);
-      } catch (err) {
-        console.error('Error fetching subjects:', err);
-      } finally {
-        setIsSubjectsLoading(false);
-      }
-    };
-    fetchSubjects();
-  }, [effectiveStageId]);
 
   const fetchCustomTabs = async () => {
     try {
@@ -259,7 +262,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
       );
     }
 
-    if (lectures.length === 0) {
+    if (lectures.length === 0 && lectureLoadState !== 'error' && lectureLoadState !== 'waiting-auth') {
       return (
         <div className="flex flex-col items-center justify-center py-20 text-center px-4">
           <div className="w-20 h-20 bg-slate-100 dark:bg-zinc-800 rounded-full flex items-center justify-center mb-6">
@@ -269,6 +272,10 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           <p className="text-slate-500 dark:text-slate-400 max-w-md">{t.noLecturesDesc}</p>
         </div>
       );
+    }
+
+    if (lectures.length === 0) {
+      return <LectureLoadFailure isRtl={isRtl} onRetry={onRetryLectures} />;
     }
 
     return (
@@ -587,6 +594,8 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           <Loader2 className="w-8 h-8 text-sky-600 dark:text-sky-400 animate-spin" />
           <p className="text-slate-500 dark:text-slate-400 font-medium">{t.loading}</p>
         </div>
+      ) : filteredLectures.length === 0 && (lectureLoadState === 'error' || lectureLoadState === 'waiting-auth') ? (
+        <LectureLoadFailure isRtl={isRtl} onRetry={onRetryLectures} />
       ) : filteredLectures.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center px-4 bg-white dark:bg-zinc-800 rounded-3xl border border-slate-200 dark:border-zinc-700 border-dashed">
           <div className="w-16 h-16 bg-slate-50 dark:bg-zinc-900 rounded-full flex items-center justify-center mb-4">

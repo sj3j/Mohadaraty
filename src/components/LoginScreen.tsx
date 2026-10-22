@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { auth, db } from '../lib/firebase';
-import { signInWithCustomToken, signInWithEmailAndPassword, UserCredential } from 'firebase/auth';
+import { signInWithCustomToken, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { Language, TRANSLATIONS } from '../types';
 import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
-import { apiUrl } from '../lib/apiBase';
+import { signInStudent } from '../services/studentLoginService';
 import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError,
   GoogleTokenBody } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
@@ -43,70 +43,14 @@ const errorMessages: Record<string, string> = {
     'متصفحك لا يدعم هذه الميزة — تحقق من إعدادات Safari',
   'auth/operation-not-allowed':
     'تسجيل الدخول بالبريد الإلكتروني غير مفعّل',
+  'auth/server-error':
+    'تعذّرت خدمة تسجيل الدخول. حاول مرة أخرى لاحقاً.',
+  'auth/server-response-invalid':
+    'وصل رد غير صالح من خدمة تسجيل الدخول. حاول مرة أخرى.',
+  'auth/token-exchange-failed':
+    'تم التحقق من بياناتك، لكن تعذّر إنشاء الجلسة. حاول مرة أخرى.',
   'OFFLINE':
     'لا يوجد اتصال بالإنترنت',
-};
-
-interface SignInOutcome {
-  credential: UserCredential;
-  /**
-   * The students/ document id the server resolved the identifier to. The
-   * caller must use THIS for its whitelist lookups, not what was typed: with
-   * name and code login the typed string is usually not a document id at all.
-   */
-  studentId: string;
-}
-
-const signInWithRetry = async (
-  identifier: string,
-  password: string,
-  retries = 1
-): Promise<SignInOutcome> => {
-  try {
-    // Sent verbatim - no lowercasing. It may be an Arabic name, and the server
-    // is what decides whether this is an email, a login code or a name.
-    // `email` is sent alongside for installed builds still on the old field.
-    const typed = identifier.trim();
-
-    const response = await fetch(apiUrl('/api/login'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier: typed, email: typed, password: password.trim() })
-    });
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      const errorMsg = data.error || 'Invalid credentials';
-      
-      const err = new Error(errorMsg);
-      if (data.code === 'AMBIGUOUS_IDENTIFIER') {
-        (err as any).code = 'AMBIGUOUS_IDENTIFIER';
-      } else if (response.status === 401 || response.status === 404) {
-        (err as any).code = 'auth/invalid-credential';
-      } else if (response.status === 403) {
-        (err as any).code = 'auth/user-disabled';
-      } else {
-        (err as any).code = 'auth/internal-error';
-      }
-      throw err;
-    }
-
-    const { token, studentId } = await response.json();
-    const credential = await signInWithCustomToken(auth, token);
-    return { credential, studentId: (studentId || typed).toLowerCase() };
-  } catch (error: any) {
-    if (
-      retries > 0 &&
-      (error.code === 'auth/network-request-failed' || error.message.includes('network-request-failed') || error.message.includes('Failed to fetch'))
-    ) {
-      await new Promise(r => setTimeout(r, 1500));
-      return signInWithRetry(identifier, password, retries - 1);
-    }
-    if (error.message.includes('Failed to fetch')) {
-      error.code = 'auth/network-request-failed';
-    }
-    throw error;
-  }
 };
 
 const isIOSPrivateMode = async (): Promise<boolean> => {
@@ -380,7 +324,11 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
         await signInWithEmailAndPassword(auth, identifier.trim(), password);
         return;
       }
-      const { credential: result, studentId } = await signInWithRetry(identifier, password);
+      const { credential: result, studentId } = await signInStudent({
+        identifier,
+        password,
+        signInWithToken: token => signInWithCustomToken(auth, token),
+      });
 
       // The id the SERVER resolved, never the typed string: a name or a login
       // code is not a document id, and a roster student's id is synthetic.

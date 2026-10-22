@@ -21,12 +21,14 @@
  */
 
 import type { LocalAttendanceReceipt } from '../../shared/attendance';
+import type { PdfStroke } from '../types/pdfDrawing.types';
 import { secureRequestId } from './secureRandom';
 
 const DB_NAME = 'mylecture-local';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export const STORE_ANNOTATIONS = 'pdfAnnotations';
+export const STORE_DRAWINGS = 'pdfDrawings';
 export const STORE_BLOBS = 'pdfBlobs';
 export const STORE_META = 'meta';
 /**
@@ -84,6 +86,11 @@ export function openDb(): Promise<IDBDatabase> {
         s.createIndex('by_lecture', 'lectureId', { unique: false });
         s.createIndex('by_lecture_page', ['lectureId', 'page'], { unique: false });
         s.createIndex('by_updated', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_DRAWINGS)) {
+        const sd = db.createObjectStore(STORE_DRAWINGS, { keyPath: 'id' });
+        sd.createIndex('by_lecture', 'lectureId', { unique: false });
+        sd.createIndex('by_lecture_page', ['lectureId', 'page'], { unique: false });
       }
       // Downloaded PDF bytes. Keyed by URL to match how useOfflinePDF already
       // thinks about them.
@@ -631,5 +638,49 @@ export async function countAllUserFiles(userId: string): Promise<number> {
     return all.filter(f => f.userId === userId).length;
   }
 }
+
+/**
+ * Retrieves all vector drawing strokes for a specific lecture page.
+ */
+export async function getLecturePageStrokes(lectureId: string, page: number): Promise<PdfStroke[]> {
+  try {
+    const strokes = await dbGetAllByIndex<PdfStroke>(
+      STORE_DRAWINGS,
+      'by_lecture_page',
+      IDBKeyRange.only([lectureId, page]),
+    );
+    return (strokes || []).sort((a, b) => a.createdAt - b.createdAt);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Saves all vector drawing strokes for a specific lecture page atomically.
+ */
+export async function saveLecturePageStrokes(
+  lectureId: string,
+  page: number,
+  strokes: PdfStroke[],
+): Promise<void> {
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_DRAWINGS, 'readwrite');
+    const store = tx.objectStore(STORE_DRAWINGS);
+    const index = store.index('by_lecture_page');
+    const req = index.getAllKeys(IDBKeyRange.only([lectureId, page]));
+
+    req.onsuccess = () => {
+      const keys = req.result;
+      for (const k of keys) store.delete(k);
+      for (const s of strokes) store.put(s);
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 
 

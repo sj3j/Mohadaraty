@@ -68,6 +68,7 @@ interface Props {
    * not annotations.
    */
   searchMatch?: { start: number; end: number } | null;
+  noMargin?: boolean;
 }
 
 interface PaintedRect {
@@ -93,7 +94,7 @@ interface PaintedRect {
  */
 export default React.memo(function PdfPage({
   pdfDoc, pageNumber, scale, rasterScale, rotation, annotations, boxW, boxH,
-  registerPage, onHighlightTap, onOrphan, onPinPoint, flashId, searchMatch,
+  registerPage, onHighlightTap, onOrphan, onPinPoint, flashId, searchMatch, noMargin,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -401,7 +402,7 @@ export default React.memo(function PdfPage({
       dir="ltr"
       data-page={pageNumber}
       onClick={handlePointerDown}
-      className="relative mx-auto my-3 bg-white shadow-lg shadow-black/20 shrink-0"
+      className={`relative ${noMargin ? '' : 'mx-auto my-3 shadow-lg shadow-black/20'} bg-white shrink-0`}
       style={{
         width: boxW || undefined,
         height: boxH || undefined,

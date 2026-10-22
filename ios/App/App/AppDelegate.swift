@@ -54,6 +54,7 @@ public class MyLectureBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(SystemBarsPlugin())
         bridge?.registerPluginInstance(SettingsLauncherPlugin())
         bridge?.registerPluginInstance(AttendanceStoragePlugin())
+        bridge?.registerPluginInstance(MohadaratyPdfPlugin())
     }
 }
 

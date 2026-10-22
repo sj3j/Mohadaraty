@@ -45,41 +45,52 @@ function check(name: string, ok: boolean, detail = '') {
 }
 
 // In-memory mock for @capacitor/filesystem and @capacitor/file-transfer
-const mockFiles: Record<string, string> = {};
+const mockFiles: Record<string, Uint8Array> = {};
+let failNextManifestWrite = false;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return arrayBufferToBase64(bytes.slice().buffer);
+}
 
 const mockFilesystem = {
   mkdir: async () => {},
-  readFile: async (opts: { path: string }) => {
-    const data = mockFiles[opts.path];
-    if (data === undefined) {
+  readFile: async (opts: { path: string; encoding?: string }) => {
+    const bytes = mockFiles[opts.path];
+    if (bytes === undefined) {
       const err = new Error('File does not exist');
       (err as any).code = 'ENOENT';
       throw err;
     }
-    return { data };
+    return { data: opts.encoding === 'utf8' ? new TextDecoder().decode(bytes) : bytesToBase64(bytes) };
   },
-  writeFile: async (opts: { path: string; data: string }) => {
-    mockFiles[opts.path] = opts.data;
+  writeFile: async (opts: { path: string; data: string; encoding?: string }) => {
+    if (failNextManifestWrite && opts.path === 'offline_manifest.json.tmp') {
+      failNextManifestWrite = false;
+      throw new Error('Manifest write failed');
+    }
+    mockFiles[opts.path] = opts.encoding === 'utf8'
+      ? new TextEncoder().encode(opts.data)
+      : new Uint8Array(base64ToArrayBuffer(opts.data));
     return { uri: `file:///data/${opts.path}` };
   },
   stat: async (opts: { path: string }) => {
-    const data = mockFiles[opts.path];
-    if (data === undefined) throw new Error('File not found');
-    return { size: data.length, mtime: Date.now() };
+    const bytes = mockFiles[opts.path];
+    if (bytes === undefined) throw new Error('File not found');
+    return { size: bytes.byteLength, mtime: Date.now() };
   },
   rename: async (opts: { from: string; to: string }) => {
-    const data = mockFiles[opts.from];
-    if (data === undefined) throw new Error('Source file not found');
-    mockFiles[opts.to] = data;
+    const bytes = mockFiles[opts.from];
+    if (bytes === undefined) throw new Error('Source file not found');
+    mockFiles[opts.to] = bytes.slice();
     delete mockFiles[opts.from];
   },
   deleteFile: async (opts: { path: string }) => {
     delete mockFiles[opts.path];
   },
   copy: async (opts: { from: string; to: string }) => {
-    const data = mockFiles[opts.from];
-    if (data === undefined) throw new Error('Source file not found');
-    mockFiles[opts.to] = data;
+    const bytes = mockFiles[opts.from];
+    if (bytes === undefined) throw new Error('Source file not found');
+    mockFiles[opts.to] = bytes.slice();
   },
   getUri: async (opts: { path: string }) => {
     return { uri: `file:///mock/data/${opts.path}` };
@@ -95,7 +106,7 @@ const mockFileTransfer = {
     // Simulate successful native write of binary PDF (as base64 in mock)
     const filename = opts.path.replace('file:///mock/data/', '');
     const samplePdfBytes = new TextEncoder().encode('%PDF-1.4 sample PDF bytes').buffer as ArrayBuffer;
-    mockFiles[filename] = arrayBufferToBase64(samplePdfBytes);
+    mockFiles[filename] = new Uint8Array(samplePdfBytes);
     return { path: opts.path };
   },
 };
@@ -147,6 +158,19 @@ const failRes = await downloadAndPublishLecture(failedLecture);
 check('Failed download reports success = false', failRes.success === false);
 check('Failed download leaves manifest untouched', (await loadNativeManifest())['lec_fail_1'] === undefined);
 check('Failed download cleans up staging file', Object.keys(mockFiles).every(k => !k.includes('lec_fail_1')));
+
+// The PDF must not be reported as downloaded unless the manifest write also
+// succeeds. A retry must work after this partial failure.
+failNextManifestWrite = true;
+const metadataFailLecture: Omit<OfflineLecture, 'savedAt'> = {
+  id: 'lec_manifest_fail_1',
+  title: 'Manifest failure',
+  pdfUrl: 'https://storage.example.com/manifest-failure.pdf',
+};
+const metadataFail = await downloadAndPublishLecture(metadataFailLecture);
+check('Metadata write failure reports success = false', metadataFail.success === false);
+check('Metadata write failure removes published PDF', !mockFiles['lectures/lec_manifest_fail_1.pdf']);
+check('Retry after metadata write failure succeeds', (await downloadAndPublishLecture(metadataFailLecture)).success === true);
 
 // Test successful download
 const successLecture: Omit<OfflineLecture, 'savedAt'> = {
