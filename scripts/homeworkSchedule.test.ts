@@ -508,5 +508,58 @@ console.log('\n--- 9. Theoretical Groups Scheduling & Resolution ---');
   );
 }
 
+console.log('\n--- 12. Exam Format Tag (Written, MCQ, Oral) ---');
+{
+  const hwWritten: Homework = {
+    id: 'hw-written',
+    subject: 'pharmacology',
+    type: 'theoretical',
+    examFormat: 'written',
+    lectures: [],
+    createdAt: new Date(),
+    dueDate: new Date(),
+  };
+
+  const hwMcq: Homework = {
+    id: 'hw-mcq',
+    subject: 'biochemistry',
+    type: 'practical',
+    examFormat: 'mcq',
+    lectures: [],
+    createdAt: new Date(),
+    dueDate: new Date(),
+  };
+
+  const hwOral: Homework = {
+    id: 'hw-oral',
+    subject: 'pharmacognosy',
+    type: 'both',
+    examFormat: 'oral',
+    lectures: [],
+    createdAt: new Date(),
+    dueDate: new Date(),
+  };
+
+  const hwNoFormat: Homework = {
+    id: 'hw-none',
+    subject: 'cosmetics',
+    type: 'theoretical',
+    lectures: [],
+    createdAt: new Date(),
+    dueDate: new Date(),
+  };
+
+  check('Homework accepts written examFormat', hwWritten.examFormat === 'written');
+  check('Homework accepts mcq examFormat', hwMcq.examFormat === 'mcq');
+  check('Homework accepts oral examFormat', hwOral.examFormat === 'oral');
+  check('Homework functions normally without examFormat (optional)', hwNoFormat.examFormat === undefined);
+
+  const cleanWritten = sanitizeForFirestore(hwWritten);
+  check('sanitizeForFirestore preserves valid examFormat', cleanWritten.examFormat === 'written');
+
+  const cleanNone = sanitizeForFirestore({ ...hwNoFormat, examFormat: undefined });
+  check('sanitizeForFirestore omits undefined examFormat', !('examFormat' in cleanNone));
+}
+
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

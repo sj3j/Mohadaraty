@@ -2,6 +2,7 @@ import type { LegacyPaymentMethod } from '../shared/subscriptionTypes';
 
 export type Category = 'pharmacology' | 'pharmacognosy' | 'organic_chemistry' | 'biochemistry' | 'cosmetics';
 export type LectureType = 'theoretical' | 'practical';
+export type ExamFormat = 'written' | 'mcq' | 'oral';
 
 /** Maximum file size permitted for lecture PDF uploads (50MB). */
 export const MAX_LECTURE_FILE_BYTES = 50 * 1024 * 1024;
@@ -431,6 +432,8 @@ export interface Homework {
    *  from shared/ and would otherwise need its own copy of the subject list. */
   subjectNameAr?: string;
   type: LectureType | 'both';
+  /** Optional exam format tag: written, mcq, or oral. */
+  examFormat?: ExamFormat;
   lectures: { label: string; lectureId: string }[];
   note?: string;
   createdAt: any;
@@ -575,6 +578,10 @@ export const TRANSLATIONS = {
     postHomework: 'إضافة واجب',
     editHomework: 'تعديل واجب',
     both: 'عملي ونظري',
+    examFormat: 'نمط الامتحان (اختياري)',
+    formatWritten: 'تحريري',
+    formatMcq: 'MCQ',
+    formatOral: 'شفهي',
     dueDate: 'تاريخ التسليم / الامتحان',
     deadlineModeFixed: 'موعد موحد (للدفعة كاملة)',
     deadlineModeTimetable: 'بحسب موعد المحاضرة (جدول العملي)',
@@ -757,6 +764,10 @@ export const TRANSLATIONS = {
     postHomework: 'Post Homework',
     editHomework: 'Edit Homework',
     both: 'Theo & Prac',
+    examFormat: 'Exam Format (Optional)',
+    formatWritten: 'Written',
+    formatMcq: 'MCQ',
+    formatOral: 'Oral',
     dueDate: 'Due / Exam Date',
     deadlineModeFixed: 'General Deadline (All Groups)',
     deadlineModeTimetable: 'By Group Lecture Time',

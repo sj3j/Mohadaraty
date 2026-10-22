@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDocs, getDoc, doc, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, where, deleteField } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
-import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework } from '../types';
+import { Lecture, Language, TRANSLATIONS, UserProfile, CATEGORIES, Homework, ExamFormat } from '../types';
 import { Loader2, ClipboardCheck, Plus, X, BookOpen, AlertCircle, Calendar, Camera, Image as ImageIcon, Trash2, Check, CalendarDays, Clock, Users, ChevronDown, ChevronUp, Sparkles, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SpotlightTooltip from './SpotlightTooltip';
@@ -79,6 +79,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
   // their stage's homework under a stage-3 subject without noticing.
   const [subject, setSubject] = useState<string>('');
   const [type, setType] = useState<'theoretical' | 'practical' | 'both'>('theoretical');
+  const [examFormat, setExamFormat] = useState<ExamFormat | ''>('');
   const [note, setNote] = useState('');
   const [dueDate, setDueDate] = useState<string>('');
   const [selectedLectures, setSelectedLectures] = useState<{ label: string; lectureId: string }[]>([]);
@@ -452,6 +453,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setEditingId(hw.id);
     setSubject(hw.subject);
     setType(hw.type as 'theoretical' | 'practical' | 'both');
+    setExamFormat(hw.examFormat || '');
     setNote(hw.note || '');
     setSelectedLectures(hw.lectures);
     if (hw.deadlineMode === 'theoretical_groups') {
@@ -501,6 +503,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
     setEditingId(null);
     setSubject('');
     setType('theoretical');
+    setExamFormat('');
     setNote('');
     setDueDate('');
     setSelectedLectures([]);
@@ -541,6 +544,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
         note,
         lectures: selectedLectures,
         stageId: effectiveStageId,
+        ...(examFormat ? { examFormat } : (editingId ? { examFormat: deleteField() } : {})),
         ...(meta ? {
           subjectId: meta.subjectId,
           courseId: meta.courseId,
@@ -719,6 +723,34 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
       completedHomeworks: sortHomeworksByStudentDeadline(completed, user?.group),
     };
   }, [homeworks, user?.completedWeeklyTasks, user?.group]);
+
+  const renderExamFormatBadge = (format?: ExamFormat, size: 'normal' | 'small' = 'normal') => {
+    if (!format) return null;
+    const isSmall = size === 'small';
+    const colorClasses = 
+      format === 'written'
+        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200/80 dark:border-amber-800/60'
+        : format === 'mcq'
+        ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300 border-indigo-200/80 dark:border-indigo-800/60'
+        : 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200/80 dark:border-rose-800/60';
+    
+    const label =
+      format === 'written'
+        ? (t.formatWritten || (isRtl ? 'تحريري' : 'Written'))
+        : format === 'mcq'
+        ? (t.formatMcq || 'MCQ')
+        : (t.formatOral || (isRtl ? 'شفهي' : 'Oral'));
+
+    return (
+      <span
+        className={`inline-flex items-center rounded-full font-bold border ${colorClasses} ${
+          isSmall ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-0.5 sm:px-3 sm:py-1 text-xs'
+        }`}
+      >
+        {label}
+      </span>
+    );
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-4 pt-6" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -936,7 +968,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
             <form onSubmit={handleSubmit} className="bg-white dark:bg-zinc-800 p-6 rounded-3xl border border-slate-200 dark:border-zinc-700 shadow-sm space-y-6">
               <h2 className="text-lg font-bold text-slate-900 dark:text-stone-100">{t.postHomework}</h2>
               
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{t.category}</label>
                   <select
@@ -998,6 +1030,58 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                       }`}
                     >
                       {t.both || (isRtl ? 'عملي ونظري' : 'Both')}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300">
+                      {t.examFormat || (isRtl ? 'نمط الامتحان (اختياري)' : 'Exam Format (Optional)')}
+                    </label>
+                    {examFormat && (
+                      <button
+                        type="button"
+                        onClick={() => setExamFormat('')}
+                        className="text-xs text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-colors font-semibold"
+                      >
+                        {isRtl ? 'إلغاء التحديد' : 'Clear'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2 bg-slate-50 dark:bg-zinc-900 p-1 rounded-xl border border-slate-200 dark:border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setExamFormat(prev => prev === 'written' ? '' : 'written')}
+                      className={`flex-1 py-2 px-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+                        examFormat === 'written'
+                          ? 'bg-amber-500 text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {t.formatWritten || (isRtl ? 'تحريري' : 'Written')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExamFormat(prev => prev === 'mcq' ? '' : 'mcq')}
+                      className={`flex-1 py-2 px-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+                        examFormat === 'mcq'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {t.formatMcq || 'MCQ'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExamFormat(prev => prev === 'oral' ? '' : 'oral')}
+                      className={`flex-1 py-2 px-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+                        examFormat === 'oral'
+                          ? 'bg-rose-500 text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {t.formatOral || (isRtl ? 'شفهي' : 'Oral')}
                     </button>
                   </div>
                 </div>
@@ -1431,7 +1515,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
               >
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                        <h3 className="text-lg font-black text-slate-900 dark:text-stone-100">
                          {resolveSubjectLabel(hw as any, subjects, lang)}
                        </h3>
@@ -1443,6 +1527,7 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                        }`}>
                          {hw.type === 'theoretical' ? t.theoretical : hw.type === 'practical' ? t.practical : (t.both || (isRtl ? 'عملي ونظري' : 'Both'))}
                        </span>
+                       {renderExamFormatBadge(hw.examFormat, 'normal')}
                     </div>
 
                     {/* Deadline and Group Schedule Info */}
@@ -1645,7 +1730,8 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                                <Check className="w-5 h-5 text-emerald-500" />
                                {resolveSubjectLabel(hw as any, subjects, lang)}
                              </h3>
-                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase w-fit ${
+                             <div className="flex flex-wrap items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase w-fit ${
                                hw.type === 'theoretical' 
                                  ? 'bg-[#2196F3]/10 text-[#2196F3] dark:bg-[#2196F3]/20 dark:text-sky-400'
                                  : hw.type === 'practical' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -1653,6 +1739,8 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                              }`}>
                                {hw.type === 'theoretical' ? t.theoretical : hw.type === 'practical' ? t.practical : (t.both || (isRtl ? 'عملي ونظري' : 'Both'))}
                              </span>
+                                {renderExamFormatBadge(hw.examFormat, 'small')}
+                              </div>
                            </div>
                            <button
                              onClick={() => handleToggleComplete(hw.id)}

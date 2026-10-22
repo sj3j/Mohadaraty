@@ -754,13 +754,14 @@ export default function App() {
         profileUid,
         authenticatedUid,
         isAuthReady,
-        isOnline: navigator.onLine,
-        isVisible: document.visibilityState !== 'hidden',
+        safeIsAuthReady,
+        isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+        isVisible: typeof document !== 'undefined' ? document.visibilityState !== 'hidden' : true,
       }) || !firebaseUser || firebaseUser.uid !== profileUid) {
         return;
       }
 
-      void streakActivitySingleFlight.run(async () => {
+      void streakActivitySingleFlight.run(async (signal) => {
         try {
           const token = await firebaseUser.getIdToken();
           const response = await fetch(apiUrl('/api/record-activity'), {
@@ -769,6 +770,7 @@ export default function App() {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${token}`,
             },
+            signal,
           });
           const data = await response.json();
           if (!response.ok || !data.success) {
@@ -778,7 +780,7 @@ export default function App() {
         } catch (e) {
           console.error('Failed to record activity', e);
         }
-      });
+      }, 12000);
     };
 
     const handleVisibilityChange = () => {
@@ -789,11 +791,38 @@ export default function App() {
     window.addEventListener('online', recordActivity);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    let removeNativeListener: (() => void) | null = null;
+    let isCancelled = false;
+
+    // Connect native Capacitor appStateChange for iOS & Android background resume
+    (async () => {
+      try {
+        const { Capacitor } = await import('@capacitor/core');
+        if (!Capacitor?.isNativePlatform?.()) return;
+
+        const { App: CapApp } = await import('@capacitor/app');
+        const handle = await CapApp.addListener('appStateChange', (state) => {
+          if (state.isActive) {
+            recordActivity();
+          }
+        });
+        if (isCancelled) {
+          handle.remove();
+        } else {
+          removeNativeListener = () => { handle.remove(); };
+        }
+      } catch (err) {
+        console.warn('[streak] Native app state listener setup failed', err);
+      }
+    })();
+
     return () => {
+      isCancelled = true;
       window.removeEventListener('online', recordActivity);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (removeNativeListener) removeNativeListener();
     };
-  }, [authenticatedUid, isAuthReady, streakActivitySingleFlight, user?.uid]);
+  }, [authenticatedUid, isAuthReady, safeIsAuthReady, streakActivitySingleFlight, user?.uid]);
 
   useEffect(() => {
     if (!user) return;

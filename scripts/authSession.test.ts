@@ -216,4 +216,51 @@ await testAsync('simultaneous activity triggers share one in-flight request', as
   assert.equal(calls, 2);
 });
 
+test('activity becomes eligible when watchdog safeIsAuthReady is true even if isAuthReady is false', () => {
+  const watchdogRescuedSession = {
+    profileUid: 'student-1',
+    authenticatedUid: 'student-1',
+    isAuthReady: false,
+    safeIsAuthReady: true,
+    isOnline: true,
+    isVisible: true,
+  };
+
+  assert.equal(canAttemptStreakActivity(watchdogRescuedSession), true);
+  assert.equal(canAttemptStreakActivity({ ...watchdogRescuedSession, safeIsAuthReady: false }), false);
+});
+
+await testAsync('singleFlight unblocks and resets on timeout if task stalls', async () => {
+  const singleFlight = createSingleFlight();
+  let calls = 0;
+
+  // Run a task with a very short timeout (50ms) that never settles on its own
+  const stalled = singleFlight.run(async (signal) => {
+    calls++;
+    return new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+  }, 50);
+
+  assert.equal(singleFlight.isRunning(), true);
+
+  try {
+    await stalled;
+  } catch {
+    // Expected abort error
+  }
+
+  // Ensure isRunning() cleared and next call succeeds
+  assert.equal(singleFlight.isRunning(), false);
+
+  const next = await singleFlight.run(async () => {
+    calls++;
+    return 'recovered';
+  }, 50);
+
+  assert.equal(next, 'recovered');
+  assert.equal(calls, 2);
+});
+
 console.log(`\nResults: ${passed} passed, 0 failed\n`);
+

@@ -1088,7 +1088,7 @@ nests under `settings/`.
 | | Simosan | MCQ generation | Timetable OCR |
 | --- | --- | --- | --- |
 | Key | `GEMINI_API_KEY` (paid) | `GEMINI_FREE_TIER_API_KEY` (free) | `GEMINI_FREE_TIER_API_KEY` (primary free) with `GEMINI_API_KEY` fallback |
-| Model | `gemini-3.1-flash-lite` (**paid-only**) | `gemini-3.5-flash` (**free tier: 1,500 RPD, 15 RPM**) | `gemini-3.5-flash` |
+| Model | `gemini-3.1-flash-lite` (**paid-only**) | `gemini-3.6-flash` (**free tier: 1,500 RPD, 15 RPM**) | `gemini-3.6-flash` |
 | Input delivery | Files API, cached in `aiFiles` | inline base64, downloaded server-side | inline base64 image, downloaded server-side |
 | Metering | energy bar + $50 monthly ceiling | none - it is free | free primary; single trial fallback stamps `fallbackUsed: true` |
 
