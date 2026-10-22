@@ -58,6 +58,7 @@ export function hasActivePendingProgression(
   user: ProgressionUser,
   yearLabel: string,
 ): boolean {
+  if (user.isMasterAdmin || user.role === 'master_admin' || user.role === 'doctor' || user.role === 'observer') return false;
   if (!user.pendingStageId || user.pendingProgressionYear !== yearLabel) return false;
   return !(user.progressionYear === yearLabel && user.progressionState === 'completed');
 }
@@ -118,7 +119,8 @@ export function nextProgressionStep(opts: {
   // the master admin is staff-not-student. This used to exclude every non-student
   // role, which quietly froze representatives in their stage for ever: they were
   // never asked whether they passed, so their stageId never advanced.
-  if (user.isMasterAdmin || user.role === 'master_admin') return 'none';
+  // Doctors (lecturers) and observers are not students and have their own separated portal.
+  if (user.isMasterAdmin || user.role === 'master_admin' || user.role === 'doctor' || user.role === 'observer') return 'none';
   if (user.graduated) return 'none';
   // Without a stage there is no "next stage" to compute, and an unknown stage
   // looks identical to the top of the ladder - answering نجحت would silently

@@ -25,18 +25,18 @@ interface Task<T> {
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
   label: string;
+  enqueuedAt: number;
 }
 
-/** Beyond this, the oldest task is dropped. A queue that has grown this long
- *  means Telegram has been unreachable for a long time, and the Firestore
- *  watcher will re-deliver the current state on reconnect anyway - so old
- *  queued edits are stale, not precious. */
+/** Producers wait at this boundary. Accepted work is never evicted. */
 const MAX_DEPTH = 200;
 
 export class SerialQueue {
   private readonly tasks: Task<any>[] = [];
   private running = false;
   private stopped = false;
+  private readonly capacityWaiters: (() => void)[] = [];
+  private idleWaiters: (() => void)[] = [];
 
   constructor(private readonly name: string) {}
 
@@ -44,16 +44,21 @@ export class SerialQueue {
     return this.tasks.length + (this.running ? 1 : 0);
   }
 
-  push<T>(label: string, run: () => Promise<T>): Promise<T> {
+  get oldestPendingAgeMs(): number {
+    return this.tasks.length ? Date.now() - this.tasks[0].enqueuedAt : 0;
+  }
+
+  async push<T>(label: string, run: () => Promise<T>): Promise<T> {
     if (this.stopped) return Promise.reject(new Error(`queue ${this.name} is stopped`));
 
+    while (this.tasks.length >= MAX_DEPTH && !this.stopped) {
+      log.warn('queue.backpressure', { queue: this.name, label, depth: this.depth });
+      await new Promise<void>(resolve => this.capacityWaiters.push(resolve));
+    }
+    if (this.stopped) throw new Error(`queue ${this.name} is stopped`);
+
     return new Promise<T>((resolve, reject) => {
-      if (this.tasks.length >= MAX_DEPTH) {
-        const dropped = this.tasks.shift();
-        log.warn('queue.dropped_oldest', { queue: this.name, dropped: dropped?.label, depth: this.tasks.length });
-        dropped?.reject(new Error('dropped: queue full'));
-      }
-      this.tasks.push({ run, resolve, reject, label });
+      this.tasks.push({ run, resolve, reject, label, enqueuedAt: Date.now() });
       void this.drain();
     });
   }
@@ -62,8 +67,9 @@ export class SerialQueue {
     if (this.running) return;
     this.running = true;
 
-    while (this.tasks.length > 0 && !this.stopped) {
+    while (this.tasks.length > 0) {
       const task = this.tasks.shift()!;
+      this.capacityWaiters.shift()?.();
       try {
         task.resolve(await task.run());
       } catch (error) {
@@ -75,12 +81,17 @@ export class SerialQueue {
     }
 
     this.running = false;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters = [];
   }
 
   /** Lets in-flight work finish; refuses anything new. */
   async stop(): Promise<void> {
     this.stopped = true;
-    while (this.running) await new Promise(resolve => setTimeout(resolve, 25));
+    for (const resolve of this.capacityWaiters.splice(0)) resolve();
+    if (this.running || this.tasks.length) {
+      await new Promise<void>(resolve => this.idleWaiters.push(resolve));
+    }
   }
 }
 
@@ -98,6 +109,9 @@ export function queueFor(chatId: number): SerialQueue {
 
 export const queueDepths = (): Record<string, number> =>
   Object.fromEntries([...queues.entries()].map(([chatId, q]) => [String(chatId), q.depth]));
+
+export const queueOldestPendingAges = (): Record<string, number> =>
+  Object.fromEntries([...queues.entries()].map(([chatId, q]) => [String(chatId), q.oldestPendingAgeMs]));
 
 export async function stopAllQueues(): Promise<void> {
   await Promise.all([...queues.values()].map(q => q.stop()));

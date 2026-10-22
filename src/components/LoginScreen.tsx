@@ -10,6 +10,8 @@ import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError,
 import { carriedProgressionFields } from '../../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../../shared/masterAdmins';
 import { IS_IOS_BUILD } from '../lib/platform';
+import { safeSetStorageItem } from '../hooks/useAuthWatchdog';
+import { clearExplicitLogoutMarker } from '../lib/authPersistence';
 import SignupScreen from './SignupScreen';
 import ClaimAccountScreen from './ClaimAccountScreen';
 import FaqSheet, { FaqTrigger } from './support/FaqSheet';
@@ -239,6 +241,8 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
       sessionStorage.removeItem('googleLoginInProgress');
       // Sign in again using custom token
       const result = await signInWithCustomToken(auth, token);
+      safeSetStorageItem('wasSignedIn', 'true');
+      clearExplicitLogoutMarker();
       
       // The id the SERVER resolved, not the address Google asserted: a roster
       // student who linked a Gmail is keyed by a synthetic id, so looking them
@@ -322,6 +326,8 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
     try {
       if (lecturerLogin) {
         await signInWithEmailAndPassword(auth, identifier.trim(), password);
+        safeSetStorageItem('wasSignedIn', 'true');
+        clearExplicitLogoutMarker();
         return;
       }
       const { credential: result, studentId } = await signInStudent({
@@ -329,6 +335,9 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
         password,
         signInWithToken: token => signInWithCustomToken(auth, token),
       });
+
+      safeSetStorageItem('wasSignedIn', 'true');
+      clearExplicitLogoutMarker();
 
       // The id the SERVER resolved, never the typed string: a name or a login
       // code is not a document id, and a roster student's id is synthetic.

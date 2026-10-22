@@ -58,6 +58,15 @@ export async function getMapping(chatId: number, messageId: number): Promise<Tel
   return snap.exists ? (snap.data() as TelegramMapping) : null;
 }
 
+/** Finds an existing canonical mapping for any member of a replayed/growing album. */
+export async function getAnyMapping(chatId: number, messageIds: number[]): Promise<TelegramMapping | null> {
+  for (const messageId of messageIds) {
+    const mapping = await getMapping(chatId, messageId);
+    if (mapping) return mapping;
+  }
+  return null;
+}
+
 export function mappingRef(chatId: number, messageId: number) {
   return ref(chatId, messageId);
 }

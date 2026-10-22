@@ -38,6 +38,16 @@ await build({
   outfile: resolve(stage, 'index.js'),
 });
 
+await build({
+  entryPoints: [resolve(root, 'bot/src/recovery.ts')],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node22',
+  packages: 'external',
+  outfile: resolve(stage, 'recovery.js'),
+});
+
 const botPkg = JSON.parse(
   await import('node:fs/promises').then(fs => fs.readFile(resolve(root, 'bot/package.json'), 'utf8')),
 );
@@ -48,7 +58,7 @@ writeFileSync(resolve(stage, 'package.json'), JSON.stringify({
   private: true,
   description: botPkg.description,
   main: 'index.js',
-  scripts: { start: 'node index.js' },
+  scripts: { start: 'node index.js', recovery: 'node recovery.js' },
   // Copied from bot/package.json so the two cannot drift.
   dependencies: botPkg.dependencies,
   engines: { node: '>=20' },
@@ -74,5 +84,5 @@ if (process.platform === 'win32') {
 }
 
 console.log(`\nPackaged: ${zip}`);
-console.log('Upload its THREE files to the server root, set the startup command');
+console.log('Upload its FOUR files to the server root, set the startup command');
 console.log('to `node index.js`, and make sure the panel runs `npm install`.');

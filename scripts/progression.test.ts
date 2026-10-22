@@ -159,6 +159,10 @@ check('the master admin is never asked',
   step('first_round', { role: 'admin', stageId: 'stage_3', isMasterAdmin: true }) === 'none');
 check('a master_admin role is never asked',
   step('first_round', { role: 'master_admin', stageId: 'stage_3' }) === 'none');
+check('a doctor is never asked',
+  step('first_round', { role: 'doctor', stageId: 'stage_3' }) === 'none');
+check('an observer is never asked',
+  step('first_round', { role: 'observer', stageId: 'stage_3' }) === 'none');
 check('a graduated student is never asked',
   step('resit_round', { role: 'student', stageId: 'stage_5', graduated: true }) === 'none');
 check('a student already done this year is not re-asked',

@@ -13,6 +13,7 @@ import BlockedUsersSettings from './BlockedUsersSettings';
 import AccountSecuritySettings from './AccountSecuritySettings';
 import StageSettings from './StageSettings';
 import DoctorAccountProvisionModal from '../doctor/DoctorAccountProvisionModal';
+import AlternativeAiKeysModal from './AlternativeAiKeysModal';
 import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
@@ -71,6 +72,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   const isRtl = lang === 'ar';
   const [page, setPage] = useState<Page>('root');
   const [doctorAccountsOpen, setDoctorAccountsOpen] = useState(false);
+  const [aiKeysOpen, setAiKeysOpen] = useState(false);
   const { stages, currentAppStage } = useStageContext();
 
   const isSubscriber = hasLiveSubscription(user);
@@ -557,6 +559,17 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                     />
                   )}
                   {doctorAccountsOpen && isMasterAdmin(user) && <DoctorAccountProvisionModal stages={stages} isRtl={isRtl} onClose={() => setDoctorAccountsOpen(false)} />}
+                  {!IS_STORE_BUILD && isMasterAdmin(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.aiKeys}
+                      label={isRtl ? 'مفاتيح الذكاء الاصطناعي البديلة' : 'Alternative Free AI Keys'}
+                      sublabel={isRtl ? 'إدارة مفاتيح Gemini المجانية المقدمة من المستخدمين' : 'Manage donated free Gemini keys pool'}
+                      onClick={() => setAiKeysOpen(true)}
+                    />
+                  )}
+                  {aiKeysOpen && !IS_STORE_BUILD && isMasterAdmin(user) && (
+                    <AlternativeAiKeysModal isRtl={isRtl} onClose={() => setAiKeysOpen(false)} />
+                  )}
                   {canViewAdminLogs(user) && (
                     <SettingsRow
                       isRtl={isRtl} icon={SETTINGS_ICONS.logs}

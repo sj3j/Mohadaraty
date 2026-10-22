@@ -26,6 +26,7 @@ import {
 import { subjectSlugOf, denormalizedSubjectName } from './subjectSlug.js';
 import { MAX_PDF_BYTES } from './simosan.js';
 import { hasStaffCapability, hasStageCapability } from './staffCapabilities.js';
+import { getActiveAlternativeKeys, markAlternativeKeyStatus } from './alternativeKeysApi.js';
 
 export interface McqDeps {
   admin: any;
@@ -104,8 +105,12 @@ export function createMcqHandlers(deps: McqDeps) {
         return res.status(503).json({ error: 'paid_api_not_configured' });
       }
     } else if (!ai) {
-      await raiseAlert('not_configured', { lectureId });
-      return res.status(503).json({ error: 'not_configured' });
+      const altKeys = await getActiveAlternativeKeys(admin);
+      if (!altKeys.length) {
+        await raiseAlert('not_configured', { lectureId });
+        return res.status(503).json({ error: 'not_configured' });
+      }
+
     }
     const activeAi = usePaidKey ? paidAi : ai;
 
@@ -183,53 +188,100 @@ export function createMcqHandlers(deps: McqDeps) {
       const buf = Buffer.from(await pdfRes.arrayBuffer());
       if (buf.length > MAX_PDF_BYTES) throw new Error('pdf_too_large');
 
-      let uploadedFile: any = null;
-      let pdfPart: any;
-
-      if (buf.length <= MAX_INLINE_PDF_BYTES) {
-        pdfPart = { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } };
-      } else {
-        const uploaded = await activeAi.files.upload({
-          file: new Blob([buf], { type: 'application/pdf' }),
-          config: { mimeType: 'application/pdf', displayName: `lecture-${lectureId}` },
-        });
-        uploadedFile = uploaded;
-
-        let file = uploaded;
-        const deadline = Date.now() + 30_000;
-        while (file.state === 'PROCESSING' && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 700));
-          file = await activeAi.files.get({ name: file.name as string });
-        }
-        if (file.state !== 'ACTIVE' || !file.uri) {
-          throw new Error('pdf_too_large');
-        }
-        uploadedFile = file;
-        pdfPart = { fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } };
-      }
-
       const startTime = Date.now();
       let response: any;
-      try {
-        response = await generateWithRetry(async () => {
-          return await activeAi.models.generateContent({
-            model: MCQ_MODEL,
-            contents: [{
-              role: 'user',
-              parts: [
-                pdfPart,
-                { text: MCQ_SYSTEM_PROMPT },
-              ],
-            }],
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: MCQ_RESPONSE_SCHEMA as any,
-            },
+      let usedAlternativeKeyId: string | null = null;
+
+      const runWithGenAi = async (targetAi: any) => {
+        let uploadedFile: any = null;
+        let pdfPart: any;
+
+        if (buf.length <= MAX_INLINE_PDF_BYTES) {
+          pdfPart = { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } };
+        } else {
+          const uploaded = await targetAi.files.upload({
+            file: new Blob([buf], { type: 'application/pdf' }),
+            config: { mimeType: 'application/pdf', displayName: `lecture-${lectureId}` },
           });
-        }, startTime);
-      } finally {
-        if (uploadedFile?.name) {
-          activeAi.files.delete({ name: uploadedFile.name }).catch(() => {});
+          uploadedFile = uploaded;
+
+          let file = uploaded;
+          const deadline = Date.now() + 30_000;
+          while (file.state === 'PROCESSING' && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 700));
+            file = await targetAi.files.get({ name: file.name as string });
+          }
+          if (file.state !== 'ACTIVE' || !file.uri) {
+            throw new Error('pdf_too_large');
+          }
+          uploadedFile = file;
+          pdfPart = { fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } };
+        }
+
+        try {
+          return await generateWithRetry(async () => {
+            return await targetAi.models.generateContent({
+              model: MCQ_MODEL,
+              contents: [{
+                role: 'user',
+                parts: [
+                  pdfPart,
+                  { text: MCQ_SYSTEM_PROMPT },
+                ],
+              }],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: MCQ_RESPONSE_SCHEMA as any,
+              },
+            });
+          }, startTime);
+        } finally {
+          if (uploadedFile?.name) {
+            targetAi.files.delete({ name: uploadedFile.name }).catch(() => {});
+          }
+        }
+      };
+
+      if (usePaidKey) {
+        response = await runWithGenAi(paidAi);
+      } else {
+        let success = false;
+        let primaryErr: any = null;
+
+        if (ai) {
+          try {
+            response = await runWithGenAi(ai);
+            success = true;
+          } catch (err: any) {
+            primaryErr = err;
+          }
+        }
+
+        if (!success) {
+          const reason = primaryErr ? classifyFailure(primaryErr) : 'not_configured';
+          if (reason === 'free_tier_limit' || reason === 'not_configured') {
+            const altKeys = await getActiveAlternativeKeys(admin);
+            for (const altKey of altKeys) {
+              try {
+                const altAi = new GoogleGenAI({ apiKey: altKey.key });
+                response = await runWithGenAi(altAi);
+                usedAlternativeKeyId = altKey.id;
+                success = true;
+                break;
+              } catch (altErr: any) {
+                const altReason = classifyFailure(altErr);
+                if (altReason === 'free_tier_limit') {
+                  await markAlternativeKeyStatus(admin, altKey.id, 'quota_exhausted');
+                } else if (altReason === 'not_configured') {
+                  await markAlternativeKeyStatus(admin, altKey.id, 'invalid');
+                }
+              }
+            }
+          }
+
+          if (!success) {
+            throw primaryErr || new Error('not_configured');
+          }
         }
       }
 
@@ -253,8 +305,9 @@ export function createMcqHandlers(deps: McqDeps) {
         stageId: lecture.stageId || '',
         questions,
         generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        generatedBy: usePaidKey ? 'gemini-paid' : 'gemini-ai',
+        generatedBy: usePaidKey ? 'gemini-paid' : (usedAlternativeKeyId ? 'gemini-alt-free' : 'gemini-ai'),
         paidFallbackUsed: usePaidKey === true,
+        alternativeKeyId: usedAlternativeKeyId || null,
         paidTriggeredBy: usePaidKey ? ((req.user as any)?.uid || null) : null,
         paidTriggeredByEmail: usePaidKey ? ((req.user as any)?.email || null) : null,
         status: 'ready',

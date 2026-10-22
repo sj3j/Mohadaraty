@@ -25,9 +25,18 @@ import {
 
 let current: TelegramConfig = DEFAULT_TELEGRAM_CONFIG;
 let configError: string | null = null;
+let configReady = false;
+let resolveInitial!: () => void;
+let rejectInitial!: (error: Error) => void;
+const initialConfig = new Promise<void>((resolve, reject) => {
+  resolveInitial = resolve;
+  rejectInitial = reject;
+});
 
 export const getConfig = (): TelegramConfig => current;
 export const getConfigError = (): string | null => configError;
+export const isConfigReady = (): boolean => configReady;
+export const waitForConfigReady = (): Promise<void> => initialConfig;
 
 export type ConfigListener = (config: TelegramConfig, previous: TelegramConfig) => void;
 
@@ -73,6 +82,7 @@ export function watchConfig(): () => void {
       if (problems.length > 0) {
         configError = problems.join(', ');
         log.error('config.rejected', { problems, keeping: Object.keys(current.channels) });
+        if (!configReady) rejectInitial(new Error(`initial Telegram config rejected: ${configError}`));
         // Deliberately keeps `current` untouched.
         return;
       }
@@ -81,6 +91,10 @@ export function watchConfig(): () => void {
       current = incoming;
       configError = null;
       rebuildAllowlist(incoming);
+      if (!configReady) {
+        configReady = true;
+        resolveInitial();
+      }
 
       log.info('config.applied', {
         enabled: incoming.enabled,
@@ -100,6 +114,7 @@ export function watchConfig(): () => void {
     error => {
       configError = String(error);
       log.error('config.listener_error', { err: String(error) });
+      if (!configReady) rejectInitial(new Error(`initial Telegram config unavailable: ${configError}`));
     },
   );
 }

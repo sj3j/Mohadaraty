@@ -103,7 +103,7 @@ export function resolveUserDocument(input: {
 }): SessionBootstrapResult {
   if (input.exists || input.rosterUser) return preserve('account-verified');
 
-  if (input.fromCache || !input.isOnline) {
+  if (input.fromCache || !input.isOnline || input.cachedProfileAvailable) {
     return preserve('cached-user-document-miss', input.cachedProfileAvailable);
   }
 

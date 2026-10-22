@@ -71,6 +71,7 @@ import { checkAttendanceReadiness } from "../shared/attendanceConfig.js";
 import { createStreakHandlers } from "../shared/streakApi.js";
 import { createMcqHandlers } from "../shared/mcqApi.js";
 import { createTimetableHandlers } from "../shared/timetableApi.js";
+import { createAlternativeKeysHandlers } from "../shared/alternativeKeysApi.js";
 import { createIapHandlers } from "../shared/iapApi.js";
 import { createSupportHandlers } from "../shared/supportApi.js";
 import { hasStaffCapability } from "../shared/staffCapabilities.js";
@@ -2207,6 +2208,18 @@ app.post("/api/mcq/modify", verifyAuth, verifyAdmin, mcq.modify);
  * moderator and support alike. Mirrored in server.ts. */
 const timetable = createTimetableHandlers({ admin });
 app.post("/api/timetable/parse", verifyAuth, verifyAdmin, timetable.parse);
+
+/* Alternative Free Gemini API Keys. Master Admin only, web version only. Mirrored in server.ts. */
+const altKeys = createAlternativeKeysHandlers({ admin });
+const requireMasterAdminOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const staff = callerStage(req);
+  if (!staff.isMasterAdmin) return res.status(403).json({ error: 'forbidden_master_only' });
+  next();
+};
+app.get("/api/admin/ai-keys/list", verifyAuth, verifyAdmin, requireMasterAdminOnly, altKeys.listKeys);
+app.post("/api/admin/ai-keys/add", verifyAuth, verifyAdmin, requireMasterAdminOnly, altKeys.addKey);
+app.delete("/api/admin/ai-keys/:id", verifyAuth, verifyAdmin, requireMasterAdminOnly, altKeys.deleteKey);
+app.post("/api/admin/ai-keys/test/:id", verifyAuth, verifyAdmin, requireMasterAdminOnly, altKeys.testKey);
 
 /* Apple In-App Purchase. Handlers live in shared/iapApi.ts and are mounted
  * identically in server.ts - keep these four lines in step across both files.

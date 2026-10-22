@@ -206,13 +206,13 @@ export const telegram = {
     call<TgMessage[]>('sendMediaGroup', params),
 
   sendByUrl: (
-    method: 'sendPhoto' | 'sendVideo' | 'sendDocument',
+    method: 'sendPhoto' | 'sendVideo' | 'sendDocument' | 'sendAudio',
     params: Record<string, unknown>,
   ) => call<TgMessage>(method, params),
 
   /** Streams bytes we hold to Telegram, for files it cannot fetch by URL. */
   sendMultipart: (
-    method: 'sendPhoto' | 'sendVideo' | 'sendDocument' | 'sendMediaGroup',
+    method: 'sendPhoto' | 'sendVideo' | 'sendDocument' | 'sendAudio' | 'sendMediaGroup',
     form: FormData,
   ) => callMultipart<TgMessage | TgMessage[]>(method, form),
 };

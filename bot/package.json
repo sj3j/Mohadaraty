@@ -9,7 +9,9 @@
     "start": "node bot.cjs",
     "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node22 --packages=external --sourcemap --outfile=bot.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx test/entities.test.ts && tsx test/privateKey.test.ts && tsx test/serviceAccount.test.ts && tsx test/net.test.ts && tsx test/botToken.test.ts"
+    "recovery": "tsx src/recovery.ts",
+    "test": "tsx test/entities.test.ts && tsx test/privateKey.test.ts && tsx test/serviceAccount.test.ts && tsx test/net.test.ts && tsx test/botToken.test.ts && tsx test/reliability.test.ts",
+    "test:integration": "tsx test/inbox.integration.test.ts"
   },
   "dependencies": {
     "dotenv": "^17.2.3",

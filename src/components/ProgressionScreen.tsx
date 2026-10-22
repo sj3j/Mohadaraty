@@ -43,6 +43,10 @@ export default function ProgressionScreen({
   onUnavailable,
   onDone,
 }: ProgressionScreenProps) {
+  if (user.role === 'doctor' || user.role === 'observer') {
+    return null;
+  }
+
   const isRtl = lang === 'ar';
   const { stages } = useStageContext();
 

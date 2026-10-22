@@ -5,7 +5,7 @@ import { explainUnauthorized } from './botToken.ts';
 import { TelegramApiError } from './telegram/types.ts';
 import { telegram, checkChannelAccess, TELEGRAM_HOST } from './telegram/api.ts';
 import { acquireLease, startLeaseRenewal, stopLeaseRenewal, releaseLease } from './state.ts';
-import { watchConfig, getConfig, onConfigChange, publishActiveStages } from './config.ts';
+import { watchConfig, waitForConfigReady, getConfig, onConfigChange, publishActiveStages } from './config.ts';
 import { startPolling, stopPolling } from './poll.ts';
 import { startWatchers } from './watcher.ts';
 import { startHealthServer, startWatchdog, stopHealthServer } from './health.ts';
@@ -24,6 +24,25 @@ import { MIRROR_STAGE_IDS } from '../../shared/telegramMirror.ts';
 
 let botUserId = 0;
 let shuttingDown = false;
+
+/** Waits safely through overlap, IAM repair, and transient Firestore outages. */
+async function acquireLeaseUntilAvailable(): Promise<void> {
+  let attempt = 0;
+  while (!shuttingDown) {
+    const result = await acquireLease();
+    if (result.status === 'LEASE_ACQUIRED') return;
+
+    attempt += 1;
+    const waitMs = result.status === 'LEASE_HELD_BY_OTHER'
+      ? Math.min(60_000, Math.max(2_000, result.remainingMs + 1_000))
+      : result.status === 'LEASE_PERMISSION_DENIED'
+        ? 60_000
+        : Math.min(60_000, 2 ** Math.min(attempt, 6) * 1_000);
+    log.warn('boot.waiting_for_lease', { status: result.status, attempt, waitMs });
+    await new Promise(resolve => setTimeout(resolve, waitMs + Math.random() * 0.2 * waitMs));
+  }
+  throw new Error('shutdown while waiting for Firestore lease');
+}
 
 /**
  * Verifies the bot can work in every configured channel.
@@ -140,18 +159,15 @@ async function main(): Promise<void> {
     await telegram.deleteWebhook();
   }
 
-  if (!await acquireLease()) {
-    // Exiting non-zero lets the restart policy back off rather than spin.
-    log.error('boot.aborted_lease_held', {});
-    process.exit(1);
-  }
+  await acquireLeaseUntilAvailable();
   startLeaseRenewal(() => { void shutdown('lease-lost'); });
 
   await reportBoot();
 
   const unwatchConfig = watchConfig();
-  // The first snapshot is asynchronous; the poll loop must not start before it.
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  // The first valid snapshot is an explicit readiness barrier. A timer cannot
+  // prove the channel map was loaded and risks acknowledging an unmapped post.
+  await waitForConfigReady();
 
   await publishActiveStages();
   await verifyChannels();

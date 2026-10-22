@@ -3,6 +3,7 @@ MyLecture Telegram mirror — Wispbyte deployment
 
 WHAT IS IN HERE
   index.js       the whole bot, pre-bundled (no build step needed on the host)
+  recovery.js    audited dead-letter inspection/retry/cleanup utility
   package.json   the two runtime dependencies
 
 The bundle already contains the announcement schema, the entity codec and the
@@ -11,7 +12,7 @@ link sanitiser that live in the main repo, so this folder is self-contained.
 
 HOW TO DEPLOY
 -------------
-1. Upload index.js and package.json to the server root (/home/container).
+1. Upload index.js, recovery.js and package.json to the server root (/home/container).
    Unzip them at the TOP level, not inside a subfolder — the startup command
    looks for index.js in the root.
 
@@ -151,7 +152,8 @@ WHAT YOU SHOULD SEE IN THE CONSOLE
 ----------------------------------
   {"level":"info","event":"boot",...}
   {"level":"info","event":"tg.identity","botUserId":...}
-  {"level":"info","event":"state.cold_start","backlogSkipped":N,...}
+  {"level":"info","event":"state.offset_resumed","offset":...}
+  {"level":"warn","event":"state.offset_missing_replay","offset":0,...}
   {"level":"info","event":"tg.channel_ok","stageId":"stage_3",...}
   {"level":"info","event":"watcher.attached","stageId":"stage_3",...}
 
@@ -180,9 +182,22 @@ BEFORE IT CAN WORK
   The bot clears a registered *webhook* by itself at boot, but it cannot delete
   the function.
 
-* RUN ONLY ONE COPY. A Firestore lease enforces this: a second instance exits
-  non-zero rather than double-posting every message. If the console shows
-  "lease.held_by_other", another copy is already running somewhere.
+* RUN ONLY ONE INTENDED COPY. A fenced Firestore lease enforces one active
+  poller; an overlapping replacement waits for the current lease rather than
+  double-posting. If the console shows "lease.held_by_other", another copy is
+  still active somewhere.
+
+
+RECOVERY OPERATIONS
+-------------------
+  node recovery.js list
+  node recovery.js inspect <updateId>
+  node recovery.js retry <updateId>
+  node recovery.js cleanup
+
+These commands use the same service account as the bot. Retries and cleanup
+write an audit record to telegramRecoveryAudit. Dead letters are never deleted
+by cleanup.
 
 
 TROUBLESHOOTING

@@ -223,4 +223,8 @@ export const env = {
    * otherwise still qualify an old post. 24h by default.
    */
   mirrorMaxAgeMs: Number(process.env.MIRROR_MAX_AGE_MS ?? 24 * 60 * 60 * 1000),
+  albumInactivityMs: Number(process.env.TELEGRAM_ALBUM_INACTIVITY_MS ?? 2_500),
+  albumMaxAssemblyMs: Number(process.env.TELEGRAM_ALBUM_MAX_ASSEMBLY_MS ?? 20_000),
+  inboxMaxAttempts: Number(process.env.TELEGRAM_INBOX_MAX_ATTEMPTS ?? 12),
+  inboxRetentionMs: Number(process.env.TELEGRAM_INBOX_RETENTION_MS ?? 30 * 24 * 60 * 60 * 1000),
 } as const;

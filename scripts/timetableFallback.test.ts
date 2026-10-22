@@ -122,6 +122,13 @@ async function runTests() {
             }),
           };
         }
+        if (collName === 'alternativeAiKeys') {
+          return {
+            where: () => ({
+              get: async () => ({ docs: [] }),
+            }),
+          };
+        }
         throw new Error(`Unexpected collection: ${collName}`);
       },
       runTransaction: async (updateFn: any) => {

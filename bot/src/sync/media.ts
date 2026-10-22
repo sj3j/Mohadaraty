@@ -6,7 +6,7 @@ import { bucket } from '../firebase.ts';
 import { env } from '../env.ts';
 import { log, errFields } from '../log.ts';
 import { telegram, TG_LIMITS } from '../telegram/api.ts';
-import type { TgFileLike, TgMessage, TgPhotoSize } from '../telegram/types.ts';
+import { TelegramApiError, type TgFileLike, type TgMessage, type TgPhotoSize } from '../telegram/types.ts';
 import type { Attachment, AttachmentKind } from '../../../src/types/announcement.types.ts';
 
 /**
@@ -141,6 +141,49 @@ export interface DownloadResult {
   oversize?: { name: string; size: number };
 }
 
+export type FileFailureCode =
+  | 'FILE_TOO_LARGE'
+  | 'FILE_TEMPORARILY_UNAVAILABLE'
+  | 'DOWNLOAD_TIMEOUT'
+  | 'FIREBASE_UPLOAD_FAILED'
+  | 'FILE_PERMANENTLY_UNAVAILABLE'
+  | 'UNSUPPORTED_FILE_TYPE';
+
+export class FileIngestError extends Error {
+  constructor(
+    readonly code: FileFailureCode,
+    message: string,
+    readonly retryable: boolean,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'FileIngestError';
+  }
+}
+
+function downloadFailure(error: unknown, file: TelegramFileRef): FileIngestError {
+  if (error instanceof FileIngestError) return error;
+  if (error instanceof TelegramApiError && error.errorCode >= 400 && error.errorCode < 500 && !error.isRetryable) {
+    return new FileIngestError(
+      'FILE_PERMANENTLY_UNAVAILABLE',
+      `Telegram cannot provide ${file.fileUniqueId}: ${error.description}`,
+      false,
+      { cause: error },
+    );
+  }
+  const name = (error as { name?: unknown } | null)?.name;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (name === 'TimeoutError' || name === 'AbortError' || code === 'ABORT_ERR') {
+    return new FileIngestError('DOWNLOAD_TIMEOUT', `download timed out for ${file.fileUniqueId}`, true, { cause: error });
+  }
+  return new FileIngestError(
+    'FILE_TEMPORARILY_UNAVAILABLE',
+    `Telegram file is temporarily unavailable: ${file.fileUniqueId}`,
+    true,
+    { cause: error },
+  );
+}
+
 /**
  * Telegram -> Firebase Storage.
  *
@@ -157,12 +200,37 @@ export async function ingestTelegramFile(file: TelegramFileRef, stageId: string)
     return { oversize: { name: file.name, size: file.size } };
   }
 
-  const meta = await telegram.getFile(file.fileId);
-  if (!meta.file_path) throw new Error(`getFile returned no file_path for ${file.fileUniqueId}`);
+  let meta;
+  try {
+    meta = await telegram.getFile(file.fileId);
+  } catch (error) {
+    if (error instanceof TelegramApiError && error.description.toLowerCase().includes('too big')) {
+      log.info('file.oversize', { name: file.name, size: file.size, limit: TG_LIMITS.downloadBytes });
+      return { oversize: { name: file.name, size: file.size } };
+    }
+    throw downloadFailure(error, file);
+  }
+  if (!meta.file_path) {
+    throw new FileIngestError(
+      'FILE_PERMANENTLY_UNAVAILABLE',
+      `getFile returned no file_path for ${file.fileUniqueId}`,
+      false,
+    );
+  }
 
-  const response = await fetch(telegram.fileUrl(meta.file_path));
+  let response: Response;
+  try {
+    response = await fetch(telegram.fileUrl(meta.file_path), { signal: AbortSignal.timeout(60_000) });
+  } catch (error) {
+    throw downloadFailure(error, file);
+  }
   if (!response.ok || !response.body) {
-    throw new Error(`file download failed: ${response.status} ${response.statusText}`);
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+    throw new FileIngestError(
+      retryable ? 'FILE_TEMPORARILY_UNAVAILABLE' : 'FILE_PERMANENTLY_UNAVAILABLE',
+      `file download failed: ${response.status} ${response.statusText}`,
+      retryable,
+    );
   }
 
   // Voice notes from Telegram are OGG Opus. If ffmpeg is available in the container,
@@ -179,17 +247,23 @@ export async function ingestTelegramFile(file: TelegramFileRef, stageId: string)
     const finalName = transcodedMp3 ? file.name.replace(/\.ogg$/i, '.mp3') : file.name;
     const finalSize = uploadBuffer.length;
 
-    const path = `announcements/${stageId}/${Date.now()}_${safeName(finalName)}`;
+    // Deterministic object identity makes a crash/retry overwrite the same
+    // object instead of leaking one orphan per attempt.
+    const path = `announcements/${stageId}/telegram_${file.fileUniqueId}_${safeName(finalName)}`;
     const token = randomUUID();
     const target = bucket.file(path);
 
-    await target.save(uploadBuffer, {
-      resumable: false,
-      metadata: {
-        contentType: finalMime,
-        metadata: { firebaseStorageDownloadTokens: token },
-      },
-    });
+    try {
+      await target.save(uploadBuffer, {
+        resumable: false,
+        metadata: {
+          contentType: finalMime,
+          metadata: { firebaseStorageDownloadTokens: token },
+        },
+      });
+    } catch (error) {
+      throw new FileIngestError('FIREBASE_UPLOAD_FAILED', `Storage upload failed for ${file.fileUniqueId}`, true, { cause: error });
+    }
 
     const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
     log.info('storage.uploaded', { path, bytes: finalSize, kind: file.kind, transcoded: !!transcodedMp3 });
@@ -209,22 +283,26 @@ export async function ingestTelegramFile(file: TelegramFileRef, stageId: string)
 
   // Stage-scoped, matching Composer exactly - storage.rules scopes writes to
   // announcements/{stageId}/{fileName} and the flat prefix is `write: if false`.
-  const path = `announcements/${stageId}/${Date.now()}_${safeName(file.name)}`;
+  const path = `announcements/${stageId}/telegram_${file.fileUniqueId}_${safeName(file.name)}`;
   const token = randomUUID();
   const target = bucket.file(path);
 
-  await pipeline(
-    Readable.fromWeb(response.body as any),
-    target.createWriteStream({
-      resumable: false,
-      metadata: {
-        contentType: file.mime,
-        // Without this the URL below 403s for the unauthenticated <img> tag in
-        // AttachmentGrid. This is the exact shape getDownloadURL() produces.
-        metadata: { firebaseStorageDownloadTokens: token },
-      },
-    }),
-  );
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body as any),
+      target.createWriteStream({
+        resumable: false,
+        metadata: {
+          contentType: file.mime,
+          // Without this the URL below 403s for the unauthenticated <img> tag in
+          // AttachmentGrid. This is the exact shape getDownloadURL() produces.
+          metadata: { firebaseStorageDownloadTokens: token },
+        },
+      }),
+    );
+  } catch (error) {
+    throw new FileIngestError('FIREBASE_UPLOAD_FAILED', `Storage upload failed for ${file.fileUniqueId}`, true, { cause: error });
+  }
 
   const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
   log.info('storage.uploaded', { path, bytes: file.size, kind: file.kind });

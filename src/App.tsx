@@ -16,7 +16,7 @@ import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks/useAuthWatchdog';
-import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker } from './lib/authPersistence';
+import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker, clearExplicitLogoutMarker } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
 import { resolveLectureLoadDecision, type LectureLoadState } from './lib/lectureLoadState';
@@ -134,7 +134,7 @@ export default function App() {
   }, [user, heldProgressionRound, forceShowProgression]);
 
   const progressionUiState = useMemo(() => {
-    if (!user) return { openRound: null, hasActivePendingAccess: false };
+    if (!user || user.role === 'doctor' || user.role === 'observer') return { openRound: null, hasActivePendingAccess: false };
     return resolveProgressionUiState({
       gate: progressionGateNow,
       yearLabel: academicYearLabel,
@@ -151,6 +151,21 @@ export default function App() {
   }, [progressionNotice]);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const safeIsAuthReady = useAuthWatchdog(isAuthReady);
+
+  // If watchdog forced ready for a returning user on a slow network or cold boot,
+  // ensure we hydrate from cache rather than falling through to LoginScreen
+  useEffect(() => {
+    if (safeIsAuthReady && !user && !hasExplicitLogoutMarker()) {
+      const wasSignedIn = safeGetStorageItem('wasSignedIn') === 'true';
+      if (wasSignedIn) {
+        const cached = getCachedUserProfile();
+        if (cached) {
+          console.info('[auth] Watchdog unblocked returning user; restoring cached profile.');
+          setUser(cached);
+        }
+      }
+    }
+  }, [safeIsAuthReady, user]);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [lectureLoadState, setLectureLoadState] = useState<LectureLoadState>('waiting-auth');
   const [lectureRetry, setLectureRetry] = useState(0);
@@ -332,25 +347,20 @@ export default function App() {
           cachedProfileAvailable: getCachedUserProfile(firebaseUser.uid) !== null,
         }));
         safeSetStorageItem('wasSignedIn', 'true');
-        const userEmail = firebaseUser.email || firebaseUser.uid;
-        // Offline this needs an STS round-trip whenever the cached token is more
-        // than an hour old, and the rejection used to escape the whole async
-        // callback - so setIsAuthReady(true) was never reached and the app sat on
-        // the spinner forever. Intermittent by nature, because it depends on how
-        // stale the token happens to be.
-        //
-        // `false` asks for the cached token rather than a refresh, so this
-        // resolves offline in the common case; if even that fails we carry on
-        // with no claims. Claims only decide master-admin, and a real master
-        // admin is still matched by the email list below.
+        clearExplicitLogoutMarker();
+
         let tokenResult: Awaited<ReturnType<typeof firebaseUser.getIdTokenResult>> | null = null;
         try {
           tokenResult = await firebaseUser.getIdTokenResult(false);
         } catch (err) {
           console.warn('Could not read ID token claims (likely offline); continuing without them.', err);
         }
-        const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || isMasterAdminEmail(userEmail);
-        const isObserver = tokenResult?.claims.role === 'observer' || isObserverEmail(userEmail);
+
+        const claimEmail = typeof tokenResult?.claims?.email === 'string' ? tokenResult.claims.email : null;
+        const cachedProfile = getCachedUserProfile(firebaseUser.uid);
+        const userEmail = claimEmail || firebaseUser.email || cachedProfile?.email || firebaseUser.uid;
+        const isMasterAdmin = tokenResult?.claims.role === 'master_admin' || isMasterAdminEmail(userEmail) || isMasterAdminEmail(firebaseUser.email || '');
+        const isObserver = tokenResult?.claims.role === 'observer' || isObserverEmail(userEmail) || isObserverEmail(firebaseUser.email || '');
         
         let studentData: any = null;
         let whitelistConfirmedByServer = true;
@@ -399,11 +409,40 @@ export default function App() {
               }
             }
 
+            // If not found yet by primary email, inspect users/{uid} document:
+            let userDocSnap: any = null;
             if (!studentData) {
-              const doctorProfile = await getDoc(doc(db, 'users', firebaseUser.uid));
-              whitelistConfirmedByServer = whitelistConfirmedByServer && !doctorProfile.metadata.fromCache;
-              if (doctorProfile.exists() && doctorProfile.data().role === 'doctor') {
-                studentData = { ...doctorProfile.data(), isActive: doctorProfile.data().staffDisabled !== true };
+              userDocSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
+              whitelistConfirmedByServer = whitelistConfirmedByServer && !userDocSnap.metadata.fromCache;
+              if (userDocSnap.exists()) {
+                const uData = userDocSnap.data();
+                if (uData.role === 'doctor') {
+                  studentData = { ...uData, isActive: uData.staffDisabled !== true };
+                } else if (uData.email && uData.email.toLowerCase() !== emailLower) {
+                  // User doc points to canonical student record (e.g. roster ID vs google email)
+                  const canonicalStudentDoc = await getDoc(doc(db, 'students', uData.email.toLowerCase()));
+                  whitelistConfirmedByServer = whitelistConfirmedByServer && !canonicalStudentDoc.metadata.fromCache;
+                  if (canonicalStudentDoc.exists()) {
+                    studentData = { ...canonicalStudentDoc.data(), id: canonicalStudentDoc.id };
+                  } else {
+                    studentData = { ...uData, id: uData.email || firebaseUser.uid, isActive: uData.staffDisabled !== true && uData.isActive !== false };
+                  }
+                } else {
+                  studentData = { ...uData, id: uData.email || firebaseUser.uid, isActive: uData.staffDisabled !== true && uData.isActive !== false };
+                }
+              }
+            }
+
+            // If still not found, check if emailLower is a linked googleEmail in students collection:
+            if (!studentData && emailLower.includes('@') && !emailLower.endsWith('@roster.local')) {
+              try {
+                const linkedQuery = await getDocs(query(collection(db, 'students'), where('googleEmail', '==', emailLower), limit(1)));
+                if (!linkedQuery.empty) {
+                  const linkedDoc = linkedQuery.docs[0];
+                  studentData = { ...linkedDoc.data(), id: linkedDoc.id };
+                }
+              } catch (e) {
+                console.warn('googleEmail query lookup fallback failed:', e);
               }
             }
 
@@ -1094,6 +1133,25 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
+  // Dedicated Doctor Portal Pathway:
+  // When a doctor logs in (role === 'doctor'), all standard app screens, bottom tabs,
+  // and student navigation are dropped to provide a focused attendance interface.
+  if (user?.role === 'doctor') {
+    return (
+      <DoctorPortal
+        user={user}
+        lang={lang}
+        onLogout={() => {
+          console.info('[auth-session] doctor signed-out: explicit-logout');
+          setCurrentTab('profile');
+          safeSetStorageItem('wasSignedIn', 'false');
+          clearCachedUserProfile(user?.uid);
+          void signOut(auth);
+        }}
+      />
+    );
+  }
+
   const effectiveProgressionRound = progressionUiState.openRound;
 
   if (effectiveProgressionRound && (!isProgressionSnoozed || forceShowProgression)) {
@@ -1142,25 +1200,6 @@ export default function App() {
   const composingAnnouncements = currentTab === 'announcements' && canManage(user, 'manageAnnouncements');
 
   const isAnyOverlayOpen = showOnboarding || showUpload || showAdminManage || showStudentManage || showAdminGrades || showAdminBank || showStudentGrades || showAntiCheat || showAdminLogs || showSimosanAdmin || showSubManage || showPaywall || (mcqLecture !== null) || (readerLecture !== null) || (localReaderFile !== null);
-
-  // Dedicated Doctor Portal Pathway:
-  // When a doctor logs in (role === 'doctor'), all standard app screens, bottom tabs,
-  // and student navigation are dropped to provide a focused attendance interface.
-  if (user?.role === 'doctor') {
-    return (
-      <DoctorPortal
-        user={user}
-        lang={lang}
-        onLogout={() => {
-          console.info('[auth-session] doctor signed-out: explicit-logout');
-          setCurrentTab('profile');
-          safeSetStorageItem('wasSignedIn', 'false');
-          clearCachedUserProfile(user?.uid);
-          void signOut(auth);
-        }}
-      />
-    );
-  }
 
   return (
     // index.html sets viewport-fit=cover, so the WebView paints beneath the

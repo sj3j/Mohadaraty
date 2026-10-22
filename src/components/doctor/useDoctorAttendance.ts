@@ -147,16 +147,15 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     }
     return { studentId: student.studentId, name: student.officialName, group: student.subgroup, examCode: student.rosterIdentifier, attendance, records: studentRecords };
   });
-  const updateCell = (studentId: string, targetOccurrenceId: string, status: AttendanceCellStatus) => run(async () => {
-    const reason = window.prompt(isRtl ? 'سبب التعديل (يسجل في سجل التدقيق):' : 'Reason for correction (audited):')?.trim();
-    if (!reason) return;
+  const updateCell = (studentId: string, targetOccurrenceId: string, status: AttendanceCellStatus, customReason?: string) => run(async () => {
+    const defaultReason = status === 'present'
+      ? (isRtl ? 'تسجيل يدوي بواسطة التدريسي' : 'Manual check-in by lecturer')
+      : (isRtl ? 'إلغاء يدوي بواسطة التدريسي' : 'Manual void by lecturer');
+    const reason = (customReason || defaultReason).trim();
     let session = sessions.find(item => item.occurrenceId === targetOccurrenceId);
     if (!session) {
       if (!workspace) throw new Error('attendance_workspace_unavailable');
-      const value = window.prompt(isRtl ? 'كم طالباً حضر فعلياً لهذه المحاضرة؟' : 'How many students were physically present for this lecture?');
-      if (value == null) return;
-      const expectedHeadcount = Number(value);
-      if (!Number.isInteger(expectedHeadcount) || expectedHeadcount < 1 || expectedHeadcount > 10000) throw new Error('invalid_headcount');
+      const expectedHeadcount = 60;
       const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, expectedHeadcount };
       const created = offlineReady
         ? await createOfflineAttendanceSession(input, ownerUid)

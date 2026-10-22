@@ -1,13 +1,14 @@
 import { db, FieldValue } from '../firebase.ts';
-import { log, errFields } from '../log.ts';
+import { log } from '../log.ts';
 import { blocksToPlainText, safeUrl } from '../../../src/lib/richText.ts';
 import type { Attachment, RichBlock } from '../../../src/types/announcement.types.ts';
 import { telegramAnnouncementId, type TelegramChannel } from '../../../shared/telegramMirror.ts';
 import type { TgMessage } from '../telegram/types.ts';
 import { tgMessageToBlocks } from './entities.ts';
 import { mirrorHash } from './hash.ts';
-import { mappingRef, getMapping, wasRecentlySent, type TelegramMapping } from './mapping.ts';
+import { mappingRef, getMapping, getAnyMapping, wasRecentlySent, type TelegramMapping } from './mapping.ts';
 import { filesInMessage, ingestTelegramFile, humanSize } from './media.ts';
+import { isGrowingAlbum, isPromotableSkip } from './inboundPolicy.ts';
 
 /**
  * Telegram -> the announcements feed.
@@ -68,6 +69,8 @@ interface BuiltPayload {
   oversize: { name: string; size: number }[];
   fileUniqueIds: string[];
   linkUrl: string | null;
+  captionMessageId: number;
+  captionKind: 'text' | 'caption';
 }
 
 /** Downloads every file in the messages and assembles the announcement body. */
@@ -83,14 +86,9 @@ async function buildPayload(messages: TgMessage[], ctx: IngestContext): Promise<
   for (const message of messages) {
     for (const file of filesInMessage(message)) {
       fileUniqueIds.push(file.fileUniqueId);
-      try {
-        const result = await ingestTelegramFile(file, ctx.stageId);
-        if (result.attachment) attachments.push(result.attachment);
-        if (result.oversize) oversize.push(result.oversize);
-      } catch (error) {
-        log.warn('tg.in.file_failed', { name: file.name, ...errFields(error) });
-        oversize.push({ name: file.name, size: file.size });
-      }
+      const result = await ingestTelegramFile(file, ctx.stageId);
+      if (result.attachment) attachments.push(result.attachment);
+      if (result.oversize) oversize.push(result.oversize);
     }
   }
 
@@ -104,6 +102,8 @@ async function buildPayload(messages: TgMessage[], ctx: IngestContext): Promise<
     oversize,
     fileUniqueIds,
     linkUrl: safeUrl(captionCarrier.link_preview_options?.url) ?? null,
+    captionMessageId: captionCarrier.message_id,
+    captionKind: captionCarrier.text ? 'text' : 'caption',
   };
 }
 
@@ -129,8 +129,9 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
     return;
   }
 
-  const existing = await getMapping(chatId, first.message_id);
-  if (existing && !isAlbumGrowth(existing, ordered)) {
+  const existing = await getAnyMapping(chatId, ordered.map(message => message.message_id));
+  const promotableSkip = isPromotableSkip(existing);
+  if (existing && !promotableSkip && !isGrowingAlbum(existing, ordered.map(message => message.message_id))) {
     log.debug('tg.in.skipped', { reason: 'already_seen', chatId, messageId: first.message_id });
     return;
   }
@@ -160,7 +161,7 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
     return;
   }
 
-  const announcementId = telegramAnnouncementId(chatId, first.message_id);
+  const announcementId = existing?.announcementId ?? telegramAnnouncementId(chatId, first.message_id);
   const messageIds = ordered.map(m => m.message_id);
   const hash = mirrorHash({
     text: plain,
@@ -192,7 +193,7 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
       origin: 'telegram',
       chatId,
       messageIds,
-      captionMessageId: first.message_id,
+      captionMessageId: built.captionMessageId,
       appliedHash: hash,
       tgDate: first.date,
       syncedAt: FieldValue.serverTimestamp(),
@@ -203,8 +204,8 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
   const mapping: TelegramMapping = {
     chatId,
     messageIds,
-    captionMessageId: first.message_id,
-    captionKind: first.text ? 'text' : 'caption',
+    captionMessageId: built.captionMessageId,
+    captionKind: built.captionKind,
     mediaGroupId: first.media_group_id ?? null,
     tgFileUniqueIds: built.fileUniqueIds,
     announcementId,
@@ -214,6 +215,7 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
     appliedFromApp: null,
     oversizeSkipped: built.oversize,
     lastError: null,
+    skipped: null,
   };
 
   const batch = db.batch();
@@ -231,12 +233,6 @@ export async function ingestMessages(messages: TgMessage[], ctx: IngestContext):
     chatId, stageId: ctx.stageId, announcementId, messageIds,
     attachments: built.attachments.length, oversize: built.oversize.length,
   });
-}
-
-/** True when this call carries album members the stored mapping has not seen. */
-function isAlbumGrowth(mapping: TelegramMapping, messages: TgMessage[]): boolean {
-  if (!mapping.mediaGroupId) return false;
-  return messages.some(m => !mapping.messageIds.includes(m.message_id));
 }
 
 /** Records an update as consumed without creating an announcement. */

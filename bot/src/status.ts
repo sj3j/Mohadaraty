@@ -1,8 +1,9 @@
 import { db, FieldValue } from './firebase.ts';
 import { env } from './env.ts';
 import { log } from './log.ts';
-import { queueDepths } from './queue.ts';
+import { queueDepths, queueOldestPendingAges } from './queue.ts';
 import { getConfigError } from './config.ts';
+import { leaseHealth } from './state.ts';
 
 /**
  * The bot's self-reported health, written to `admin_config/telegram_status`.
@@ -33,6 +34,12 @@ interface ChannelStatus {
 const channels: Record<string, ChannelStatus> = {};
 const counters: Record<string, number> = {};
 let pollState: 'polling' | 'backoff' | 'stalled' = 'polling';
+let inboxMetrics: Record<string, unknown> = {};
+
+export function updateInboxMetrics(next: Record<string, unknown>): void {
+  inboxMetrics = next;
+  schedule();
+}
 
 export function setPollState(next: typeof pollState): void {
   if (next !== pollState) {
@@ -108,6 +115,9 @@ async function flush(immediate = false): Promise<void> {
       channels,
       counters24h: counters,
       queueDepth: queueDepths(),
+      queueOldestPendingAgeMs: queueOldestPendingAges(),
+      inbox: inboxMetrics,
+      lease: leaseHealth(),
       // An ISO string, not serverTimestamp: the UI computes heartbeat age from
       // it, and a sentinel would read back as null until the write lands.
       updatedAt: new Date().toISOString(),
@@ -129,4 +139,12 @@ export async function reportBoot(): Promise<void> {
   }, { merge: true });
 }
 
-export const snapshot = () => ({ pollState, channels, counters, queueDepth: queueDepths() });
+export const snapshot = () => ({
+  pollState,
+  channels,
+  counters,
+  queueDepth: queueDepths(),
+  queueOldestPendingAgeMs: queueOldestPendingAges(),
+  inbox: inboxMetrics,
+  lease: leaseHealth(),
+});

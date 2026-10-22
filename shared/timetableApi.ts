@@ -29,6 +29,7 @@ import {
 } from './timetable.js';
 import { FALLBACK_GROUP_CONFIG, type GroupConfigLike } from './groups.js';
 import { hasStaffCapability, hasStageCapability } from './staffCapabilities.js';
+import { getActiveAlternativeKeys, markAlternativeKeyStatus } from './alternativeKeysApi.js';
 
 export interface TimetableDeps {
   admin: any;
@@ -216,8 +217,11 @@ export function createTimetableHandlers(deps: TimetableDeps) {
     }
 
     if (!ai) {
-      await raiseAlert('not_configured', { stageId });
-      return res.status(503).json({ error: 'not_configured' });
+      const altKeys = await getActiveAlternativeKeys(admin);
+      if (!altKeys.length) {
+        await raiseAlert('not_configured', { stageId });
+        return res.status(503).json({ error: 'not_configured' });
+      }
     }
 
     const draftRef = db.collection('timetableDrafts').doc(stageId);
@@ -308,22 +312,57 @@ export function createTimetableHandlers(deps: TimetableDeps) {
           },
         };
 
-        try {
-          response = await generateWithRetry(
-            () => ai.models.generateContent(generateArgs),
-            deadlineAt,
-          );
-        } catch (genErr: any) {
-          const classified = classifyFailure(genErr);
-          if (classified === 'free_tier_limit' && paidAi) {
+        let usedAlternativeKeyId: string | null = null;
+        let primaryErr: any = null;
+
+        if (ai) {
+          try {
+            response = await generateWithRetry(
+              () => ai.models.generateContent(generateArgs),
+              deadlineAt,
+            );
+          } catch (genErr: any) {
+            primaryErr = genErr;
+            const classified = classifyFailure(genErr);
+            if (classified !== 'free_tier_limit' && classified !== 'not_configured') {
+              throw genErr;
+            }
+          }
+        }
+
+        if (!response) {
+          // Attempt fallback through alternative free keys
+          const altKeys = await getActiveAlternativeKeys(admin);
+          for (const altKey of altKeys) {
+            try {
+              const altAi = new GoogleGenAI({ apiKey: altKey.key });
+              response = await generateWithRetry(
+                () => altAi.models.generateContent(generateArgs),
+                deadlineAt,
+              );
+              usedAlternativeKeyId = altKey.id;
+              break;
+            } catch (altErr: any) {
+              const altClassified = classifyFailure(altErr);
+              if (altClassified === 'free_tier_limit') {
+                await markAlternativeKeyStatus(admin, altKey.id, 'quota_exhausted');
+              } else if (altClassified === 'not_configured') {
+                await markAlternativeKeyStatus(admin, altKey.id, 'invalid');
+              }
+            }
+          }
+        }
+
+        if (!response) {
+          if (paidAi) {
             console.warn(
-              `[timetable] free tier quota exhausted for stage ${stageId}. Attempting fallback trial with GEMINI_API_KEY`,
+              `[timetable] free tier & alternative keys quota exhausted for stage ${stageId}. Attempting fallback trial with GEMINI_API_KEY`,
             );
             // Fallback trial once with the paid key
             response = await paidAi.models.generateContent(generateArgs);
             usedPaidFallback = true;
           } else {
-            throw genErr;
+            throw primaryErr || Object.assign(new Error('free_tier_limit'), { status: 429 });
           }
         }
 
@@ -352,6 +391,7 @@ export function createTimetableHandlers(deps: TimetableDeps) {
           failureReason: admin.firestore.FieldValue.delete(),
           failedPhotoUrl: admin.firestore.FieldValue.delete(),
           fallbackUsed: usedPaidFallback,
+          alternativeKeyId: usedAlternativeKeyId || null,
         }, { merge: true });
 
         if (usedPaidFallback) {

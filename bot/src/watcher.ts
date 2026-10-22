@@ -22,6 +22,37 @@ import { noteOutbound, markChannel } from './status.ts';
  */
 
 const watchers = new Map<string, () => void>();
+const retryTimers = new Map<string, NodeJS.Timeout>();
+const retryAttempts = new Map<string, number>();
+
+function clearRetry(announcementId: string): void {
+  const timer = retryTimers.get(announcementId);
+  if (timer) clearTimeout(timer);
+  retryTimers.delete(announcementId);
+  retryAttempts.delete(announcementId);
+}
+
+/** Firestore remains the durable outbound queue: an unstamped document is retried. */
+function scheduleRetry(announcementId: string, stageId: string): void {
+  if (retryTimers.has(announcementId)) return;
+  const attempt = (retryAttempts.get(announcementId) ?? 0) + 1;
+  retryAttempts.set(announcementId, attempt);
+  const delayMs = Math.min(5 * 60_000, 2 ** Math.min(attempt, 8) * 1_000);
+  const timer = setTimeout(() => {
+    retryTimers.delete(announcementId);
+    void db.collection('announcements').doc(announcementId).get()
+      .then(snap => snap.exists && outboundChannelFor(stageId)
+        ? handleUpsert(snap.id, snap.data()!, stageId)
+        : undefined)
+      .catch(error => {
+        log.error('tg.out.retry_failed', { stageId, announcementId, ...errFields(error) });
+        scheduleRetry(announcementId, stageId);
+      });
+  }, delayMs + Math.random() * 0.2 * delayMs);
+  timer.unref();
+  retryTimers.set(announcementId, timer);
+  log.warn('tg.out.retry_scheduled', { stageId, announcementId, attempt, delayMs });
+}
 
 /** True when the document already reflects what is live in Telegram. */
 function isUpToDate(doc: OutboundDoc): boolean {
@@ -74,6 +105,7 @@ async function handleUpsert(id: string, data: Record<string, unknown>, stageId: 
       const alreadySent = (doc.telegramMirror?.messageIds?.length ?? 0) > 0;
       if (alreadySent) await editAnnouncement(doc, chatId);
       else await sendAnnouncement(doc, chatId, stageId);
+      clearRetry(id);
       noteOutbound(stageId);
       markChannel(stageId, { state: 'ok', lastError: null });
     } catch (error) {
@@ -86,6 +118,7 @@ async function handleUpsert(id: string, data: Record<string, unknown>, stageId: 
       }
       markChannel(stageId, { state: 'degraded', lastError: String(error) });
       log.error('tg.out.failed', { stageId, announcementId: id, ...errFields(error) });
+      scheduleRetry(id, stageId);
     }
   });
 }
@@ -104,13 +137,20 @@ function attach(stageId: string): void {
     .where('createdAt', '>=', cutoff)
     .onSnapshot(
       snapshot => {
-        for (const change of snapshot.docChanges()) {
-          if (change.type === 'removed') {
-            void handleRemoval(change.doc.id, change.doc.data());
-          } else {
-            void handleUpsert(change.doc.id, change.doc.data(), stageId);
+        // Apply one snapshot sequentially. This supplies real backpressure to
+        // the bounded per-chat queue during reconnect bursts.
+        void (async () => {
+          for (const change of snapshot.docChanges()) {
+            if (change.type === 'removed') {
+              await handleRemoval(change.doc.id, change.doc.data());
+            } else {
+              await handleUpsert(change.doc.id, change.doc.data(), stageId);
+            }
           }
-        }
+        })().catch(error => {
+          log.error('watcher.snapshot_failed', { stageId, ...errFields(error) });
+          markChannel(stageId, { state: 'degraded', lastError: String(error) });
+        });
       },
       error => {
         // A terminal listener error (PERMISSION_DENIED, UNAUTHENTICATED) is not
@@ -184,8 +224,12 @@ export function startWatchers(): () => void {
   return () => {
     off();
     for (const stageId of [...watchers.keys()]) detach(stageId);
+    for (const announcementId of [...retryTimers.keys()]) clearRetry(announcementId);
   };
 }
 
 export const configuredStageCount = (): number =>
   MIRROR_STAGE_IDS.filter(s => !!getConfig().channels[s]?.enabled).length;
+
+export const configuredOutboundStageCount = (): number =>
+  MIRROR_STAGE_IDS.filter(s => !!outboundChannelFor(s)).length;

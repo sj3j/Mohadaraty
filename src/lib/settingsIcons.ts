@@ -56,4 +56,5 @@ export const SETTINGS_ICONS: Record<string, SettingsIcon> = {
   stage:         { Icon: Layers,        className: 'text-sky-500',     tile: 'bg-sky-100 dark:bg-sky-900/30' },
   telegram:      { Icon: Send,          className: 'text-cyan-500',    tile: 'bg-cyan-100 dark:bg-cyan-900/30' },
   attendanceAdmin: { Icon: CalendarCheck, className: 'text-teal-500',  tile: 'bg-teal-100 dark:bg-teal-900/30' },
+  aiKeys: { Icon: KeyRound, className: 'text-amber-500',  tile: 'bg-amber-100 dark:bg-amber-900/30' },
 };

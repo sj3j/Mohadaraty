@@ -91,13 +91,19 @@ firebase functions:delete telegramWebhookV3 --region me-west1
 firebase functions:delete telegramWebhookV3 --region us-central1
 ```
 
-**One container at a time.** A Firestore lease stops a second instance from
-starting; it exits non-zero rather than double-posting every message.
+**One active poller at a time.** A fenced Firestore lease lets an overlapping
+replacement wait safely. Every checkpoint and worker claim carries the lease
+generation, so an expired instance cannot overwrite its successor.
 
-**A first run does not import history.** Telegram holds up to 24h of pending
-updates. A cold start skips them deliberately — importing a day of channel
-history would create dozens of announcements at once, each firing its own push
-notification to a whole stage.
+**A missing checkpoint never clears history.** The bot starts at offset `0`,
+which asks Telegram for the earliest update it still retains. Telegram may have
+already expired older updates; those cannot be reconstructed by the Bot API and
+must be re-submitted by an authorized operator.
+
+**Receipt precedes acknowledgment.** Every update is atomically written to
+`telegramInboundUpdates` together with the Firestore checkpoint. Processing,
+media download, and retries happen from that durable inbox. A processing error
+therefore cannot make Telegram's next offset forget the update.
 
 **Size limits.** Bots can download at most **20MB** (`getFile`) and upload
 50MB. A larger Telegram file is skipped with a note in the post pointing at the
@@ -120,6 +126,8 @@ Everything is in Firestore; the container is disposable and mounts no volumes.
 | `admin_config/telegram` | the channel map (master admin reads and writes) |
 | `admin_config/telegram_status` | health, per-channel counters (bot writes, master admin reads) |
 | `admin_config/telegram_state` | the `getUpdates` offset and the instance lease |
+| `telegramInboundUpdates/{updateId}` | durable update, processing attempts, retry/dead-letter state |
+| `telegramInboundAlbums/{hash}` | crash-safe membership and assembly timing for media groups |
 | `telegramMessages/{chatId}_{msgId}` | message ↔ announcement mapping |
 | `announcements/*.telegramMirror` | where a post lives in Telegram, and its content hash |
 
@@ -131,6 +139,17 @@ equal, and nothing is sent.
 `reactions` and `poll.counts` are deliberately excluded from the hash. Including
 them would turn one student tapping 👍, or one vote in a class poll, into a
 Telegram edit — and a busy poll into a 429.
+
+Completed and intentionally ignored inbox records receive an `expireAt` value
+(30 days by default). Run the audited cleanup command periodically, or configure
+Firestore TTL on that field. Dead letters never expire automatically.
+
+```bash
+npm --prefix bot run recovery -- list
+npm --prefix bot run recovery -- inspect 331042222
+npm --prefix bot run recovery -- retry 331042222
+npm --prefix bot run recovery -- cleanup
+```
 
 ---
 
@@ -146,6 +165,6 @@ Telegram edit — and a busy poll into a 429.
 
 ```bash
 npm --prefix bot run lint     # typecheck
-npm --prefix bot run test     # entity codec round-trip tests
+npm --prefix bot run test     # unit and reliability tests
 curl -s localhost:8081/healthz?verbose=1 | jq   # on the host, if the port is exposed
 ```
