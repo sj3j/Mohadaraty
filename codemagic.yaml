@@ -30,7 +30,7 @@ workflows:
         VITE_ENABLE_VCONSOLE: "true"
       xcode: latest
       cocoapods: default
-      node: 20
+      node: v22.11.0
 
     scripts:
       - name: Preflight - the RevenueCat public key must be present
@@ -103,7 +103,7 @@ workflows:
         BUNDLE_ID: "com.mohadaraty.app"
       xcode: latest
       cocoapods: default
-      node: 20
+      node: v22.11.0
 
     scripts:
       - name: Preflight - reject debug tools in release
