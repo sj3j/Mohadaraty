@@ -8,6 +8,8 @@ import {
   loadCanonicalPageAnnotations,
   loadCanonicalDocument,
   getDurableJournal,
+  persistDurableJournal,
+  recoverPendingOperations,
   undoCanonicalPage,
   redoCanonicalPage,
 } from '../src/services/unifiedPdfAnnotationService';
@@ -393,5 +395,46 @@ test('Stress & Durability: Rapid consecutive strokes and undo/redo consistency',
   assert.equal(redoResult.success, true);
   const afterRedoAnnos = await loadCanonicalPageAnnotations(docId, 1);
   assert.equal(afterRedoAnnos.length, strokeCount);
+});
+
+test('Durability & Journal: concurrent operations serialize and pending operations replay', async () => {
+  const docId = 'doc-concurrent-recovery';
+  const makeAnnotation = (id: string): CanonicalInkAnnotation => ({
+    id,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    documentId: docId,
+    pageIndex: 1,
+    kind: 'ink',
+    points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.2 }],
+    color: '#4f46e5', opacity: 1, width: 3,
+    createdAt: Date.now(), updatedAt: Date.now(), revision: 1,
+  });
+
+  await Promise.all(Array.from({ length: 20 }, (_, index) => commitCanonicalOperation({
+    opId: `concurrent-${index}`,
+    type: 'add' as const,
+    documentId: docId,
+    pageIndex: 1,
+    annotation: makeAnnotation(`concurrent-stroke-${index}`),
+    clientTimestamp: Date.now(),
+  })));
+  assert.equal((await loadCanonicalPageAnnotations(docId, 1)).length, 20);
+
+  const recoveryOp = {
+    opId: 'interrupted-operation',
+    type: 'add' as const,
+    documentId: docId,
+    pageIndex: 1,
+    annotation: makeAnnotation('recovered-stroke'),
+    clientTimestamp: Date.now(),
+  };
+  const journal = await getDurableJournal(docId);
+  journal.pendingOps.push(recoveryOp);
+  journal.processedOpIds.push(recoveryOp.opId);
+  await persistDurableJournal(docId, journal);
+
+  assert.equal(await recoverPendingOperations(docId), 1);
+  assert.equal((await loadCanonicalPageAnnotations(docId, 1)).length, 21);
+  assert.equal((await getDurableJournal(docId)).pendingOps.length, 0);
 });
 

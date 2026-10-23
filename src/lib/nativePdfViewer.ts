@@ -56,7 +56,7 @@ export interface NativeStrokeUpdateEvent {
 }
 
 export interface MohadaratyPdfPluginInterface {
-  openPdf(options: OpenPdfOptions): Promise<{ success: boolean }>;
+  openPdf(options: OpenPdfOptions): Promise<{ success: boolean; nativeInkAvailable?: boolean }>;
   closePdf(): Promise<void>;
   goToPage(options: { page: number }): Promise<void>;
   setNightMode(options: { nightMode: boolean }): Promise<void>;

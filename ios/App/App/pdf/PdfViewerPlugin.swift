@@ -127,7 +127,10 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
 
             self.applyNightMode(nightMode, to: pdfView)
 
-            // Setup PencilKit page overlay on iOS 16+
+            // PencilKit page overlays are iOS 16+. iOS 15 intentionally keeps
+            // the safe PDFKit read/navigation path rather than accepting ink
+            // it cannot restore page-by-page.
+            var nativeInkAvailable = false
             if nativeInkV2 {
                 if #available(iOS 16.0, *) {
                     let provider = NativePdfPageOverlayProvider(pdfView: pdfView) { [weak self] (page, action, stroke, strokeId) in
@@ -148,6 +151,7 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
                     }
                     pdfView.pageOverlayViewProvider = provider
                     self.overlayProvider = provider
+                    nativeInkAvailable = true
                 }
             }
 
@@ -190,7 +194,10 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
                 ])
             }
 
-            call.resolve(["success": true])
+            call.resolve([
+                "success": true,
+                "nativeInkAvailable": nativeInkAvailable
+            ])
         }
     }
 
@@ -255,8 +262,18 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func setPageStrokes(_ call: CAPPluginCall) {
-        // Page strokes stored on React side, rendered dynamically per PKCanvasView on page display
-        call.resolve()
+        let page = call.getInt("page", 1)
+        let rawStrokes = call.getArray("strokes", [JSObject]()) ?? []
+        let strokes = rawStrokes.compactMap { PdfBridgeStroke.from(dictionary: $0) }
+        DispatchQueue.main.async { [weak self] in
+            if #available(iOS 16.0, *) {
+                (self?.overlayProvider as? NativePdfPageOverlayProvider)?.setPageStrokes(
+                    pageIndex: page,
+                    strokes: strokes
+                )
+            }
+            call.resolve()
+        }
     }
 
     @objc func setInteractiveZones(_ call: CAPPluginCall) {
@@ -360,7 +377,12 @@ extension WKWebView {
         if MohadaratyPdfPlugin.stableInteractionRouting {
             let state = MohadaratyPdfPlugin.interactionState
             let topChrome = point.y <= 120
-            let bottomChrome = point.y >= bounds.height - 100 && point.x <= 240
+            // The annotation dock is centered and can expose palette/width
+            // popovers across the full lower area. The old 240pt-left-only
+            // region swallowed its centre/right controls as PDF gestures.
+            let bottomChrome = state.mode == "annotate"
+                ? point.y >= bounds.height - 240
+                : (point.y >= bounds.height - 100 && point.x <= 240)
             let chromeHit = state.chromeVisible && (topChrome || bottomChrome)
 
             if state.webOverlayActive {

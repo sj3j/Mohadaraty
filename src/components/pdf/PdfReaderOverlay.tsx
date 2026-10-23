@@ -17,6 +17,7 @@ import NotewiseAnnotationDock from './NotewiseAnnotationDock';
 import PdfDrawingLayer from './PdfDrawingLayer';
 import { PdfTextBoxOverlay } from './PdfTextBoxOverlay';
 import type { DrawingTool, StrokeWidth, PdfStroke } from '../../types/pdfDrawing.types';
+import type { CanonicalInkAnnotation } from '../../types/canonicalAnnotation.types';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { loadPdfjs, fetchPdfBytes, freshBytes, PDFJS_DOC_OPTIONS } from '../../lib/pdfjs';
 import { readStoredPdf } from '../../hooks/useOfflinePDF';
@@ -35,8 +36,11 @@ import { getUserFileBlob, getLecturePageStrokes, saveLecturePageStrokes } from '
 import { secureRequestId } from '../../lib/secureRandom';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import {
+  canonicalToLegacyStroke,
   commitCanonicalOperation,
+  loadCanonicalPageAnnotations,
   migrateStrokeToCanonical,
+  recoverPendingOperations,
 } from '../../services/unifiedPdfAnnotationService';
 import { exportAnnotatedPdf } from '../../services/pdfExportService';
 import {
@@ -121,6 +125,12 @@ export default function PdfReaderOverlay({
 }: Props) {
   const isRtl = lang === 'ar';
   const hasTranslationAccess = hasSubscriptionAccess(user);
+  // V3/native records are account-scoped. Pre-V3 lecture-only records remain
+  // untouched and are read only as a legacy fallback.
+  const annotationDocumentId = useMemo(
+    () => `v3-${encodeURIComponent(user?.uid || 'anonymous')}-${encodeURIComponent(lectureId)}`,
+    [lectureId, user?.uid],
+  );
 
   // Native vs Web state
   const [isNative, setIsNative] = useState(() => isNativePdfSupported());
@@ -147,6 +157,11 @@ export default function PdfReaderOverlay({
   const [activeDrawColor, setActiveDrawColor] = useState<string>('#4f46e5');
   const [activeDrawWidth, setActiveDrawWidth] = useState<StrokeWidth>('medium');
   const [pageStrokes, setPageStrokes] = useState<Record<number, PdfStroke[]>>({});
+  // Pre-V3 strokes were normalised against a viewport/SVG layer. They must
+  // never be handed to the page-owned native renderer as though they used the
+  // crop-box coordinate system; that would silently move a student's marks.
+  const [pageStrokeCoordinateSpace, setPageStrokeCoordinateSpace] = useState<Record<number, 'pdf-page' | 'legacy-viewport'>>({});
+  const legacyInkNoticeShownRef = useRef(false);
   const [history, setHistory] = useState<Record<number, { past: PdfStroke[][]; future: PdfStroke[][] }>>({});
 
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -332,19 +347,49 @@ export default function PdfReaderOverlay({
     if (!lectureId || !current) return;
     if (pageStrokes[current] !== undefined) {
       if (isNative && nativeReady && NATIVE_INK_V2) {
-        NativePdf.setPageStrokes({ page: current, strokes: pageStrokes[current] || [] }).catch(() => {});
+        const strokes = pageStrokeCoordinateSpace[current] === 'legacy-viewport'
+          ? []
+          : pageStrokes[current] || [];
+        NativePdf.setPageStrokes({ page: current, strokes }).catch(() => {});
       }
       return;
     }
-    getLecturePageStrokes(lectureId, current)
-      .then((strokes) => {
+    loadCanonicalPageAnnotations(annotationDocumentId, current)
+      .then(async (canonical) => {
+        const v3Strokes = canonical
+          .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
+          .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
+        // Legacy records stay untouched until their old viewport coordinate
+        // system has a fixture-validated migration path.
+        let strokes = v3Strokes;
+        let coordinateSpace: 'pdf-page' | 'legacy-viewport' = 'pdf-page';
+        if (strokes.length === 0) {
+          const legacyCanonical = await loadCanonicalPageAnnotations(lectureId, current);
+          strokes = legacyCanonical
+            .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
+            .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
+          if (strokes.length === 0) {
+            strokes = await getLecturePageStrokes(lectureId, current);
+          }
+          coordinateSpace = 'legacy-viewport';
+        }
         setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
+        setPageStrokeCoordinateSpace((prev) => ({ ...prev, [current]: coordinateSpace }));
         if (isNative && nativeReady && NATIVE_INK_V2) {
-          NativePdf.setPageStrokes({ page: current, strokes: strokes || [] }).catch(() => {});
+          NativePdf.setPageStrokes({
+            page: current,
+            strokes: coordinateSpace === 'pdf-page' ? strokes : [],
+          }).catch(() => {});
+          if (coordinateSpace === 'legacy-viewport' && strokes.length > 0 && !legacyInkNoticeShownRef.current) {
+            legacyInkNoticeShownRef.current = true;
+            setToast(isRtlRef.current
+              ? 'ملاحظات الرسم القديمة محفوظة ولم تُنقل تلقائياً؛ ستبقى متاحة في القارئ المتوافق.'
+              : 'Older screen-anchored ink is preserved and was not moved automatically. It remains available in the compatibility reader.');
+          }
         }
       })
       .catch(() => {});
-  }, [lectureId, current, pageStrokes, isNative, nativeReady]);
+  }, [lectureId, annotationDocumentId, current, pageStrokes, pageStrokeCoordinateSpace, isNative, nativeReady]);
 
   const handleAddStroke = useCallback(
     (pageNum: number, stroke: PdfStroke) => {
@@ -355,6 +400,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -379,6 +425,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -635,13 +682,23 @@ export default function PdfReaderOverlay({
         const meta = await getDocMeta(lectureId);
         const initPage = meta?.lastPage && meta.lastPage > 1 ? meta.lastPage : 1;
 
-        await NativePdf.openPdf({
+        const nativeOpen = await NativePdf.openPdf({
           filePath: localPath,
           initialPage: initPage,
           nightMode: nightModeRef.current,
           stableInteractionRouting: STABLE_INTERACTION_ROUTING,
           nativeInkV2: NATIVE_INK_V2,
         });
+
+        if (NATIVE_INK_V2 && nativeOpen.nativeInkAvailable === false) {
+          setToast(isRtlRef.current
+            ? 'الكتابة بالقلم تحتاج iOS 16 أو أحدث. القراءة والتنقل ما زالا متاحين.'
+            : 'Ink requires iOS 16 or later. Reading and navigation remain available.');
+        }
+
+        // A successful native open is the first safe point to replay a
+        // write-ahead operation left by an interrupted annotation save.
+        await recoverPendingOperations(annotationDocumentId);
 
         const coordinator = interactionCoordinatorRef.current;
         const requested = coordinator.request({
@@ -691,10 +748,11 @@ export default function PdfReaderOverlay({
         const stroke = event.stroke as PdfStroke;
         setPageStrokes((prev) => {
           const currentList = prev[pageNum] || [];
+          if (currentList.some((item) => item.id === stroke.id)) return prev;
           const nextList = [...currentList, stroke];
-          saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
           return { ...prev, [pageNum]: nextList };
         });
+        setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
         setHistory((prev) => {
           const pageHist = prev[pageNum] || { past: [], future: [] };
           const currentList = pageStrokes[pageNum] || [];
@@ -711,19 +769,25 @@ export default function PdfReaderOverlay({
         void commitCanonicalOperation({
           opId,
           type: 'add',
-          documentId: lectureId,
+          documentId: annotationDocumentId,
           pageIndex: pageNum,
-          annotation: migrateStrokeToCanonical(stroke),
+          annotation: migrateStrokeToCanonical(stroke, annotationDocumentId),
           clientTimestamp: Date.now(),
+        }).then((result) => {
+          if (!result.success && mountedRef.current) {
+            setToast(isRtlRef.current ? 'ØªØ¹Ø°Ù‘Ø± Ø­ÙØ¸ Ø§Ù„Ø±Ø³Ù…' : 'Could not save annotation');
+          }
+        }).catch(() => {
+          if (mountedRef.current) setToast(isRtlRef.current ? 'ØªØ¹Ø°Ù‘Ø± Ø­ÙØ¸ Ø§Ù„Ø±Ø³Ù…' : 'Could not save annotation');
         });
       } else if (event.action === 'erase' && event.strokeId) {
         setPageStrokes((prev) => {
           const currentList = prev[pageNum] || [];
           const nextList = currentList.filter((s) => s.id !== event.strokeId);
           if (nextList.length === currentList.length) return prev;
-          saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
           return { ...prev, [pageNum]: nextList };
         });
+        setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
         setHistory((prev) => {
           const pageHist = prev[pageNum] || { past: [], future: [] };
           const currentList = pageStrokes[pageNum] || [];
@@ -740,10 +804,16 @@ export default function PdfReaderOverlay({
         void commitCanonicalOperation({
           opId,
           type: 'delete',
-          documentId: lectureId,
+          documentId: annotationDocumentId,
           pageIndex: pageNum,
           annotationId: event.strokeId,
           clientTimestamp: Date.now(),
+        }).then((result) => {
+          if (!result.success && mountedRef.current) {
+            setToast(isRtlRef.current ? 'ØªØ¹Ø°Ù‘Ø± Ø­ÙØ¸ ØªØºÙŠÙŠØ± Ø§Ù„Ø±Ø³Ù…' : 'Could not save annotation change');
+          }
+        }).catch(() => {
+          if (mountedRef.current) setToast(isRtlRef.current ? 'ØªØ¹Ø°Ù‘Ø± Ø­ÙØ¸ ØªØºÙŠÙŠØ± Ø§Ù„Ø±Ø³Ù…' : 'Could not save annotation change');
         });
       }
     });
@@ -775,7 +845,7 @@ export default function PdfReaderOverlay({
       subLongPress.then((h) => h.remove()).catch(() => {});
       NativePdf.closePdf().catch(() => {});
     };
-  }, [isNative, lectureId, pdfUrl, isLocalFile, applyConfirmedInteraction, requestInteraction]);
+  }, [isNative, lectureId, annotationDocumentId, pdfUrl, isLocalFile, applyConfirmedInteraction, requestInteraction]);
 
   // Night Mode handler
   const handleToggleNightMode = useCallback(() => {
@@ -1109,6 +1179,7 @@ export default function PdfReaderOverlay({
       setToast(isRtl ? 'جاري تجهيز وتصدير ملف الـ PDF...' : 'Generating annotated PDF...');
       const result = await exportAnnotatedPdf({
         lectureId,
+        annotationDocumentId,
         lectureTitle,
         pdfUrl,
       });

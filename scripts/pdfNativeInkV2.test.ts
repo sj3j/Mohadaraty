@@ -22,6 +22,7 @@ console.log('\n--- 1. Phase 2 Native Architecture & Source Contracts ---');
 const androidHost = source('android/app/src/main/java/com/mohadaraty/app/pdf/NativePdfReaderHost.java');
 const androidInk = source('android/app/src/main/java/com/mohadaraty/app/pdf/PdfInkOverlayView.java');
 const androidCoord = source('android/app/src/main/java/com/mohadaraty/app/pdf/NativeGestureCoordinator.java');
+const androidGeometry = source('android/app/src/main/java/com/mohadaraty/app/pdf/PdfPageGeometryAdapter.java');
 const androidPlugin = source('android/app/src/main/java/com/mohadaraty/app/pdf/PdfViewerPlugin.java');
 const iosPlugin = source('ios/App/App/pdf/PdfViewerPlugin.swift');
 const iosGeometry = source('ios/App/App/pdf/PdfGeometryAdapter.swift');
@@ -52,6 +53,22 @@ check(
 );
 
 check(
+  'Android removes the top ink overlay from hit testing outside an active ink tool',
+  /inkOverlayView\.setVisibility\(shouldReceiveInk \? VISIBLE : GONE\)/.test(androidHost) &&
+    /setInteractive\(shouldReceiveInk\)/.test(androidHost),
+  'The overlay must not consume PDFView navigation gestures outside Pencil, Highlighter, or Eraser mode',
+);
+
+check(
+  'Android normalizes ink against the displayed PDF page rather than the overlay viewport',
+  /getPageSize\(/.test(androidGeometry) &&
+    /getCurrentXOffset\(\)/.test(androidGeometry) &&
+    /getCurrentYOffset\(\)/.test(androidGeometry) &&
+    /geometry\.normalizedX/.test(androidInk),
+  'Coordinates must use the visible PDF page bounds, offsets, and zoom rather than getWidth/getHeight',
+);
+
+check(
   'Android Plugin exposes setPageStrokes and dispatches onStrokesUpdated events',
   /@PluginMethod[\s\S]{0,100}\bsetPageStrokes\b/.test(androidPlugin) &&
     /notifyListeners\("onStrokesUpdated"/.test(androidPlugin),
@@ -63,6 +80,14 @@ check(
   /NativePdfPageOverlayProvider:\s*NSObject,\s*PDFPageOverlayViewProvider/.test(iosOverlay) &&
     /PKCanvasView/.test(iosOverlay),
   'iOS must conform to PDFPageOverlayViewProvider and provide interactive PKCanvasView'
+);
+
+check(
+  'iOS hydrates native page overlays and suppresses duplicate hydration callbacks',
+  /setPageStrokes\(pageIndex: Int, strokes: \[PdfBridgeStroke\]\)/.test(iosOverlay) &&
+    /pagesBeingHydrated/.test(iosOverlay) &&
+    /canvasToNormalizedPoint/.test(iosGeometry),
+  'Hydrating a page must not re-emit its historical strokes as new operations',
 );
 
 check(

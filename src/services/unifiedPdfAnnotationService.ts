@@ -44,7 +44,24 @@ import {
 
 const PROCESSED_OPS_LIMIT = 500;
 const journalMemoryCache = new Map<string, DurableOperationJournal>();
-const processedOpIdsMemory = new Set<string>();
+const processedOpIdsMemory = new Map<string, Set<string>>();
+const documentQueues = new Map<string, Promise<void>>();
+
+function processedIdsFor(documentId: string): Set<string> {
+  let ids = processedOpIdsMemory.get(documentId);
+  if (!ids) {
+    ids = new Set<string>();
+    processedOpIdsMemory.set(documentId, ids);
+  }
+  return ids;
+}
+
+function enqueueDocument<T>(documentId: string, work: () => Promise<T>): Promise<T> {
+  const previous = documentQueues.get(documentId) || Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  documentQueues.set(documentId, next.then(() => undefined, () => undefined));
+  return next;
+}
 
 // Fallback in-memory stores when neither IndexedDB nor Native Filesystem is active (e.g. Node tests, strict private browsing)
 const fallbackMemoryStrokes = new Map<string, PdfStroke[]>();
@@ -94,9 +111,8 @@ export async function getDurableJournal(documentId: string): Promise<DurableOper
 
   // Seed memory cache and lookup set
   journalMemoryCache.set(documentId, initialJournal);
-  for (const id of initialJournal.processedOpIds) {
-    processedOpIdsMemory.add(id);
-  }
+  const processed = processedIdsFor(documentId);
+  for (const id of initialJournal.processedOpIds) processed.add(id);
 
   return initialJournal;
 }
@@ -111,16 +127,16 @@ export async function persistDurableJournal(
   journal.updatedAt = Date.now();
   journalMemoryCache.set(documentId, journal);
 
-  // 1. Native mobile filesystem
-  try {
-    if (await isNativePlatform()) {
-      await saveNativeJournal(documentId, journal);
-    }
-  } catch (err) {
-    console.warn('[UnifiedPdfAnnotationService] Error writing native journal:', err);
+  const native = await isNativePlatform();
+  let nativeSaved = !native;
+  let indexedDbSaved = !isLocalDbAvailable();
+
+  if (native) {
+    nativeSaved = await saveNativeJournal(documentId, journal);
   }
 
-  // 2. IndexedDB STORE_META
+  // IndexedDB is a web fallback/mirror. Native acknowledgement is based on the
+  // native repository, never on an unrelated WebView cache.
   if (isLocalDbAvailable()) {
     try {
       const db = await openDb();
@@ -134,20 +150,29 @@ export async function persistDurableJournal(
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
+      indexedDbSaved = true;
     } catch (err) {
-      console.warn('[UnifiedPdfAnnotationService] Error writing IndexedDB journal:', err);
+      if (!native) throw err;
+      console.warn('[UnifiedPdfAnnotationService] IndexedDB journal mirror failed:', err);
     }
+  }
+
+  if (!nativeSaved || (!native && !indexedDbSaved)) {
+    throw new Error('Annotation operation journal could not be persisted');
   }
 }
 
 /**
  * Transforms a legacy PdfStroke into a CanonicalInkAnnotation.
  */
-export function migrateStrokeToCanonical(stroke: PdfStroke): CanonicalInkAnnotation {
+export function migrateStrokeToCanonical(
+  stroke: PdfStroke,
+  documentId: string = stroke.lectureId,
+): CanonicalInkAnnotation {
   return {
     id: stroke.id,
     schemaVersion: CANONICAL_SCHEMA_VERSION,
-    documentId: stroke.lectureId,
+    documentId,
     pageIndex: stroke.page,
     kind: stroke.tool === 'free_highlighter' ? 'highlighter' : 'ink',
     points: (stroke.points || []).map((pt: StrokePoint) => ({
@@ -347,26 +372,22 @@ export async function loadCanonicalDocument(
  * Recovers any uncommitted pending operations recorded in the journal (crash recovery).
  */
 export async function recoverPendingOperations(documentId: string): Promise<number> {
-  const journal = await getDurableJournal(documentId);
-  if (!journal.pendingOps || journal.pendingOps.length === 0) {
-    return 0;
-  }
+  return enqueueDocument(documentId, async () => {
+    const journal = await getDurableJournal(documentId);
+    if (!journal.pendingOps || journal.pendingOps.length === 0) return 0;
 
-  let recovered = 0;
-  const pending = [...journal.pendingOps];
-  journal.pendingOps = [];
-
-  for (const op of pending) {
-    try {
-      await commitCanonicalOperation(op);
+    let recovered = 0;
+    // Do not clear pendingOps before replay. Their opIds are deliberately in
+    // processedOpIds, so normal deduplication would otherwise skip them.
+    for (const op of [...journal.pendingOps]) {
+      const result = await commitCanonicalOperationNow(op, true);
+      if (!result.success) {
+        throw new Error(`Could not recover annotation operation ${op.opId}`);
+      }
       recovered++;
-    } catch (e) {
-      console.warn('[UnifiedPdfAnnotationService] Pending op recovery failed:', op, e);
     }
-  }
-
-  await persistDurableJournal(documentId, journal);
-  return recovered;
+    return recovered;
+  });
 }
 
 /**
@@ -376,26 +397,38 @@ export async function recoverPendingOperations(documentId: string): Promise<numb
 export async function commitCanonicalOperation(
   op: CanonicalAnnotationOperation,
 ): Promise<{ success: boolean; skipped?: boolean }> {
+  return enqueueDocument(op.documentId, () => commitCanonicalOperationNow(op, false));
+}
+
+async function commitCanonicalOperationNow(
+  op: CanonicalAnnotationOperation,
+  isRecoveryReplay: boolean,
+): Promise<{ success: boolean; skipped?: boolean }> {
+  const processed = processedIdsFor(op.documentId);
   // Check in-memory fast path
-  if (processedOpIdsMemory.has(op.opId)) {
+  if (!isRecoveryReplay && processed.has(op.opId)) {
     return { success: true, skipped: true };
   }
 
   // Check persistent journal
   const journal = await getDurableJournal(op.documentId);
-  if (journal.processedOpIds.includes(op.opId)) {
-    processedOpIdsMemory.add(op.opId);
+  if (!isRecoveryReplay && journal.processedOpIds.includes(op.opId)) {
+    processed.add(op.opId);
     return { success: true, skipped: true };
   }
 
-  // Register in journal pending queue
-  journal.pendingOps.push(op);
-  journal.processedOpIds.push(op.opId);
-  if (journal.processedOpIds.length > PROCESSED_OPS_LIMIT) {
-    journal.processedOpIds.shift();
+  if (!isRecoveryReplay) {
+    // Write-ahead logging: a kill between this point and the state write can
+    // now be replayed safely after launch.
+    journal.pendingOps.push(op);
+    journal.processedOpIds.push(op.opId);
+    if (journal.processedOpIds.length > PROCESSED_OPS_LIMIT) {
+      journal.processedOpIds.shift();
+    }
+    journal.lastRevision += 1;
+    await persistDurableJournal(op.documentId, journal);
   }
-  journal.lastRevision += 1;
-  processedOpIdsMemory.add(op.opId);
+  processed.add(op.opId);
 
   // Record page history snapshot before applying mutation (for undo/redo)
   try {
@@ -427,9 +460,11 @@ export async function commitCanonicalOperation(
             const existingStrokes = await listNativeStrokes(op.documentId, op.pageIndex);
             const nextStrokes = existingStrokes.filter((s) => s.id !== stroke.id);
             nextStrokes.push(stroke);
-            await saveNativeStrokes(op.documentId, op.pageIndex, nextStrokes);
+            if (!await saveNativeStrokes(op.documentId, op.pageIndex, nextStrokes)) {
+              throw new Error('Native stroke write was rejected');
+            }
           } catch (fsErr) {
-            console.warn('[UnifiedPdfAnnotationService] Native stroke write skipped:', fsErr);
+            throw fsErr;
           }
         }
 
@@ -458,7 +493,9 @@ export async function commitCanonicalOperation(
         };
 
         if (await isNativePlatform()) {
-          await saveNativeAnnotation(legacy);
+          if (!await saveNativeAnnotation(legacy)) {
+            throw new Error('Native annotation write was rejected');
+          }
         }
         if (isLocalDbAvailable()) {
           const db = await openDb();
@@ -493,15 +530,19 @@ export async function commitCanonicalOperation(
       // 2. Delete from native filesystem strokes
       if (await isNativePlatform()) {
         try {
-          await deleteNativeStroke(op.documentId, op.pageIndex, op.annotationId);
+          if (!await deleteNativeStroke(op.documentId, op.pageIndex, op.annotationId)) {
+            throw new Error('Native stroke delete was rejected');
+          }
         } catch (fsErr) {
-          console.warn('[UnifiedPdfAnnotationService] Native delete stroke skipped:', fsErr);
+          throw fsErr;
         }
       }
 
       // 3. Delete from annotations (text/highlights)
       if (await isNativePlatform()) {
-        await deleteNativeAnnotation(op.annotationId, op.documentId);
+        if (!await deleteNativeAnnotation(op.annotationId, op.documentId)) {
+          throw new Error('Native annotation delete was rejected');
+        }
       }
       if (isLocalDbAvailable()) {
         const db = await openDb();
@@ -521,7 +562,7 @@ export async function commitCanonicalOperation(
       fallbackMemoryAnnotations.set(op.documentId, existingMemAnnos.filter((a) => a.id !== op.annotationId));
     }
 
-    // Remove from pendingOps upon durable success and persist journal
+    // Remove from pendingOps only after the canonical state was durably saved.
     journal.pendingOps = journal.pendingOps.filter((p) => p.opId !== op.opId);
     await persistDurableJournal(op.documentId, journal);
 
@@ -529,8 +570,14 @@ export async function commitCanonicalOperation(
   } catch (err) {
     console.error('[UnifiedPdfAnnotationService] Operation commit failed:', op, err);
     // Remove from processed set on hard failure so a retry is permitted
-    processedOpIdsMemory.delete(op.opId);
+    processed.delete(op.opId);
     journal.processedOpIds = journal.processedOpIds.filter((id) => id !== op.opId);
+    // Keep the pending entry durable so a later retry/recovery has evidence.
+    try {
+      await persistDurableJournal(op.documentId, journal);
+    } catch (journalError) {
+      console.error('[UnifiedPdfAnnotationService] Could not persist failed operation journal:', journalError);
+    }
     return { success: false };
   }
 }

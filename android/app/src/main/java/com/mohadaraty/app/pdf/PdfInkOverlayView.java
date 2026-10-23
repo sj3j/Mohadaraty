@@ -5,10 +5,13 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PointF;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.view.MotionEvent;
 import android.view.View;
+
+import com.github.barteksc.pdfviewer.PDFView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -16,7 +19,9 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public class PdfInkOverlayView extends View {
@@ -70,21 +75,30 @@ public class PdfInkOverlayView extends View {
     }
 
     private int currentPage = 1;
+    private int activeStrokePage = -1;
     private String activeTool = "pencil";
     private int activeColor = Color.parseColor("#4f46e5");
     private float activeWidth = 4f;
+    private boolean isInteractive = false;
 
     private final Paint pencilPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private final Paint highlighterPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private final Paint currentStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+    private final PdfPageGeometryAdapter geometry;
+    private final PDFView pdfView;
 
     private final Path currentPath = new Path();
     private final List<NativePoint> currentStrokePoints = new ArrayList<>();
-    private final List<NativeStroke> persistedStrokes = Collections.synchronizedList(new ArrayList<>());
+    // Keep page state isolated. A single global list made strokes from the
+    // previously viewed page render on the next page until JavaScript happened
+    // to send another setPageStrokes call.
+    private final Map<Integer, List<NativeStroke>> persistedStrokesByPage = Collections.synchronizedMap(new HashMap<>());
     private StrokeCommitListener commitListener;
 
-    public PdfInkOverlayView(Context context) {
+    public PdfInkOverlayView(Context context, PDFView pdfView) {
         super(context);
+        this.pdfView = pdfView;
+        this.geometry = new PdfPageGeometryAdapter(pdfView);
         initPaints();
     }
 
@@ -109,7 +123,7 @@ public class PdfInkOverlayView extends View {
     public void setCurrentPage(int page) {
         this.currentPage = page;
         cancelActiveStroke();
-        invalidate();
+        pdfView.invalidate();
     }
 
     public void setActiveTool(String tool) {
@@ -127,50 +141,59 @@ public class PdfInkOverlayView extends View {
         invalidate();
     }
 
+    public void setInteractive(boolean interactive) {
+        if (!interactive) cancelActiveStroke();
+        this.isInteractive = interactive;
+    }
+
     public void setPageStrokes(int page, List<NativeStroke> strokes) {
-        synchronized (persistedStrokes) {
-            persistedStrokes.clear();
-            if (strokes != null) {
-                persistedStrokes.addAll(strokes);
-            }
+        synchronized (persistedStrokesByPage) {
+            persistedStrokesByPage.put(page, strokes == null ? new ArrayList<>() : new ArrayList<>(strokes));
         }
-        invalidate();
+        pdfView.invalidate();
     }
 
     public void cancelActiveStroke() {
         currentPath.reset();
         currentStrokePoints.clear();
+        activeStrokePage = -1;
         invalidate();
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
-        float viewWidth = getWidth();
-        float viewHeight = getHeight();
+        if (!isInteractive) {
+            return false;
+        }
 
-        if (viewWidth <= 0 || viewHeight <= 0) {
+        if (getWidth() <= 0 || getHeight() <= 0) {
             return false;
         }
 
         float x = event.getX();
         float y = event.getY();
         float pressure = event.getPressure();
+        int pageAtTouch = geometry.pageAt(x, y);
 
         if ("eraser".equals(activeTool)) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
-                eraseStrokesNear(x / viewWidth, y / viewHeight, 0.035f);
+                if (pageAtTouch > 0) {
+                    eraseStrokesNear(pageAtTouch, geometry.normalizedX(x, pageAtTouch), geometry.normalizedY(y, pageAtTouch), 0.035f);
+                }
             }
             return true;
         }
 
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
+                if (pageAtTouch < 0) return false;
                 currentStrokePoints.clear();
                 currentPath.reset();
                 currentPath.moveTo(x, y);
+                activeStrokePage = pageAtTouch;
 
-                currentStrokePoints.add(new NativePoint(x / viewWidth, y / viewHeight, pressure));
+                currentStrokePoints.add(new NativePoint(geometry.normalizedX(x, activeStrokePage), geometry.normalizedY(y, activeStrokePage), pressure));
                 invalidate();
                 return true;
             }
@@ -183,17 +206,17 @@ public class PdfInkOverlayView extends View {
                     float hY = event.getHistoricalY(h);
                     float hP = event.getHistoricalPressure(h);
                     currentPath.lineTo(hX, hY);
-                    currentStrokePoints.add(new NativePoint(hX / viewWidth, hY / viewHeight, hP));
+                    currentStrokePoints.add(new NativePoint(geometry.normalizedX(hX, activeStrokePage), geometry.normalizedY(hY, activeStrokePage), hP));
                 }
                 currentPath.lineTo(x, y);
-                currentStrokePoints.add(new NativePoint(x / viewWidth, y / viewHeight, pressure));
+                currentStrokePoints.add(new NativePoint(geometry.normalizedX(x, activeStrokePage), geometry.normalizedY(y, activeStrokePage), pressure));
                 invalidate();
                 return true;
             }
 
             case MotionEvent.ACTION_UP: {
                 currentPath.lineTo(x, y);
-                currentStrokePoints.add(new NativePoint(x / viewWidth, y / viewHeight, pressure));
+                currentStrokePoints.add(new NativePoint(geometry.normalizedX(x, activeStrokePage), geometry.normalizedY(y, activeStrokePage), pressure));
                 commitCurrentStroke();
                 invalidate();
                 return true;
@@ -218,7 +241,7 @@ public class PdfInkOverlayView extends View {
         String strokeId = UUID.randomUUID().toString();
         NativeStroke stroke = new NativeStroke(
                 strokeId,
-                currentPage,
+                activeStrokePage,
                 activeTool,
                 activeColor,
                 activeWidth,
@@ -227,38 +250,42 @@ public class PdfInkOverlayView extends View {
                 System.currentTimeMillis()
         );
 
-        synchronized (persistedStrokes) {
-            persistedStrokes.add(stroke);
+        synchronized (persistedStrokesByPage) {
+            persistedStrokesByPage.computeIfAbsent(activeStrokePage, ignored -> new ArrayList<>()).add(stroke);
         }
 
         if (commitListener != null) {
             try {
                 JSONObject json = strokeToJson(stroke);
-                commitListener.onStrokeCommitted(currentPage, json);
+                commitListener.onStrokeCommitted(activeStrokePage, json);
             } catch (JSONException ignored) {}
         }
 
         currentPath.reset();
         currentStrokePoints.clear();
+        activeStrokePage = -1;
+        pdfView.invalidate();
     }
 
-    private void eraseStrokesNear(float normX, float normY, float threshold) {
+    private void eraseStrokesNear(int page, float normX, float normY, float threshold) {
         List<String> erasedIds = new ArrayList<>();
-        synchronized (persistedStrokes) {
-            for (int i = persistedStrokes.size() - 1; i >= 0; i--) {
-                NativeStroke stroke = persistedStrokes.get(i);
+        synchronized (persistedStrokesByPage) {
+            List<NativeStroke> pageStrokes = persistedStrokesByPage.get(page);
+            if (pageStrokes == null) return;
+            for (int i = pageStrokes.size() - 1; i >= 0; i--) {
+                NativeStroke stroke = pageStrokes.get(i);
                 if (intersects(stroke, normX, normY, threshold)) {
                     erasedIds.add(stroke.id);
-                    persistedStrokes.remove(i);
+                    pageStrokes.remove(i);
                 }
             }
         }
 
         if (!erasedIds.isEmpty()) {
-            invalidate();
+            pdfView.invalidate();
             if (commitListener != null) {
                 for (String id : erasedIds) {
-                    commitListener.onStrokeErased(currentPage, id);
+                    commitListener.onStrokeErased(page, id);
                 }
             }
         }
@@ -292,19 +319,11 @@ public class PdfInkOverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        float viewWidth = getWidth();
-        float viewHeight = getHeight();
+        if (getWidth() <= 0 || getHeight() <= 0) return;
 
-        if (viewWidth <= 0 || viewHeight <= 0) return;
-
-        // Render persisted strokes
-        synchronized (persistedStrokes) {
-            for (NativeStroke stroke : persistedStrokes) {
-                renderStroke(canvas, stroke, viewWidth, viewHeight);
-            }
-        }
-
-        // Render active stroke currently being drawn
+        // Persisted strokes are painted by PDFView's page callback. Keeping
+        // them out of this full-screen overlay prevents viewport-anchored ink.
+        // This view paints only the temporary stroke while it is being drawn.
         if (!currentStrokePoints.isEmpty() && !"eraser".equals(activeTool)) {
             boolean isHighlighter = "free_highlighter".equals(activeTool);
             currentStrokePaint.setColor(activeColor);
@@ -318,21 +337,41 @@ public class PdfInkOverlayView extends View {
         }
     }
 
-    private void renderStroke(Canvas canvas, NativeStroke stroke, float width, float height) {
+    /** Called by PDFView.onDrawAll with PDFView's own page transform. */
+    public void drawPageStrokes(Canvas canvas, float pageWidth, float pageHeight, int zeroBasedPage) {
+        final List<NativeStroke> pageStrokes;
+        synchronized (persistedStrokesByPage) {
+            List<NativeStroke> stored = persistedStrokesByPage.get(zeroBasedPage + 1);
+            pageStrokes = stored == null ? Collections.emptyList() : new ArrayList<>(stored);
+        }
+        if (pageStrokes.isEmpty()) return;
+
+        PointF inset = geometry.pageLayerInset(zeroBasedPage);
+        canvas.save();
+        canvas.translate(inset.x, inset.y);
+        for (NativeStroke stroke : pageStrokes) {
+            renderStroke(canvas, stroke, pageWidth, pageHeight, zeroBasedPage);
+        }
+        canvas.restore();
+    }
+
+    private void renderStroke(Canvas canvas, NativeStroke stroke, float pageWidth, float pageHeight, int zeroBasedPage) {
         if (stroke.points == null || stroke.points.size() < 2) return;
 
         Paint paint = "free_highlighter".equals(stroke.tool) ? highlighterPaint : pencilPaint;
         paint.setColor(stroke.color);
-        paint.setStrokeWidth(stroke.width * getResources().getDisplayMetrics().density);
+        float rawWidth = Math.max(1f, pdfView.getPageSize(zeroBasedPage).getWidth());
+        float zoom = pageWidth / rawWidth;
+        paint.setStrokeWidth(stroke.width * getResources().getDisplayMetrics().density * zoom);
         paint.setAlpha((int) (255 * Math.max(0.1f, Math.min(1.0f, stroke.opacity))));
 
         Path path = new Path();
         NativePoint p0 = stroke.points.get(0);
-        path.moveTo(p0.x * width, p0.y * height);
+        path.moveTo(p0.x * pageWidth, p0.y * pageHeight);
 
         for (int i = 1; i < stroke.points.size(); i++) {
             NativePoint p = stroke.points.get(i);
-            path.lineTo(p.x * width, p.y * height);
+            path.lineTo(p.x * pageWidth, p.y * pageHeight);
         }
 
         canvas.drawPath(path, paint);

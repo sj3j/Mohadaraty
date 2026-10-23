@@ -134,6 +134,7 @@ export interface CanonicalDocumentState {
 
 export interface DurableOperationJournal {
   documentId: string;
+  schemaVersion: number;
   processedOpIds: string[];
   lastRevision: number;
   pendingOps: CanonicalAnnotationOperation[];
