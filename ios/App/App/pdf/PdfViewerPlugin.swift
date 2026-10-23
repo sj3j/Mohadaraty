@@ -263,8 +263,10 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func setPageStrokes(_ call: CAPPluginCall) {
         let page = call.getInt("page", 1)
-        let rawStrokes = call.getArray("strokes", [JSObject]()) ?? []
-        let strokes = rawStrokes.compactMap { PdfBridgeStroke.from(dictionary: $0) }
+        let rawStrokes = call.getArray("strokes", JSObject.self) ?? []
+        let strokes = rawStrokes.compactMap {
+            PdfBridgeStroke.from(dictionary: $0.mapValues { $0 as Any })
+        }
         DispatchQueue.main.async { [weak self] in
             if #available(iOS 16.0, *) {
                 (self?.overlayProvider as? NativePdfPageOverlayProvider)?.setPageStrokes(
@@ -277,7 +279,7 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func setInteractiveZones(_ call: CAPPluginCall) {
-        let zones = call.getArray("zones", [JSObject]()) ?? []
+        let zones = call.getArray("zones", JSObject.self) ?? []
         let mapped = zones.map { item -> CGRect in
             let left = item["left"] as? Double ?? 0
             let top = item["top"] as? Double ?? 0
