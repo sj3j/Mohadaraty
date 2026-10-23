@@ -131,6 +131,14 @@ export const PdfTextBoxOverlay: React.FC<Props> = ({
     setEditingId(null);
   }, [editingId, editText, editFontSize, editColor, textItems, onSaveText, onDeleteText]);
 
+  useEffect(() => {
+    if (isAnnotationMode && activeTool === 'text') return;
+    setDraggingId(null);
+    dragStartRef.current = null;
+    setSelectedId(null);
+    if (editingId) handleCommitEdit();
+  }, [isAnnotationMode, activeTool, editingId, handleCommitEdit]);
+
   // Click on background container when activeTool === 'text' creates a new text box
   const handleContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (activeTool !== 'text' || !isAnnotationMode) {
@@ -202,6 +210,7 @@ export const PdfTextBoxOverlay: React.FC<Props> = ({
 
     const onPointerMove = (e: MouseEvent | TouchEvent) => {
       if (!dragStartRef.current || !containerRef.current) return;
+      if ('touches' in e) e.preventDefault();
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
 
@@ -231,12 +240,16 @@ export const PdfTextBoxOverlay: React.FC<Props> = ({
     window.addEventListener('mouseup', onPointerUp);
     window.addEventListener('touchmove', onPointerMove, { passive: false });
     window.addEventListener('touchend', onPointerUp);
+    window.addEventListener('touchcancel', onPointerUp);
+    window.addEventListener('blur', onPointerUp);
 
     return () => {
       window.removeEventListener('mousemove', onPointerMove);
       window.removeEventListener('mouseup', onPointerUp);
       window.removeEventListener('touchmove', onPointerMove);
       window.removeEventListener('touchend', onPointerUp);
+      window.removeEventListener('touchcancel', onPointerUp);
+      window.removeEventListener('blur', onPointerUp);
     };
   }, [draggingId, textItems, onSaveText]);
 

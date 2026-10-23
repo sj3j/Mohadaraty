@@ -8,6 +8,8 @@
 
 import type { OfflineLecture } from './localDb';
 import type { PdfAnnotation, DocMeta } from '../types/pdfAnnotation.types';
+import type { PdfStroke } from '../types/pdfDrawing.types';
+import type { DurableOperationJournal } from '../types/canonicalAnnotation.types';
 
 const LECTURES_DIR = 'lectures';
 const STAGING_DIR = 'staging';
@@ -478,6 +480,111 @@ export async function deleteAllNativeAnnotations(lectureId: string): Promise<num
     return existing.length;
   } catch {
     return 0;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Vector Stroke Storage on Native Filesystem
+// ----------------------------------------------------------------------------
+
+export async function listNativeStrokes(lectureId: string, page?: number): Promise<PdfStroke[]> {
+  try {
+    const { Filesystem, Directory, Encoding } = await getFs();
+    const result = await Filesystem.readFile({
+      path: `${ANNOTATIONS_DIR}/strokes_${lectureId}.json`,
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+    });
+    const content = typeof result.data === 'string' ? result.data : '';
+    const allStrokes: PdfStroke[] = content ? JSON.parse(content) : [];
+    if (typeof page === 'number') {
+      return allStrokes.filter(s => s.page === page);
+    }
+    return allStrokes;
+  } catch {
+    return [];
+  }
+}
+
+export async function saveNativeStrokes(
+  lectureId: string,
+  page: number,
+  pageStrokes: PdfStroke[]
+): Promise<boolean> {
+  try {
+    await ensureDirectoriesExist();
+    const { Filesystem, Directory, Encoding } = await getFs();
+    const existing = await listNativeStrokes(lectureId);
+    // Remove previous strokes for this page and append updated strokes
+    const otherPages = existing.filter(s => s.page !== page);
+    const merged = [...otherPages, ...pageStrokes];
+
+    await Filesystem.writeFile({
+      path: `${ANNOTATIONS_DIR}/strokes_${lectureId}.json`,
+      data: JSON.stringify(merged, null, 2),
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[NativePdfRepository] saveNativeStrokes failed:', err);
+    return false;
+  }
+}
+
+export async function deleteNativeStroke(
+  lectureId: string,
+  page: number,
+  strokeId: string
+): Promise<boolean> {
+  try {
+    const existing = await listNativeStrokes(lectureId, page);
+    const updated = existing.filter(s => s.id !== strokeId);
+    return await saveNativeStrokes(lectureId, page, updated);
+  } catch (err) {
+    console.error('[NativePdfRepository] deleteNativeStroke failed:', err);
+    return false;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Durable Operation Journal on Native Filesystem
+// ----------------------------------------------------------------------------
+
+export async function getNativeJournal(lectureId: string): Promise<DurableOperationJournal | null> {
+  try {
+    const { Filesystem, Directory, Encoding } = await getFs();
+    const result = await Filesystem.readFile({
+      path: `${ANNOTATIONS_DIR}/journal_${lectureId}.json`,
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+    });
+    const content = typeof result.data === 'string' ? result.data : '';
+    return content ? JSON.parse(content) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveNativeJournal(
+  lectureId: string,
+  journal: DurableOperationJournal
+): Promise<boolean> {
+  try {
+    await ensureDirectoriesExist();
+    const { Filesystem, Directory, Encoding } = await getFs();
+    await Filesystem.writeFile({
+      path: `${ANNOTATIONS_DIR}/journal_${lectureId}.json`,
+      data: JSON.stringify(journal, null, 2),
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[NativePdfRepository] saveNativeJournal failed:', err);
+    return false;
   }
 }
 

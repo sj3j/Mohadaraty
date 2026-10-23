@@ -1219,8 +1219,8 @@ export default function App() {
     // half-screen under the last card. A screen that needs more room now says so
     // by its own content, not by re-padding.
     <div
-      className={`min-h-screen ${isReaderOpen ? 'bg-transparent !pt-0' : 'bg-stone-50 dark:bg-zinc-900'} text-slate-900 dark:text-stone-100 ${composingAnnouncements || isReaderOpen ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
-      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+      className={`min-h-screen ${isReaderOpen ? 'bg-transparent' : 'bg-stone-50 dark:bg-zinc-900'} text-slate-900 dark:text-stone-100 ${composingAnnouncements || isReaderOpen ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
+      style={isReaderOpen ? { paddingTop: 0 } : { paddingTop: 'env(safe-area-inset-top)' }}
       dir={isRtl ? 'rtl' : 'ltr'}
     >
 

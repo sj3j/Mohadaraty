@@ -18,6 +18,7 @@ interface Props {
   onToggleNightMode: () => void;
   onShare: () => void;
   onExportNotes: () => void;
+  onExportPdf?: () => void;
   onOpenAttachments: () => void;
   onOpenNotes: () => void;
   onOpenTranslation?: () => void;
@@ -39,6 +40,7 @@ export const NotewiseDocumentSheet: React.FC<Props> = ({
   onToggleNightMode,
   onShare,
   onExportNotes,
+  onExportPdf,
   onOpenAttachments,
   onOpenNotes,
   onOpenTranslation,
@@ -214,6 +216,29 @@ export const NotewiseDocumentSheet: React.FC<Props> = ({
                 </div>
                 <ChevronIcon className="w-4 h-4 text-slate-400 dark:text-zinc-500" />
               </button>
+
+              {onExportPdf && (
+                <button
+                  type="button"
+                  onClick={() => { onClose(); onExportPdf(); }}
+                  className="w-full flex items-center justify-between p-3.5 rounded-2xl hover:bg-slate-100 dark:hover:bg-zinc-800/60 transition-all text-left rtl:text-right"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                      <Download className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-900 dark:text-zinc-100">
+                        {isRtl ? 'تصدير نسخة PDF مع الشروحات' : 'Export Annotated PDF'}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-zinc-400">
+                        {isRtl ? 'تصدير مستند PDF كامل بجميع كتاباتك وملاحظاتك' : 'Export full PDF with all handwritten notes & highlights'}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronIcon className="w-4 h-4 text-slate-400 dark:text-zinc-500" />
+                </button>
+              )}
 
               {simosanAvailable && onOpenSimosan && (
                 <button

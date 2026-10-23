@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import type {
   DrawingTool,
   StrokeWidth,
@@ -129,8 +129,15 @@ export const PdfDrawingLayer: React.FC<Props> = ({
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [currentPoints, setCurrentPoints] = useState<StrokePoint[] | null>(null);
+  const currentPointsRef = useRef<StrokePoint[] | null>(null);
   const isDrawing = useRef(false);
   const activePointerId = useRef<number | null>(null);
+  const paintFrame = useRef<number | null>(null);
+  const gestureStyle = useRef<{
+    tool: DrawingTool;
+    color: string;
+    width: StrokeWidth;
+  } | null>(null);
 
   const isInteractive =
     isAnnotationMode &&
@@ -143,6 +150,48 @@ export const PdfDrawingLayer: React.FC<Props> = ({
         : PENCIL_WIDTHS[activeWidth] || 4;
     return base * scale;
   }, [activeTool, activeWidth, scale]);
+
+  const cancelPaintFrame = useCallback(() => {
+    if (paintFrame.current !== null) {
+      cancelAnimationFrame(paintFrame.current);
+      paintFrame.current = null;
+    }
+  }, []);
+
+  const publishCurrentPoints = useCallback(() => {
+    if (paintFrame.current !== null) return;
+    paintFrame.current = requestAnimationFrame(() => {
+      paintFrame.current = null;
+      setCurrentPoints(currentPointsRef.current ? [...currentPointsRef.current] : null);
+    });
+  }, []);
+
+  const releaseActivePointer = useCallback(() => {
+    const element = svgRef.current;
+    const pointerId = activePointerId.current;
+    if (!element || pointerId === null) return;
+    try {
+      if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    } catch {}
+  }, []);
+
+  const cancelActiveGesture = useCallback((updateView = true) => {
+    releaseActivePointer();
+    cancelPaintFrame();
+    isDrawing.current = false;
+    activePointerId.current = null;
+    currentPointsRef.current = null;
+    gestureStyle.current = null;
+    if (updateView) setCurrentPoints(null);
+  }, [cancelPaintFrame, releaseActivePointer]);
+
+  useEffect(() => {
+    if (isDrawing.current) cancelActiveGesture();
+  }, [isInteractive, activeTool, cancelActiveGesture]);
+
+  useEffect(() => () => {
+    cancelActiveGesture(false);
+  }, [cancelActiveGesture]);
 
   const getNormalizedPoint = useCallback(
     (clientX: number, clientY: number): StrokePoint | null => {
@@ -177,13 +226,16 @@ export const PdfDrawingLayer: React.FC<Props> = ({
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!isInteractive || !e.isPrimary) return;
+    e.preventDefault();
 
-    // Capture pointer
+    if (isDrawing.current) cancelActiveGesture();
+
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
     activePointerId.current = e.pointerId;
     isDrawing.current = true;
+    gestureStyle.current = { tool: activeTool, color: activeColor, width: activeWidth };
 
     if (activeTool === 'eraser') {
       checkEraserHit(e.clientX, e.clientY);
@@ -193,14 +245,16 @@ export const PdfDrawingLayer: React.FC<Props> = ({
     const pt = getNormalizedPoint(e.clientX, e.clientY);
     if (pt) {
       pt.p = e.pressure > 0 ? e.pressure : 0.5;
+      currentPointsRef.current = [pt];
       setCurrentPoints([pt]);
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!isDrawing.current || (activePointerId.current !== null && activePointerId.current !== e.pointerId)) return;
+    e.preventDefault();
 
-    if (activeTool === 'eraser') {
+    if (gestureStyle.current?.tool === 'eraser') {
       checkEraserHit(e.clientX, e.clientY);
       return;
     }
@@ -208,47 +262,51 @@ export const PdfDrawingLayer: React.FC<Props> = ({
     const pt = getNormalizedPoint(e.clientX, e.clientY);
     if (pt) {
       pt.p = e.pressure > 0 ? e.pressure : 0.5;
-      setCurrentPoints((prev) => (prev ? [...prev, pt] : [pt]));
+      if (currentPointsRef.current) currentPointsRef.current.push(pt);
+      else currentPointsRef.current = [pt];
+      publishCurrentPoints();
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!isDrawing.current || (activePointerId.current !== null && activePointerId.current !== e.pointerId)) return;
+    e.preventDefault();
+    isDrawing.current = false;
+    activePointerId.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
 
-    isDrawing.current = false;
-    activePointerId.current = null;
+    cancelPaintFrame();
 
-    if (activeTool !== 'eraser' && currentPoints && currentPoints.length > 0) {
+    const points = currentPointsRef.current;
+    const style = gestureStyle.current;
+    if (style && style.tool !== 'eraser' && points && points.length > 0) {
       const newStroke: PdfStroke = {
         id: secureRequestId(),
         lectureId: '', // populated by caller
         page: pageNumber,
-        tool: activeTool === 'free_highlighter' ? 'free_highlighter' : 'pencil',
-        color: activeColor,
+        tool: style.tool === 'free_highlighter' ? 'free_highlighter' : 'pencil',
+        color: style.color,
         width:
-          activeTool === 'free_highlighter'
-            ? FREE_HIGHLIGHTER_WIDTHS[activeWidth] || 22
-            : PENCIL_WIDTHS[activeWidth] || 4,
-        opacity: activeTool === 'free_highlighter' ? 0.38 : 1.0,
-        points: currentPoints,
+          style.tool === 'free_highlighter'
+            ? FREE_HIGHLIGHTER_WIDTHS[style.width] || 22
+            : PENCIL_WIDTHS[style.width] || 4,
+        opacity: style.tool === 'free_highlighter' ? 0.38 : 1.0,
+        points: [...points],
         createdAt: Date.now(),
       };
       onAddStroke(newStroke);
     }
 
+    currentPointsRef.current = null;
+    gestureStyle.current = null;
     setCurrentPoints(null);
   };
 
   const handlePointerCancel = (e: React.PointerEvent<SVGSVGElement>) => {
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {}
-    isDrawing.current = false;
-    activePointerId.current = null;
-    setCurrentPoints(null);
+    if (activePointerId.current !== null && activePointerId.current !== e.pointerId) return;
+    cancelActiveGesture();
   };
 
   // pageWidth and pageHeight are already the pixel layout dimensions (box.w, box.h)
@@ -270,6 +328,7 @@ export const PdfDrawingLayer: React.FC<Props> = ({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handlePointerCancel}
     >
       {/* Committed Strokes */}
       {strokes.map((stroke) => {

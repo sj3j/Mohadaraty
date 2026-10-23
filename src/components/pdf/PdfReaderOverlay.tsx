@@ -34,7 +34,21 @@ import { fetchSimosanState } from '../../services/simosanService';
 import { getUserFileBlob, getLecturePageStrokes, saveLecturePageStrokes } from '../../lib/localDb';
 import { secureRequestId } from '../../lib/secureRandom';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
-import { NativePdf, isNativePdfSupported, type InteractiveZone } from '../../lib/nativePdfViewer';
+import {
+  commitCanonicalOperation,
+  migrateStrokeToCanonical,
+} from '../../services/unifiedPdfAnnotationService';
+import { exportAnnotatedPdf } from '../../services/pdfExportService';
+import {
+  NativePdf,
+  isNativePdfSupported,
+  type InteractiveZone,
+  type ReaderInteractionState,
+} from '../../lib/nativePdfViewer';
+import {
+  DEFAULT_READER_INTERACTION,
+  PdfInteractionRevisionCoordinator,
+} from '../../lib/pdfInteractionState';
 import { getNativePdfFilePath, cacheNativePdfBytes } from '../../lib/nativePdfRepository';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language, UserProfile } from '../../types';
@@ -72,6 +86,8 @@ const NO_ANNOTATIONS: PdfAnnotation[] = [];
 const MAX_MATCHES = 500;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
+const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING !== 'false';
+const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 === 'true';
 
 const RESIST = 0.25;
 const RUBBER = 0.55;
@@ -109,6 +125,9 @@ export default function PdfReaderOverlay({
   // Native vs Web state
   const [isNative, setIsNative] = useState(() => isNativePdfSupported());
   const [nativeLoading, setNativeLoading] = useState(false);
+  const [nativeReady, setNativeReady] = useState(false);
+  const [interactionPending, setInteractionPending] = useState(false);
+  const [confirmedInteractionRevision, setConfirmedInteractionRevision] = useState(0);
 
   // PDF & UI States
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -213,6 +232,45 @@ export default function PdfReaderOverlay({
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, PageHandle>());
   const fingerprint = useRef('');
+  const mountedRef = useRef(true);
+  const nativeReadyRef = useRef(false);
+  const annotationModeRef = useRef(isAnnotationMode);
+  const nightModeRef = useRef(isNightMode);
+  const isRtlRef = useRef(isRtl);
+  const lectureTitleRef = useRef(lectureTitle);
+  const chromeVisibleRef = useRef(chromeVisible);
+  const webOverlayActiveRef = useRef(false);
+  const interactionCoordinatorRef = useRef(
+    new PdfInteractionRevisionCoordinator(DEFAULT_READER_INTERACTION),
+  );
+  const confirmedInteractionRef = useRef<ReaderInteractionState>(DEFAULT_READER_INTERACTION);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    annotationModeRef.current = isAnnotationMode;
+  }, [isAnnotationMode]);
+
+  useEffect(() => {
+    nightModeRef.current = isNightMode;
+  }, [isNightMode]);
+
+  useEffect(() => {
+    isRtlRef.current = isRtl;
+  }, [isRtl]);
+
+  useEffect(() => {
+    lectureTitleRef.current = lectureTitle;
+  }, [lectureTitle]);
+
+  useEffect(() => {
+    chromeVisibleRef.current = chromeVisible;
+  }, [chromeVisible]);
 
   const { annotations, byPage, upsert, remove, removeAll } = useLectureAnnotations(lectureId);
 
@@ -272,13 +330,21 @@ export default function PdfReaderOverlay({
   // Load strokes on mount or page change
   useEffect(() => {
     if (!lectureId || !current) return;
-    if (pageStrokes[current] !== undefined) return;
+    if (pageStrokes[current] !== undefined) {
+      if (isNative && nativeReady && NATIVE_INK_V2) {
+        NativePdf.setPageStrokes({ page: current, strokes: pageStrokes[current] || [] }).catch(() => {});
+      }
+      return;
+    }
     getLecturePageStrokes(lectureId, current)
       .then((strokes) => {
         setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
+        if (isNative && nativeReady && NATIVE_INK_V2) {
+          NativePdf.setPageStrokes({ page: current, strokes: strokes || [] }).catch(() => {});
+        }
       })
       .catch(() => {});
-  }, [lectureId, current, pageStrokes]);
+  }, [lectureId, current, pageStrokes, isNative, nativeReady]);
 
   const handleAddStroke = useCallback(
     (pageNum: number, stroke: PdfStroke) => {
@@ -373,22 +439,86 @@ export default function PdfReaderOverlay({
   const canUndo = (history[current]?.past?.length ?? 0) > 0;
   const canRedo = (history[current]?.future?.length ?? 0) > 0;
 
-  // Sync interactive touch zones to Native Plugin on Android & iOS
-  useEffect(() => {
-    if (!isNative) return;
-    const isAnyDrawerOpen =
-      searchOpen ||
-      drawerOpen ||
-      simosanOpen ||
-      attachmentsOpen ||
-      overviewOpen ||
-      docSheetOpen ||
-      jumpModalOpen ||
-      !!editing ||
-      translationOpen ||
-      !!translationTarget;
+  const isAnyWebOverlayOpen =
+    searchOpen ||
+    drawerOpen ||
+    simosanOpen ||
+    attachmentsOpen ||
+    overviewOpen ||
+    docSheetOpen ||
+    jumpModalOpen ||
+    !!editing ||
+    translationOpen ||
+    !!translationTarget;
+  webOverlayActiveRef.current = isAnyWebOverlayOpen;
 
-    if (isAnyDrawerOpen) {
+  const applyConfirmedInteraction = useCallback((state: ReaderInteractionState) => {
+    confirmedInteractionRef.current = state;
+    annotationModeRef.current = state.mode === 'annotate';
+    setIsAnnotationMode(state.mode === 'annotate');
+    setActiveDrawingTool(state.tool);
+    setChromeVisible(state.chromeVisible);
+    setConfirmedInteractionRevision(state.revision);
+    setInteractionPending(false);
+  }, []);
+
+  const requestInteraction = useCallback(async (
+    patch: Partial<Omit<ReaderInteractionState, 'revision'>>,
+  ): Promise<ReaderInteractionState | null> => {
+    const coordinator = interactionCoordinatorRef.current;
+    const requested = coordinator.request(patch);
+    setInteractionPending(true);
+
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[PDF_INTERACTION] requested_mode=${requested.mode} requested_tool=${requested.tool} revision=${requested.revision}`,
+      );
+    }
+
+    if (!isNative) {
+      const confirmed = coordinator.confirm({
+        appliedRevision: requested.revision,
+        appliedState: requested,
+      });
+      if (confirmed) applyConfirmedInteraction(confirmed);
+      return confirmed;
+    }
+
+    if (!nativeReadyRef.current) return null;
+
+    try {
+      const result = await NativePdf.setInteraction(requested);
+      if (!mountedRef.current) return null;
+      const confirmed = coordinator.confirm(result);
+      if (confirmed) {
+        applyConfirmedInteraction(confirmed);
+        if (import.meta.env.DEV) {
+          console.debug(`[PDF_INTERACTION] applied_revision=${result.appliedRevision}`);
+        }
+      }
+      return confirmed;
+    } catch (error) {
+      if (!mountedRef.current) return null;
+      const rolledBack = coordinator.rollbackLatest(
+        requested.revision,
+        confirmedInteractionRef.current,
+      );
+      if (rolledBack) {
+        setInteractionPending(false);
+        console.error('[PDF_INTERACTION] native transition rejected', error);
+        setToast(isRtlRef.current ? 'تعذّر تغيير وضع التفاعل' : 'Could not change interaction mode');
+        window.setTimeout(() => setToast(null), 1600);
+      }
+      return null;
+    }
+  }, [applyConfirmedInteraction, isNative]);
+
+  // Rollback-only legacy rectangle routing. Stable routing never consults
+  // asynchronously calculated DOM rectangles for a gesture owner.
+  useEffect(() => {
+    if (!isNative || STABLE_INTERACTION_ROUTING) return;
+
+    if (isAnyWebOverlayOpen) {
       NativePdf.setInteractiveZones({
         zones: [{ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }],
       }).catch(() => {});
@@ -397,8 +527,10 @@ export default function PdfReaderOverlay({
 
     const zones: InteractiveZone[] = [];
     if (chromeVisible) {
-      zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: 85 });
-      zones.push({ left: 0, top: window.innerHeight - 80, right: 190, bottom: window.innerHeight });
+      // Top header zone: ample clearance for status bar / notch safe-area + pill height
+      zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: 120 });
+      // Bottom left page counter pill zone
+      zones.push({ left: 0, top: window.innerHeight - 90, right: 220, bottom: window.innerHeight });
     }
 
     if (isAnnotationMode) {
@@ -408,11 +540,13 @@ export default function PdfReaderOverlay({
         activeDrawingTool === 'eraser' ||
         activeDrawingTool === 'text'
       ) {
+        // Fullscreen touch layer for responsive freehand drawing & erasing
         zones.push({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight });
       } else {
+        // Bottom annotation dock + color palette popover + stroke width popover
         zones.push({
           left: 0,
-          top: Math.max(0, window.innerHeight - 110),
+          top: Math.max(0, window.innerHeight - 230),
           right: window.innerWidth,
           bottom: window.innerHeight,
         });
@@ -444,6 +578,21 @@ export default function PdfReaderOverlay({
     isAnnotationMode,
     activeDrawingTool,
     selectionPos,
+    isAnyWebOverlayOpen,
+  ]);
+
+  // Modal ownership is part of the revisioned contract. Mode, tool, and chrome
+  // changes use explicit handlers so React updates only after native ack.
+  useEffect(() => {
+    if (!isNative || !STABLE_INTERACTION_ROUTING || !nativeReady) return;
+    void requestInteraction({
+      webOverlayActive: isAnyWebOverlayOpen,
+    });
+  }, [
+    isNative,
+    nativeReady,
+    isAnyWebOverlayOpen,
+    requestInteraction,
   ]);
 
   // Toggle html/body transparency for native viewer
@@ -462,6 +611,8 @@ export default function PdfReaderOverlay({
   useEffect(() => {
     if (!isNative || !lectureId) return;
     let active = true;
+    nativeReadyRef.current = false;
+    setNativeReady(false);
 
     (async () => {
       try {
@@ -487,16 +638,41 @@ export default function PdfReaderOverlay({
         await NativePdf.openPdf({
           filePath: localPath,
           initialPage: initPage,
-          nightMode: isNightMode,
+          nightMode: nightModeRef.current,
+          stableInteractionRouting: STABLE_INTERACTION_ROUTING,
+          nativeInkV2: NATIVE_INK_V2,
         });
 
+        const coordinator = interactionCoordinatorRef.current;
+        const requested = coordinator.request({
+          chromeVisible: chromeVisibleRef.current,
+          webOverlayActive: webOverlayActiveRef.current,
+          tool: activeDrawingTool,
+          color: activeDrawColor,
+          width: activeDrawWidth,
+        });
+        const interactionResult = await NativePdf.setInteraction(requested);
+        const confirmed = coordinator.confirm(interactionResult);
+
         if (active) {
+          if (confirmed) applyConfirmedInteraction(confirmed);
+          nativeReadyRef.current = true;
+          setNativeReady(true);
           setNativeLoading(false);
           setCurrent(initPage);
         }
       } catch (err) {
         console.error('[PdfReaderOverlay] Native PDFium failed, falling back to Web:', err);
         if (active) {
+          const coordinator = interactionCoordinatorRef.current;
+          const desired = coordinator.currentDesired();
+          const confirmed = coordinator.confirm({
+            appliedRevision: desired.revision,
+            appliedState: desired,
+          });
+          if (confirmed) applyConfirmedInteraction(confirmed);
+          nativeReadyRef.current = false;
+          setNativeReady(false);
           setIsNative(false);
           setNativeLoading(false);
         }
@@ -508,9 +684,74 @@ export default function PdfReaderOverlay({
       if (data.pageCount) setPageCount(data.pageCount);
     });
 
+    const subStrokes = NativePdf.addListener('onStrokesUpdated', (event: any) => {
+      const pageNum = event.page;
+      const opId = event.opId || secureRequestId();
+      if (event.action === 'add' && event.stroke) {
+        const stroke = event.stroke as PdfStroke;
+        setPageStrokes((prev) => {
+          const currentList = prev[pageNum] || [];
+          const nextList = [...currentList, stroke];
+          saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
+          return { ...prev, [pageNum]: nextList };
+        });
+        setHistory((prev) => {
+          const pageHist = prev[pageNum] || { past: [], future: [] };
+          const currentList = pageStrokes[pageNum] || [];
+          return {
+            ...prev,
+            [pageNum]: {
+              past: [...pageHist.past, currentList],
+              future: [],
+            },
+          };
+        });
+
+        // Persist through Canonical Unified Service
+        void commitCanonicalOperation({
+          opId,
+          type: 'add',
+          documentId: lectureId,
+          pageIndex: pageNum,
+          annotation: migrateStrokeToCanonical(stroke),
+          clientTimestamp: Date.now(),
+        });
+      } else if (event.action === 'erase' && event.strokeId) {
+        setPageStrokes((prev) => {
+          const currentList = prev[pageNum] || [];
+          const nextList = currentList.filter((s) => s.id !== event.strokeId);
+          if (nextList.length === currentList.length) return prev;
+          saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
+          return { ...prev, [pageNum]: nextList };
+        });
+        setHistory((prev) => {
+          const pageHist = prev[pageNum] || { past: [], future: [] };
+          const currentList = pageStrokes[pageNum] || [];
+          return {
+            ...prev,
+            [pageNum]: {
+              past: [...pageHist.past, currentList],
+              future: [],
+            },
+          };
+        });
+
+        // Persist through Canonical Unified Service
+        void commitCanonicalOperation({
+          opId,
+          type: 'delete',
+          documentId: lectureId,
+          pageIndex: pageNum,
+          annotationId: event.strokeId,
+          clientTimestamp: Date.now(),
+        });
+      }
+    });
+
     const subTap = NativePdf.addListener('onDocumentTap', () => {
-      if (!isAnnotationMode) {
-        setChromeVisible((prev) => !prev);
+      if (!annotationModeRef.current) {
+        const desired = interactionCoordinatorRef.current.currentDesired();
+        void requestInteraction({ chromeVisible: !desired.chromeVisible });
       }
       setSelection(null);
       setSelectionPos(null);
@@ -519,19 +760,22 @@ export default function PdfReaderOverlay({
     const subLongPress = NativePdf.addListener('onDocumentLongPress', (data) => {
       setSelectionPos({ x: data.x, y: data.y });
       setSelection({
-        text: lectureTitle,
+        text: lectureTitleRef.current,
         fragments: [],
       });
     });
 
     return () => {
       active = false;
+      nativeReadyRef.current = false;
+      setNativeReady(false);
       subPage.then((h) => h.remove()).catch(() => {});
+      subStrokes.then((h) => h.remove()).catch(() => {});
       subTap.then((h) => h.remove()).catch(() => {});
       subLongPress.then((h) => h.remove()).catch(() => {});
       NativePdf.closePdf().catch(() => {});
     };
-  }, [isNative, lectureId, pdfUrl, isLocalFile, isNightMode, isAnnotationMode, lectureTitle]);
+  }, [isNative, lectureId, pdfUrl, isLocalFile, applyConfirmedInteraction, requestInteraction]);
 
   // Night Mode handler
   const handleToggleNightMode = useCallback(() => {
@@ -860,6 +1104,39 @@ export default function PdfReaderOverlay({
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const handleExportAnnotatedPdf = async () => {
+    try {
+      setToast(isRtl ? 'جاري تجهيز وتصدير ملف الـ PDF...' : 'Generating annotated PDF...');
+      const result = await exportAnnotatedPdf({
+        lectureId,
+        lectureTitle,
+        pdfUrl,
+      });
+
+      if (!result.success || !result.exportedBlob) {
+        setToast(isRtl ? 'فشل تصدير ملف PDF' : 'Failed to export PDF');
+        setTimeout(() => setToast(null), 2500);
+        return;
+      }
+
+      const url = URL.createObjectURL(result.exportedBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+      setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
+      setTimeout(() => setToast(null), 2000);
+    } catch (err) {
+      console.error('[PdfReaderOverlay] Export PDF failed:', err);
+      setToast(isRtl ? 'حدث خطأ أثناء تصدير PDF' : 'Error exporting PDF');
+      setTimeout(() => setToast(null), 2500);
+    }
+  };
+
   const shareLecture = async () => {
     try {
       const { Share } = await import('@capacitor/share');
@@ -880,6 +1157,9 @@ export default function PdfReaderOverlay({
   return (
     <div
       dir={isRtl ? 'rtl' : 'ltr'}
+      aria-busy={interactionPending}
+      data-interaction-revision={confirmedInteractionRevision}
+      data-interaction-pending={interactionPending ? 'true' : 'false'}
       className={`pdfReaderSurface fixed inset-0 z-[160] flex flex-col overflow-hidden select-none ${
         isNative ? 'bg-transparent' : isNightMode ? 'bg-zinc-950 text-white' : 'bg-slate-100 dark:bg-zinc-950'
       }`}
@@ -898,8 +1178,11 @@ export default function PdfReaderOverlay({
               isRtl={isRtl}
               isAnnotationMode={isAnnotationMode}
               onToggleMode={() => {
-                setIsAnnotationMode(!isAnnotationMode);
-                setChromeVisible(true);
+                const desired = interactionCoordinatorRef.current.currentDesired();
+                void requestInteraction({
+                  mode: desired.mode === 'annotate' ? 'read' : 'annotate',
+                  chromeVisible: true,
+                });
               }}
               onBack={onClose}
               onOpenOverview={() => setOverviewOpen(true)}
@@ -1027,19 +1310,21 @@ export default function PdfReaderOverlay({
               : 'pointer-events-none'
           }`}
         >
-          <PdfDrawingLayer
-            pageNumber={current}
-            pageWidth={window.innerWidth}
-            pageHeight={window.innerHeight}
-            scale={1}
-            strokes={pageStrokes[current] || []}
-            activeTool={activeDrawingTool}
-            activeColor={activeDrawColor}
-            activeWidth={activeDrawWidth}
-            isAnnotationMode={isAnnotationMode}
-            onAddStroke={(s) => handleAddStroke(current, s)}
-            onEraseStroke={(id) => handleEraseStroke(current, id)}
-          />
+          {!NATIVE_INK_V2 && (
+            <PdfDrawingLayer
+              pageNumber={current}
+              pageWidth={window.innerWidth}
+              pageHeight={window.innerHeight}
+              scale={1}
+              strokes={pageStrokes[current] || []}
+              activeTool={activeDrawingTool}
+              activeColor={activeDrawColor}
+              activeWidth={activeDrawWidth}
+              isAnnotationMode={isAnnotationMode}
+              onAddStroke={(s) => handleAddStroke(current, s)}
+              onEraseStroke={(id) => handleEraseStroke(current, id)}
+            />
+          )}
           <PdfTextBoxOverlay
             pageNumber={current}
             pageWidth={window.innerWidth}
@@ -1098,14 +1383,18 @@ export default function PdfReaderOverlay({
         activeWidth={activeDrawWidth}
         canUndo={canUndo}
         canRedo={canRedo}
-        onSelectTool={setActiveDrawingTool}
+        onSelectTool={(tool) => {
+          void requestInteraction({ mode: 'annotate', tool });
+        }}
         onChangeColor={setActiveDrawColor}
         onChangeWidth={setActiveDrawWidth}
         onUndo={handleUndo}
         onRedo={handleRedo}
         onAddNote={handleAddNote}
         onOpenSimosan={() => openSimosan()}
-        onCloseDock={() => setIsAnnotationMode(false)}
+        onCloseDock={() => {
+          void requestInteraction({ mode: 'read' });
+        }}
         isRtl={isRtl}
         simosanAvailable={simosanReady}
       />
@@ -1176,6 +1465,7 @@ export default function PdfReaderOverlay({
         onToggleNightMode={handleToggleNightMode}
         onShare={shareLecture}
         onExportNotes={doExport}
+        onExportPdf={handleExportAnnotatedPdf}
         onOpenAttachments={() => setAttachmentsOpen(true)}
         onOpenNotes={() => setDrawerOpen(true)}
         onOpenTranslation={() => openTranslation()}

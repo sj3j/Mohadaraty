@@ -164,7 +164,10 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
             </div>
 
             {/* Main Dock Bar */}
-            <div className="flex items-center justify-between sm:justify-center gap-0.5 sm:gap-1 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-2xl shadow-black/15 rounded-full px-1.5 sm:px-2.5 py-1 sm:py-1.5 border border-zinc-200/80 dark:border-zinc-800 w-full max-w-full overflow-x-auto hide-scrollbar">
+            <div
+              className="flex items-center justify-between sm:justify-center gap-0.5 sm:gap-1 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-2xl shadow-black/15 rounded-full px-1.5 sm:px-2.5 py-1 sm:py-1.5 border border-zinc-200/80 dark:border-zinc-800 w-full max-w-full overflow-x-auto hide-scrollbar touch-manipulation"
+              style={{ touchAction: 'manipulation' }}
+            >
               {/* Pencil (Drawing / الرسم) */}
               <button
                 type="button"
@@ -177,7 +180,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                   }
                 }}
                 title={isRtl ? 'قلم الرصاص / رسم' : 'Pencil / Pen'}
-                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 ${
+                style={{ touchAction: 'manipulation' }}
+                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 touch-manipulation ${
                   activeTool === 'pencil'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                     : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
@@ -199,14 +203,31 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                   }
                 }}
                 title={isRtl ? 'تظليل حر للمخططات والصفحات' : 'Freehand Highlighter'}
-                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 ${
+                style={{ touchAction: 'manipulation' }}
+                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 touch-manipulation ${
                   activeTool === 'free_highlighter'
                     ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30'
                     : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
                 }`}
               >
                 <Highlighter className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                <span className="hidden md:inline ms-1">{isRtl ? 'تظليل' : 'Free'}</span>
+                <span className="hidden md:inline ms-1">{isRtl ? 'تظليل حر' : 'Free'}</span>
+              </button>
+
+              {/* Text Highlight Tool (تظليل نصوص) */}
+              <button
+                type="button"
+                onClick={() => onSelectTool('text_highlight')}
+                title={isRtl ? 'تظليل النصوص والمحتوى' : 'Text Highlight'}
+                style={{ touchAction: 'manipulation' }}
+                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 touch-manipulation ${
+                  activeTool === 'text_highlight'
+                    ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+                    : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
+                }`}
+              >
+                <Baseline className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span className="hidden md:inline ms-1">{isRtl ? 'تظليل نص' : 'Highlight'}</span>
               </button>
 
               {/* Text Tool (كتابة نص وملاحظات) */}
@@ -214,7 +235,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 type="button"
                 onClick={() => onSelectTool('text')}
                 title={isRtl ? 'إضافة نص وملاحظات' : 'Text Box'}
-                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 ${
+                style={{ touchAction: 'manipulation' }}
+                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 touch-manipulation ${
                   activeTool === 'text'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                     : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
@@ -229,7 +251,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 type="button"
                 onClick={() => onSelectTool('eraser')}
                 title={isRtl ? 'الممحاة' : 'Eraser'}
-                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 ${
+                style={{ touchAction: 'manipulation' }}
+                className={`flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 touch-manipulation ${
                   activeTool === 'eraser'
                     ? 'bg-rose-500 text-white shadow-md shadow-rose-500/30'
                     : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
@@ -248,8 +271,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                     setWidthPickerOpen(false);
                   }}
                   title={isRtl ? 'اختيار اللون' : 'Pick Color'}
-                  className="w-5 h-5 sm:w-6 sm:h-6 rounded-full border border-zinc-300 dark:border-zinc-600 shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shrink-0"
-                  style={{ backgroundColor: activeColor }}
+                  style={{ backgroundColor: activeColor, touchAction: 'manipulation' }}
+                  className="w-5 h-5 sm:w-6 sm:h-6 rounded-full border border-zinc-300 dark:border-zinc-600 shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shrink-0 touch-manipulation"
                 />
               )}
 
@@ -260,7 +283,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 type="button"
                 onClick={onAddNote}
                 title={isRtl ? 'إضافة ملاحظة' : 'Add Note'}
-                className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-95 transition-all text-xs font-medium text-slate-700 dark:text-zinc-300 shrink-0"
+                style={{ touchAction: 'manipulation' }}
+                className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-95 transition-all text-xs font-medium text-slate-700 dark:text-zinc-300 shrink-0 touch-manipulation"
               >
                 <NotebookPen className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600 dark:text-indigo-400" />
                 <span className="hidden md:inline ms-1">{isRtl ? 'ملاحظة' : 'Note'}</span>
@@ -274,7 +298,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 onClick={onUndo}
                 disabled={!canUndo}
                 title={isRtl ? 'تراجع' : 'Undo'}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none active:scale-95 transition-all shrink-0"
+                style={{ touchAction: 'manipulation' }}
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none active:scale-95 transition-all shrink-0 touch-manipulation"
               >
                 <Undo2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </button>
@@ -283,7 +308,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 onClick={onRedo}
                 disabled={!canRedo}
                 title={isRtl ? 'إعادة' : 'Redo'}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none active:scale-95 transition-all shrink-0"
+                style={{ touchAction: 'manipulation' }}
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none active:scale-95 transition-all shrink-0 touch-manipulation"
               >
                 <Redo2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </button>
@@ -296,7 +322,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                     type="button"
                     onClick={onOpenSimosan}
                     title={isRtl ? 'سيموسان الذكي' : 'Simosan AI'}
-                    className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full bg-gradient-to-r from-amber-500/10 to-indigo-500/10 hover:from-amber-500/20 hover:to-indigo-500/20 text-indigo-600 dark:text-indigo-400 active:scale-95 transition-all text-xs font-semibold shrink-0"
+                    style={{ touchAction: 'manipulation' }}
+                    className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-full bg-gradient-to-r from-amber-500/10 to-indigo-500/10 hover:from-amber-500/20 hover:to-indigo-500/20 text-indigo-600 dark:text-indigo-400 active:scale-95 transition-all text-xs font-semibold shrink-0 touch-manipulation"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                     <span className="hidden md:inline ms-1">{isRtl ? 'سيموسان' : 'Simosan'}</span>
@@ -311,7 +338,8 @@ export const NotewiseAnnotationDock: React.FC<Props> = ({
                 type="button"
                 onClick={onCloseDock}
                 title={isRtl ? 'إغلاق الشريط' : 'Close bar'}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-400 dark:text-zinc-500 hover:text-slate-600 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition-all shrink-0"
+                style={{ touchAction: 'manipulation' }}
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-slate-400 dark:text-zinc-500 hover:text-slate-600 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition-all shrink-0 touch-manipulation"
               >
                 <ChevronDown className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </button>

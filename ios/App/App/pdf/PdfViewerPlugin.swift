@@ -3,6 +3,41 @@ import PDFKit
 import Capacitor
 import WebKit
 
+fileprivate struct PdfInteractionState {
+    let mode: String
+    let tool: String
+    let color: String
+    let width: String
+    let fingerDrawing: Bool
+    let chromeVisible: Bool
+    let webOverlayActive: Bool
+    let revision: Int
+
+    static let initial = PdfInteractionState(
+        mode: "read",
+        tool: "pencil",
+        color: "#4f46e5",
+        width: "medium",
+        fingerDrawing: true,
+        chromeVisible: true,
+        webOverlayActive: false,
+        revision: 0
+    )
+
+    var dictionary: [String: Any] {
+        [
+            "mode": mode,
+            "tool": tool,
+            "color": color,
+            "width": width,
+            "fingerDrawing": fingerDrawing,
+            "chromeVisible": chromeVisible,
+            "webOverlayActive": webOverlayActive,
+            "revision": revision
+        ]
+    }
+}
+
 @objc(MohadaratyPdfPlugin)
 public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "MohadaratyPdfPlugin"
@@ -12,15 +47,26 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "closePdf", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "goToPage", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNightMode", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setInteraction", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setPageStrokes", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setInteractiveZones", returnType: CAPPluginReturnPromise)
     ]
 
-    public static var isPdfActive: Bool = false
-    public static var activeZones: [CGRect] = []
+    fileprivate static var isPdfActive = false
+    fileprivate static var activeZones: [CGRect] = []
+    fileprivate static var interactionState = PdfInteractionState.initial
+    fileprivate static var stableInteractionRouting = true
+    fileprivate static var nativeInkV2 = false
+    fileprivate static weak var activeWebView: WKWebView?
 
     private var pdfView: PDFView?
     private var pageObserver: Any?
-    private static var hasSwizzledHitTest: Bool = false
+    private var overlayProvider: Any? // NativePdfPageOverlayProvider on iOS 15+
+    private var originalWebViewOpaque = true
+    private var originalWebViewBackground: UIColor?
+    private var originalScrollBackground: UIColor?
+    private var hasCapturedWebViewAppearance = false
+    private static var hasSwizzledHitTest = false
 
     public override func load() {
         super.load()
@@ -48,6 +94,8 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
 
         let initialPage = call.getInt("initialPage", 1)
         let nightMode = call.getBool("nightMode", false)
+        let stableRouting = call.getBool("stableInteractionRouting", true)
+        let nativeInkV2 = call.getBool("nativeInkV2", false)
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let bridge = self.bridge, let webView = bridge.webView else {
@@ -55,8 +103,17 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
-            self.cleanup()
+            self.cleanup(restoreWebView: false)
+            Self.interactionState = .initial
+            Self.stableInteractionRouting = stableRouting
+            Self.nativeInkV2 = nativeInkV2
 
+            if !self.hasCapturedWebViewAppearance {
+                self.originalWebViewOpaque = webView.isOpaque
+                self.originalWebViewBackground = webView.backgroundColor
+                self.originalScrollBackground = webView.scrollView.backgroundColor
+                self.hasCapturedWebViewAppearance = true
+            }
             webView.isOpaque = false
             webView.backgroundColor = .clear
             webView.scrollView.backgroundColor = .clear
@@ -68,33 +125,54 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
             pdfView.displaysPageBreaks = true
             pdfView.autoScales = true
 
-            if nightMode {
-                pdfView.backgroundColor = .black
-                if let invertFilter = CIFilter(name: "CIColorInvert") {
-                    pdfView.layer.filters = [invertFilter]
+            self.applyNightMode(nightMode, to: pdfView)
+
+            // Setup PencilKit page overlay on iOS 16+
+            if nativeInkV2 {
+                if #available(iOS 16.0, *) {
+                    let provider = NativePdfPageOverlayProvider(pdfView: pdfView) { [weak self] (page, action, stroke, strokeId) in
+                        guard let self = self else { return }
+                        var ret: [String: Any] = [
+                            "page": page,
+                            "action": action
+                        ]
+                        if let s = stroke {
+                            ret["stroke"] = s.dictionary
+                            ret["opId"] = "op_add_\(s.id)"
+                        }
+                        if let sid = strokeId {
+                            ret["strokeId"] = sid
+                            ret["opId"] = "op_erase_\(sid)"
+                        }
+                        self.notifyListeners("onStrokesUpdated", data: ret)
+                    }
+                    pdfView.pageOverlayViewProvider = provider
+                    self.overlayProvider = provider
                 }
-            } else {
-                pdfView.backgroundColor = UIColor(white: 0.95, alpha: 1.0)
-                pdfView.layer.filters = []
             }
 
-            guard let url = URL(string: filePath.hasPrefix("file://") ? filePath : "file://" + filePath),
-                  let doc = PDFDocument(url: url) else {
+            let path = filePath.hasPrefix("file://") ? String(filePath.dropFirst(7)) : filePath
+            let url = URL(fileURLWithPath: path)
+            guard let document = PDFDocument(url: url) else {
+                self.restore(webView: webView)
                 call.reject("Cannot load PDF at \(filePath)")
                 return
             }
 
-            pdfView.document = doc
-
-            if initialPage > 1, let page = doc.page(at: initialPage - 1) {
+            pdfView.document = document
+            if initialPage > 1, let page = document.page(at: initialPage - 1) {
                 pdfView.go(to: page)
             }
 
-            if let superview = webView.superview {
-                superview.insertSubview(pdfView, belowSubview: webView)
+            guard let superview = webView.superview else {
+                self.restore(webView: webView)
+                call.reject("WebView has no superview")
+                return
             }
+            superview.insertSubview(pdfView, belowSubview: webView)
 
             self.pdfView = pdfView
+            Self.activeWebView = webView
             Self.isPdfActive = true
 
             self.pageObserver = NotificationCenter.default.addObserver(
@@ -102,11 +180,13 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
                 object: pdfView,
                 queue: .main
             ) { [weak self] _ in
-                guard let self = self, let pdfView = self.pdfView, let doc = pdfView.document, let current = pdfView.currentPage else { return }
-                let pageIndex = doc.index(for: current) + 1
+                guard let self = self,
+                      let pdfView = self.pdfView,
+                      let document = pdfView.document,
+                      let current = pdfView.currentPage else { return }
                 self.notifyListeners("onPageChange", data: [
-                    "page": pageIndex,
-                    "pageCount": doc.pageCount
+                    "page": document.index(for: current) + 1,
+                    "pageCount": document.pageCount
                 ])
             }
 
@@ -114,28 +194,94 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc func setInteraction(_ call: CAPPluginCall) {
+        let mode = call.getString("mode", "read")
+        let tool = call.getString("tool", "pencil")
+        let color = call.getString("color", "#4f46e5")
+        let width = call.getString("width", "medium")
+        let revision = call.getInt("revision", -1)
+        let requested = PdfInteractionState(
+            mode: mode,
+            tool: tool,
+            color: color,
+            width: width,
+            fingerDrawing: call.getBool("fingerDrawing", true),
+            chromeVisible: call.getBool("chromeVisible", true),
+            webOverlayActive: call.getBool("webOverlayActive", false),
+            revision: revision
+        )
+
+        guard mode == "read" || mode == "annotate" else {
+            call.reject("mode must be read or annotate")
+            return
+        }
+        guard revision >= 0 else {
+            call.reject("revision must be a non-negative integer")
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard requested.revision > Self.interactionState.revision else {
+                call.resolve([
+                    "appliedRevision": Self.interactionState.revision,
+                    "appliedState": Self.interactionState.dictionary,
+                    "stale": true
+                ])
+                return
+            }
+
+            Self.interactionState = requested
+
+            if #available(iOS 16.0, *) {
+                if let provider = self?.overlayProvider as? NativePdfPageOverlayProvider {
+                    provider.setInteraction(
+                        mode: requested.mode,
+                        tool: requested.tool,
+                        color: requested.color,
+                        width: requested.width,
+                        fingerDrawing: requested.fingerDrawing
+                    )
+                }
+            }
+
+            #if DEBUG
+            print("[PDF_INTERACTION] action=applied mode=\(requested.mode) tool=\(requested.tool) revision=\(requested.revision)")
+            #endif
+            call.resolve([
+                "appliedRevision": requested.revision,
+                "appliedState": requested.dictionary
+            ])
+        }
+    }
+
+    @objc func setPageStrokes(_ call: CAPPluginCall) {
+        // Page strokes stored on React side, rendered dynamically per PKCanvasView on page display
+        call.resolve()
+    }
+
     @objc func setInteractiveZones(_ call: CAPPluginCall) {
         let zones = call.getArray("zones", [JSObject]()) ?? []
-        var newZones: [CGRect] = []
-        for item in zones {
+        let mapped = zones.map { item -> CGRect in
             let left = item["left"] as? Double ?? 0
             let top = item["top"] as? Double ?? 0
             let right = item["right"] as? Double ?? 0
             let bottom = item["bottom"] as? Double ?? 0
-            newZones.append(CGRect(x: left, y: top, width: right - left, height: bottom - top))
+            return CGRect(x: left, y: top, width: right - left, height: bottom - top)
         }
-        Self.activeZones = newZones
-        call.resolve()
+        DispatchQueue.main.async {
+            Self.activeZones = mapped
+            call.resolve()
+        }
     }
 
     @objc func goToPage(_ call: CAPPluginCall) {
-        let pageNum = call.getInt("page", 1)
+        let pageNumber = call.getInt("page", 1)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, let pdfView = self.pdfView, let doc = pdfView.document else {
+            guard let pdfView = self?.pdfView, let document = pdfView.document else {
                 call.reject("PDF not open")
                 return
             }
-            if let page = doc.page(at: max(0, min(pageNum - 1, doc.pageCount - 1))) {
+            if let page = document.page(at: max(0, min(pageNumber - 1, document.pageCount - 1))) {
                 pdfView.go(to: page)
             }
             call.resolve()
@@ -143,20 +289,10 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func setNightMode(_ call: CAPPluginCall) {
-        let night = call.getBool("nightMode", false)
+        let nightMode = call.getBool("nightMode", false)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, let pdfView = self.pdfView else {
-                call.resolve()
-                return
-            }
-            if night {
-                pdfView.backgroundColor = .black
-                if let invertFilter = CIFilter(name: "CIColorInvert") {
-                    pdfView.layer.filters = [invertFilter]
-                }
-            } else {
-                pdfView.backgroundColor = UIColor(white: 0.95, alpha: 1.0)
-                pdfView.layer.filters = []
+            if let self = self, let pdfView = self.pdfView {
+                self.applyNightMode(nightMode, to: pdfView)
             }
             call.resolve()
         }
@@ -164,16 +300,39 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func closePdf(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
-            self?.cleanup()
-            self?.bridge?.webView?.isOpaque = true
-            self?.bridge?.webView?.backgroundColor = .white
+            self?.cleanup(restoreWebView: true)
+            Self.interactionState = .initial
             call.resolve()
         }
     }
 
-    private func cleanup() {
+    private func applyNightMode(_ nightMode: Bool, to pdfView: PDFView) {
+        if nightMode {
+            pdfView.backgroundColor = .black
+            if let invertFilter = CIFilter(name: "CIColorInvert") {
+                pdfView.layer.filters = [invertFilter]
+            }
+        } else {
+            pdfView.backgroundColor = UIColor(white: 0.95, alpha: 1.0)
+            pdfView.layer.filters = []
+        }
+    }
+
+    private func restore(webView: WKWebView) {
+        webView.isOpaque = originalWebViewOpaque
+        webView.backgroundColor = originalWebViewBackground
+        webView.scrollView.backgroundColor = originalScrollBackground
+        hasCapturedWebViewAppearance = false
+    }
+
+    private func cleanup(restoreWebView: Bool) {
         Self.isPdfActive = false
-        Self.activeZones.removeAll()
+        if #available(iOS 16.0, *) {
+            if let provider = overlayProvider as? NativePdfPageOverlayProvider {
+                provider.cleanUp()
+            }
+        }
+        overlayProvider = nil
 
         if let observer = pageObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -182,18 +341,44 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
         pdfView?.layer.filters = []
         pdfView?.removeFromSuperview()
         pdfView = nil
+
+        if let webView = Self.activeWebView, restoreWebView {
+            restore(webView: webView)
+        }
+        Self.activeWebView = nil
     }
 }
 
 extension WKWebView {
     @objc func mohadaraty_hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if MohadaratyPdfPlugin.isPdfActive {
-            let insideZone = MohadaratyPdfPlugin.activeZones.contains { $0.contains(point) }
-            if !insideZone {
-                // Pass touch through to the underlying native PDFView
-                return nil
-            }
+        guard MohadaratyPdfPlugin.isPdfActive,
+              MohadaratyPdfPlugin.activeWebView === self else {
+            return self.mohadaraty_hitTest(point, with: event)
         }
-        return self.mohadaraty_hitTest(point, with: event)
+
+        let ownsTouch: Bool
+        if MohadaratyPdfPlugin.stableInteractionRouting {
+            let state = MohadaratyPdfPlugin.interactionState
+            let topChrome = point.y <= 120
+            let bottomChrome = point.y >= bounds.height - 100 && point.x <= 240
+            let chromeHit = state.chromeVisible && (topChrome || bottomChrome)
+
+            if state.webOverlayActive {
+                ownsTouch = true
+            } else if MohadaratyPdfPlugin.nativeInkV2 {
+                // In Phase 2 nativeInkV2 mode, PencilKit / PDFKit directly own drawing and reading touches.
+                // WKWebView only intercepts top/bottom app chrome or open modals.
+                ownsTouch = chromeHit
+            } else {
+                ownsTouch = state.mode == "annotate" || chromeHit
+            }
+        } else {
+            ownsTouch = MohadaratyPdfPlugin.activeZones.contains { $0.contains(point) }
+        }
+
+        #if DEBUG
+        print("[PDF_TOUCH] action=HIT_TEST owner=\(ownsTouch ? "WEB" : "PDF") revision=\(MohadaratyPdfPlugin.interactionState.revision)")
+        #endif
+        return ownsTouch ? self.mohadaraty_hitTest(point, with: event) : nil
     }
 }
