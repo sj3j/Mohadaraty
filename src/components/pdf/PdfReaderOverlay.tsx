@@ -91,7 +91,10 @@ const MAX_MATCHES = 500;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING !== 'false';
-const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 === 'true';
+// Page-owned native ink is the safe default. The old WebView SVG layer is
+// screen-relative on native readers and makes marks float after zoom/page
+// changes. Set this explicitly to "false" only for an emergency rollback.
+const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 !== 'false';
 
 const RESIST = 0.25;
 const RUBBER = 0.55;

@@ -2,6 +2,7 @@ import UIKit
 import Capacitor
 import FirebaseCore
 import CoreLocation
+import WebKit
 
 @objc(SettingsLauncherPlugin)
 public class SettingsLauncherPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -50,6 +51,10 @@ public class SystemBarsPlugin: CAPPlugin, CAPBridgedPlugin {
 }
 
 public class MyLectureBridgeViewController: CAPBridgeViewController {
+    public override func webView(with frame: CGRect, configuration: WKWebViewConfiguration) -> WKWebView {
+        MohadaratyWebView(frame: frame, configuration: configuration)
+    }
+
     public override func capacitorDidLoad() {
         bridge?.registerPluginInstance(SystemBarsPlugin())
         bridge?.registerPluginInstance(SettingsLauncherPlugin())

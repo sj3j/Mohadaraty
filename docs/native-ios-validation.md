@@ -1,5 +1,29 @@
 # Native iOS validation
 
+## Touch-crash patch release (1.0.3)
+
+The affected App Store install is 1.0.2 (31) on an iPhone 14 Pro Max running
+iOS 26.5. A tap anywhere on the login screen closes the app. To confirm its
+cause, share the latest app `.ips` report from Settings > Privacy & Security >
+Analytics & Improvements > Analytics Data. Match its bundle version and binary
+UUID to the 1.0.2 (31) Codemagic archive and dSYM, then symbolicate it in Xcode.
+Check whether the terminating stack enters the PDF plugin's old `hitTest`
+method swap. Keep the original report: a source-level match is not a substitute
+for the installed binary's crash evidence.
+
+Build 1.0.3 with build number greater than 31 on macOS. Before distribution,
+confirm the `.ipa` contains `public/index.html`, `public/sw.js`, the PDF worker,
+PDF standard fonts, and CMaps. Install it over the affected build so the test
+also covers an update without clearing downloaded lectures or local annotations.
+
+On the affected iPhone, tap empty space, each login field, the student/lecturer
+switch, and sign in. The app must remain open. Then open and close a PDF; test
+scroll, pinch zoom, page navigation, annotation tools, and a downloaded PDF in
+airplane mode. Repeat the login and PDF checks on iOS 15 and iOS 16+ simulators;
+the iOS 15 reader should allow reading/navigation and show the existing ink
+availability notice. After release, check App Store crash reports for the same
+signature on 1.0.3.
+
 Build a diagnostic IPA only when investigating an affected device:
 
 ```powershell

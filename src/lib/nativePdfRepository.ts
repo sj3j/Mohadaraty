@@ -15,6 +15,7 @@ const LECTURES_DIR = 'lectures';
 const STAGING_DIR = 'staging';
 const ANNOTATIONS_DIR = 'annotations';
 const MANIFEST_FILE = 'offline_manifest.json';
+const MANIFEST_BACKUP_FILE = `${MANIFEST_FILE}.bak`;
 const MIGRATION_FLAG_FILE = 'migration_completed.flag';
 
 export interface DownloadResult {
@@ -111,18 +112,26 @@ async function ensureDirectoriesExist(): Promise<void> {
  * Loads the offline lectures manifest from Directory.Data.
  */
 export async function loadNativeManifest(): Promise<Record<string, OfflineLecture>> {
-  try {
-    const { Filesystem, Directory, Encoding } = await getFs();
-    const result = await Filesystem.readFile({
-      path: MANIFEST_FILE,
-      directory: Directory.Data,
-      encoding: Encoding.UTF8,
-    });
-    const content = typeof result.data === 'string' ? result.data : '';
-    return content ? JSON.parse(content) : {};
-  } catch {
-    return {};
+  const { Filesystem, Directory, Encoding } = await getFs();
+  for (const path of [MANIFEST_FILE, MANIFEST_BACKUP_FILE]) {
+    try {
+      const result = await Filesystem.readFile({
+        path,
+        directory: Directory.Data,
+        encoding: Encoding.UTF8,
+      });
+      const content = typeof result.data === 'string' ? result.data : '';
+      if (!content) continue;
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, OfflineLecture>;
+      }
+    } catch {
+      // A replacement can be interrupted after the native plugin removes the
+      // old destination. The last known-good backup is our recovery path.
+    }
   }
+  return {};
 }
 
 /**
@@ -132,6 +141,30 @@ export async function saveNativeManifest(manifest: Record<string, OfflineLecture
   const { Filesystem, Directory, Encoding } = await getFs();
   const tempPath = `${MANIFEST_FILE}.tmp`;
   const data = JSON.stringify(manifest, null, 2);
+
+  // IONFilesystemLib's rename may remove an existing destination before moving
+  // the source. Preserve the old valid manifest before that step so an
+  // interruption cannot turn all offline files into unreachable bytes.
+  try {
+    const current = await Filesystem.readFile({
+      path: MANIFEST_FILE,
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+    });
+    if (typeof current.data === 'string' && current.data) {
+      JSON.parse(current.data);
+      await Filesystem.writeFile({
+        path: MANIFEST_BACKUP_FILE,
+        data: current.data,
+        directory: Directory.Data,
+        encoding: Encoding.UTF8,
+        recursive: true,
+      });
+    }
+  } catch {
+    // No prior manifest (or it was already corrupted): the new write below is
+    // still valid, and loadNativeManifest will fall back to an earlier backup.
+  }
 
   await Filesystem.writeFile({
     path: tempPath,
@@ -166,6 +199,7 @@ export async function isNativeLectureDownloaded(lectureId?: string, pdfUrl?: str
     let entry: OfflineLecture | undefined;
     if (lectureId && manifest[lectureId]) {
       entry = manifest[lectureId];
+      if (pdfUrl && entry.pdfUrl !== pdfUrl) return false;
     } else if (pdfUrl) {
       entry = Object.values(manifest).find(item => item.pdfUrl === pdfUrl);
     }
@@ -294,8 +328,9 @@ export async function downloadAndPublishLecture(
 export async function readNativePdfBytes(lectureId?: string, pdfUrl?: string): Promise<ArrayBuffer | null> {
   try {
     let targetId = lectureId;
+    const manifest = await loadNativeManifest();
+    if (targetId && pdfUrl && manifest[targetId]?.pdfUrl !== pdfUrl) return null;
     if (!targetId && pdfUrl) {
-      const manifest = await loadNativeManifest();
       const match = Object.values(manifest).find(l => l.pdfUrl === pdfUrl);
       if (match) targetId = match.id;
     }
@@ -369,21 +404,25 @@ export async function getNativeShareUri(
 
   // 1. If lecture is downloaded, copy from Directory.Data to Directory.Cache
   if (lectureId) {
+    const manifest = await loadNativeManifest();
+    const entry = manifest[lectureId];
     const publishedPath = `${LECTURES_DIR}/${lectureId}.pdf`;
-    try {
-      const stat = await Filesystem.stat({ path: publishedPath, directory: Directory.Data });
-      if ((stat?.size ?? 0) > 0) {
-        await Filesystem.copy({
-          from: publishedPath,
-          directory: Directory.Data,
-          to: cachePath,
-          toDirectory: Directory.Cache,
-        });
-        const { uri } = await Filesystem.getUri({ path: cachePath, directory: Directory.Cache });
-        return uri;
+    if (entry?.pdfUrl === remoteUrl) {
+      try {
+        const stat = await Filesystem.stat({ path: publishedPath, directory: Directory.Data });
+        if ((stat?.size ?? 0) > 0) {
+          await Filesystem.copy({
+            from: publishedPath,
+            directory: Directory.Data,
+            to: cachePath,
+            toDirectory: Directory.Cache,
+          });
+          const { uri } = await Filesystem.getUri({ path: cachePath, directory: Directory.Cache });
+          return uri;
+        }
+      } catch {
+        // File not present in local repository, fall through to native download.
       }
-    } catch {
-      // File not present in local repository, fall through to native download
     }
   }
 
@@ -775,6 +814,8 @@ export async function getNativePdfFilePath(lectureId?: string, url?: string): Pr
   try {
     const { Filesystem, Directory } = await getFs();
     if (lectureId) {
+      const manifest = await loadNativeManifest();
+      if (url && manifest[lectureId]?.pdfUrl !== url) return null;
       const publishedPath = `${LECTURES_DIR}/${lectureId}.pdf`;
       try {
         const stat = await Filesystem.stat({ path: publishedPath, directory: Directory.Data });

@@ -66,25 +66,6 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     private var originalWebViewBackground: UIColor?
     private var originalScrollBackground: UIColor?
     private var hasCapturedWebViewAppearance = false
-    private static var hasSwizzledHitTest = false
-
-    public override func load() {
-        super.load()
-        Self.setupTouchPassthrough()
-    }
-
-    private static func setupTouchPassthrough() {
-        guard !hasSwizzledHitTest else { return }
-        hasSwizzledHitTest = true
-
-        let originalSelector = #selector(UIView.hitTest(_:with:))
-        let swizzledSelector = #selector(WKWebView.mohadaraty_hitTest(_:with:))
-
-        guard let originalMethod = class_getInstanceMethod(WKWebView.self, originalSelector),
-              let swizzledMethod = class_getInstanceMethod(WKWebView.self, swizzledSelector) else { return }
-
-        method_exchangeImplementations(originalMethod, swizzledMethod)
-    }
 
     @objc func openPdf(_ call: CAPPluginCall) {
         guard let filePath = call.getString("filePath") else {
@@ -368,11 +349,13 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 }
 
-extension WKWebView {
-    @objc func mohadaraty_hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+// Capacitor creates this subclass for the app's own web view. Keeping touch
+// routing here avoids changing UIView.hitTest for every view in the process.
+final class MohadaratyWebView: WKWebView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard MohadaratyPdfPlugin.isPdfActive,
               MohadaratyPdfPlugin.activeWebView === self else {
-            return self.mohadaraty_hitTest(point, with: event)
+            return super.hitTest(point, with: event)
         }
 
         let ownsTouch: Bool
@@ -403,6 +386,6 @@ extension WKWebView {
         #if DEBUG
         print("[PDF_TOUCH] action=HIT_TEST owner=\(ownsTouch ? "WEB" : "PDF") revision=\(MohadaratyPdfPlugin.interactionState.revision)")
         #endif
-        return ownsTouch ? self.mohadaraty_hitTest(point, with: event) : nil
+        return ownsTouch ? super.hitTest(point, with: event) : nil
     }
 }

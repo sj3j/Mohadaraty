@@ -99,7 +99,7 @@ check(
 
 check(
   'React PdfReaderOverlay gates PdfDrawingLayer when NATIVE_INK_V2 is active on native',
-  /const NATIVE_INK_V2 = import\.meta\.env\.VITE_PDF_NATIVE_INK_V2 === 'true'/.test(overlay) &&
+  /const NATIVE_INK_V2 = import\.meta\.env\.VITE_PDF_NATIVE_INK_V2 !== 'false'/.test(overlay) &&
     /\{!NATIVE_INK_V2 && \(/s.test(overlay),
   'React SVG drawing layer must not double-render or intercept touches when native ink is active'
 );

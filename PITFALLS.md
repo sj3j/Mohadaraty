@@ -379,7 +379,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   transform becomes the sibling's containing block.
 - A search overlay inside a reader chrome must have a higher z-index than header capsules (use `z-50` over `z-40`) and hide the header pill while open, or touches hit occluded navigation buttons.
 - A floating page counter pill at `bottom-5` collides with a centered bottom annotation dock on mobile — elevate the page pill to `bottom-20` when annotation mode is active.
-- A full-screen `WKWebView` over native `PDFView` on iOS intercepts all gestures despite transparent backgrounds — swizzle `WKWebView.hitTest` to return `nil` outside registered `interactiveZones` so 120Hz pinch/scroll reaches UIKit.
+- A full-screen `WKWebView` over native `PDFView` intercepts gestures, but swizzling its inherited `hitTest` changes `UIView` touch handling process-wide and can crash on the login screen; use a dedicated `WKWebView` subclass and route touches only while a PDF is open.
 - A floating editor card with an `onBlur` auto-commit unmounts before its toolbar button `onClick` fires — add `onMouseDown` `e.preventDefault()` to toolbar buttons so clicking them does not steal focus or cancel the action.
 
 - A cross-platform push plugin returns a DIFFERENT KIND of token per platform:

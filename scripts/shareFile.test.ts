@@ -20,6 +20,7 @@
  * Android too.
  */
 import { safeFileName } from '../src/lib/shareFileName';
+import { readFileSync } from 'node:fs';
 
 /** Exactly the pattern MimeTypeMap tests. */
 const ANDROID_MIME_SAFE = /^[a-zA-Z_0-9.\-()%]+$/;
@@ -74,6 +75,12 @@ check('a long Arabic title is truncated well inside the 255-byte limit',
   String(new TextEncoder().encode(longArabic).length));
 check('truncation never splits a surrogate pair',
   !/[\uD800-\uDFFF]/.test(safeFileName('🧪'.repeat(200), 'pdf').replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')));
+
+console.log('\nNative memory boundary:');
+const lectureCardSource = readFileSync(new URL('../src/components/LectureCard.tsx', import.meta.url), 'utf8');
+const subjectBrowserSource = readFileSync(new URL('../src/components/SubjectBrowser.tsx', import.meta.url), 'utf8');
+check('single native share does not preload PDF bytes into the WebView', !lectureCardSource.includes('readStoredPdf('));
+check('batch native share does not preload PDF bytes into the WebView', !subjectBrowserSource.includes('readNativePdfBytes('));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

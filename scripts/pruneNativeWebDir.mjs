@@ -33,7 +33,14 @@ if (!fs.existsSync(DIST)) {
 
 // Refuse to run anywhere that is not a build output directory, so a mistyped
 // argument cannot delete from a source tree.
-if (!fs.existsSync(path.join(DIST, 'index.html'))) {
+// Some Vite/PWA plugin hooks finish writing index.html a moment after the
+// bundler process resolves on Windows. Wait briefly instead of making the
+// native sync nondeterministic, while keeping the same strict safety check.
+const indexPath = path.join(DIST, 'index.html');
+for (let attempt = 0; attempt < 25 && !fs.existsSync(indexPath); attempt++) {
+  await new Promise(resolve => setTimeout(resolve, 200));
+}
+if (!fs.existsSync(indexPath)) {
   console.error(`prune-native-webdir: ${DIST} has no index.html - refusing to prune.`);
   process.exit(1);
 }

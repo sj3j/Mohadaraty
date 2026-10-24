@@ -11,7 +11,7 @@ import CourseTabs from './CourseTabs';
 import { COURSE_IDS, DEFAULT_COURSE_ID } from '../types';
 import { BookOpen, ChevronRight, ChevronLeft, ArrowLeft, ArrowRight, Loader2, SearchX, List, LayoutGrid, Grid, Settings, CheckSquare, Archive, Download, X, Share2 } from 'lucide-react';
 import { canManageGroups } from '../lib/permissions';
-import { isNativePlatform, downloadAndPublishLecture, readNativePdfBytes } from '../lib/nativePdfRepository';
+import { isNativePlatform, downloadAndPublishLecture } from '../lib/nativePdfRepository';
 import { safeFileName } from '../lib/shareFileName';
 import { forceDownload } from '../lib/utils';
 import { shareMultipleFiles, type ShareFileInput } from '../lib/shareFile';
@@ -100,6 +100,8 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     setIsProcessingBatch(true);
     const native = await isNativePlatform();
     let completed = 0;
+    let successful = 0;
+    const failed: string[] = [];
     const total = selectedLectures.length;
 
     for (const lec of selectedLectures) {
@@ -112,7 +114,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
 
       try {
         if (native) {
-          await downloadAndPublishLecture({
+          const result = await downloadAndPublishLecture({
             id: lec.id,
             title: lec.title,
             pdfUrl: lec.pdfUrl,
@@ -121,9 +123,11 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             number: lec.number,
             type: lec.type,
           });
+          if (!result.success) throw new Error(result.error || 'Native download failed');
         } else {
           const res = await fetch(lec.pdfUrl);
-          if (res.ok) {
+          if (!res.ok) throw new Error(`Download failed (${res.status})`);
+          {
             const blob = await res.blob();
             const { dbPut, STORE_BLOBS, saveOfflineLecture } = await import('../lib/localDb');
             await dbPut(STORE_BLOBS, { url: lec.pdfUrl, blob, savedAt: Date.now() });
@@ -136,15 +140,22 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
               number: lec.number,
               type: lec.type,
               savedAt: Date.now(),
-            }).catch(() => {});
+            });
           }
         }
+        successful++;
       } catch (err) {
         console.warn('Batch download item failed:', lec.id, err);
+        failed.push(lec.title);
       }
     }
 
     setBatchActionStatus(isRtl ? 'اكتمل التنزيل بنجاح!' : 'Batch download complete!');
+    setBatchActionStatus(
+      failed.length === 0
+        ? `Downloaded ${successful} file${successful === 1 ? '' : 's'}.`
+        : `Downloaded ${successful} of ${total}. Failed: ${failed.join(', ')}`,
+    );
     setTimeout(() => {
       setBatchActionStatus(null);
       setIsProcessingBatch(false);
@@ -159,7 +170,6 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     setBatchActionStatus(isRtl ? 'جارٍ تجهيز الملفات للمشاركة...' : 'Preparing files to share...');
 
     try {
-      const native = await isNativePlatform();
       const shareInputs: ShareFileInput[] = [];
 
       for (let i = 0; i < selectedLectures.length; i++) {
@@ -170,19 +180,6 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             : `Preparing ${i + 1} of ${selectedLectures.length}: ${lec.title}`
         );
 
-        let buf: ArrayBuffer | null = null;
-        if (native) {
-          buf = await readNativePdfBytes(lec.id, lec.pdfUrl);
-        }
-        if (!buf) {
-          try {
-            const res = await fetch(lec.pdfUrl);
-            if (res.ok) buf = await res.arrayBuffer();
-          } catch {
-            // ignore
-          }
-        }
-
         const safeTitle = lec.number ? `${lec.title} - ${lec.number}` : lec.title;
         shareInputs.push({
           url: lec.pdfUrl,
@@ -191,7 +188,6 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
           mimeType: 'application/pdf',
           title: lec.title,
           lectureId: lec.id,
-          bytes: buf,
         });
       }
 

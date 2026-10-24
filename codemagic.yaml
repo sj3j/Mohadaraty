@@ -56,8 +56,19 @@ workflows:
       - name: Install node dependencies
         script: npm ci
 
+      - name: Check iOS native touch and publishing contracts
+        script: npm run test:ios-audit
+
       - name: Build the web bundle and sync it into the Xcode project
         script: npm run ios:sync
+
+      - name: Verify bundled iOS app and PDF assets
+        script: |
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          test -s ios/App/App/public/pdfjs/cmaps/78-EUC-H.bcmap
+          find ios/App/App/public/assets -maxdepth 1 -name 'pdfWorkerEntry-*.js' | grep -q .
 
       - name: Store-compliance gate - no off-Apple purchase surface
         script: npm run check:payment-surface:ios
@@ -140,8 +151,19 @@ workflows:
       - name: Install node dependencies
         script: npm ci
 
+      - name: Check iOS native touch and publishing contracts
+        script: npm run test:ios-audit
+
       - name: Build the web bundle and sync it into the Xcode project
         script: npm run ios:sync
+
+      - name: Verify bundled iOS app and PDF assets
+        script: |
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          test -s ios/App/App/public/pdfjs/cmaps/78-EUC-H.bcmap
+          find ios/App/App/public/assets -maxdepth 1 -name 'pdfWorkerEntry-*.js' | grep -q .
 
       - name: Store-compliance gate - no off-Apple purchase surface
         script: npm run check:payment-surface:ios
@@ -159,6 +181,10 @@ workflows:
 
       - name: Set a unique build number
         script: |
+          if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [ "$BUILD_NUMBER" -le 31 ]; then
+            echo "iOS 1.0.3 requires a numeric build number greater than installed build 31."
+            exit 1
+          fi
           sed -i '' "s/CURRENT_PROJECT_VERSION = .*;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/g" \
             ios/App/App.xcodeproj/project.pbxproj
           grep -n "CURRENT_PROJECT_VERSION" ios/App/App.xcodeproj/project.pbxproj
@@ -172,10 +198,22 @@ workflows:
             --workspace "$XCODE_WORKSPACE" \
             --scheme "$XCODE_SCHEME"
 
+      - name: Verify App Store archive contains the web and PDF assets
+        script: |
+          ipa=$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)
+          test -n "$ipa"
+          archive_entries=$(unzip -Z1 "$ipa")
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/index\.html$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/sw\.js$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/pdfjs/standard_fonts/LiberationSans-Regular\.ttf$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/pdfjs/cmaps/78-EUC-H\.bcmap$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/assets/pdfWorkerEntry-[^/]+\.js$' >/dev/null
+
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-      - ios/App/build/**/*.dSYM
+      - build/ios/**/*.dSYM
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
 
     publishing:
       app_store_connect:

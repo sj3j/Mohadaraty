@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Upload, AlertCircle, Loader2, FileUp, CheckCircle2 } from 'lucide-react';
 import { db, auth, storage, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, addDoc, doc, updateDoc, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, updateDoc, serverTimestamp, getDocs, getDocFromServer, query, where, writeBatch } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { CATEGORIES, Category, LectureType, Language, TRANSLATIONS, Lecture, UserProfile, MAX_LECTURE_FILE_BYTES } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
@@ -18,6 +18,8 @@ interface AdminUploadProps {
   lectureToEdit?: Lecture | null;
   user?: UserProfile | null;
 }
+
+const MAX_PUBLISH_BATCH_SIZE = 450;
 
 export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user }: AdminUploadProps) {
   const t = TRANSLATIONS[lang];
@@ -59,6 +61,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [publishReceipt, setPublishReceipt] = useState<{ stageId: string; count: number; verified: boolean } | null>(null);
   // How many uploads are still generating MCQs in this tab. Drives the "don't
   // close the tab" banner, since generation is browser-side and dies with it.
   const [pendingMCQCount, setPendingMCQCount] = useState(0);
@@ -270,14 +273,23 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
     setCurrentFileIndex(0);
     setUploadProgress(null);
     setShowSuccess(false);
+    setPublishReceipt(null);
     setError(null);
     setSubjectId('');
     setCourseFilter(activeCourseId);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, submittedConfigs?: any[]) => {
     e.preventDefault();
     if (!auth.currentUser) return;
+    if (!effectiveStageId) {
+      setError('The target stage is unavailable. Sign in again and retry.');
+      return;
+    }
+    if (!lectureToEdit && files.length > MAX_PUBLISH_BATCH_SIZE) {
+      setError(`Publish at most ${MAX_PUBLISH_BATCH_SIZE} files at a time.`);
+      return;
+    }
     if (!lectureToEdit && files.length === 0 && !youtubeUrl) {
       setError(isRtl ? 'يرجى اختيار ملف PDF أو رابط يوتيوب' : 'Please select a PDF file or YouTube URL');
       return;
@@ -288,6 +300,11 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
       return;
     }
 
+    // Capture the editable per-file state exactly once. React state updates from
+    // the publish button are asynchronous, so publishing from the live array
+    // can otherwise use an older subject/title configuration.
+    const configSnapshot = files.length > 1 ? (submittedConfigs || saveCurrentConfig(fileConfigs)) : null;
+
     if (hasCurriculum) {
       if (lectureToEdit || files.length <= 1) {
         if (!subjectId) {
@@ -295,7 +312,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
           return;
         }
       } else {
-        const activeConfigs = saveCurrentConfig(fileConfigs);
+        const activeConfigs = configSnapshot!;
         const missingSubIdx = activeConfigs.findIndex((c: any) => !c.subjectId);
         if (missingSubIdx !== -1) {
           setCurrentFileIndex(missingSubIdx);
@@ -306,19 +323,34 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
       }
     }
 
+    if (hasCurriculum) {
+      const subjectIds = configSnapshot
+        ? configSnapshot.map((config: any) => config.subjectId)
+        : [subjectId];
+      if (subjectIds.some(id => !subjects.some(subject => subject.id === id && subject.stageId === effectiveStageId))) {
+        setError('A selected subject does not belong to the target stage.');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setError(null);
     setUploadProgress(0);
+    let activePublishTarget: string | null = null;
 
     try {
       if (lectureToEdit || files.length === 0) {
         // Edit mode OR Youtube only creation mode
         let downloadUrl = lectureToEdit?.pdfUrl || '';
         const currentFile = files.length > 0 ? files[0] : null;
+        // Allocate the ID before Storage upload so the object path is unique
+        // and traceable to the eventual Firestore document.
+        const newLectureRef = lectureToEdit ? null : doc(collection(db, 'lectures'));
 
         if (currentFile) {
+          activePublishTarget = currentFile.name;
           const safeFileName = currentFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-          const storagePath = `lectures/${Date.now()}_${safeFileName}`;
+          const storagePath = `lectures/${lectureToEdit?.id || newLectureRef!.id}_${Date.now()}_${safeFileName}`;
           const storageRef = ref(storage, storagePath);
           const uploadTask = uploadBytesResumable(storageRef, currentFile);
 
@@ -364,23 +396,43 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
 
         if (lectureToEdit) {
           await updateDoc(doc(db, 'lectures', lectureToEdit.id), lectureData);
-          await logAdminAction('UPDATE_LECTURE', `Updated lecture: ${lectureData.title}`, lectureToEdit.id);
+          void logAdminAction('UPDATE_LECTURE', `Updated lecture: ${lectureData.title}`, lectureToEdit.id);
+          setPublishReceipt({ stageId: lectureData.stageId, count: 1, verified: true });
         } else {
           lectureData.createdAt = serverTimestamp();
-          const docRef = await addDoc(collection(db, 'lectures'), lectureData);
-          await logAdminAction('CREATE_LECTURE', `Created lecture: ${lectureData.title}`, docRef.id);
+          const docRef = newLectureRef!;
+          const publication = writeBatch(db);
+          publication.set(docRef, lectureData);
+          await publication.commit();
+          let verified = false;
+          try {
+            verified = (await getDocFromServer(docRef)).exists();
+          } catch (verificationError) {
+            console.warn('[AdminUpload] Lecture committed but immediate server verification was unavailable.', verificationError);
+          }
+          setPublishReceipt({ stageId: effectiveStageId, count: 1, verified });
+          void logAdminAction('CREATE_LECTURE', `Created lecture: ${lectureData.title}`, docRef.id);
           kickOffMCQGeneration(docRef.id, lectureData);
         }
       } else {
         // Multiple files creation mode
-        const finalConfigs = saveCurrentConfig(fileConfigs);
-        
+        const finalConfigs = configSnapshot!;
+        const publication = writeBatch(db);
+        const published: Array<{ ref: ReturnType<typeof doc>; data: any }> = [];
+
         for (let i = 0; i < files.length; i++) {
           const currentFile = files[i];
           const config = finalConfigs[i];
+          activePublishTarget = currentFile.name;
+          if (!config?.title?.trim()) throw new Error(`File ${i + 1} has no lecture title.`);
+          if (hasCurriculum && !subjects.some(subject => subject.id === config.subjectId && subject.stageId === effectiveStageId)) {
+            throw new Error(`File ${i + 1} has a subject outside the selected stage.`);
+          }
+
+          const docRef = doc(collection(db, 'lectures'));
           
           const safeFileName = currentFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-          const storagePath = `lectures/${Date.now()}_${safeFileName}`;
+          const storagePath = `lectures/${docRef.id}_${Date.now()}_${safeFileName}`;
           const storageRef = ref(storage, storagePath);
           const uploadTask = uploadBytesResumable(storageRef, currentFile);
 
@@ -418,9 +470,32 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
             lectureData.number = null;
           }
 
-          const docRef = await addDoc(collection(db, 'lectures'), lectureData);
-          await logAdminAction('CREATE_LECTURE_BATCH', `Batch created lecture: ${lectureData.title}`, docRef.id);
-          kickOffMCQGeneration(docRef.id, lectureData);
+          publication.set(docRef, lectureData);
+          published.push({ ref: docRef, data: lectureData });
+        }
+
+        await publication.commit();
+        let verified = false;
+        try {
+          const confirmations = await Promise.all(published.map(({ ref }) => getDocFromServer(ref)));
+          verified = confirmations.every(snapshot => snapshot.exists());
+          if (!verified) {
+            console.warn('[AdminUpload] Batch commit acknowledged but a server read did not return every lecture.');
+          }
+        } catch (verificationError) {
+          // The commit itself is the durable publication result. Never turn a
+          // successful commit into a retry prompt just because verification is
+          // temporarily offline.
+          console.warn('[AdminUpload] Batch committed but immediate server verification was unavailable.', verificationError);
+        }
+        setPublishReceipt({ stageId: effectiveStageId, count: published.length, verified });
+        void logAdminAction(
+          'CREATE_LECTURE_BATCH',
+          `Published ${published.length} lectures to ${effectiveStageId}: ${published.map(item => item.ref.id).join(',')}`,
+          published.map(item => item.ref.id).join(','),
+        );
+        for (const { ref, data } of published) {
+          kickOffMCQGeneration(ref.id, data);
         }
       }
 
@@ -452,7 +527,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
         errorMessage = err.message;
       }
 
-      setError(errorMessage);
+      setError(activePublishTarget && files.length > 1 ? `${errorMessage} (${activePublishTarget})` : errorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -503,6 +578,12 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
                       {lectureToEdit ? t.editSuccess : t.success}
                     </h3>
                     <p className="text-slate-500 dark:text-slate-400">{t.lectureTitle}: <span className="font-bold text-slate-700 dark:text-slate-300">{title}</span></p>
+                    {publishReceipt && (
+                      <p className="mt-2 text-sm text-sky-700 dark:text-sky-300">
+                        {publishReceipt.count} lecture{publishReceipt.count === 1 ? '' : 's'} published to {publishReceipt.stageId}
+                        {publishReceipt.verified ? ' (server confirmed).' : ' (commit confirmed; server refresh pending).'}
+                      </p>
+                    )}
                   </div>
 
                   {pendingMCQCount > 0 && (
@@ -852,7 +933,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
                        // Force saving the current config state before submission
                        const updated = saveCurrentConfig(fileConfigs);
                        setFileConfigs(updated);
-                       handleSubmit(e);
+                       handleSubmit(e, updated);
                     }}
                     className="w-full py-3.5 bg-sky-600 dark:bg-sky-500 text-white dark:text-zinc-900 rounded-xl font-bold hover:bg-sky-700 dark:hover:bg-sky-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-sky-200 dark:shadow-none"
                   >

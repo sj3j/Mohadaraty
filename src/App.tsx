@@ -601,7 +601,10 @@ export default function App() {
               mustChangePassword: studentData?.mustChangePassword === true,
               googleEmail: studentData?.googleEmail || undefined,
               examCodePromptSnoozedUntil: userDoc.data().examCodePromptSnoozedUntil || undefined,
-              group: userDoc.data().group || undefined,
+              // Older user documents can lack `group` even when the canonical
+              // roster record has `subgroup`. Preserve that entitlement while
+              // the profile is being repaired rather than suppressing lectures.
+              group: userDoc.data().group || studentData?.subgroup || undefined,
               favorites: userDoc.data().favorites || [],
               studied: userDoc.data().studied || [],
               completedWeeklyTasks: userDoc.data().completedWeeklyTasks || [],
@@ -656,6 +659,7 @@ export default function App() {
               isMasterAdmin,
               photoUrl: firebaseUser.photoURL || undefined,
               examCode: studentData?.examCode || undefined,
+              group: studentData?.subgroup || undefined,
               mustChangePassword: studentData?.mustChangePassword === true,
               googleEmail: studentData?.googleEmail || undefined,
               favorites: [],
@@ -693,6 +697,7 @@ export default function App() {
             isMasterAdmin,
             photoUrl: firebaseUser.photoURL || undefined,
             examCode: studentData?.examCode || undefined,
+            group: studentData?.subgroup || undefined,
             mustChangePassword: studentData?.mustChangePassword === true,
             googleEmail: studentData?.googleEmail || undefined,
             favorites: [],
@@ -923,7 +928,7 @@ export default function App() {
 
   // Announcements Listener for Notifications
   useEffect(() => {
-    if (!user || (!user.group && user.role === 'student')) return;
+    if (!user) return;
     if (!effectiveStageId) return;
 
     const q = query(collection(db, 'announcements'), where('stageId', '==', effectiveStageId), orderBy('createdAt', 'desc'), limit(1));
@@ -964,10 +969,12 @@ export default function App() {
       authenticatedUid,
       isAuthReady,
       effectiveStageId,
-      canBrowseLectures: Boolean(user && (user.group || user.role !== 'student')),
+      // Stage entitlement is authoritative. Legacy accounts may legitimately
+      // have no users.group while still carrying a valid users/students stage.
+      canBrowseLectures: Boolean(user),
     });
 
-    if (!user || (!user.group && user.role === 'student')) {
+    if (!user) {
       setLectures([]);
       setIsLoading(false);
       setLectureLoadState(decision.state);
@@ -1038,7 +1045,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user?.uid, user?.group, user?.role, effectiveStageId, authenticatedUid, isAuthReady, lectureRetry]);
+  }, [user?.uid, user?.role, effectiveStageId, authenticatedUid, isAuthReady, lectureRetry]);
 
   const retryLectures = useCallback(() => setLectureRetry(value => value + 1), []);
 
@@ -1182,7 +1189,9 @@ export default function App() {
     return <PasswordChangeGate lang={lang} onDone={() => setPasswordChanged(true)} />;
   }
 
-  if (!user.group && user.role === 'student') {
+  // A legacy account can legitimately be stage-assigned before its old group
+  // field is backfilled. Stage access is sufficient to enter the content UI.
+  if (!user.group && !user.stageId && user.role === 'student') {
     return <OnboardingScreen user={user} lang={lang} />;
   }
 
