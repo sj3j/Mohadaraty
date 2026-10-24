@@ -11,10 +11,10 @@ binary for this route.
 
 | Gate | Evidence required | Current status |
 | --- | --- | --- |
-| iOS 1.0.3 release | Confirm the processed Codemagic `ios-release` IPA, build number, and App Store Connect **Ready for Distribution** status. | Unverified here. The last supplied screenshot showed **Waiting for Review**. |
+| iOS 1.0.3 release | Confirm the processed Codemagic `ios-release` IPA, build number, and App Store Connect **Ready for Distribution** status. | Public Iraq storefront lookup on 2026-10-24 still reports **1.0.2**. The last supplied App Store Connect screenshot showed 1.0.3 **Waiting for Review**. |
 | Mac compile | Run `ios-mac-qa` and keep its Xcode destination/build log. | Workflow prepared; no Mac build has run in this workspace. |
 | Mac runtime | Run **My Mac (Designed for iPad)** on the Codemagic Apple silicon builder and record the checks below. | Unverified. A successful compile is not a runtime pass. |
-| iOS screenshots | Inspect the iOS product page for its required iPhone and 13-inch iPad screenshots. | Unverified without App Store Connect access. |
+| iOS screenshots | Inspect the iOS product page for its required iPhone and 13-inch iPad screenshots. | Public storefront lookup reports five iPhone and four iPad images for 1.0.2; the 1.0.3 draft assets and exact screenshot slots remain unverified. |
 | Mac availability | Select **Make this app available** in App Store Connect after the gates above pass. | Unverified without App Store Connect access. |
 | Mac storefront | Find the approved app under **iPhone & iPad Apps** on an Apple silicon Mac and install it. | Unverified. |
 
@@ -97,3 +97,4 @@ Mac availability.
 - [Apple: Test iPhone and iPad apps on Macs with Apple silicon using TestFlight](https://developer.apple.com/help/app-store-connect/test-a-beta-version/test-iphone-and-ipad-apps-on-macs-with-apple-silicon/)
 - [Apple: Screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications)
 - [Codemagic: Remote access to a build machine](https://docs.codemagic.io/troubleshooting/accessing-builder-machine-via-ssh/)
+- [Apple public Iraq storefront lookup for Mohadaraty](https://itunes.apple.com/lookup?id=6814124686&country=iq) (public live listing only; it does not report App Store Connect review state)
