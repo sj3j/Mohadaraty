@@ -13,6 +13,83 @@
 # purchase surface in the store build".
 
 workflows:
+  # Manual compatibility run. It builds the existing iOS target for the
+  # "Designed for iPad" Mac destination; it does not publish a Mac binary.
+  ios-mac-qa:
+    name: iOS app on Apple silicon Mac - interactive QA
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+
+    environment:
+      groups:
+        - revenuecat
+      vars:
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        MAC_QA_HOLD_SECONDS: "1200"
+      xcode: latest
+      cocoapods: default
+      node: v22.11.0
+
+    scripts:
+      - name: Check iOS configuration and dependencies
+        script: |
+          test -n "$VITE_REVENUECAT_IOS_KEY"
+          case "$VITE_REVENUECAT_IOS_KEY" in
+            appl_*) ;;
+            *) echo "Expected an iOS RevenueCat public key (appl_*)."; exit 1 ;;
+          esac
+          test -f ios/App/App/GoogleService-Info.plist
+          npm ci
+          npm run test:ios-audit
+
+      - name: Prepare the iOS app and its PDF assets
+        script: |
+          npm run ios:sync
+          npm run check:payment-surface:ios
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          cd ios/App && pod install
+
+      - name: Check the Designed for iPad Mac destination
+        script: |
+          mkdir -p build/mac-qa
+          xcodebuild -showdestinations \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme "$XCODE_SCHEME" \
+            > build/mac-qa/destinations.txt
+          cat build/mac-qa/destinations.txt
+          if ! grep -Eq 'variant:Designed for (iPad|\[iPad,iPhone\]|\[iPhone,iPad\])' build/mac-qa/destinations.txt; then
+            echo "Xcode did not offer a Designed for iPad Mac destination on this builder."
+            exit 1
+          fi
+
+      - name: Build the iPad app for Mac compatibility
+        script: |
+          xcodebuild build \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Debug \
+            -destination 'platform=macOS,variant=Designed for iPad' \
+            -derivedDataPath build/mac-qa/DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Keep the remote Mac available for interactive QA
+        script: |
+          case "$MAC_QA_HOLD_SECONDS" in
+            ''|*[!0-9]*) echo "MAC_QA_HOLD_SECONDS must be a nonnegative integer."; exit 1 ;;
+          esac
+          if [ "$MAC_QA_HOLD_SECONDS" -gt 1800 ]; then
+            echo "MAC_QA_HOLD_SECONDS must be at most 1800."; exit 1
+          fi
+          echo "Use this time to connect by VNC and run My Mac (Designed for iPad) in Xcode."
+          sleep "$MAC_QA_HOLD_SECONDS"
+
+    artifacts:
+      - build/mac-qa/destinations.txt
+      - /tmp/xcodebuild_logs/*.log
+
   # ---------------------------------------------------------------------
   # 1. مسار المحاكي: مخصص لـ App Preview (تمت إضافته)
   # ---------------------------------------------------------------------
