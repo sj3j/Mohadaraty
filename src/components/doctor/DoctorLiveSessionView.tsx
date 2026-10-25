@@ -30,7 +30,7 @@ export default function DoctorLiveSessionView({
   onStudentMarkedPresent,
   attendance, selectedLectureId, onSelectLecture,
 }: DoctorLiveSessionViewProps) {
-  const [expectedHeadcount, setExpectedHeadcount] = useState(60);
+  const [physicalHeadcount, setPhysicalHeadcount] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [includeAllStudents, setIncludeAllStudents] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -140,22 +140,20 @@ export default function DoctorLiveSessionView({
     if (attendance.workspace && !attendance.busy) {
       const existingSession = attendance.workspace.sessions.find(s => s.occurrenceId === occId);
       const isEnded = existingSession?.status === 'ended' || existingSession?.status === 'finalized';
-      const isAlreadyActive = existingSession?.status === 'active' && attendance.snapshot?.session.occurrenceId === occId;
-
-      if (!isEnded && !isAlreadyActive && autoStartedSessionRef.current !== occId) {
+      if (!isEnded && !existingSession && autoStartedSessionRef.current !== occId) {
         autoStartedSessionRef.current = occId;
         attendance.selectOccurrence(occId);
-        void attendance.start(expectedHeadcount);
+        void attendance.start(physicalHeadcount);
       }
     }
-  }, [currentSlotOption, selectedLectureId, attendance.workspace, attendance.busy, expectedHeadcount]);
+  }, [currentSlotOption, selectedLectureId, attendance.workspace, attendance.busy, physicalHeadcount]);
 
   const selectedLecture = lectures.find(lecture => lecture.id === (selectedLectureId || currentSlotOption?.id));
   const activeSession = attendance.snapshot?.session.occurrenceId === selectedLecture?.id ? attendance.snapshot : null;
   const isSessionActive = activeSession?.session.status === 'active';
   const currentQr = isSessionActive && attendance.occurrenceId === selectedLecture?.id ? attendance.qrToken : '';
 
-  useEffect(() => { if (activeSession?.session.expectedHeadcount) setExpectedHeadcount(activeSession.session.expectedHeadcount); }, [activeSession?.session.id, activeSession?.session.expectedHeadcount]);
+  useEffect(() => { setPhysicalHeadcount(activeSession?.session.physicalHeadcount ?? null); }, [activeSession?.session.id, activeSession?.session.physicalHeadcount]);
   useEffect(() => {
     let live = true;
     setQrDataUrl('');
@@ -172,7 +170,7 @@ export default function DoctorLiveSessionView({
   const handleRefreshQr = () => {
     if (!selectedLecture) return;
     attendance.selectOccurrence(selectedLecture.id);
-    void attendance.start(expectedHeadcount);
+    void attendance.refreshQr();
   };
 
   const handleManualAdd = (student: StudentAttendanceRow) => {
@@ -222,12 +220,15 @@ export default function DoctorLiveSessionView({
     (!command.kind || command.kind === 'manual') && command.sessionId === activeSession?.session.id && command.status === 'pending'
   ).length;
   const presentCount = confirmedCount + pendingManualCount;
-  const totalCount = activeSession?.session.expectedHeadcount || expectedHeadcount;
-  const attendanceRate = totalCount > 0 ? Math.round((confirmedCount / totalCount) * 100) : 0;
+  const totalCount = activeSession?.session.physicalHeadcount ?? null;
   const finalizationQueued = attendance.commands.some(command => command.sessionId === activeSession?.session.id && command.kind === 'session_update' && command.input.status === 'finalized' && command.status === 'pending');
+  const sessionProblems = attendance.commands.filter(command => command.sessionId === activeSession?.session.id && command.status === 'needs_help');
   const canFinalize = activeSession?.session.status === 'ended' && !activeSession.offline
     && Date.parse(activeSession.serverNow) >= Date.parse(activeSession.session.reconciliationDeadline)
     && activeSession.counts.review === 0;
+  const sessionCards = (attendance.workspace?.sessions || [])
+    .filter(session => session.status === 'active' || session.status === 'ended')
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   const allConfirmedRecords = (activeSession?.records || []).filter(record => record.status === 'confirmed');
   const filteredConfirmedRecords = allConfirmedRecords.filter(record => {
@@ -275,7 +276,7 @@ export default function DoctorLiveSessionView({
                 if (isSessionActive) {
                   void attendance.saveSession({ status: 'ended', reason: isRtl ? 'انتهى عرض الرمز' : 'QR display ended' });
                 } else {
-                  handleRefreshQr();
+                  void attendance.start(physicalHeadcount);
                 }
               }}
               disabled={attendance.busy || !selectedLecture || (activeSession != null && activeSession.session.status !== 'active')}
@@ -315,6 +316,17 @@ export default function DoctorLiveSessionView({
             </button>
           </div>
         </div>
+
+        {sessionCards.length > 1 && (
+          <div className="flex gap-2 overflow-x-auto border-t border-slate-100 pt-3 dark:border-zinc-800" aria-label={isRtl ? 'الجلسات المحفوظة' : 'Saved sessions'}>
+            {sessionCards.map(session => (
+              <button key={session.id} onClick={() => { onSelectLecture(session.occurrenceId); attendance.selectOccurrence(session.occurrenceId); }} className={`min-w-48 rounded-xl border p-3 text-start text-xs ${session.occurrenceId === selectedLecture?.id ? 'border-teal-500 bg-teal-50 text-teal-900 dark:bg-teal-950/30 dark:text-teal-100' : 'border-slate-200 dark:border-zinc-700'}`}>
+                <span className="block truncate font-black">{session.occurrence.title}</span>
+                <span className="mt-1 block text-[10px] opacity-75">{session.status === 'active' ? (isRtl ? 'مفتوحة' : 'Open') : (isRtl ? 'مغلقة' : 'Closed')} · {session.physicalHeadcount ?? '—'}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Timetable Session Selectors: Week & Group */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-zinc-800">
@@ -436,9 +448,9 @@ export default function DoctorLiveSessionView({
             <div className="flex items-center gap-1.5">
               <button
                 onClick={handleRefreshQr}
-                disabled={attendance.busy || !selectedLecture || (activeSession != null && !isSessionActive)}
+                disabled={attendance.busy || !isSessionActive}
                 className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 hover:text-teal-600 dark:hover:bg-zinc-800 transition-colors"
-                title={isRtl ? 'تحديث الرمز' : 'Refresh QR'}
+                title={isRtl ? 'إعادة تحميل الرمز' : 'Reload QR'}
               >
                 <RefreshCw className="h-4 w-4" />
               </button>
@@ -459,7 +471,7 @@ export default function DoctorLiveSessionView({
                 token={currentQr}
                 title={selectedLecture?.title || ''}
                 subtitle={`${selectedLecture?.date || ''} · ${selectedLecture?.time || ''}`}
-                countLabel={`${confirmedCount} / ${totalCount}`}
+                countLabel={`${isRtl ? 'المؤكد' : 'Confirmed'}: ${confirmedCount} · ${isRtl ? 'القاعة' : 'In room'}: ${totalCount ?? '—'}`}
                 isRtl={isRtl}
                 unavailableLabel={isRtl ? 'ابدأ الجلسة لعرض الرمز' : 'Start the session to display the QR'}
               />
@@ -467,7 +479,7 @@ export default function DoctorLiveSessionView({
               <div className="flex flex-col items-center justify-center p-8 rounded-3xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-md max-w-sm sm:max-w-md w-full aspect-square text-center space-y-3">
                 <QrCode className="h-16 w-16 mx-auto text-slate-300 dark:text-zinc-700 animate-pulse" />
                 <p className="text-sm font-bold text-slate-400">
-                  {isRtl ? 'ابدأ الجلسة أو جدد الرمز لعرض رمز موقع صالح' : 'Start the session or refresh to show a signed QR'}
+                  {isRtl ? 'ابدأ الجلسة أو أعد تحميل رمزها الثابت' : 'Start the session or reload its static QR'}
                 </p>
               </div>
             )}
@@ -487,14 +499,18 @@ export default function DoctorLiveSessionView({
         <div className="lg:col-span-5 space-y-6">
           <div className="rounded-2xl bg-white p-4 text-xs dark:bg-zinc-900">
             <label className="font-bold">{isRtl ? 'عدد الطلاب في القاعة' : 'Physical headcount'}</label>
-            <input type="number" min={1} max={10000} value={expectedHeadcount} onChange={event => setExpectedHeadcount(Number(event.target.value))} className="ms-2 w-20 rounded-lg border p-2 dark:bg-zinc-800" />
-            {activeSession && <button disabled={attendance.busy || expectedHeadcount === activeSession.session.expectedHeadcount} onClick={() => void attendance.saveSession({ expectedHeadcount })} className="ms-2 text-teal-700 disabled:opacity-40">{isRtl ? 'حفظ' : 'Save'}</button>}
+            <input type="number" min={0} max={10000} value={physicalHeadcount ?? ''} onChange={event => setPhysicalHeadcount(event.target.value === '' ? null : Number(event.target.value))} className="ms-2 w-20 rounded-lg border p-2 dark:bg-zinc-800" />
+            {activeSession && <button disabled={attendance.busy || physicalHeadcount === activeSession.session.physicalHeadcount} onClick={() => void attendance.saveSession({ physicalHeadcount })} className="ms-2 text-teal-700 disabled:opacity-40">{isRtl ? 'حفظ' : 'Save'}</button>}
             <p>{isRtl ? 'المؤكد' : 'Confirmed'}: {confirmedCount} · {isRtl ? 'يدوي بانتظار المزامنة' : 'Manual pending sync'}: {pendingManualCount}</p>
           </div>
-          <button disabled={attendance.busy || attendance.offlineReady} onClick={() => void attendance.prepare()} className="w-full rounded-2xl border border-teal-300 bg-teal-50 p-3 text-xs font-bold text-teal-900 disabled:opacity-60">{attendance.offlineReady ? (isRtl ? 'أدوات العمل دون اتصال جاهزة' : 'Offline work pack ready') : (isRtl ? 'تحضير أدوات العمل دون اتصال' : 'Prepare offline work pack')}</button>
+          <p className={`rounded-xl p-3 text-xs font-bold ${attendance.offlineReady ? 'bg-teal-50 text-teal-900' : 'bg-amber-50 text-amber-900'}`}>{attendance.offlineReady ? (isRtl ? 'الجهاز جاهز للعمل دون اتصال ويتم تحديثه تلقائياً.' : 'Offline access is ready and refreshes automatically.') : (isRtl ? 'لا توجد حزمة صالحة بعد؛ اتصل بالإنترنت لتُجهّز تلقائياً.' : 'No valid offline pack yet; connect once to prepare automatically.')}</p>
           {attendance.error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-800">{attendance.error}</p>}
+          {sessionProblems.length > 0 && <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            <strong>{isRtl ? 'تحتاج مراجعة' : 'Needs review'}</strong>
+            {sessionProblems.map(command => <p key={command.requestId} className="mt-1">{command.kind || 'manual'} · {command.reason || (isRtl ? 'تعذر مزامنة العملية' : 'Could not sync operation')}</p>)}
+          </div>}
           {activeSession?.offline && <p role="status" className="rounded-xl bg-amber-50 p-3 text-xs text-amber-900">{isRtl ? 'الطلاب المزامنون يظهرون بعد عودة الإنترنت. التسجيل اليدوي يُحفظ فوراً.' : 'Student uploads appear after reconnecting. Manual entries save immediately.'}</p>}
-          {activeSession && confirmedCount > totalCount && <p role="alert" className="rounded-xl bg-red-100 p-3 text-sm font-black text-red-900">{isRtl ? `${confirmedCount - totalCount} حضور زائد عن عدد القاعة — راجع السجلات` : `${confirmedCount - totalCount} scans beyond physical headcount — review records`}</p>}
+          {activeSession && totalCount != null && confirmedCount > totalCount && <p role="alert" className="rounded-xl bg-red-100 p-3 text-sm font-black text-red-900">{isRtl ? `${confirmedCount - totalCount} حضور زائد عن عدد القاعة — راجع السجلات` : `${confirmedCount - totalCount} scans beyond physical headcount — review records`}</p>}
           {/* Headcount Card */}
           <div className="p-6 rounded-3xl bg-gradient-to-br from-teal-600 to-emerald-700 text-white shadow-lg shadow-teal-600/20">
             <div className="flex items-center justify-between mb-4">
@@ -505,18 +521,8 @@ export default function DoctorLiveSessionView({
             </div>
 
             <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black">{confirmedCount}</span>
-              <span className="text-lg text-teal-200 font-bold">/ {totalCount}</span>
-              <span className="ms-auto text-sm font-black px-3 py-1 rounded-xl bg-white/20 backdrop-blur-sm">
-                {attendanceRate}%
-              </span>
-            </div>
-
-            <div className="mt-4 w-full bg-black/20 rounded-full h-2.5 overflow-hidden">
-              <div 
-                className="bg-white h-2.5 rounded-full transition-all duration-500 ease-out"
-                style={{ width: `${Math.min(100, attendanceRate)}%` }}
-              />
+              <span className="text-sm font-bold">{isRtl ? 'المؤكد' : 'Confirmed'}: <strong className="text-3xl">{confirmedCount}</strong></span>
+              <span className="ms-auto text-sm font-bold">{isRtl ? 'عدد القاعة' : 'In room'}: <strong className="text-3xl">{totalCount ?? '—'}</strong></span>
             </div>
           </div>
 

@@ -2160,6 +2160,7 @@ app.post('/api/attendance/offline/prepare', verifyAuth, attendance.prepareOfflin
 app.post('/api/attendance/offline/import', verifyAuth, attendance.importOfflineSession);
 app.post('/api/attendance/sessions', verifyAuth, attendance.createSession);
 app.get('/api/attendance/sessions/:sessionId', verifyAuth, attendance.sessionSnapshot);
+app.get('/api/attendance/sessions/:sessionId/qr', verifyAuth, attendance.sessionQr);
 app.patch('/api/attendance/sessions/:sessionId', verifyAuth, attendance.updateSession);
 app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, attendance.manualRecord);
 app.post('/api/attendance/records/:recordId/void', verifyAuth, attendance.voidRecord);

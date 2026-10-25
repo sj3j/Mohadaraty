@@ -8,7 +8,7 @@
 import React, { useState } from 'react';
 import { 
   QrCode, FileSpreadsheet, BarChart3, LogOut, BookOpen, CalendarDays,
-  ChevronDown, GraduationCap, Sparkles, Layers, ArrowRight, ArrowLeft, RefreshCw
+  ChevronDown, GraduationCap, Layers, ArrowRight, ArrowLeft, RefreshCw
 } from 'lucide-react';
 import type { Language, UserProfile } from '../../types';
 import { DoctorSubject, DoctorPortalTab, LectureMode, LectureColumn, StudentAttendanceRow, AttendanceCellStatus } from './types';
@@ -18,6 +18,7 @@ import SubjectModeModal from './SubjectModeModal';
 import DoctorLiveSessionView from './DoctorLiveSessionView';
 import DoctorExcelTimetableView from './DoctorExcelTimetableView';
 import DoctorTimetableView from './DoctorTimetableView';
+import EmergencyAttendanceDrafts from './EmergencyAttendanceDrafts';
 
 
 interface DoctorPortalProps {
@@ -25,15 +26,14 @@ interface DoctorPortalProps {
   lang: Language;
   onLogout: () => void;
   onBack?: () => void;
-  onOpenOfflineTools?: () => void;
   stageId?: string;
 }
 
-export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOfflineTools, stageId }: DoctorPortalProps) {
+export default function DoctorPortal({ user, lang, onLogout, onBack, stageId }: DoctorPortalProps) {
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
 
-  const attendance = useDoctorAttendance(user.uid, isRtl, stageId);
+  const attendance = useDoctorAttendance(user.uid, isRtl, stageId || user.assignedStageId || user.stageId);
   const availableSubjects: DoctorSubject[] = (attendance.workspace?.subjects || []).map(subject => ({
     id: subject.id, nameAr: subject.nameAr, nameEn: subject.nameEn,
     stageId: attendance.workspace!.stageId, stageNameAr: attendance.workspace!.stageId,
@@ -107,6 +107,19 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
   const handleStudentMarkedPresent = (studentId: string, lectureId: string) => {
     void attendance.updateCell(studentId, lectureId, 'present');
   };
+  const savedSessions = (attendance.workspace?.sessions || [])
+    .filter(session => session.status === 'active' || session.status === 'ended')
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const openSavedSession = (occurrenceId: string) => {
+    const occurrence = attendance.workspace?.bootstrap.occurrences.find(item => item.id === occurrenceId);
+    if (occurrence) {
+      const subject = availableSubjects.find(item => item.timetableSessionIds?.includes(occurrence.timetableSessionId));
+      if (subject) setSelectedSubjectId(subject.id);
+      setSelectedMode(occurrence.mode === 'practical' ? 'practical' : 'theoretical');
+    }
+    selectOccurrence(occurrenceId);
+    setActiveTab('live');
+  };
   if (!selectedSubject) {
     const isLoading = !attendance.workspace && !attendance.error;
     const isNoSubjects = !!attendance.workspace && availableSubjects.length === 0;
@@ -140,6 +153,7 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
             {isRtl ? 'تسجيل الخروج' : 'Sign out'}
           </button>
         </div>
+        {(user.assignedStageId || user.stageId || stageId) && <div className="mt-5 w-full"><EmergencyAttendanceDrafts ownerUid={user.uid} stageId={(user.assignedStageId || user.stageId || stageId)!} isRtl={isRtl} /></div>}
       </div>
     );
   }
@@ -232,16 +246,6 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
             {/* Right/End: Actions */}
             <div className="flex items-center gap-2 ms-auto md:ms-0">
               <button onClick={() => void attendance.refresh()} disabled={attendance.busy} className="rounded-xl border border-teal-200 p-2 text-teal-700 disabled:opacity-40" title={isRtl ? 'تحديث سجل الحضور' : 'Refresh attendance ledger'}><RefreshCw className="h-4 w-4" /></button>
-              {onOpenOfflineTools && (
-                <button
-                  onClick={onOpenOfflineTools}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold border border-teal-200 bg-teal-50/60 text-teal-700 hover:bg-teal-100 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-300 transition-colors cursor-pointer"
-                  title={isRtl ? 'حزمة العمل دون اتصال والمزامنة' : 'Offline Pack & Sync Tools'}
-                >
-                  <Sparkles className="h-4 w-4" />
-                  <span className="hidden sm:inline">{isRtl ? 'أدوات دون اتصال' : 'Offline Tools'}</span>
-                </button>
-              )}
               {onBack ? (
                 <button
                   onClick={onBack}
@@ -311,6 +315,25 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, onOpenOffli
 
       {/* Main Content Area */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6">
+        {savedSessions.length > 0 && <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900" aria-label={isRtl ? 'جلسات الحضور المحفوظة' : 'Saved attendance sessions'}>
+          <h2 className="mb-3 text-sm font-black">{isRtl ? 'جلسات الحضور' : 'Attendance sessions'}</h2>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {savedSessions.map(session => {
+              const queued = attendance.commands.filter(command => command.sessionId === session.id && command.status === 'pending').length;
+              const problems = attendance.commands.filter(command => command.sessionId === session.id && command.status === 'needs_help').length
+                + (attendance.snapshot?.session.id === session.id ? attendance.snapshot.counts.review : attendance.workspace?.reviewCounts?.[session.id] || 0);
+              const confirmed = attendance.snapshot?.session.id === session.id ? attendance.snapshot.counts.confirmed
+                : attendance.workspace?.records.filter(record => record.sessionId === session.id && record.status === 'confirmed').length || 0;
+              return <button key={session.id} onClick={() => openSavedSession(session.occurrenceId)} className="rounded-xl border border-slate-200 p-3 text-start text-xs hover:border-teal-500 dark:border-zinc-700">
+                <span className="block truncate font-black">{session.occurrence.title}</span>
+                <span className="mt-1 block">{session.status === 'active' ? (isRtl ? 'مفتوحة · QR متاح' : 'Open · QR available') : (isRtl ? 'مغلقة' : 'Closed')}</span>
+                <span className="mt-1 block">{isRtl ? 'عدد القاعة' : 'In room'}: {session.physicalHeadcount ?? '—'} · {isRtl ? 'المؤكد' : 'Confirmed'}: {confirmed}</span>
+                <span className="mt-1 block text-amber-700 dark:text-amber-300">{problems ? `${isRtl ? 'تحتاج مراجعة' : 'Needs review'}: ${problems}` : queued ? `${isRtl ? 'بانتظار المزامنة' : 'Pending sync'}: ${queued}` : (isRtl ? 'تمت المزامنة' : 'Synced')}</span>
+              </button>;
+            })}
+          </div>
+        </section>}
+        {(user.assignedStageId || user.stageId || stageId) && <div className="mb-5"><EmergencyAttendanceDrafts ownerUid={user.uid} stageId={(user.assignedStageId || user.stageId || stageId)!} isRtl={isRtl} /></div>}
         {activeTab !== 'timetable' && scopedLectures.length === 0 && (
           <div className="mb-6 p-4 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-xs md:text-sm font-bold flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/60" role="status">
             <span>

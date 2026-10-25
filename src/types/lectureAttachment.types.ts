@@ -10,6 +10,7 @@ export interface LectureAttachment {
   lectureTitle?: string;
   lectureNumber?: number;
   stageId: string;
+  courseId?: string;
   subjectId?: string;
   subjectName?: string;
   subjectNameAr?: string;

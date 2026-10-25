@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Lock,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { Lecture, UserProfile } from '../../types';
 import { LectureAttachment } from '../../types/lectureAttachment.types';
@@ -19,7 +20,9 @@ import {
   getLectureAttachments,
   deleteAttachment,
   getStudentApprovedCourseAttachmentsCount,
+  getStudentApprovedSemesterAttachmentsCount,
 } from '../../services/lectureAttachmentService';
+import { useStageContext } from '../../contexts/StageContext';
 import { hasSubscriptionAccess } from '../../../shared/subscriptionAccess';
 import AttachmentViewerModal from '../lecture/AttachmentViewerModal';
 import UploadAttachmentModal from '../lecture/UploadAttachmentModal';
@@ -49,12 +52,15 @@ export default function PdfAttachmentsDrawer({
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [approvedUploadsCount, setApprovedUploadsCount] = useState<number>(0);
+  const [deletingItem, setDeletingItem] = useState<LectureAttachment | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
+  const { activeCourseId } = useStageContext();
   const isStaff = canManageLectures(user);
 
   const courseKey = lecture.subjectId || lecture.category;
   const isSubscribed = hasSubscriptionAccess(user);
-  const isUnlocked = isStaff || isSubscribed || approvedUploadsCount >= 5;
+  const isUnlocked = isStaff || isSubscribed || approvedUploadsCount >= 3;
 
   const load = useCallback(async () => {
     try {
@@ -62,8 +68,12 @@ export default function PdfAttachmentsDrawer({
       setAttachments(items);
       const approvedCount = items.filter((a) => a.status === 'approved').length;
       onCountChange?.(approvedCount);
-      if (user?.uid && courseKey) {
-        const count = await getStudentApprovedCourseAttachmentsCount(user.uid, courseKey);
+      if (user?.uid) {
+        const count = await getStudentApprovedSemesterAttachmentsCount(
+          user.uid,
+          lecture.stageId || user.managedStageId || user.stageId,
+          lecture.courseId || activeCourseId
+        );
         setApprovedUploadsCount(count);
       }
     } catch (err) {
@@ -71,7 +81,7 @@ export default function PdfAttachmentsDrawer({
     } finally {
       setLoading(false);
     }
-  }, [lecture.id, user, courseKey, onCountChange]);
+  }, [lecture.id, lecture.stageId, lecture.courseId, user, activeCourseId, onCountChange]);
 
   useEffect(() => {
     if (isOpen) {
@@ -88,6 +98,20 @@ export default function PdfAttachmentsDrawer({
   const handleDelete = async (att: LectureAttachment) => {
     await deleteAttachment(att);
     await load();
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingItem) return;
+    setIsDeleting(true);
+    try {
+      await deleteAttachment(deletingItem);
+      setDeletingItem(null);
+      await load();
+    } catch (err) {
+      console.error('Failed to delete attachment in drawer:', err);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -234,21 +258,21 @@ export default function PdfAttachmentsDrawer({
                         <span>{isRtl ? 'افتح المادة بالمساهمة' : 'Unlock Free'}</span>
                       </span>
                       <span className="text-amber-600 dark:text-amber-400 font-black">
-                        {approvedUploadsCount} / 5 {isRtl ? 'معتمد' : 'approved'}
+                        {approvedUploadsCount} / 3 {isRtl ? 'معتمد' : 'approved'}
                       </span>
                     </div>
 
                     <div className="w-full h-1.5 bg-slate-200 dark:bg-zinc-700 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.min(100, (approvedUploadsCount / 5) * 100)}%` }}
+                        style={{ width: `${Math.min(100, (approvedUploadsCount / 3) * 100)}%` }}
                       />
                     </div>
 
                     <p className="text-[9px] text-slate-500 dark:text-slate-400 leading-tight text-start">
                       {isRtl
-                        ? `ارفع 5 ملحقات معتمدة لفتح ملحقات هذه المادة مجاناً (متبقي: ${Math.max(0, 5 - approvedUploadsCount)})`
-                        : `Upload 5 approved attachments to unlock all attachments for this course free (${Math.max(0, 5 - approvedUploadsCount)} left)`}
+                        ? `ارفع 3 ملحقات معتمدة لفتح ملحقات هذا الكورس مجاناً (متبقي: ${Math.max(0, 3 - approvedUploadsCount)})`
+                        : `Upload 3 approved attachments to unlock all attachments for this course free (${Math.max(0, 3 - approvedUploadsCount)} left)`}
                     </p>
                   </div>
 
@@ -306,6 +330,21 @@ export default function PdfAttachmentsDrawer({
                         </div>
                       )}
 
+                      {/* Admin Delete Action Button */}
+                      {isStaff && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeletingItem(item);
+                          }}
+                          className="absolute top-2 end-2 z-10 p-1.5 rounded-lg bg-black/60 hover:bg-rose-600 text-white shadow-md transition-all cursor-pointer hover:scale-105 active:scale-95"
+                          title={isRtl ? 'حذف المرفق نهائياً' : 'Delete attachment'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
                       {/* Info Overlay */}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex flex-col justify-end p-2 text-white">
                         {item.title && (
@@ -359,6 +398,53 @@ export default function PdfAttachmentsDrawer({
             load();
           }}
         />
+      )}
+
+      {/* Admin Delete Confirmation Modal */}
+      {deletingItem && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center p-3 bg-black/60 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
+          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2.5 text-rose-600">
+              <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 dark:text-stone-100">
+                  {isRtl ? 'حذف المرفق نهائياً' : 'Delete Attachment'}
+                </h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
+                  {deletingItem.title || (isRtl ? 'ملف المرفق' : 'Attachment file')}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              {isRtl
+                ? 'هل أنت متأكد من حذف هذا المرفق نهائياً؟ سيتم حذفه من التخزين وقاعدة البيانات ولا يمكن التراجع عن هذا الإجراء.'
+                : 'Are you sure you want to permanently delete this attachment? It will be removed from storage and database permanently.'}
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeletingItem(null)}
+                disabled={isDeleting}
+                className="px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-slate-700 dark:text-stone-300 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+                className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isRtl ? 'تأكيد الحذف' : 'Confirm Delete'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

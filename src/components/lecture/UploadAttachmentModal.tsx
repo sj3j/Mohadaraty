@@ -198,6 +198,7 @@ export default function UploadAttachmentModal({
         lectureTitle: lecture.title,
         lectureNumber: lecture.number,
         stageId: resolvedStageId,
+        courseId: lecture.courseId,
         subjectId: lecture.subjectId,
         subjectName: subjectNameEnResolved,
         subjectNameAr: subjectNameArResolved,

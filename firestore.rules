@@ -888,9 +888,8 @@ service cloud.firestore {
       allow update: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures') &&
         canWriteStage(request.resource.data.get('stageId', ''), 'manageLectures');
 
-      // Deletion is allowed by staff or by the original uploader
-      allow delete: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures') ||
-                       (isAuthenticated() && resource.data.get('uploadedBy', '') == request.auth.uid);
+      // Deletion is strictly allowed by staff only. Students/uploaders cannot delete.
+      allow delete: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures');
     }
     
     // records / announcements / homeworks all carry stageId and are filtered by

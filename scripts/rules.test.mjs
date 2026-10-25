@@ -1621,8 +1621,8 @@ await check('representative CAN approve an attachment',
 await check('student CANNOT approve an attachment',
   assertFails(updateDoc(doc(student, 'lecture_attachments/att_pending_stu'), { status: 'approved' })));
 
-await check('student CAN delete their own attachment',
-  assertSucceeds(deleteDoc(doc(student, 'lecture_attachments/att_new'))));
+await check('student CANNOT delete an attachment',
+  assertFails(deleteDoc(doc(student, 'lecture_attachments/att_new'))));
 
 await check('student CANNOT delete someone else attachment',
   assertFails(deleteDoc(doc(student, 'lecture_attachments/att_pending_other'))));

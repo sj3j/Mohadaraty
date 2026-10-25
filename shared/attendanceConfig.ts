@@ -279,6 +279,7 @@ export const REQUIRED_TABLES = [
 export const REQUIRED_RPCS = [
   'attendance_claim_command',
   'attendance_create_session',
+  'attendance_create_session_v2',
   'attendance_import_offline_session',
   'attendance_manual_record',
   'attendance_receipt_result',
@@ -286,6 +287,7 @@ export const REQUIRED_RPCS = [
   'attendance_set_record_status',
   'attendance_submit_receipt',
   'attendance_update_session',
+  'attendance_update_session_v2',
   'attendance_create_key_rotation_challenge',
   'attendance_commit_key_rotation',
 ] as const;

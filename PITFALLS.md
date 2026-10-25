@@ -103,6 +103,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A permission-denied `onSnapshot` is not inert: the backend rejects the target
   and the client re-adds it, which is its own source of watch-stream target
   churn. Rule out a missing rule before blaming the SDK.
+- Storage rules using dynamic regex `fileName.matches(request.auth.uid + ".*")` break on emails, dots, and metacharacters in custom token UIDs → allow authenticated creates with content/size guards under scoped lecture prefixes, and restrict updates/deletions with `isStaff()`.
 
 ## Data model & consistency
 - Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.

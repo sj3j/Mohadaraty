@@ -70,7 +70,7 @@ import { usePushNotifications } from './hooks/usePushNotifications';
 import { type UserFile, getUserFileBlob } from './lib/localDb';
 import { syncPendingSubmissions } from './services/mcqAnswerService';
 import { apiUrl } from './lib/apiBase';
-import { startAttendanceSync } from './services/attendanceService';
+import { ensureOfflineAttendancePrepared, startAttendanceSync } from './services/attendanceService';
 
 type SortField = 'title' | 'date' | 'number';
 type SortOrder = 'asc' | 'desc';
@@ -186,6 +186,16 @@ export default function App() {
     if (!user?.uid) return;
     return startAttendanceSync(user.uid);
   }, [user?.uid]);
+  useEffect(() => {
+    const doctorStageId = user?.assignedStageId || user?.stageId;
+    if (user?.role !== 'doctor' || !doctorStageId) return;
+    const prepare = () => { void ensureOfflineAttendancePrepared(doctorStageId, user.uid).catch(() => undefined); };
+    const reconnect = () => { void ensureOfflineAttendancePrepared(doctorStageId, user.uid, true).catch(() => undefined); };
+    prepare();
+    window.addEventListener('online', reconnect);
+    window.addEventListener('focus', prepare);
+    return () => { window.removeEventListener('online', reconnect); window.removeEventListener('focus', prepare); };
+  }, [user?.uid, user?.role, user?.assignedStageId, user?.stageId]);
   const [showUpload, setShowUpload] = useState(false);
   const [lectureToEdit, setLectureToEdit] = useState<Lecture | null>(null);
   const [isLoading, setIsLoading] = useState(true);

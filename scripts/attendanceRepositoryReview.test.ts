@@ -49,6 +49,30 @@ test('acknowledging a doctor command preserves its order', async () => {
   assert.equal(updated.localOrder, first.localOrder);
 });
 
+test('two lecturer sessions retain separate QR imports, counts, and close commands after repository reopen', async () => {
+  const ownerUid = 'doctor-two-sessions';
+  const repo = new IndexedDbAttendanceRepository();
+  for (const sessionId of ['lecture-a', 'lecture-b']) {
+    await repo.commitDoctorSession({
+      meta: { key: `attendance-doctor:${ownerUid}:${sessionId}`, data: { session: { id: sessionId, physicalHeadcount: null, status: 'active' } } },
+      command: { kind: 'import', requestId: `import-${sessionId}`, ownerUid, sessionId, input: { qrToken: `static-qr-${sessionId}` }, status: 'pending' },
+    });
+    await repo.enqueueDoctorCommand({ kind: 'session_update', requestId: `count-${sessionId}`, ownerUid, sessionId,
+      input: { physicalHeadcount: sessionId === 'lecture-a' ? 25 : 40 }, status: 'pending' });
+    await repo.enqueueDoctorCommand({ kind: 'session_update', requestId: `close-${sessionId}`, ownerUid, sessionId,
+      input: { status: 'ended' }, status: 'pending' });
+  }
+  const reopened = new IndexedDbAttendanceRepository();
+  const commands = await reopened.listDoctorCommands(ownerUid);
+  for (const sessionId of ['lecture-a', 'lecture-b']) {
+    const own = commands.filter(command => command.sessionId === sessionId).sort((a, b) => (a.localOrder || 0) - (b.localOrder || 0));
+    assert.deepEqual(own.map(command => command.kind), ['import', 'session_update', 'session_update']);
+    assert.equal(own[0].input.qrToken, `static-qr-${sessionId}`);
+    assert.equal(own[2].input.status, 'ended');
+    assert.equal((await reopened.getMetadata<{ session: { id: string } }>(`attendance-doctor:${ownerUid}:${sessionId}`, ownerUid))?.session.id, sessionId);
+  }
+});
+
 test('native initialization rejects unavailable storage and can retry', async () => {
   let healthy = false;
   registerPlugin('AttendanceStorage', {

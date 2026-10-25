@@ -20,6 +20,7 @@ before(async () => {
     'supabase/migrations/20261021000000_attendance_review_revisions_key_rotation.sql',
     'supabase/migrations/20261021000001_attendance_review_retry_integrity.sql',
     'supabase/migrations/20261021173355_attendance_auto_confirm_signed_location.sql',
+    'supabase/migrations/20261024100000_physical_headcount_offline_permits.sql',
   ]) {
     try {
       await database.exec(readFileSync(path, 'utf8'));
@@ -40,6 +41,58 @@ before(async () => {
   }
 });
 after(async () => { await database.close(); });
+
+test('new session count is nullable, edits are independent, and clearing it is explicit', async () => {
+  const occurrenceId = `headcount-${randomUUID()}`;
+  const sessionId = randomUUID();
+  const requestId = randomUUID();
+  const challengeId = randomUUID();
+  const term = { id: 'term', calendarTermId: 'term', yearLabel: '2026', nameAr: 'term', nameEn: 'term', startDate: '2026-01-01', endDate: '2026-12-31' };
+  const occurrence = { id: occurrenceId, termId: 'term', stageId: 'stage_3', timetableSessionId: occurrenceId,
+    lectureDate: '2026-10-25', title: 'Physical Count', startAt: new Date().toISOString(),
+    endAt: new Date(Date.now() + 3600000).toISOString(), audienceGroups: ['A'] };
+  const create = () => database.query<{ result: any }>('select attendance_create_session_v2($1,$2,$3,$4,$5) result', [
+    JSON.stringify(term), JSON.stringify(occurrence), JSON.stringify({ id: sessionId, requestId, professorUid: 'doctor',
+      physicalHeadcount: null, notes: '', reconciliationDeadline: new Date(Date.now() + 37 * 3600000).toISOString() }),
+    JSON.stringify([{ studentId: 'student-a', officialName: 'Student A', rosterIdentifier: '123', subgroup: 'A' }]),
+    JSON.stringify({ id: challengeId, tokenHash: createHash('sha256').update(sessionId).digest('hex'), qrToken: 'signed.qr.token.'.repeat(5), keyId: 'test' }),
+  ]);
+  assert.equal((await create()).rows[0].result.sessionId, sessionId);
+  assert.equal((await create()).rows[0].result.existing, true);
+  const before = await database.query<{ revision: number; physical_headcount: number | null }>('select revision, physical_headcount from attendance_sessions where id=$1', [sessionId]);
+  assert.equal(before.rows[0].physical_headcount, null);
+  const update = async (count: number | null, isSet: boolean, notes: string | null, revision: number) =>
+    database.query<{ result: any }>('select attendance_update_session_v2($1,$2,\'doctor\',$3,$4,$5,null,\'\',$6) result',
+      [randomUUID(), sessionId, revision, count, notes, isSet]);
+  const first = await update(42, true, null, before.rows[0].revision);
+  const second = await update(null, false, 'Kept count', first.rows[0].result.session.revision);
+  assert.equal(second.rows[0].result.session.physical_headcount, 42);
+  const third = await update(null, true, null, second.rows[0].result.session.revision);
+  assert.equal(third.rows[0].result.session.physical_headcount, null);
+  const fourth = await update(0, true, null, third.rows[0].result.session.revision);
+  assert.equal(fourth.rows[0].result.session.physical_headcount, 0);
+});
+
+test('first receipt arriving after server closure stays reviewable without a confirmed record', async () => {
+  const sessionId = randomUUID();
+  const challengeId = randomUUID();
+  const occurrenceId = `closed-${randomUUID()}`;
+  const tokenHash = createHash('sha256').update(sessionId).digest('hex');
+  await database.query("insert into attendance_occurrences(id,term_id,stage_id,timetable_session_id,lecture_date,title,start_at,end_at,audience_groups) values ($1,'term','stage_3',$1,'2026-10-25','Closed',now(),now()+interval '1 hour',array['A'])", [occurrenceId]);
+  await database.query("insert into attendance_sessions(id,request_id,occurrence_id,professor_uid,expected_headcount,status,reconciliation_deadline) values ($1,$2,$3,'doctor',1,'ended',now()+interval '7 days')", [sessionId, randomUUID(), occurrenceId]);
+  await database.query("insert into attendance_session_roster(session_id,roster_student_id,official_name,subgroup) values ($1,'student-a','Student A','A')", [sessionId]);
+  await database.query("insert into attendance_challenges(id,session_id,token_hash,qr_token,key_id) values ($1,$2,$3,$4,'test')", [challengeId, sessionId, tokenHash, 'signed.qr.token.'.repeat(5)]);
+  const requestId = randomUUID();
+  const submit = () => database.query<{ result: any }>(
+    'select attendance_submit_receipt($1,\'student-a\',\'student-a\',$2,$3,$4,$5,$6,null,$7,false,$8) result',
+    [requestId, createHash('sha256').update(requestId).digest('hex'), sessionId, challengeId, tokenHash,
+      'd'.repeat(64), device, JSON.stringify({ flags: [], locationStatus: 'on_campus', signedLocationProofVersion: 2 })],
+  );
+  assert.equal((await submit()).rows[0].result.reason, 'session_ended');
+  assert.equal((await submit()).rows[0].result.reason, 'session_ended');
+  const records = await database.query<{ total: number }>('select count(*)::int total from attendance_records where session_id=$1', [sessionId]);
+  assert.equal(records.rows[0].total, 0);
+});
 
 function input(sessionIndex: number, student = 'student-a', installation: string | null = sharedInstallation, enrolledDevice: string | null = device) {
   return { requestId: randomUUID(), sessionIndex, student, installation, enrolledDevice };

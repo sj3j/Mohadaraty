@@ -13,7 +13,7 @@ import {
   updateAttendanceSession,
   createOfflineAttendanceSession,
   getOfflineAttendancePack,
-  prepareOfflineAttendance,
+  ensureOfflineAttendancePrepared,
   listDoctorAttendanceCommands,
   subscribeAttendanceChanges,
   type DoctorAttendanceCommand,
@@ -34,7 +34,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
   const isRtl = lang === 'ar';
   const [bootstrap, setBootstrap] = useState<AttendanceBootstrap | null>(null);
   const [occurrenceId, setOccurrenceId] = useState('');
-  const [headcount, setHeadcount] = useState(60);
+  const [headcount, setHeadcount] = useState<number | null>(null);
   const [notes, setNotes] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [qrToken, setQrToken] = useState('');
@@ -63,7 +63,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
       if (lastSessionRef.current !== next.session.id) {
         lastSessionRef.current = next.session.id;
         setNotes(next.session.notes);
-        setHeadcount(next.session.expectedHeadcount);
+        setHeadcount(next.session.physicalHeadcount);
       }
       setError('');
     } catch {
@@ -76,7 +76,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
     const reload = () => void listDoctorAttendanceCommands(ownerUid).then(items => { if (active) setCommands(items); }).catch(() => undefined);
     reload();
     const stop = subscribeAttendanceChanges(reload);
-    void getOfflineAttendancePack(ownerUid, stageId).then(pack => { if (active) setOfflineReady(!!pack); });
+    void ensureOfflineAttendancePrepared(stageId, ownerUid).then(pack => { if (active) setOfflineReady(!!pack); });
     return () => { active = false; stop(); };
   }, [ownerUid, stageId]);
 
@@ -137,7 +137,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
     setError('');
     try {
       const input = {
-        stageId, occurrenceId, expectedHeadcount: headcount, notes, requestId: requestIdRef.current,
+        stageId, occurrenceId, physicalHeadcount: headcount, notes, requestId: requestIdRef.current,
       };
       const created = offlineReady ? await createOfflineAttendanceSession(input, ownerUid) : await createAttendanceSession(input);
       setSessionId(created.sessionId);
@@ -153,10 +153,10 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
   };
 
   const saveHeadcount = async () => {
-    if (!snapshot || headcount === snapshot.session.expectedHeadcount) return;
+    if (!snapshot || headcount === snapshot.session.physicalHeadcount) return;
     try {
       await updateAttendanceSession(snapshot.session.id, {
-        requestId: newId(), expectedRevision: snapshot.session.revision, expectedHeadcount: headcount, reason: '',
+        requestId: newId(), expectedRevision: snapshot.session.revision, physicalHeadcount: headcount, reason: '',
       }, ownerUid);
       await refreshSnapshot();
     } catch {
@@ -206,12 +206,7 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
     <div className="space-y-4" dir={isRtl ? 'rtl' : 'ltr'}>
       <section className="rounded-2xl border border-teal-200 bg-teal-50 p-4 dark:border-teal-900 dark:bg-teal-950/30">
         <p className="text-sm font-bold">{offlineReady ? (isRtl ? 'الجدول وقائمة الدفعة محفوظان للعمل دون اتصال' : 'Timetable and full cohort saved for offline use') : (isRtl ? 'جهّز الجهاز أثناء الاتصال قبل الذهاب للقاعة' : 'Prepare this device online before going to the classroom')}</p>
-        <button disabled={busy} className="mt-2 rounded-xl bg-teal-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" onClick={async () => {
-          setBusy(true);
-          try { const pack = await prepareOfflineAttendance(stageId, ownerUid); setBootstrap(pack.bootstrap); setOfflineReady(true); setError(''); }
-          catch { setError(isRtl ? 'لم يكتمل تنزيل حزمة العمل دون اتصال. أعد المحاولة وأنت متصل.' : 'Offline setup did not complete. Retry while online.'); }
-          finally { setBusy(false); }
-        }}>{isRtl ? 'تنزيل / تحديث حزمة العمل دون اتصال' : 'Download / refresh offline pack'}</button>
+        <p className="mt-2 text-xs font-bold text-teal-800 dark:text-teal-200">{offlineReady ? (isRtl ? 'يُحدّث تلقائياً عند توفر الاتصال.' : 'It refreshes automatically whenever connectivity is available.') : (isRtl ? 'اتصل بالإنترنت مرة واحدة ليُجهز الجهاز تلقائياً.' : 'Connect once so this device can prepare automatically.')}</p>
         <p className="mt-2 text-xs text-slate-500">{isRtl ? 'عند انقطاع الإنترنت تظهر التسجيلات اليدوية هنا فوراً؛ إيصالات الطلاب تظهر بعد مزامنتها. مهلة الإرسال ٣٦ ساعة من النهاية المجدولة.' : 'Offline manual entries appear immediately. Student receipts appear after synchronization. Upload deadline: scheduled end + 36 hours.'}</p>
       </section>
       {!sessionId && <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
@@ -222,10 +217,10 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
             {(bootstrap?.occurrences || []).map(item => <option key={item.id} value={item.id}>{item.lectureDate} · {item.startTime} · {item.title}</option>)}
           </select>
           <label className="block text-sm font-bold text-slate-600 dark:text-slate-300">{isRtl ? 'عدد الموجودين المتوقع' : 'Expected hall headcount'}</label>
-          <input type="number" min={1} max={10000} value={headcount} onChange={event => setHeadcount(Number(event.target.value))} className="w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900" />
+          <input type="number" min={0} max={10000} value={headcount ?? ''} onChange={event => setHeadcount(event.target.value === '' ? null : Number(event.target.value))} className="w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900" />
           <label className="block text-sm font-bold text-slate-600 dark:text-slate-300">{isRtl ? 'ملاحظات' : 'Notes'}</label>
           <textarea value={notes} onChange={event => { notesDirtyRef.current = true; setNotes(event.target.value); }} maxLength={2000} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900" />
-          <button onClick={startSession} disabled={busy || !occurrenceId || headcount < 1} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3 font-black text-white disabled:opacity-50"><QrCode className="h-5 w-5" />{busy ? (isRtl ? 'جارٍ البدء...' : 'Starting...') : (isRtl ? 'إنشاء رمز الحضور' : 'Create attendance QR')}</button>
+          <button onClick={startSession} disabled={busy || !occurrenceId} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3 font-black text-white disabled:opacity-50"><QrCode className="h-5 w-5" />{busy ? (isRtl ? 'جارٍ البدء...' : 'Starting...') : (isRtl ? 'إنشاء رمز الحضور' : 'Create attendance QR')}</button>
         </div>
       </section>}
 
@@ -238,14 +233,14 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
             <div><h2 className="font-black">{snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')}</h2><p className="text-xs text-slate-500">{snapshot?.session.occurrence.lectureDate} · {snapshot?.session.occurrence.startTime}</p></div>
             <button onClick={() => projectorRef.current?.requestFullscreen()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'ملء الشاشة' : 'Fullscreen'}><Expand className="h-5 w-5" /></button>
           </div>
-          {snapshot?.session.status !== 'active' && snapshot ? <p>{isRtl ? 'أُغلق عرض الرمز' : 'QR display closed'}</p> : qrToken ? <AttendanceQrDisplay token={qrToken} title={snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')} subtitle={`${snapshot?.session.occurrence.lectureDate || ''} · ${snapshot?.session.occurrence.startTime || ''}`} countLabel={snapshot ? `${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}` : undefined} isRtl={isRtl} unavailableLabel={isRtl ? 'تعذر عرض الرمز' : 'Could not display QR'} /> : <Loader2 className="mx-auto my-20 h-8 w-8 animate-spin" />}
+          {snapshot?.session.status !== 'active' && snapshot ? <p>{isRtl ? 'أُغلق عرض الرمز' : 'QR display closed'}</p> : qrToken ? <AttendanceQrDisplay token={qrToken} title={snapshot?.session.occurrence.title || (isRtl ? 'جلسة الحضور' : 'Attendance session')} subtitle={`${snapshot?.session.occurrence.lectureDate || ''} · ${snapshot?.session.occurrence.startTime || ''}`} countLabel={snapshot ? (snapshot.session.physicalHeadcount == null ? `${snapshot.counts.confirmed}` : `${snapshot.counts.confirmed} / ${snapshot.session.physicalHeadcount}`) : undefined} isRtl={isRtl} unavailableLabel={isRtl ? 'تعذر عرض الرمز' : 'Could not display QR'} /> : <Loader2 className="mx-auto my-20 h-8 w-8 animate-spin" />}
           <p className="mt-3 text-xs font-bold text-slate-500">{isRtl ? 'لا يعتمد الرمز على ساعة جهاز الطالب.' : 'This code does not depend on the student device clock.'}</p>
         </section>
 
         {snapshot && <>
           {commands.filter(command => command.sessionId === sessionId && command.kind === 'session_update' && command.status !== 'synced').map(command => <div key={command.requestId} className="rounded-xl border border-amber-300 p-3 text-sm">
             {command.status === 'pending' ? (isRtl ? 'تعديل الجلسة محفوظ — بانتظار المزامنة' : 'Session edit saved — pending synchronization') : (isRtl ? 'تعارض في تعديل الجلسة؛ البيانات التالية محفوظة ولم تُحذف. راجع القيم وأعد إدخال التعديل المطلوب.' : 'Session edit conflict. These saved values were not discarded; review and re-enter the intended change.')}
-            <p className="mt-1 whitespace-pre-wrap">{String(command.input.notes ?? command.input.expectedHeadcount ?? command.input.status ?? '')}</p>
+            <p className="mt-1 whitespace-pre-wrap">{String(command.input.notes ?? command.input.physicalHeadcount ?? command.input.status ?? '')}</p>
           </div>)}
           {snapshot.offline && <div role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{isRtl ? 'قائمة محفوظة دون اتصال — ليست عدداً مباشراً للماسحين' : 'Cached offline roster — not a live scan count'}</div>}
           {snapshot.session.status === 'ended' && !snapshot.offline && Date.parse(snapshot.serverNow) > Date.parse(snapshot.session.reconciliationDeadline) && !snapshot.reviewReceipts.length && <button disabled={busy} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => {
@@ -255,12 +250,12 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
           {commands.filter(command => command.sessionId === sessionId && command.kind !== 'import' && command.kind !== 'session_update' && command.status !== 'synced').map(command => <div key={command.requestId} className="rounded-xl border border-amber-300 p-3 text-sm">
             <strong>{snapshot.roster.find(student => student.studentId === command.input.studentId)?.officialName}</strong> · {command.status === 'pending' ? (isRtl ? 'تسجيل يدوي محفوظ على الجهاز — بانتظار المزامنة' : 'Manual attendance saved on device — pending synchronization') : (isRtl ? 'التسجيل محفوظ لكن يحتاج معالجة الأستاذ' : 'Saved entry needs lecturer attention')}
           </div>)}
-          {snapshot.counts.discrepancy > 0 && <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-4 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200"><div className="flex items-center gap-2 font-black"><AlertTriangle className="h-5 w-5" />{isRtl ? `تنبيه فرق العدد: ${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}` : `Headcount discrepancy: ${snapshot.counts.confirmed} / ${snapshot.session.expectedHeadcount}`}</div><p className="mt-1 text-xs">{isRtl ? 'هذا تنبيه على مستوى الجلسة، ولا يلغي حضور أي طالب تلقائياً.' : 'This is a session-level warning and never voids a student automatically.'}</p></div>}
+          {snapshot.counts.discrepancy > 0 && snapshot.session.physicalHeadcount != null && <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-4 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200"><div className="flex items-center gap-2 font-black"><AlertTriangle className="h-5 w-5" />{isRtl ? `تنبيه فرق العدد: ${snapshot.counts.confirmed} / ${snapshot.session.physicalHeadcount}` : `Headcount discrepancy: ${snapshot.counts.confirmed} / ${snapshot.session.physicalHeadcount}`}</div><p className="mt-1 text-xs">{isRtl ? 'هذا تنبيه على مستوى الجلسة، ولا يلغي حضور أي طالب تلقائياً.' : 'This is a session-level warning and never voids a student automatically.'}</p></div>}
 
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">{isRtl ? 'القائمة المباشرة' : 'Live roster'}</h2><p className="text-sm text-slate-500">{snapshot.counts.confirmed} / {snapshot.session.expectedHeadcount} · {isRtl ? 'آخر تحديث' : 'Updated'} {new Date(snapshot.serverNow).toLocaleTimeString(lang === 'ar' ? 'ar-IQ' : 'en-GB')}</p></div><div className="flex gap-1"><button onClick={() => window.print()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'طباعة قائمة احتياطية' : 'Print contingency roster'}><Printer className="h-5 w-5" /></button><button onClick={() => void refreshSnapshot()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700"><RefreshCw className="h-5 w-5" /></button></div></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">{isRtl ? 'القائمة المباشرة' : 'Live roster'}</h2><p className="text-sm text-slate-500">{snapshot.counts.confirmed}{snapshot.session.physicalHeadcount == null ? '' : ` / ${snapshot.session.physicalHeadcount}`} · {isRtl ? 'آخر تحديث' : 'Updated'} {new Date(snapshot.serverNow).toLocaleTimeString(lang === 'ar' ? 'ar-IQ' : 'en-GB')}</p></div><div className="flex gap-1"><button onClick={() => window.print()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700" title={isRtl ? 'طباعة قائمة احتياطية' : 'Print contingency roster'}><Printer className="h-5 w-5" /></button><button onClick={() => void refreshSnapshot()} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-zinc-700"><RefreshCw className="h-5 w-5" /></button></div></div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div><label className="text-xs font-bold text-slate-500">{isRtl ? 'عدد القاعة' : 'Hall count'}</label><input type="number" min={1} value={headcount} onChange={event => setHeadcount(Number(event.target.value))} onBlur={saveHeadcount} className="mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900" /></div>
+              <div><label className="text-xs font-bold text-slate-500">{isRtl ? 'عدد القاعة' : 'Hall count'}</label><input type="number" min={0} value={headcount ?? ''} onChange={event => setHeadcount(event.target.value === '' ? null : Number(event.target.value))} onBlur={saveHeadcount} className="mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900" /></div>
               <div><label className="text-xs font-bold text-slate-500">{isRtl ? 'ملاحظات — تحفظ تلقائياً' : 'Notes — auto-saved'}</label><input value={notes} onChange={event => { notesDirtyRef.current = true; setNotes(event.target.value); }} maxLength={2000} className="mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900" /></div>
             </div>
             <div className="relative mt-4"><Search className="absolute start-3 top-3 h-4 w-4 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={isRtl ? 'بحث بالاسم الرسمي أو الرمز' : 'Search official name or roster ID'} className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pe-3 ps-10 dark:border-zinc-700 dark:bg-zinc-900" /></div>
