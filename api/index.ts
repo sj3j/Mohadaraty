@@ -15,6 +15,7 @@ import {
   LoginError,
 } from "../shared/studentLookup.js";
 import { nameKeyFor } from "../shared/rosterIdentity.js";
+import { reconcileStudentProfile } from "../shared/studentProfile.js";
 import {
   resetStudentPassword,
   transferStudentStage,
@@ -562,6 +563,18 @@ const syncUserStage = async (
   }
 };
 
+const reconcileLoginProfile = async (
+  db: FirebaseFirestore.Firestore, uid: string,
+  source: { studentId?: string; stageId?: string | null; managedStageId?: string | null },
+) => {
+  if (source.studentId) {
+    await reconcileStudentProfile(db, uid, source.studentId,
+      () => admin.firestore.FieldValue.serverTimestamp());
+  } else {
+    await syncUserStage(db, uid, source);
+  }
+};
+
 // Student Login
 //
 // Accepts an email, a login code ("D4-01234") or a name. Resolution lives in
@@ -591,7 +604,7 @@ app.post("/api/login", async (req, res) => {
     // admin merge tool exists to clean up, and with name login it would key
     // an identity by a raw Arabic name.
     const { uid, emailClaim } = await resolveSessionUid(
-      db, student, (u, source) => syncUserStage(db, u, source),
+      db, student, (u, source) => reconcileLoginProfile(db, u, source),
     );
 
     const customToken = await admin.auth().createCustomToken(uid, { email: emailClaim });
@@ -706,7 +719,7 @@ app.post("/api/google-login", async (req, res) => {
       masterAdminEmails: [...MASTER_ADMIN_EMAILS],
       // Only used when no users doc carries this email yet.
       fallbackUid: identity.email,
-      syncUserStage: (uid, source) => syncUserStage(db, uid, source),
+      syncUserStage: (uid, source) => reconcileLoginProfile(db, uid, source),
     });
 
     // studentId is the students/ document id the server resolved to - which
@@ -749,7 +762,7 @@ app.post("/api/google-claim", async (req, res) => {
       { identifier, password },
       {
         masterAdminEmails: [...MASTER_ADMIN_EMAILS],
-        syncUserStage: (uid, source) => syncUserStage(db, uid, source),
+        syncUserStage: (uid, source) => reconcileLoginProfile(db, uid, source),
         FieldValue: admin.firestore.FieldValue as any,
       });
 

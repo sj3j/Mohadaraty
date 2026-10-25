@@ -84,6 +84,7 @@
     "roster:backfill": "npx tsx scripts/backfillNameKeys.ts",
     "degrees:backfill": "npx tsx scripts/backfillDegreeYears.ts",
     "test:account": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/account.test.ts\"",
+    "test:sparse-students": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"node node_modules/tsx/dist/cli.mjs scripts/sparseStudentProfile.test.ts\"",
     "test:mcq-backfill": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/mcqBackfill.test.ts\"",
     "test:mcq-transaction": "npx tsx scripts/mcqTransactionOrder.test.ts",
     "test:mcq-finalize": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/mcqFinalize.integration.test.ts\"",

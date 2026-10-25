@@ -76,6 +76,7 @@ interface RosterImportProps {
   /** The current stage's roster, for dedupe against people already imported. */
   students: Student[];
   effectiveStageId: string | null;
+  creationStageIsValid: boolean;
   groupConfig: GroupConfigLike;
   onImported: () => void;
 }
@@ -127,7 +128,7 @@ function downloadCsv(filename: string, content: string) {
 }
 
 export default function RosterImport({
-  lang, students, effectiveStageId, groupConfig, onImported,
+  lang, students, effectiveStageId, creationStageIsValid, groupConfig, onImported,
 }: RosterImportProps) {
   const isRtl = lang === 'ar';
   const [rows, setRows] = useState<ImportRow[]>([]);
@@ -357,7 +358,13 @@ export default function RosterImport({
   };
 
   const handleCommit = async () => {
-    if (valid.length === 0 || !effectiveStageId) return;
+    if (valid.length === 0) return;
+    if (!creationStageIsValid || !effectiveStageId) {
+      setError(isRtl
+        ? 'تعذّر تحديد مرحلة دراسية صحيحة. أعد تحميل المراحل قبل الاستيراد.'
+        : 'A valid stage is required. Reload the stages before importing.');
+      return;
+    }
     setIsBusy(true);
     setError(null);
 
