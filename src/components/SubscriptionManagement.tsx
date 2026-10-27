@@ -275,7 +275,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
         await manualActivateSubscription({
           requestId: activationRequestId,
           studentEmail: preview.studentEmail,
-          plan: activationPlan as Exclude<SubscriptionPlan, 'annual'>,
+          plan: activationPlan,
           paymentMethod,
           note: activationNote || undefined,
           previewStateToken: preview.stateToken,
@@ -886,14 +886,14 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
             <option value="monthly">{rtl ? 'شهري (Monthly)' : 'Monthly'}</option>
             <option value="seasonal">{rtl ? 'فصلي (Seasonal)' : 'Seasonal'}</option>
             <option value="semi_annual">{rtl ? 'نصف سنوي (Semi-annual)' : 'Semi-annual'}</option>
-            {paymentMethod === 'grant' && <option value="annual">{rtl ? 'سنوي (Annual)' : 'Annual'}</option>}
+            <option value="annual">{rtl ? 'سنوي (Annual)' : 'Annual'}</option>
           </select>
           <select value={paymentMethod} onChange={e => {
             const nextMethod = e.target.value as ManualPaymentMethod;
             setPaymentMethod(nextMethod);
             if (nextMethod === 'grant') {
               setActivationPlan('ten_days');
-            } else if (activationPlan === 'ten_days' || activationPlan === 'annual') {
+            } else if (activationPlan === 'ten_days') {
               setActivationPlan('monthly');
             }
           }} className="rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800">

@@ -36,7 +36,7 @@ check('legacy manageSubscriptions grants no activation', !hasStaffCapability({ r
 
 console.log('\n--- enums and plans ---');
 check('manual methods exact', canonicalJson(MANUAL_PAYMENT_METHODS) === canonicalJson(['cash', 'zaincash', 'superkey', 'grant', 'other']));
-check('annual excluded from paid manual', !PAID_MANUAL_PLANS.includes('annual' as any));
+check('annual included in paid manual', PAID_MANUAL_PLANS.includes('annual'));
 check('annual included in grants', GRANT_PLANS.includes('annual'));
 check('ten_days included in grants', GRANT_PLANS.includes('ten_days'));
 

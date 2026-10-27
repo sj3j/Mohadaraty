@@ -238,14 +238,15 @@ service cloud.firestore {
         'email' in request.auth.token && request.auth.token.email != null &&
         data.userEmail.lower() == request.auth.token.email.lower() &&
         data.userName is string && data.userName.size() > 0 && data.userName.size() <= 200 &&
-        data.plan in ['monthly', 'seasonal', 'semi_annual'] &&
+        data.plan in ['monthly', 'seasonal', 'semi_annual', 'annual'] &&
         data.status == 'pending' &&
         data.startDate == null && data.endDate == null &&
         data.paymentMethod == 'superkey' &&
         data.amount is int &&
         ((data.plan == 'monthly' && data.amount == 2000) ||
          (data.plan == 'seasonal' && data.amount == 5000) ||
-         (data.plan == 'semi_annual' && data.amount == 9000)) &&
+         (data.plan == 'semi_annual' && data.amount == 9000) ||
+         (data.plan == 'annual' && data.amount == 12000)) &&
         data.createdAt is timestamp && data.createdAt == request.time &&
         (!('transactionId' in data) ||
           (data.transactionId is string && data.transactionId.size() > 0 && data.transactionId.size() <= 100)) &&

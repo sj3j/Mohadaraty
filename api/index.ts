@@ -119,7 +119,9 @@ app.use((req, res, next) => {
 // we would answer 400 to every retry forever.
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Firebase Admin for FCM
+// Initialize Firebase Admin for FCM & Storage
+const DEFAULT_STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || 'mylectures-app.firebasestorage.app';
+
 if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PROJECT_ID) {
   try {
     if (!admin.apps.length) {
@@ -129,8 +131,9 @@ if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL && pro
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
           privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         }),
+        storageBucket: DEFAULT_STORAGE_BUCKET,
       });
-      console.log("Firebase Admin initialized for Push Notifications.");
+      console.log("Firebase Admin initialized for Push Notifications & Storage.");
     }
   } catch (error) {
     console.error("Firebase Admin initialization error:", error);
@@ -2196,7 +2199,7 @@ app.post('/api/auth/session-bridge', verifyAuth, async (req: express.Request, re
 
 /* MCQ generation. Staff-only, on the free-tier key - see shared/mcqGeneration.ts
  * for why it is a second key. Mirrored in server.ts. */
-const mcq = createMcqHandlers({ admin });
+const mcq = createMcqHandlers({ admin, storageBucket: DEFAULT_STORAGE_BUCKET });
 app.post("/api/mcq/generate", verifyAuth, verifyAdmin, mcq.generate);
 app.post("/api/mcq/request", verifyAuth, mcq.request);
 app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);

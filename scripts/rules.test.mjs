@@ -1362,12 +1362,19 @@ await check('a student CANNOT file a request in somebody else\'s name',
     paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
     transactionId: 'QI-12347',
   })));
-await check('a student CANNOT file an annual paid request',
-  assertFails(setDoc(doc(student, 'subscriptions/annual_paid'), {
+await check('a student CAN file an annual paid request with amount 12000',
+  assertSucceeds(setDoc(doc(student, 'subscriptions/annual_paid'), {
     userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
     plan: 'annual', status: 'pending', startDate: null, endDate: null,
     paymentMethod: 'superkey', amount: 12000, createdAt: serverTimestamp(),
     transactionId: 'QI-12348',
+  })));
+await check('a student CANNOT file an annual request with wrong amount',
+  assertFails(setDoc(doc(student, 'subscriptions/annual_wrong_amount'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'annual', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12348b',
   })));
 await check('a student CANNOT omit payment proof',
   assertFails(setDoc(doc(student, 'subscriptions/no_proof'), {

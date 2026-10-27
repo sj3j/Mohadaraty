@@ -389,7 +389,7 @@ export async function commitManagedActivation(
   if (mode === 'manual') {
     requireCapability(actor, 'canActivate');
     if (!(PAID_MANUAL_PLANS as readonly string[]).includes(plan)) {
-      throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Paid activation does not support annual plans');
+      throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Invalid paid activation plan');
     }
     if (!(MANUAL_PAYMENT_METHODS as readonly unknown[]).includes(paymentMethod)) {
       throw new SubscriptionManagementError(400, 'INVALID_PAYMENT_METHOD', 'A valid manual payment method is required');

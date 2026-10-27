@@ -35,10 +35,21 @@ export interface McqDeps {
   paidApiKey?: string;
   ai?: any;
   paidAi?: any;
+  storageBucket?: string;
 }
 
 export function createMcqHandlers(deps: McqDeps) {
   const { admin } = deps;
+  const resolvedBucketName =
+    deps.storageBucket ||
+    process.env.FIREBASE_STORAGE_BUCKET ||
+    admin.app?.()?.options?.storageBucket ||
+    'mylectures-app.firebasestorage.app';
+
+  function getStorageBucket() {
+    return admin.storage().bucket(resolvedBucketName);
+  }
+
   const apiKey = deps.apiKey || process.env.GEMINI_FREE_TIER_API_KEY;
   const paidApiKey = deps.paidApiKey || process.env.GEMINI_API_KEY;
   const ai = deps.ai !== undefined ? deps.ai : (apiKey ? new GoogleGenAI({ apiKey }) : null);
@@ -484,30 +495,67 @@ export function createMcqHandlers(deps: McqDeps) {
       return res.status(400).json({ error: 'storagePath is required' });
     }
     if (storagePath.includes('..')) return res.status(400).json({ error: 'bad_path' });
-    if (!ai) return res.status(503).json({ error: 'not_configured' });
 
     try {
-      const file = admin.storage().bucket().file(storagePath);
+      const file = getStorageBucket().file(storagePath);
       const [exists] = await file.exists();
       if (!exists) return res.status(404).json({ error: 'file_not_found' });
 
       const [buf] = await file.download();
       if (buf.length > MAX_INLINE_PDF_BYTES) return res.status(413).json({ error: 'pdf_too_large' });
 
-      const response = await ai.models.generateContent({
-        model: MCQ_MODEL,
-        contents: [{
-          role: 'user',
-          parts: [
-            { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } },
-            { text: BANK_EXTRACTION_PROMPT },
-          ],
-        }],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: BANK_EXTRACTION_SCHEMA as any,
-        },
-      });
+      const runExtraction = async (targetAi: any) => {
+        return await targetAi.models.generateContent({
+          model: MCQ_MODEL,
+          contents: [{
+            role: 'user',
+            parts: [
+              { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } },
+              { text: BANK_EXTRACTION_PROMPT },
+            ],
+          }],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: BANK_EXTRACTION_SCHEMA as any,
+          },
+        });
+      };
+
+      let response: any = null;
+      let primaryErr: any = null;
+
+      if (ai) {
+        try {
+          response = await runExtraction(ai);
+        } catch (err: any) {
+          primaryErr = err;
+        }
+      }
+
+      if (!response) {
+        const reason = primaryErr ? classifyFailure(primaryErr) : 'not_configured';
+        if (reason === 'free_tier_limit' || reason === 'not_configured') {
+          const altKeys = await getActiveAlternativeKeys(admin);
+          for (const altKey of altKeys) {
+            try {
+              const altAi = new GoogleGenAI({ apiKey: altKey.key });
+              response = await runExtraction(altAi);
+              break;
+            } catch (altErr: any) {
+              const altReason = classifyFailure(altErr);
+              if (altReason === 'free_tier_limit') {
+                await markAlternativeKeyStatus(admin, altKey.id, 'quota_exhausted');
+              } else if (altReason === 'not_configured') {
+                await markAlternativeKeyStatus(admin, altKey.id, 'invalid');
+              }
+            }
+          }
+        }
+
+        if (!response) {
+          throw primaryErr || new Error('not_configured');
+        }
+      }
 
       const parsed = JSON.parse(response.text || '{}');
       res.json({ ok: true, questions: Array.isArray(parsed.questions) ? parsed.questions : [] });
