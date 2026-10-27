@@ -95,19 +95,19 @@ check(
 // 5. LoginScreen.tsx Guideline 4.8 compliance
 const loginSrc = fs.readFileSync('src/components/LoginScreen.tsx', 'utf8');
 check(
-  'LoginScreen.tsx imports IS_IOS_BUILD',
-  loginSrc.includes('import { IS_IOS_BUILD } from') || loginSrc.includes('IS_IOS_BUILD'),
+  'LoginScreen.tsx imports an Apple-store build guard',
+  loginSrc.includes('IS_APPLE_STORE_BUILD') || loginSrc.includes('IS_IOS_BUILD'),
 );
 check(
-  'LoginScreen.tsx conditionally hides Google Sign-In with !IS_IOS_BUILD',
-  loginSrc.includes('!IS_IOS_BUILD &&'),
+  'LoginScreen.tsx conditionally hides Google Sign-In on Apple builds',
+  loginSrc.includes('!IS_APPLE_STORE_BUILD &&') || loginSrc.includes('!IS_IOS_BUILD &&'),
 );
 
 // 5. AccountSecuritySettings.tsx Guideline 4.8 compliance
 const accountSecSrc = fs.readFileSync('src/components/settings/AccountSecuritySettings.tsx', 'utf8');
 check(
-  'AccountSecuritySettings.tsx conditionally hides Google linking with !IS_IOS_BUILD',
-  accountSecSrc.includes('!IS_IOS_BUILD &&'),
+  'AccountSecuritySettings.tsx conditionally hides Google linking on Apple builds',
+  accountSecSrc.includes('!IS_APPLE_STORE_BUILD &&') || accountSecSrc.includes('!IS_IOS_BUILD &&'),
 );
 
 console.log(`\nAudit Results: ${passed} passed, ${failed} failed.\n`);

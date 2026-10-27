@@ -17,6 +17,7 @@ import { getStorage } from 'firebase/storage';
 import { getMessaging, isSupported } from 'firebase/messaging';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { IS_MACOS_BUILD } from './platform';
 
 export const app = initializeApp(firebaseConfig);
 export const functions = getFunctions(app, 'me-west1');
@@ -59,7 +60,7 @@ export const db = initializeFirestore(
   app,
   { 
     localCache: persistentLocalCache({ 
-      tabManager: Capacitor.isNativePlatform() 
+      tabManager: (Capacitor.isNativePlatform() || IS_MACOS_BUILD)
         ? persistentSingleTabManager({ forceOwnership: false }) 
         : persistentMultipleTabManager() 
     }) 
@@ -75,6 +76,7 @@ storage.maxOperationRetryTime = 60000;
 
 // Initialize Messaging conditionally (not supported in all browsers)
 export const messaging = async () => {
+  if (IS_MACOS_BUILD) return null;
   const supported = await isSupported();
   if (supported) {
     return getMessaging(app);

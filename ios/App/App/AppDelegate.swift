@@ -4,6 +4,87 @@ import FirebaseCore
 import CoreLocation
 import WebKit
 
+@objc(NativeFilesPlugin)
+public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "NativeFilesPlugin"
+    public let jsName = "NativeFiles"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "getRuntimeInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "savePdf", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func getRuntimeInfo(_ call: CAPPluginCall) {
+        call.resolve(["platform": "ios", "sdkInt": 999])
+    }
+
+    @objc func savePdf(_ call: CAPPluginCall) {
+        guard let sourceValue = call.getString("sourceUri"),
+              let sourceURL = URL(string: sourceValue), sourceURL.isFileURL,
+              let filename = call.getString("filename"), !filename.isEmpty,
+              !filename.contains("/"), !filename.contains("\\") else {
+            call.reject("Invalid PDF save parameters", "FILE_SAVE_INVALID")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let canonicalSource = sourceURL.standardizedFileURL
+                let appRoot = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL.path + "/"
+                guard canonicalSource.path.hasPrefix(appRoot) else {
+                    throw NSError(domain: "NativeFiles", code: 1, userInfo: [NSLocalizedDescriptionKey: "Source is outside app storage"])
+                }
+                let attributes = try FileManager.default.attributesOfItem(atPath: canonicalSource.path)
+                guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
+                    throw NSError(domain: "NativeFiles", code: 2, userInfo: [NSLocalizedDescriptionKey: "Source PDF is missing or empty"])
+                }
+                let probe = try FileHandle(forReadingFrom: canonicalSource)
+                let headerData = probe.readData(ofLength: 1024)
+                try probe.close()
+                guard headerData.range(of: Data("%PDF-".utf8)) != nil else {
+                    throw NSError(domain: "NativeFiles", code: 3, userInfo: [NSLocalizedDescriptionKey: "Source is not a PDF"])
+                }
+
+                let documents = try FileManager.default.url(
+                    for: .documentDirectory,
+                    in: .userDomainMask,
+                    appropriateFor: nil,
+                    create: true
+                )
+                let destination = self.uniqueDestination(in: documents, filename: filename)
+                try FileManager.default.copyItem(at: canonicalSource, to: destination)
+                let savedAttributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+                let savedSize = (savedAttributes[.size] as? NSNumber)?.int64Value ?? 0
+                guard savedSize > 0 else {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw NSError(domain: "NativeFiles", code: 4, userInfo: [NSLocalizedDescriptionKey: "Saved PDF is empty"])
+                }
+                call.resolve([
+                    "status": "saved",
+                    "uri": destination.absoluteString,
+                    "location": "On My iPhone/Mohadaraty",
+                    "bytes": savedSize
+                ])
+            } catch {
+                call.reject(error.localizedDescription, "FILE_SAVE_FAILED", error)
+            }
+        }
+    }
+
+    private func uniqueDestination(in folder: URL, filename: String) -> URL {
+        let original = folder.appendingPathComponent(filename, isDirectory: false)
+        if !FileManager.default.fileExists(atPath: original.path) { return original }
+        let source = filename as NSString
+        let stem = source.deletingPathExtension
+        let ext = source.pathExtension
+        for suffix in 1..<10_000 {
+            let candidateName = ext.isEmpty ? "\(stem) (\(suffix))" : "\(stem) (\(suffix)).\(ext)"
+            let candidate = folder.appendingPathComponent(candidateName, isDirectory: false)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return folder.appendingPathComponent("\(Date().timeIntervalSince1970)_\(filename)", isDirectory: false)
+    }
+}
+
 @objc(SettingsLauncherPlugin)
 public class SettingsLauncherPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SettingsLauncherPlugin"
@@ -58,6 +139,7 @@ public class MyLectureBridgeViewController: CAPBridgeViewController {
     public override func capacitorDidLoad() {
         bridge?.registerPluginInstance(SystemBarsPlugin())
         bridge?.registerPluginInstance(SettingsLauncherPlugin())
+        bridge?.registerPluginInstance(NativeFilesPlugin())
         bridge?.registerPluginInstance(AttendanceStoragePlugin())
         bridge?.registerPluginInstance(MohadaratyPdfPlugin())
     }

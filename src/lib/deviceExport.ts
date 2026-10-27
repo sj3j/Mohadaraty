@@ -1,5 +1,8 @@
 import { safeFileName } from './shareFileName';
 import { forceDownload } from './utils';
+import { IS_MACOS_BUILD } from './platform';
+import { macFiles } from '../macos/macBridge';
+import { isNativeFileCancellation, nativeFileErrorCode, saveNativePdf } from './nativeFileTransfer';
 
 export interface DeviceExportInput {
   url: string;
@@ -9,7 +12,9 @@ export interface DeviceExportInput {
 
 export interface DeviceExportResult {
   success: boolean;
+  cancelled?: boolean;
   message?: string;
+  errorCode?: string;
 }
 
 /**
@@ -21,6 +26,11 @@ export interface DeviceExportResult {
  */
 export async function exportPdfToDevice(input: DeviceExportInput): Promise<DeviceExportResult> {
   const filename = safeFileName(input.title, 'pdf');
+
+  if (IS_MACOS_BUILD) {
+    const result = await macFiles.saveRemoteFile(input.url, filename, 'application/pdf');
+    return { success: result.status !== 'cancelled' };
+  }
 
   let isNative = false;
   if ((globalThis as any).__mockIsNative !== undefined) {
@@ -43,63 +53,26 @@ export async function exportPdfToDevice(input: DeviceExportInput): Promise<Devic
   const { Capacitor } = await import('@capacitor/core');
   const platform = (globalThis as any).__mockPlatform || Capacitor.getPlatform();
 
-  if (platform === 'android') {
+  if (platform === 'android' || platform === 'ios') {
     try {
-      const { Filesystem, Directory } = (globalThis as any).__mockFs
-        ? { Filesystem: (globalThis as any).__mockFs, Directory: { Cache: 'CACHE', Data: 'DATA', Documents: 'DOCUMENTS' } }
-        : await import('@capacitor/filesystem');
       const { getNativeShareUri } = await import('./nativePdfRepository');
-
-      // Ensure file exists in native storage (Cache or Data)
-      const fileUri = await getNativeShareUri(input.lectureId, filename, input.url);
-
-      // On Android, attempt copy to Directory.Documents so user sees it in Downloads/Documents
-      try {
-        await Filesystem.copy({
-          from: fileUri,
-          to: filename,
-          toDirectory: Directory.Documents,
-        });
-        return { success: true, message: 'تم حفظ المحاضرة في مجلد المستندات / التنزيلات' };
-      } catch {
-        // If direct Documents write is restricted by Android scoped storage, open system share sheet
-        const Share = (globalThis as any).__mockShare || (await import('@capacitor/share')).Share;
-        await Share.share({
-          title: input.title,
-          files: [fileUri],
-          dialogTitle: 'حفظ أو مشاركة المحاضرة',
-        });
-        return { success: true, message: 'تم فتح نافذة الحفظ والمشاركة' };
-      }
-    } catch (err: any) {
-      if (/cancel|abort|dismiss/i.test(err?.message || '')) {
-        return { success: true };
-      }
-      console.error('[deviceExport] Android export failed, falling back to shareFile:', err);
-      const { shareFile } = await import('./shareFile');
-      await shareFile({
-        url: input.url,
-        name: input.title,
-        extension: 'pdf',
-        mimeType: 'application/pdf',
-        lectureId: input.lectureId,
-      });
-      return { success: true };
+      // Reuses a verified offline copy when available; otherwise stages one
+      // native download without putting the PDF in the WebView heap.
+      const sourceUri = await getNativeShareUri(input.lectureId, filename, input.url);
+      const result = await saveNativePdf(sourceUri, filename);
+      if (result.status === 'cancelled') return { success: false, cancelled: true };
+      return {
+        success: true,
+        message: platform === 'android'
+          ? 'تم حفظ المحاضرة في مجلد التنزيلات / Mohadaraty'
+          : 'تم حفظ المحاضرة في الملفات / على الـ iPhone / محاضراتي',
+      };
+    } catch (error) {
+      if (isNativeFileCancellation(error)) return { success: false, cancelled: true };
+      const errorCode = nativeFileErrorCode(error);
+      console.error('[deviceExport] Native save failed:', { errorCode, error });
+      return { success: false, errorCode };
     }
-  }
-
-  if (platform === 'ios') {
-    // iOS sandboxed environment: trigger system share sheet so user can choose "Save to Files" (حفظ في الملفات)
-    const { shareFile } = await import('./shareFile');
-    const result = await shareFile({
-      url: input.url,
-      name: input.title,
-      extension: 'pdf',
-      mimeType: 'application/pdf',
-      title: input.title,
-      lectureId: input.lectureId,
-    });
-    return { success: result !== 'failed' };
   }
 
   await forceDownload(input.url, filename);

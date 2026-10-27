@@ -52,12 +52,18 @@ export function setPollState(next: typeof pollState): void {
 
 export function markChannel(stageId: string, patch: Partial<ChannelStatus>): void {
   const previous = channels[stageId] ?? {};
+  // Firestore rejects `undefined` anywhere in a document. Telegram omits a
+  // title when getChat fails (for example, a stale/private chat id), so do not
+  // let a diagnostic field prevent the entire heartbeat from being written.
+  const definedPatch = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  ) as Partial<ChannelStatus>;
   channels[stageId] = {
     ...previous,
-    ...patch,
-    ...(patch.lastError ? { lastErrorAt: new Date().toISOString() } : {}),
+    ...definedPatch,
+    ...(definedPatch.lastError ? { lastErrorAt: new Date().toISOString() } : {}),
   };
-  if (patch.state && patch.state !== previous.state) void flush(true);
+  if (definedPatch.state && definedPatch.state !== previous.state) void flush(true);
   else schedule();
 }
 
@@ -94,6 +100,12 @@ let lastWriteAt = 0;
 /** At most one write every 30s. ~2,880/day, which is negligible - and enough
  *  for the UI to call the bot offline after two missed beats. */
 const MIN_INTERVAL_MS = 30_000;
+
+// Keep the admin screen truthful even when both directions are idle. Without
+// this heartbeat, `updatedAt` only changed when some other metric changed and
+// the UI declared a perfectly healthy bot offline after two minutes.
+const heartbeatTimer = setInterval(() => { void flush(true); }, MIN_INTERVAL_MS);
+heartbeatTimer.unref();
 
 function schedule(): void {
   if (timer) return;

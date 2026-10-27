@@ -158,6 +158,8 @@ npm --prefix bot run recovery -- cleanup
 | Symptom | Check |
 | --- | --- |
 | Admin screen says "bot offline" | `docker compose -f bot/docker-compose.yml ps`, then the logs. The screen calls it offline after 2 minutes without a heartbeat. |
+| `/healthz` says `lease_permission_denied` | The loaded service account cannot currently write Firestore data. Run `npm --prefix bot run diagnose:firestore`, then inspect that principal's IAM bindings and Cloud audit denial. Server SDK access uses IAM, not Firestore Rules. |
+| `/healthz` says `lease_held_by_other` | Another instance still owns the fenced poller lease. Keep one intended copy running and let the prior lease expire. |
 | Nothing arrives from Telegram | Is the bot an administrator of that channel? The screen shows `parked` and the missing right. |
 | `409 Conflict` in the logs | Something else holds the update stream: a webhook, or a second container. |
 | Posts appear in the app but not Telegram | The per-post toggle in the composer, or `mirrorOut` off for that stage. |

@@ -71,6 +71,8 @@ import { type UserFile, getUserFileBlob } from './lib/localDb';
 import { syncPendingSubmissions } from './services/mcqAnswerService';
 import { apiUrl } from './lib/apiBase';
 import { ensureOfflineAttendancePrepared, startAttendanceSync } from './services/attendanceService';
+import { useMobileReleaseGate } from './hooks/useMobileReleaseGate';
+import ForceUpdateScreen from './components/ForceUpdateScreen';
 
 type SortField = 'title' | 'date' | 'number';
 type SortOrder = 'asc' | 'desc';
@@ -122,6 +124,7 @@ export default function App() {
     return wasSignedIn ? getCachedUserProfile() : null;
   });
   const [authenticatedUid, setAuthenticatedUid] = useState<string | null>(null);
+  const mobileReleaseGate = useMobileReleaseGate(user?.role, authenticatedUid);
   const authGenerationRef = useRef(0);
   const streakActivitySingleFlight = useMemo(createSingleFlight, []);
 
@@ -1148,6 +1151,10 @@ export default function App() {
 
   if (!user) {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
+  }
+
+  if (user.role === 'student' && mobileReleaseGate.required) {
+    return <ForceUpdateScreen gate={mobileReleaseGate} lang={lang} />;
   }
 
   // Dedicated Doctor Portal Pathway:

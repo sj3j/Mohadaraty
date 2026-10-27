@@ -9,7 +9,7 @@ import { getGoogleCustomToken, NoAccountError, GoogleNativeSignInError,
   GoogleTokenBody } from '../lib/googleSignIn';
 import { carriedProgressionFields } from '../../shared/progression';
 import { isMasterAdminEmail, isObserverEmail } from '../../shared/masterAdmins';
-import { IS_IOS_BUILD } from '../lib/platform';
+import { IS_APPLE_STORE_BUILD } from '../lib/platform';
 import { safeSetStorageItem } from '../hooks/useAuthWatchdog';
 import { clearExplicitLogoutMarker } from '../lib/authPersistence';
 import SignupScreen from './SignupScreen';
@@ -393,7 +393,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-zinc-950 p-4" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div data-macos-smoke="login-ready" className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-zinc-950 p-4" dir={isRtl ? 'rtl' : 'ltr'}>
       <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-3xl p-8 shadow-xl border border-slate-200 dark:border-zinc-800 text-center">
         <div className="w-20 h-20 bg-sky-100 dark:bg-sky-900/30 rounded-full flex items-center justify-center mx-auto mb-6">
           {/* The real brand mark. This was a lucide GraduationCap standing in
@@ -504,7 +504,7 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
           </button>
         </form>
 
-        {!IS_IOS_BUILD && (
+        {!IS_APPLE_STORE_BUILD && (
           <>
             <div className="relative mb-6">
               <div className="absolute inset-0 flex items-center">

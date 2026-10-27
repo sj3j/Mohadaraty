@@ -72,6 +72,9 @@ export default React.memo(function LectureCard({
       });
       if (res.message) {
         setShareToast(res.message);
+      } else if (!res.success && !res.cancelled) {
+        const suffix = res.errorCode ? ` (${res.errorCode})` : '';
+        setShareToast(`${isRtl ? 'تعذّر تحميل الملف' : 'Download failed'}${suffix}`);
       }
     } catch (err) {
       console.error('Local export failed:', err);
@@ -92,6 +95,7 @@ export default React.memo(function LectureCard({
     if (isSharing) return;
     setIsSharing(true);
     try {
+      let errorCode = '';
       const result = await shareFile({
         lectureId: lecture.id,
         url: lecture.pdfUrl,
@@ -101,13 +105,15 @@ export default React.memo(function LectureCard({
         extension: 'pdf',
         mimeType: 'application/pdf',
         title: lecture.title,
+        onError: code => { errorCode = code; },
       });
       // 'shared' needs no toast - the chooser was the feedback - and neither
       // does 'cancelled', which is the student changing their mind.
       if (result === 'downloaded') {
         setShareToast(isRtl ? 'تم تنزيل الملف' : 'File downloaded');
       } else if (result === 'failed') {
-        setShareToast(isRtl ? 'تعذّرت المشاركة' : 'Could not share');
+        const suffix = errorCode ? ` (${errorCode})` : '';
+        setShareToast(`${isRtl ? 'تعذّرت المشاركة' : 'Could not share'}${suffix}`);
       }
     } finally {
       setIsSharing(false);

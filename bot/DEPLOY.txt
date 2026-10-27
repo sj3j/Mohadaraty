@@ -286,6 +286,26 @@ be read: ..."
     rather than "your variable is wrong". The message names what it found.
 
 
+"lease_permission_denied" from /healthz, or "LEASE_PERMISSION_DENIED" in logs
+    The service account loaded by this process cannot currently write Firestore
+    data. Firebase Admin SDK calls bypass Firestore Rules and use Google Cloud
+    IAM. From a trusted checkout with the same credentials, run:
+
+      npm --prefix bot run diagnose:firestore
+
+    It creates, reads, updates and deletes one uniquely named diagnostic
+    document. If it reports code 7/403, inspect the Cloud audit denial and the
+    logged clientEmail. Grant roles/datastore.user only when the denied
+    permission confirms that the intended service account lacks Firestore data
+    access. IAM changes can take several minutes to propagate. The bot stays up,
+    reports HTTP 503, and retries once per minute while access is repaired.
+
+"lease_held_by_other" from /healthz
+    A different instance owns the unexpired fenced poller lease. This is an
+    overlap, not an IAM failure. Stop unintended copies and allow the lease to
+    expire; do not delete admin_config/telegram_state or reset its offset.
+
+
 "tg.network_retry" / "tg.unreachable"
     The bot cannot reach api.telegram.org. It does NOT exit - it keeps
     retrying with a growing backoff and connects by itself when the network

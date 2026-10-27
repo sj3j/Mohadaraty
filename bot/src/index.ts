@@ -5,6 +5,7 @@ import { explainUnauthorized } from './botToken.ts';
 import { TelegramApiError } from './telegram/types.ts';
 import { telegram, checkChannelAccess, TELEGRAM_HOST } from './telegram/api.ts';
 import { acquireLease, startLeaseRenewal, stopLeaseRenewal, releaseLease } from './state.ts';
+import { LeaseWaitAbortedError, waitForLease } from './leaseStartup.ts';
 import { watchConfig, waitForConfigReady, getConfig, onConfigChange, publishActiveStages } from './config.ts';
 import { startPolling, stopPolling } from './poll.ts';
 import { startWatchers } from './watcher.ts';
@@ -24,24 +25,15 @@ import { MIRROR_STAGE_IDS } from '../../shared/telegramMirror.ts';
 
 let botUserId = 0;
 let shuttingDown = false;
+let runtimeTeardown: (() => Promise<void>) | undefined;
 
 /** Waits safely through overlap, IAM repair, and transient Firestore outages. */
 async function acquireLeaseUntilAvailable(): Promise<void> {
-  let attempt = 0;
-  while (!shuttingDown) {
-    const result = await acquireLease();
-    if (result.status === 'LEASE_ACQUIRED') return;
-
-    attempt += 1;
-    const waitMs = result.status === 'LEASE_HELD_BY_OTHER'
-      ? Math.min(60_000, Math.max(2_000, result.remainingMs + 1_000))
-      : result.status === 'LEASE_PERMISSION_DENIED'
-        ? 60_000
-        : Math.min(60_000, 2 ** Math.min(attempt, 6) * 1_000);
-    log.warn('boot.waiting_for_lease', { status: result.status, attempt, waitMs });
-    await new Promise(resolve => setTimeout(resolve, waitMs + Math.random() * 0.2 * waitMs));
-  }
-  throw new Error('shutdown while waiting for Firestore lease');
+  await waitForLease({
+    acquire: acquireLease,
+    shouldContinue: () => !shuttingDown,
+    onWait: fields => log.warn('boot.waiting_for_lease', { ...fields }),
+  });
 }
 
 /**
@@ -143,6 +135,12 @@ async function main(): Promise<void> {
     botTokenFingerprint: env.botTokenFingerprint,
   });
 
+  // Start diagnostics and signal handling before any remote dependency. During
+  // IAM repair the process stays alive and /healthz names the lease failure.
+  startHealthServer();
+  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.once('SIGINT', () => { void shutdown('SIGINT'); });
+
   const me = await reachTelegram();
   botUserId = me.id;
   log.info('tg.identity', { botUserId, username: me.username });
@@ -176,17 +174,12 @@ async function main(): Promise<void> {
   setInterval(() => { void verifyChannels(); }, 15 * 60_000).unref();
 
   const stopWatchers = startWatchers();
-  startHealthServer();
   startWatchdog();
 
-  const teardown = async () => {
+  runtimeTeardown = async () => {
     unwatchConfig();
     stopWatchers();
-    stopHealthServer();
   };
-
-  process.once('SIGTERM', () => { void shutdown('SIGTERM', teardown); });
-  process.once('SIGINT', () => { void shutdown('SIGINT', teardown); });
 
   await startPolling();
 }
@@ -198,7 +191,7 @@ async function main(): Promise<void> {
  * never advanced - but it would leave Telegram to redeliver work that is
  * already half-applied. Finishing the queues first keeps that rare.
  */
-async function shutdown(reason: string, teardown?: () => Promise<void>): Promise<void> {
+async function shutdown(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info('shutdown', { reason });
@@ -206,12 +199,13 @@ async function shutdown(reason: string, teardown?: () => Promise<void>): Promise
   try {
     await stopPolling();
     await stopAllQueues();
-    await teardown?.();
+    await runtimeTeardown?.();
     stopLeaseRenewal();
     await releaseLease();
   } catch (error) {
     log.error('shutdown.failed', errFields(error));
   }
+  stopHealthServer();
   process.exit(reason === 'lease-lost' ? 1 : 0);
 }
 
@@ -224,6 +218,7 @@ async function shutdown(reason: string, teardown?: () => Promise<void>): Promise
 const RESTART_GRACE_MS = 70_000;
 
 main().catch(async error => {
+  if (error instanceof LeaseWaitAbortedError && shuttingDown) return;
   const network = isNetworkError(error);
   log.error('boot.failed', {
     detail: network ? describeNetworkFailure(error, TELEGRAM_HOST) : undefined,

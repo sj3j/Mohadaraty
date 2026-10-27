@@ -20,6 +20,7 @@
 
 declare const __NATIVE_BUILD__: boolean;
 declare const __IOS_BUILD__: boolean;
+declare const __MACOS_BUILD__: boolean;
 
 /**
  * Running inside an app binary (Android APK/AAB or iOS .ipa) rather than on the
@@ -36,6 +37,13 @@ export const IS_STORE_BUILD: boolean =
 /** The App Store build specifically - the one with Apple IAP compiled in. */
 export const IS_IOS_BUILD: boolean =
   typeof __IOS_BUILD__ !== 'undefined' ? __IOS_BUILD__ : false;
+
+/** A dedicated macOS WKWebView shell, not Capacitor and not "Designed for iPad". */
+export const IS_MACOS_BUILD: boolean =
+  typeof __MACOS_BUILD__ !== 'undefined' ? __MACOS_BUILD__ : false;
+
+/** Apple-distributed targets. Useful for login and store-compliance surfaces. */
+export const IS_APPLE_STORE_BUILD: boolean = IS_IOS_BUILD || IS_MACOS_BUILD;
 
 /**
  * May this build show purchase vocabulary and a route to a buy flow?

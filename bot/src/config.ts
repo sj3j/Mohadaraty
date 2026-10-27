@@ -41,6 +41,7 @@ export const waitForConfigReady = (): Promise<void> => initialConfig;
 export type ConfigListener = (config: TelegramConfig, previous: TelegramConfig) => void;
 
 const listeners = new Set<ConfigListener>();
+const CONFIG_POLL_MS = 30_000;
 export function onConfigChange(listener: ConfigListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -73,50 +74,90 @@ export function activeStageIds(): string[] {
   return MIRROR_STAGE_IDS.filter(stageId => current.channels[stageId]?.enabled);
 }
 
+function sameConfig(a: TelegramConfig, b: TelegramConfig): boolean {
+  return JSON.stringify({ enabled: a.enabled, channels: a.channels, defaultMirrorOut: a.defaultMirrorOut })
+    === JSON.stringify({ enabled: b.enabled, channels: b.channels, defaultMirrorOut: b.defaultMirrorOut });
+}
+
+async function applyConfig(data: unknown, source: 'stream' | 'poll'): Promise<void> {
+  const incoming = data ? coerceTelegramConfig(data) : DEFAULT_TELEGRAM_CONFIG;
+  const problems = validateTelegramConfig(incoming);
+
+  if (problems.length > 0) {
+    configError = problems.join(', ');
+    log.error('config.rejected', { source, problems, keeping: Object.keys(current.channels) });
+    if (!configReady) rejectInitial(new Error(`initial Telegram config rejected: ${configError}`));
+    return;
+  }
+
+  const first = !configReady;
+  const changed = first || !sameConfig(current, incoming);
+  configError = null;
+  if (!changed) return;
+
+  const previous = current;
+  current = incoming;
+  rebuildAllowlist(incoming);
+  if (first) {
+    configReady = true;
+    resolveInitial();
+  }
+
+  log.info('config.applied', {
+    source,
+    enabled: incoming.enabled,
+    stages: Object.keys(incoming.channels),
+  });
+
+  for (const listener of listeners) {
+    try {
+      listener(incoming, previous);
+    } catch (error) {
+      log.error('config.listener_failed', { err: String(error) });
+    }
+  }
+
+  await publishActiveStages();
+}
+
 export function watchConfig(): () => void {
-  return db.collection('admin_config').doc('telegram').onSnapshot(
-    async snap => {
-      const incoming = snap.exists ? coerceTelegramConfig(snap.data()) : DEFAULT_TELEGRAM_CONFIG;
-      const problems = validateTelegramConfig(incoming);
+  const ref = db.collection('admin_config').doc('telegram');
+  let stopped = false;
+  let polling = false;
 
-      if (problems.length > 0) {
-        configError = problems.join(', ');
-        log.error('config.rejected', { problems, keeping: Object.keys(current.channels) });
-        if (!configReady) rejectInitial(new Error(`initial Telegram config rejected: ${configError}`));
-        // Deliberately keeps `current` untouched.
-        return;
-      }
+  const poll = async () => {
+    if (stopped || polling) return;
+    polling = true;
+    try {
+      const snap = await ref.get();
+      await applyConfig(snap.exists ? snap.data() : undefined, 'poll');
+    } catch (error) {
+      configError = String(error);
+      log.error('config.poll_error', { err: String(error) });
+    } finally {
+      polling = false;
+    }
+  };
 
-      const previous = current;
-      current = incoming;
-      configError = null;
-      rebuildAllowlist(incoming);
-      if (!configReady) {
-        configReady = true;
-        resolveInitial();
-      }
-
-      log.info('config.applied', {
-        enabled: incoming.enabled,
-        stages: Object.keys(incoming.channels),
-      });
-
-      for (const listener of listeners) {
-        try {
-          listener(incoming, previous);
-        } catch (error) {
-          log.error('config.listener_failed', { err: String(error) });
-        }
-      }
-
-      await publishActiveStages();
-    },
+  const unsubscribe = ref.onSnapshot(
+    snap => { void applyConfig(snap.exists ? snap.data() : undefined, 'stream'); },
     error => {
       configError = String(error);
-      log.error('config.listener_error', { err: String(error) });
-      if (!configReady) rejectInitial(new Error(`initial Telegram config unavailable: ${configError}`));
+      log.error('config.listener_error', { err: String(error), fallback: 'poll' });
+      void poll();
     },
   );
+
+  // Unary reads work on hosts where the long-lived Firestore stream is blocked.
+  void poll();
+  const timer = setInterval(() => { void poll(); }, CONFIG_POLL_MS);
+  timer.unref();
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    unsubscribe();
+  };
 }
 
 /**

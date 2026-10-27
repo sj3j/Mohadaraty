@@ -20,6 +20,7 @@ import './index.css';
 import { registerSW } from 'virtual:pwa-register';
 import { AudioProvider } from './contexts/AudioContext';
 import { StageProvider } from './contexts/StageContext';
+import { IS_MACOS_BUILD } from './lib/platform';
 
 const originalConsoleError = console.error;
 console.error = (...args) => {
@@ -34,7 +35,7 @@ console.warn = (...args) => {
 };
 
 // Register PWA Service Worker
-if ('serviceWorker' in navigator) {
+if (!IS_MACOS_BUILD && 'serviceWorker' in navigator) {
   registerSW({ immediate: true });
 }
 

@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { env } from './env.ts';
 import { log } from './log.ts';
-import { holdsLease, leaseHealth } from './state.ts';
+import { holdsLease, leaseHealth, leaseUnavailableReason } from './state.ts';
 import { lastPollAt, isPolling } from './poll.ts';
 import { attachedStages, configuredOutboundStageCount } from './watcher.ts';
 import { isConfigReady } from './config.ts';
@@ -31,12 +31,12 @@ export interface Health {
 export function assess(): Health {
   const reasons: string[] = [];
 
-  if (!holdsLease()) reasons.push('lease_not_held');
+  const lease = leaseHealth();
+  if (!holdsLease()) reasons.push(leaseUnavailableReason(lease.lastAcquireStatus));
   if (!isConfigReady()) reasons.push('config_not_ready');
   if (!isPolling()) reasons.push('telegram_not_polling');
   if (Date.now() - lastPollAt() > POLL_STALE_MS) reasons.push('poll_stale');
 
-  const lease = leaseHealth();
   if (lease.renewalError && lease.lastRenewedAt && Date.now() - lease.lastRenewedAt > 60_000) {
     reasons.push('firestore_unavailable');
   }

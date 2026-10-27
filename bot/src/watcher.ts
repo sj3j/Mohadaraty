@@ -24,6 +24,8 @@ import { noteOutbound, markChannel } from './status.ts';
 const watchers = new Map<string, () => void>();
 const retryTimers = new Map<string, NodeJS.Timeout>();
 const retryAttempts = new Map<string, number>();
+const knownDocs = new Map<string, Map<string, { version: number; data: Record<string, unknown> }>>();
+const WATCHER_POLL_MS = 30_000;
 
 function clearRetry(announcementId: string): void {
   const timer = retryTimers.get(announcementId);
@@ -143,19 +145,73 @@ function attach(stageId: string): void {
   // boot and every reconnect.
   const cutoff = Timestamp.fromMillis(Date.now() - env.mirrorMaxAgeMs);
 
-  const unsubscribe = db.collection('announcements')
+  const query = db.collection('announcements')
     .where('stageId', '==', stageId)
-    .where('createdAt', '>=', cutoff)
-    .onSnapshot(
+    .where('createdAt', '>=', cutoff);
+  const known = new Map<string, { version: number; data: Record<string, unknown> }>();
+  knownDocs.set(stageId, known);
+  let stopped = false;
+  let pollRunning = false;
+
+  const applyUpsert = async (
+    id: string,
+    data: Record<string, unknown>,
+    version: number,
+    source: 'stream' | 'poll',
+  ) => {
+    if (known.get(id)?.version === version) return;
+    // Claim the version before awaiting so a simultaneous stream/poll delivery
+    // cannot enqueue the same unstamped announcement twice.
+    known.set(id, { version, data });
+    try {
+      await handleUpsert(id, data, stageId);
+    } catch (error) {
+      known.delete(id);
+      log.error('watcher.upsert_failed', { source, stageId, announcementId: id, ...errFields(error) });
+      throw error;
+    }
+  };
+
+  const poll = async () => {
+    if (stopped || pollRunning) return;
+    pollRunning = true;
+    try {
+      const snapshot = await query.get();
+      const present = new Set<string>();
+      for (const doc of snapshot.docs) {
+        present.add(doc.id);
+        await applyUpsert(doc.id, doc.data(), doc.updateTime.toMillis(), 'poll');
+      }
+      for (const [id, cached] of [...known]) {
+        if (present.has(id)) continue;
+        known.delete(id);
+        await handleRemoval(id, cached.data);
+      }
+    } catch (error) {
+      log.error('watcher.poll_failed', { stageId, ...errFields(error) });
+      markChannel(stageId, { state: 'degraded', lastError: String(error) });
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const unsubscribe = query.onSnapshot(
       snapshot => {
         // Apply one snapshot sequentially. This supplies real backpressure to
         // the bounded per-chat queue during reconnect bursts.
         void (async () => {
           for (const change of snapshot.docChanges()) {
             if (change.type === 'removed') {
+              if (!known.has(change.doc.id)) continue;
+              known.delete(change.doc.id);
               await handleRemoval(change.doc.id, change.doc.data());
             } else {
-              await handleUpsert(change.doc.id, change.doc.data(), stageId);
+              await applyUpsert(
+                change.doc.id,
+                change.doc.data(),
+                change.doc.updateTime.toMillis(),
+                'stream',
+              );
             }
           }
         })().catch(error => {
@@ -169,12 +225,25 @@ function attach(stageId: string): void {
         // delay rather than leaving the stage silently unmirrored.
         log.error('listener.error', { stageId, ...errFields(error) });
         markChannel(stageId, { state: 'degraded', lastError: String(error) });
-        setTimeout(() => { if (outboundChannelFor(stageId)) attach(stageId); }, 15_000);
+        void poll();
       },
     );
 
-  watchers.set(stageId, unsubscribe);
-  log.info('watcher.attached', { stageId, cutoff: cutoff.toDate().toISOString() });
+  void poll();
+  const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);
+  pollTimer.unref();
+
+  watchers.set(stageId, () => {
+    stopped = true;
+    clearInterval(pollTimer);
+    unsubscribe();
+    knownDocs.delete(stageId);
+  });
+  log.info('watcher.attached', {
+    stageId,
+    cutoff: cutoff.toDate().toISOString(),
+    fallbackPollMs: WATCHER_POLL_MS,
+  });
 }
 
 /**

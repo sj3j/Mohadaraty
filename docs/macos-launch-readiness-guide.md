@@ -1,5 +1,9 @@
 # Apple silicon Mac release of the iPad app
 
+This guide covers only the existing iPad app running on Apple silicon. For a
+separate native macOS binary and macOS App Store version, use
+[`native-macos-implementation-plan.md`](native-macos-implementation-plan.md).
+
 Mohadaraty uses the existing iOS/iPadOS app (`com.mohadaraty.app`) on Apple
 silicon Macs. The repository has an iOS IPA workflow and an iPad target
 (`TARGETED_DEVICE_FAMILY = "1,2"`); it does not have a native macOS or

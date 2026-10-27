@@ -14,6 +14,7 @@ import AccountSecuritySettings from './AccountSecuritySettings';
 import StageSettings from './StageSettings';
 import DoctorAccountProvisionModal from '../doctor/DoctorAccountProvisionModal';
 import AlternativeAiKeysModal from './AlternativeAiKeysModal';
+import MobileReleaseSettings from './MobileReleaseSettings';
 import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
@@ -27,7 +28,7 @@ import {
   canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
 
-type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage' | 'faq';
+type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage' | 'faq' | 'appUpdates';
 
 export interface SettingsScreenProps {
   /** Returns to the profile. This is a real page now, not an overlay. */
@@ -113,6 +114,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
     security: { ar: 'الحساب وكلمة المرور', en: 'Account & password' },
     stage: { ar: 'المرحلة المعروضة', en: 'Viewing stage' },
     faq: { ar: 'الأسئلة الشائعة', en: 'FAQ' },
+    appUpdates: { ar: 'تحديثات التطبيق', en: 'App updates' },
   };
 
   const notifLabel = notificationPermission === 'granted'
@@ -187,6 +189,10 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
         {page === 'faq' && (
           <FaqList lang={lang} />
+        )}
+
+        {page === 'appUpdates' && isMasterAdmin(user) && (
+          <MobileReleaseSettings lang={lang} />
         )}
 
         {page === 'root' && (
@@ -478,6 +484,14 @@ export default function SettingsScreen(props: SettingsScreenProps) {
                       label={isRtl ? 'التقويم الدراسي' : 'Academic calendar'}
                       sublabel={isRtl ? 'المواسم والنتائج والترقية' : 'Seasons, results and progression'}
                       onClick={() => onOpen('calendar')}
+                    />
+                  )}
+                  {isMasterAdmin(user) && (
+                    <SettingsRow
+                      isRtl={isRtl} icon={SETTINGS_ICONS.appUpdates}
+                      label={isRtl ? 'تحديثات التطبيق' : 'App updates'}
+                      sublabel={isRtl ? 'الحد الأدنى للإصدار ومفتاح الإيقاف' : 'Minimum builds and emergency switch'}
+                      onClick={() => setPage('appUpdates')}
                     />
                   )}
                   {canManageStudents(user) && (

@@ -10,6 +10,7 @@ import type { OfflineLecture } from './localDb';
 import type { PdfAnnotation, DocMeta } from '../types/pdfAnnotation.types';
 import type { PdfStroke } from '../types/pdfDrawing.types';
 import type { DurableOperationJournal } from '../types/canonicalAnnotation.types';
+import { downloadNativeFile, nativeFileErrorCode } from './nativeFileTransfer';
 
 const LECTURES_DIR = 'lectures';
 const STAGING_DIR = 'staging';
@@ -51,17 +52,6 @@ async function getFs() {
   }
   const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
   return { Filesystem, Directory, Encoding };
-}
-
-/**
- * Helper to get FileTransfer lazily.
- */
-async function getTransfer() {
-  if ((globalThis as any).__mockFt) {
-    return { FileTransfer: (globalThis as any).__mockFt };
-  }
-  const { FileTransfer } = await import('@capacitor/file-transfer');
-  return { FileTransfer };
 }
 
 /**
@@ -232,7 +222,6 @@ export async function downloadAndPublishLecture(
   const stagingPath = `${STAGING_DIR}/${lecture.id}_${timestamp}.tmp`;
   const publishedPath = `${LECTURES_DIR}/${lecture.id}.pdf`;
 
-  let listenerHandle: any = null;
   let Filesystem: any;
   let Directory: any;
   let published = false;
@@ -242,25 +231,15 @@ export async function downloadAndPublishLecture(
     // Keep that failure on the same recoverable path as a failed transfer.
     await ensureDirectoriesExist();
     ({ Filesystem, Directory } = await getFs());
-    const { FileTransfer } = await getTransfer();
     const { uri: destinationUri } = await Filesystem.getUri({
       path: stagingPath,
       directory: Directory.Data,
     });
 
-    if (onProgress) {
-      listenerHandle = await FileTransfer.addListener('progress', (status: any) => {
-        if (status.type === 'download' && status.lengthComputable && status.contentLength > 0) {
-          const percent = Math.min(100, Math.round((status.bytes / status.contentLength) * 100));
-          onProgress(percent);
-        }
-      });
-    }
-
-    await FileTransfer.downloadFile({
+    await downloadNativeFile({
       url: lecture.pdfUrl,
       path: destinationUri,
-      progress: !!onProgress,
+      onProgress,
     });
 
     // Validate the staged download
@@ -313,11 +292,8 @@ export async function downloadAndPublishLecture(
         }
       }
     }
-    return { success: false, error: err?.message || 'Download failed' };
-  } finally {
-    if (listenerHandle?.remove) {
-      listenerHandle.remove();
-    }
+    const code = nativeFileErrorCode(err);
+    return { success: false, error: `${code}: ${err?.message || 'Download failed'}` };
   }
 }
 
@@ -427,13 +403,17 @@ export async function getNativeShareUri(
   }
 
   // 2. Not downloaded locally: download directly to Directory.Cache/shared using native FileTransfer
-  const { FileTransfer } = await getTransfer();
   const { uri: targetUri } = await Filesystem.getUri({ path: cachePath, directory: Directory.Cache });
 
-  await FileTransfer.downloadFile({
+  await downloadNativeFile({
     url: remoteUrl,
     path: targetUri,
   });
+
+  const downloaded = await Filesystem.stat({ path: cachePath, directory: Directory.Cache });
+  if (!downloaded || (downloaded.size ?? 0) <= 0) {
+    throw Object.assign(new Error('Downloaded PDF is empty'), { code: 'FILE_EMPTY' });
+  }
 
   return targetUri;
 }

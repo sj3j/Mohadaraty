@@ -10,6 +10,8 @@ import type { useDoctorAttendance } from './useDoctorAttendance';
 import { attendanceFlagLabel, attendanceLocationBadge, attendanceScanTimeBadge } from '../../../shared/attendanceSecurity';
 import { buildWeeklyColumns, getLectureDayName, formatLectureTime } from './DoctorExcelTimetableView';
 import AttendanceQrDisplay from '../attendance/AttendanceQrDisplay';
+import { IS_MACOS_BUILD } from '../../lib/platform';
+import { macPresentation } from '../../macos/macBridge';
 
 interface DoctorLiveSessionViewProps {
   subject: DoctorSubject;
@@ -162,6 +164,15 @@ export default function DoctorLiveSessionView({
   }, [currentQr]);
 
   const toggleFullscreen = () => {
+    if (IS_MACOS_BUILD) {
+      if (!qrDataUrl) return;
+      void macPresentation.showQr(
+        qrDataUrl,
+        isRtl ? subject.nameAr : subject.nameEn,
+        selectedLecture?.title || '',
+      ).catch(error => console.error('[macOS] Could not open QR presentation window:', error));
+      return;
+    }
     if (!projectorRef.current) return;
     if (!document.fullscreenElement) void projectorRef.current.requestFullscreen().catch(() => undefined);
     else void document.exitFullscreen().catch(() => undefined);

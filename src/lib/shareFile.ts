@@ -16,6 +16,9 @@
 
 import { forceDownload } from './utils';
 import { safeFileName } from './shareFileName';
+import { IS_MACOS_BUILD } from './platform';
+import { macFiles } from '../macos/macBridge';
+import { nativeFileErrorCode } from './nativeFileTransfer';
 
 export type ShareFileResult =
   /** The share sheet opened and the user picked a target. */
@@ -41,6 +44,8 @@ export interface ShareFileInput {
    * Bytes already on the device (Web/IDB fallback).
    */
   bytes?: ArrayBuffer | null;
+  /** Receives a stable native error code for support diagnostics. */
+  onError?: (code: string) => void;
 }
 
 /** Cache subdirectory the shared copies live in, so the sweep below cannot
@@ -102,6 +107,19 @@ function isCancellation(err: unknown): boolean {
 export async function shareFile(input: ShareFileInput): Promise<ShareFileResult> {
   const filename = safeFileName(input.name, input.extension);
 
+  if (IS_MACOS_BUILD) {
+    try {
+      const result = input.bytes
+        ? await macFiles.shareData(input.bytes, filename, input.mimeType)
+        : await macFiles.shareRemoteFile(input.url, filename, input.mimeType);
+      return result.status === 'cancelled' ? 'cancelled' : 'shared';
+    } catch (err) {
+      if (isCancellation(err)) return 'cancelled';
+      console.error('[shareFile] macOS share failed:', err);
+      return 'failed';
+    }
+  }
+
   if (await isNative()) {
     try {
       const Share = (globalThis as any).__mockShare || (await import('@capacitor/share')).Share;
@@ -123,6 +141,7 @@ export async function shareFile(input: ShareFileInput): Promise<ShareFileResult>
     } catch (err) {
       if (isCancellation(err)) return 'cancelled';
       console.error('[shareFile] Native share failed:', err);
+      input.onError?.(nativeFileErrorCode(err));
       return 'failed';
     }
   }
@@ -195,6 +214,25 @@ export async function shareMultipleFiles(
   }
 
   const defaultTitle = batchTitle || 'Lecture Bundle';
+
+  if (IS_MACOS_BUILD) {
+    // Keep the multi-file operation explicit: the Mac bridge owns all
+    // temporary files and presents one native share picker.
+    try {
+      const items = inputs.map(item => ({
+        url: item.url,
+        suggestedName: safeFileName(item.name, item.extension),
+        mimeType: item.mimeType,
+      }));
+      const result = await import('../macos/macBridge').then(({ callMacBridge }) =>
+        callMacBridge<{ status: 'shared' | 'cancelled' }>('files', 'shareRemoteFiles', { items, title: defaultTitle }),
+      );
+      return result.status === 'cancelled' ? 'cancelled' : 'shared';
+    } catch (err) {
+      if (isCancellation(err)) return 'cancelled';
+      return 'failed';
+    }
+  }
 
   if (await isNative()) {
     try {

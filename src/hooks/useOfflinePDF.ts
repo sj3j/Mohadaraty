@@ -241,10 +241,13 @@ export function useOfflinePDF(
       await checkIsDownloaded();
     } catch (error) {
       console.error('Error downloading PDF:', error);
+      const diagnostic = await isNativePlatform()
+        ? ` (${String((error as any)?.message || '').split(':', 1)[0] || 'FILE_UNKNOWN'})`
+        : '';
       if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-        alert('تعذّر تنزيل الملف. تحقق من اتصالك بالإنترنت.');
+        alert(`تعذّر تنزيل الملف. تحقق من اتصالك بالإنترنت.${diagnostic}`);
       } else {
-        alert('تعذّر تنزيل الملف للقراءة بدون إنترنت.');
+        alert(`تعذّر تنزيل الملف للقراءة بدون إنترنت.${diagnostic}`);
       }
     } finally {
       setIsDownloading(false);

@@ -9,6 +9,8 @@ import {
 } from './types';
 import { attendanceWeekStart } from '../../../shared/attendance';
 import { attendanceLocationBadge, attendanceScanTimeBadge } from '../../../shared/attendanceSecurity';
+import { IS_MACOS_BUILD } from '../../lib/platform';
+import { macFiles } from '../../macos/macBridge';
 
 const DAY_NAMES_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const DAY_NAMES_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -365,7 +367,7 @@ export default function DoctorExcelTimetableView({
   };
 
   // Export to Excel-compatible CSV file with UTF-8 BOM
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     const headers = [
       isRtl ? 'الرقم' : 'No',
       isRtl ? 'اسم الطالب الرباعي' : 'Student Name',
@@ -421,14 +423,25 @@ export default function DoctorExcelTimetableView({
       return '"' + safe.replace(/"/g, '""') + '"';
     };
     const csvContent = '\uFEFF' + [headers, ...rows].map(row => row.map(csvCell).join(',')).join('\n');
+    const filename = `Attendance_Weekly_${subject.nameEn.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`;
+    if (IS_MACOS_BUILD) {
+      try {
+        await macFiles.saveData(csvContent, filename, 'text/csv');
+      } catch (error) {
+        console.error('[macOS] Attendance CSV export failed:', error);
+        window.alert(isRtl ? 'تعذر حفظ ملف الحضور.' : 'The attendance file could not be saved.');
+      }
+      return;
+    }
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Attendance_Weekly_${subject.nameEn.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
