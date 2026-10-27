@@ -11,6 +11,8 @@
  * Run with: npx tsx scripts/adminUpload.test.ts
  */
 
+import { readFileSync } from 'node:fs';
+
 let passed = 0;
 let failed = 0;
 
@@ -218,6 +220,17 @@ console.log('\n--- Test 5: Firestore Payload Generation ---');
   check('lectureData contains subjectName', lectureData.subjectName === 'Pharmacology I');
   check('lectureData contains stageId', lectureData.stageId === 'stage_3');
   check('lectureData has number 1', lectureData.number === 1);
+}
+
+console.log('\n--- Test 6: Atomic Batch Publication Contract ---');
+{
+  const source = readFileSync(new URL('../src/components/AdminUpload.tsx', import.meta.url), 'utf8');
+  check('batch publish caps Firestore writes below its 500-document limit', source.includes('MAX_PUBLISH_BATCH_SIZE = 450'));
+  check('batch publish snapshots editable configuration before upload', source.includes('const configSnapshot = files.length > 1'));
+  check('batch publish validates each selected subject against the target stage', source.includes('subject.stageId === effectiveStageId'));
+  check('batch publish uses one Firestore writeBatch commit', source.includes('const publication = writeBatch(db)') && source.includes('await publication.commit()'));
+  check('batch publish verifies committed documents from the server', source.includes('getDocFromServer(ref)'));
+  check('legacy per-file addDoc publication is absent', !source.includes('addDoc('));
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

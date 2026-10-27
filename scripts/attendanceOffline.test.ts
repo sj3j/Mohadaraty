@@ -12,8 +12,36 @@ import { studentAttendanceRows } from '../shared/attendanceSchedule';
 import { attendanceErrorResponse, canManageOccurrence } from '../shared/attendanceApi';
 import { createAttendanceDoctorAdminHandlers, validateDoctorAssignments } from '../shared/attendanceDoctorAdmin';
 import { createLatestDoctorListRefresher } from '../src/components/doctor/doctorAccountList';
+import { matchEmergencyOccurrence, matchEmergencyStudent } from '../shared/attendanceEmergency';
 
 process.env.ATTENDANCE_INSTALLATION_SECRET = 'test-only-installation-secret-that-is-long-enough';
+
+test('emergency matching accepts only one exact lecture and one exact student', () => {
+  const occurrence = { id: 'lecture-1', stageId: 'stage_3', lectureDate: '2026-10-25', startTime: '09:00', title: 'أخلاقيات الصيدلة' } as any;
+  const draft = { stageId: 'stage_3', lectureTitle: 'اخلاقيات الصيدلة', lectureDate: '2026-10-25', startTime: '09:00' };
+  assert.equal(matchEmergencyOccurrence(draft, [occurrence])?.id, occurrence.id);
+  assert.equal(matchEmergencyOccurrence(draft, [occurrence, { ...occurrence, id: 'lecture-2' }]), null);
+  const roster = [{ studentId: 'a', officialName: 'علي احمد', rosterIdentifier: 'C-123', subgroup: 'A' },
+    { studentId: 'b', officialName: 'علي احمد', rosterIdentifier: 'C-456', subgroup: 'A' }];
+  assert.equal(matchEmergencyStudent('C-123', roster)?.studentId, 'a');
+  assert.equal(matchEmergencyStudent('علي أحمد', roster), null);
+  assert.equal(matchEmergencyStudent('unknown', roster), null);
+});
+
+test('V2 offline QR omits the count while V1 receipts remain verifiable', async () => {
+  const signing = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const publicKey = (await attendanceInstallation()).publicKey;
+  const permit: AttendanceOfflinePermitClaims = { typ: 'simosan-offline-permit', id: crypto.randomUUID(), professorUid: 'doctor', stageId: 'stage_3', publicKey };
+  const permitToken = jwt.sign(permit, signing.privateKey, { algorithm: 'ES256' });
+  const occurrenceId = 'term:stage_3:2026-10-25:lecture';
+  const base = { typ: 'simosan-attendance' as const, sessionId: attendanceSessionId(occurrenceId), challengeId: crypto.randomUUID(),
+    occurrenceId, stageId: 'stage_3', lectureDate: '2026-10-25', title: 'Lecture', startTime: '09:00', endTime: '10:00' };
+  const v2 = await signOfflineAttendanceQr(permitToken, { ...base, v: 2 });
+  assert.equal(parseUnverifiedAttendanceQr(v2)?.expectedHeadcount, undefined);
+  assert.equal(verifyOfflineAttendanceToken(v2, () => permit)?.claims.v, 2);
+  const v1 = await signOfflineAttendanceQr(permitToken, { ...base, v: 1, expectedHeadcount: 60 });
+  assert.equal(verifyOfflineAttendanceToken(v1, () => permit)?.claims.expectedHeadcount, 60);
+});
 
 test('an older lecturer list response cannot overwrite a newer refresh', async () => {
   const resolvers: Array<(value: { doctors: string[]; truncated: boolean }) => void> = [];

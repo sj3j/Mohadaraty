@@ -20,6 +20,7 @@ import {
 import { getAttendanceRepository, getAttendanceSigner } from './attendanceRepositoryFactory';
 import type { StorageHealth } from './attendanceRepository';
 import { ensureAttendanceInitialized } from './attendanceMigration';
+import { matchEmergencyOccurrence, matchEmergencyStudent, type EmergencyAttendanceInput } from '../../shared/attendanceEmergency';
 
 const ATTENDANCE_EVENT = 'simosan-attendance-changed';
 const activeSync = new Map<string, Promise<void>>();
@@ -324,6 +325,38 @@ export async function getOfflineAttendancePack(ownerUid: string, stageId: string
   return pack || undefined;
 }
 
+export function isOfflineAttendancePackReady(pack: AttendanceOfflinePack | undefined): boolean {
+  return !!pack?.expiresAt && Date.parse(pack.expiresAt) > Date.now();
+}
+
+const offlinePreparationFlights = new Map<string, Promise<AttendanceOfflinePack | undefined>>();
+async function packMatchesCurrentSigner(pack: AttendanceOfflinePack): Promise<boolean> {
+  try {
+    const payload = JSON.parse(atob(pack.permit.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as { publicKey?: JsonWebKey };
+    const current = (await getAttendanceSigner().getPublicIdentity()).publicKey;
+    return payload.publicKey?.kty === current.kty && payload.publicKey?.crv === current.crv
+      && payload.publicKey?.x === current.x && payload.publicKey?.y === current.y;
+  } catch { return false; }
+}
+
+/** Refreshes silently while online. A still-valid local pack is never discarded on failure. */
+export async function ensureOfflineAttendancePrepared(stageId: string, ownerUid: string, forceRefresh = false): Promise<AttendanceOfflinePack | undefined> {
+  const key = `${ownerUid}:${stageId}`;
+  const inFlight = offlinePreparationFlights.get(key);
+  if (inFlight) return inFlight;
+  const flight = (async () => {
+    const cached = await getOfflineAttendancePack(ownerUid, stageId);
+    const validCached = isOfflineAttendancePackReady(cached) && await packMatchesCurrentSigner(cached!);
+    const expiresAt = cached?.expiresAt ? Date.parse(cached.expiresAt) : 0;
+    if ((!forceRefresh && validCached && expiresAt > Date.now() + 24 * 60 * 60 * 1000)
+      || (typeof navigator !== 'undefined' && navigator.onLine === false)) return validCached ? cached : undefined;
+    try { return await prepareOfflineAttendance(stageId, ownerUid); }
+    catch { return validCached ? cached : undefined; }
+  })();
+  offlinePreparationFlights.set(key, flight);
+  try { return await flight; } finally { offlinePreparationFlights.delete(key); }
+}
+
 export async function getDoctorAttendanceWorkspace(ownerUid: string, stageId?: string): Promise<AttendanceDoctorWorkspace> {
   await ensureAttendanceInitialized();
   const repo = getAttendanceRepository();
@@ -335,8 +368,18 @@ export async function getDoctorAttendanceWorkspace(ownerUid: string, stageId?: s
   } catch (error: any) {
     if (error.status === 403) throw error;
     const cached = await repo.getMetadata<AttendanceDoctorWorkspace>(key, ownerUid);
-    if (!cached) throw error;
-    return { ...cached, offline: true };
+    if (cached) return { ...cached, offline: true };
+    const pack = stageId ? await getOfflineAttendancePack(ownerUid, stageId) : undefined;
+    if (!pack) throw error;
+    const subjects = [...new Map(pack.bootstrap.occurrences.map(item => [item.timetableSessionId, {
+      id: item.timetableSessionId, nameAr: item.title, nameEn: item.title,
+      type: item.mode === 'practical' ? 'practical' as const : 'theoretical' as const,
+      timetableSessionIds: [item.timetableSessionId],
+    }])).values()];
+    return {
+      offline: true, stageId: pack.bootstrap.stageId, bootstrap: pack.bootstrap,
+      subjects, roster: pack.roster, sessions: [], records: [],
+    };
   }
 }
 
@@ -347,43 +390,51 @@ export async function prepareOfflineAttendance(stageId: string, ownerUid: string
   const pack = await apiRequest<AttendanceOfflinePack>('/api/attendance/offline/prepare', {
     method: 'POST', body: JSON.stringify({ stageId, publicKey: identity.publicKey }),
   }, false, ownerUid);
-  if (pack.ownerUid !== ownerUid) throw new Error('invalid_permit_owner');
+  if (pack.ownerUid !== ownerUid || pack.bootstrap.stageId !== stageId) throw new Error('invalid_permit_owner');
+  if (!isOfflineAttendancePackReady(pack)) throw new Error('invalid_offline_permit');
   const repo = getAttendanceRepository();
   await repo.setMetadata(`attendance-pack:${ownerUid}:${stageId}`, pack, ownerUid);
   return pack;
 }
 
-export async function createOfflineAttendanceSession(input: { stageId: string; occurrenceId: string; expectedHeadcount: number }, ownerUid: string) {
+export async function createOfflineAttendanceSession(input: { stageId: string; occurrenceId: string; physicalHeadcount?: number | null }, ownerUid: string) {
   await ensureAttendanceInitialized();
   if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
   const pack = await getOfflineAttendancePack(ownerUid, input.stageId);
   const occurrence = pack?.bootstrap.occurrences.find(item => item.id === input.occurrenceId);
   if (!pack || !occurrence) throw new Error('offline_setup_required');
-  if (!Number.isInteger(input.expectedHeadcount) || input.expectedHeadcount < 1 || input.expectedHeadcount > 10000) throw new Error('invalid_headcount');
+  if (!isOfflineAttendancePackReady(pack) || !await packMatchesCurrentSigner(pack)) throw new Error('offline_setup_required');
+  if (input.physicalHeadcount != null && (!Number.isInteger(input.physicalHeadcount) || input.physicalHeadcount < 0 || input.physicalHeadcount > 10000)) throw new Error('invalid_headcount');
   const sessionId = pack.sessions[occurrence.id];
+  if (!sessionId) throw new Error('offline_setup_required');
+  const repo = getAttendanceRepository();
+  const key = `attendance-doctor:${ownerUid}:${sessionId}`;
+  const previous = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
+  const existingToken = (await repo.listDoctorCommands(ownerUid)).find(command => command.kind === 'import' && command.sessionId === sessionId)?.input?.qrToken;
+  if (previous) {
+    if (previous.session.status !== 'active') throw new Error('session_not_editable');
+    if (typeof existingToken !== 'string') throw new Error('offline_session_qr_missing');
+    return { sessionId, qrToken: existingToken, revision: previous.session.revision, status: 'active' };
+  }
   const signer = getAttendanceSigner();
   const qrToken = await signer.signDoctorQr({
     permit: pack.permit,
     claims: {
-      v: 1, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
+      v: 2, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
       stageId: occurrence.stageId, lectureDate: occurrence.lectureDate, title: occurrence.title, startTime: occurrence.startTime,
-      endTime: occurrence.endTime, expectedHeadcount: input.expectedHeadcount,
+      endTime: occurrence.endTime,
     },
   });
-  const key = `attendance-doctor:${ownerUid}:${sessionId}`;
-  const repo = getAttendanceRepository();
-  const previous = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
-  const snapshot: AttendanceSessionSnapshot = previous || {
+  const snapshot: AttendanceSessionSnapshot = {
     offline: true, serverNow: pack.bootstrap.serverNow,
-    session: { id: sessionId, occurrenceId: occurrence.id, occurrence, expectedHeadcount: input.expectedHeadcount, notes: '', status: 'active',
-      createdAt: '', reconciliationDeadline: new Date(Date.parse(occurrence.endAt) + 36 * 3600000).toISOString(), revision: 0 },
+    session: { id: sessionId, occurrenceId: occurrence.id, occurrence, physicalHeadcount: null, notes: '', status: 'active',
+      createdAt: new Date().toISOString(), reconciliationDeadline: new Date(Date.parse(occurrence.endAt) + 36 * 3600000).toISOString(), revision: 0 },
     roster: pack.roster.map(student => ({ ...student, expectedAttendee: !occurrence.audienceGroups.length || occurrence.audienceGroups.includes(student.subgroup) })),
     records: [], reviewReceipts: [], counts: { confirmed: 0, voided: 0, review: 0, discrepancy: 0 },
   };
-  if (snapshot.session.status !== 'active') throw new Error('session_not_editable');
   const command: DoctorAttendanceCommand = { kind: 'import', requestId: attendanceRequestId(), ownerUid, sessionId, input: { qrToken }, status: 'pending' };
   await repo.commitDoctorSession({ meta: { key, data: snapshot }, command });
-  await repo.setMetadata(key, snapshot, ownerUid);
+  if (input.physicalHeadcount != null) await updateAttendanceSession(sessionId, { physicalHeadcount: input.physicalHeadcount, requestId: attendanceRequestId(), reason: '' }, ownerUid);
   emitAttendanceChange();
   void syncAttendanceReceipts(ownerUid).catch(() => undefined);
   return { sessionId, qrToken, revision: snapshot.session.revision, status: 'active' };
@@ -410,12 +461,26 @@ export async function getMyAttendance(ownerUid: string): Promise<AttendanceMine>
 export async function createAttendanceSession(input: {
   stageId: string;
   occurrenceId: string;
-  expectedHeadcount: number;
+  physicalHeadcount?: number | null;
   notes: string;
   requestId: string;
 }): Promise<{ sessionId: string; qrToken: string; revision: number; status: string; existing: boolean; rosterCount: number }> {
   await ensureAttendanceInitialized();
-  return apiRequest('/api/attendance/sessions', { method: 'POST', body: JSON.stringify(input) });
+  const result = await apiRequest<{ sessionId: string; qrToken: string; revision: number; status: string; existing: boolean; rosterCount: number }>('/api/attendance/sessions', { method: 'POST', body: JSON.stringify(input) });
+  const repo = getAttendanceRepository();
+  await repo.setMetadata(`attendance-doctor-qr:${auth.currentUser?.uid}:${result.sessionId}`, result.qrToken, auth.currentUser?.uid);
+  return result;
+}
+
+export async function getAttendanceSessionQr(sessionId: string, ownerUid: string): Promise<string> {
+  await ensureAttendanceInitialized();
+  const repo = getAttendanceRepository();
+  const command = (await repo.listDoctorCommands(ownerUid)).find(item => item.kind === 'import' && item.sessionId === sessionId);
+  const local = command?.input?.qrToken || await repo.getMetadata<string>(`attendance-doctor-qr:${ownerUid}:${sessionId}`, ownerUid);
+  if (typeof local === 'string' && local) return local;
+  const result = await apiRequest<{ qrToken: string }>(`/api/attendance/sessions/${encodeURIComponent(sessionId)}/qr`, {}, false, ownerUid);
+  await repo.setMetadata(`attendance-doctor-qr:${ownerUid}:${sessionId}`, result.qrToken, ownerUid);
+  return result.qrToken;
 }
 
 export async function getAttendanceSessionSnapshot(sessionId: string, ownerUid = auth.currentUser?.uid): Promise<AttendanceSessionSnapshot> {
@@ -439,12 +504,14 @@ export async function getAttendanceSessionSnapshot(sessionId: string, ownerUid =
 export async function updateAttendanceSession(sessionId: string, input: Record<string, unknown>, ownerUid = auth.currentUser?.uid): Promise<any> {
   await ensureAttendanceInitialized();
   if (!ownerUid || (auth.currentUser && auth.currentUser.uid !== ownerUid)) throw new Error('login_required');
+  if (Object.prototype.hasOwnProperty.call(input, 'physicalHeadcount') && input.physicalHeadcount != null
+    && (!Number.isInteger(input.physicalHeadcount) || Number(input.physicalHeadcount) < 0 || Number(input.physicalHeadcount) > 10000)) throw new Error('invalid_headcount');
   const key = `attendance-doctor:${ownerUid}:${sessionId}`;
   const repo = getAttendanceRepository();
   const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
   if (!cached) throw new Error('offline_session_not_cached');
   const snapshot = await overlayDoctorCommands(cached, ownerUid);
-  const basis = { notes: snapshot.session.notes, expectedHeadcount: snapshot.session.expectedHeadcount };
+  const basis = { notes: snapshot.session.notes, physicalHeadcount: snapshot.session.physicalHeadcount };
   const command: DoctorAttendanceCommand = { kind: 'session_update', requestId: String(input.requestId || attendanceRequestId()), ownerUid, sessionId, input: { ...input, basis }, status: 'pending' };
   await repo.commitDoctorSession({ meta: { key, data: cached }, command });
   await repo.setMetadata(key, cached, ownerUid);
@@ -458,7 +525,7 @@ async function overlayDoctorCommands(snapshot: AttendanceSessionSnapshot, ownerU
   const session = { ...snapshot.session };
   for (const command of commands) {
     if (typeof command.input.notes === 'string') session.notes = command.input.notes;
-    if (typeof command.input.expectedHeadcount === 'number') session.expectedHeadcount = command.input.expectedHeadcount;
+    if (command.input.physicalHeadcount === null || typeof command.input.physicalHeadcount === 'number') session.physicalHeadcount = command.input.physicalHeadcount as number | null;
     if (command.input.status === 'ended') session.status = 'ended';
   }
   return { ...snapshot, session };
@@ -476,8 +543,46 @@ export async function markAttendanceManually(sessionId: string, input: Record<st
   return command;
 }
 
+function validateEmergencyAttendanceDraft(input: EmergencyAttendanceInput): void {
+  if (!input.stageId || !input.lectureTitle.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(input.lectureDate)
+    || !/^\d{2}:\d{2}$/.test(input.startTime) || (!input.studentIdentifier?.trim() && input.physicalHeadcount == null)
+    || (input.studentIdentifier?.trim() && !input.reason?.trim())
+    || (input.physicalHeadcount != null && (!Number.isInteger(input.physicalHeadcount) || input.physicalHeadcount < 0 || input.physicalHeadcount > 10000))) {
+    throw new Error('invalid_emergency_draft');
+  }
+}
+
+export async function saveEmergencyAttendanceDraft(ownerUid: string, input: EmergencyAttendanceInput): Promise<DoctorAttendanceCommand> {
+  await ensureAttendanceInitialized();
+  if (auth.currentUser && auth.currentUser.uid !== ownerUid) throw new Error('login_required');
+  validateEmergencyAttendanceDraft(input);
+  const command: DoctorAttendanceCommand = {
+    kind: 'emergency_draft', requestId: attendanceRequestId(), ownerUid, sessionId: `draft:${attendanceRequestId()}`,
+    input: { ...input, lectureTitle: input.lectureTitle.trim(), studentIdentifier: input.studentIdentifier?.trim(), reason: input.reason?.trim(),
+      sessionCreateRequestId: attendanceRequestId(), headcountRequestId: attendanceRequestId() }, status: 'pending',
+  };
+  await getAttendanceRepository().enqueueDoctorCommand(command);
+  emitAttendanceChange();
+  void syncAttendanceReceipts(ownerUid).catch(() => undefined);
+  return command;
+}
+
+export async function reviseEmergencyAttendanceDraft(ownerUid: string, requestId: string, input: EmergencyAttendanceInput): Promise<void> {
+  await ensureAttendanceInitialized();
+  const repo = getAttendanceRepository();
+  const command = (await repo.listDoctorCommands(ownerUid)).find(item => item.requestId === requestId);
+  if (!command || command.kind !== 'emergency_draft' || command.status !== 'needs_help'
+    || !['emergency_occurrence_ambiguous', 'emergency_student_ambiguous'].includes(String(command.reason))) throw new Error('draft_not_editable');
+  validateEmergencyAttendanceDraft(input);
+  await repo.updateDoctorCommand({ ...command, status: 'pending', reason: undefined,
+    input: { ...command.input, ...input, sessionCreateRequestId: attendanceRequestId(), headcountRequestId: attendanceRequestId() },
+  });
+  emitAttendanceChange();
+  void syncAttendanceReceipts(ownerUid).catch(() => undefined);
+}
+
 export interface DoctorAttendanceCommand {
-  kind?: 'manual' | 'import' | 'session_update';
+  kind?: 'manual' | 'import' | 'session_update' | 'emergency_draft';
   localOrder?: number;
   requestId: string;
   ownerUid: string;
@@ -501,16 +606,39 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
   const commands = await listDoctorAttendanceCommands(ownerUid);
   const pending = commands.filter(item => item.status === 'pending').sort((first, second) => Number(second.kind === 'import') - Number(first.kind === 'import') || (first.localOrder || 0) - (second.localOrder || 0));
   const blockedSessions = new Set<string>();
+  for (const command of commands) if (command.kind === 'import' && command.status === 'needs_help') blockedSessions.add(command.sessionId);
   for (const command of pending) {
     if (auth.currentUser?.uid !== ownerUid) return;
     if (blockedSessions.has(command.sessionId)) continue;
     try {
+      if (command.kind === 'emergency_draft') {
+        const draft = command.input as unknown as EmergencyAttendanceInput & { sessionCreateRequestId: string; headcountRequestId: string };
+        const workspace = await getDoctorAttendanceWorkspace(ownerUid, draft.stageId);
+        if (workspace.offline) throw new Error('attendance_offline');
+        const occurrence = matchEmergencyOccurrence(draft, workspace.bootstrap.occurrences);
+        if (!occurrence) throw Object.assign(new Error('emergency_occurrence_ambiguous'), { status: 409 });
+        const student = draft.studentIdentifier ? matchEmergencyStudent(draft.studentIdentifier, workspace.roster) : null;
+        if (draft.studentIdentifier && !student) throw Object.assign(new Error('emergency_student_ambiguous'), { status: 409 });
+        const created = await createAttendanceSession({ stageId: draft.stageId, occurrenceId: occurrence.id, physicalHeadcount: null,
+          notes: '', requestId: draft.sessionCreateRequestId });
+        const current = await getAttendanceSessionSnapshot(created.sessionId, ownerUid);
+        if (student) await apiRequest(`/api/attendance/sessions/${encodeURIComponent(created.sessionId)}/manual`, {
+          method: 'POST', body: JSON.stringify({ requestId: command.requestId, studentId: student.studentId,
+            reason: draft.reason, expectedRevision: current.session.revision }),
+        }, false, ownerUid);
+        if (draft.physicalHeadcount != null) await updateAttendanceSession(created.sessionId, {
+          requestId: draft.headcountRequestId, physicalHeadcount: draft.physicalHeadcount, reason: '',
+        }, ownerUid);
+        await repo.updateDoctorCommand({ ...command, status: 'synced', sessionId: created.sessionId });
+        emitAttendanceChange();
+        continue;
+      }
       const path = command.kind === 'import' ? '/api/attendance/offline/import' : `/api/attendance/sessions/${encodeURIComponent(command.sessionId)}${command.kind === 'session_update' ? '' : '/manual'}`;
       const input: Record<string, unknown> = { ...command.input, requestId: command.requestId };
       if (command.kind === 'session_update') {
         const current = await apiRequest<AttendanceSessionSnapshot>(`/api/attendance/sessions/${encodeURIComponent(command.sessionId)}`, {}, false, ownerUid);
-        const basis = command.input.basis as { notes: string; expectedHeadcount: number };
-        for (const field of ['notes', 'expectedHeadcount'] as const) {
+        const basis = command.input.basis as { notes: string; physicalHeadcount: number | null };
+        for (const field of ['notes', 'physicalHeadcount'] as const) {
           if (input[field] !== undefined && current.session[field] !== basis[field] && current.session[field] !== input[field]) throw Object.assign(new Error('revision_conflict'), { status: 409 });
         }
         input.expectedRevision = current.session.revision;
@@ -520,7 +648,7 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
       const key = `attendance-doctor:${ownerUid}:${command.sessionId}`;
       const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
       if (cached && result.session) {
-        const data = { ...cached, session: { ...cached.session, notes: result.session.notes, expectedHeadcount: result.session.expected_headcount, status: result.session.status, revision: Number(result.session.revision), endedAt: result.session.ended_at } };
+        const data = { ...cached, session: { ...cached.session, notes: result.session.notes, physicalHeadcount: result.session.physical_headcount ?? null, status: result.session.status, revision: Number(result.session.revision), endedAt: result.session.ended_at } };
         await repo.commitDoctorSession({ meta: { key, data }, command: { ...command, status: 'synced' } });
         await repo.setMetadata(key, data, ownerUid);
       } else if (cached && result.record) {
@@ -529,7 +657,7 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
           entryMethod: row.entry_method, status: row.status, receivedAt: row.received_at, decidedAt: row.decided_at, reviewFlags: row.review_flags || [], revision: Number(row.revision) };
         const records = cached.records.filter(item => item.id !== record.id).concat(record);
         const counts = { ...cached.counts, confirmed: records.filter(item => item.status === 'confirmed').length };
-        counts.discrepancy = Math.max(0, counts.confirmed - cached.session.expectedHeadcount);
+        counts.discrepancy = cached.session.physicalHeadcount == null ? 0 : Math.max(0, counts.confirmed - cached.session.physicalHeadcount);
         const data = { ...cached, records, counts };
         await repo.commitDoctorSession({ meta: { key, data }, command: { ...command, status: 'synced' } });
         await repo.setMetadata(key, data, ownerUid);

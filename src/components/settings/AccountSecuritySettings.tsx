@@ -5,7 +5,7 @@ import {
   AccountSummary, AccountError, DeletionStatus, fetchAccount, changePassword,
   linkGoogle, unlinkGoogle, fetchDeletionStatus, requestDeletion, cancelDeletion,
 } from '../../services/accountService';
-import { IS_IOS_BUILD } from '../../lib/platform';
+import { IS_APPLE_STORE_BUILD } from '../../lib/platform';
 
 /**
  * Password and Google linking for the signed-in student.
@@ -195,7 +195,7 @@ export default function AccountSecuritySettings({ lang }: { lang: Language }) {
       </section>
 
       {/* Google - Hidden on iOS to comply with Apple Guideline 4.8 (no social login without Sign in with Apple) */}
-      {!IS_IOS_BUILD && (
+      {!IS_APPLE_STORE_BUILD && (
         <section className="bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 rounded-2xl p-4">
           <h2 className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
             {isRtl ? 'حساب Google' : 'Google account'}

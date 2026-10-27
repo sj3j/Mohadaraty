@@ -9,6 +9,8 @@ import {
   isLocalDbAvailable,
 } from '../lib/localDb';
 import { NativeAttendanceStorage } from './nativeAttendanceRepository';
+import { IS_MACOS_BUILD } from '../lib/platform';
+import { callMacBridge } from '../macos/macBridge';
 
 export const MIGRATION_CHECKPOINT_KEY = 'attendance_native_migration_checkpoint_v1';
 
@@ -30,6 +32,13 @@ let initBarrierPromise: Promise<void> | null = null;
 export async function ensureAttendanceInitialized(): Promise<void> {
   if (!initBarrierPromise) {
     initBarrierPromise = (async () => {
+        if (IS_MACOS_BUILD) {
+          const health = await callMacBridge<any>('attendance', 'initialize', { ownerUid: '' });
+          if (!health?.isDurable || health.healthState !== 'ready') {
+            throw new Error(`attendance_storage_${health?.healthState || 'unavailable'}`);
+          }
+          return;
+        }
         if (!Capacitor.isNativePlatform()) {
           return;
         }
@@ -57,6 +66,15 @@ export async function ensureAttendanceInitialized(): Promise<void> {
 }
 
 export async function runLosslessAttendanceMigration(): Promise<MigrationResult> {
+  if (IS_MACOS_BUILD) {
+    const health = await callMacBridge<any>('attendance', 'initialize', { ownerUid: '' });
+    if (!health?.isDurable || health.healthState !== 'ready') {
+      throw new Error(`attendance_storage_${health?.healthState || 'unavailable'}`);
+    }
+    // A native Mac app has no predecessor IndexedDB container to import. The
+    // encrypted SQLite store is authoritative from its first launch.
+    return { migrated: true, skipped: false, receiptsCount: 0, locksCount: 0, commandsCount: 0, metaCount: 0 };
+  }
   if (!Capacitor.isNativePlatform()) {
     return { migrated: false, skipped: true, receiptsCount: 0, locksCount: 0, commandsCount: 0, metaCount: 0 };
   }

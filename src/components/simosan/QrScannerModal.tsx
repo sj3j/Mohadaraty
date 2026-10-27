@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { Camera, CheckCircle2, Flashlight, Lightbulb, RefreshCw, ShieldAlert, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { ATTENDANCE_DISCIPLINARY_BANNER } from '../../../shared/attendanceSecurity';
+import { IS_MACOS_BUILD } from '../../lib/platform';
 
 interface QrScannerModalProps {
   lang: 'ar' | 'en';
@@ -121,6 +122,12 @@ export default function QrScannerModal({ lang, onScan, onClose }: QrScannerModal
 
   // Scanner lifecycle
   useEffect(() => {
+    if (IS_MACOS_BUILD) {
+      setError(isRtl
+        ? 'مسح حضور الطالب بالكاميرا غير متاح في نسخة Mac التجريبية. اطلب من الأستاذ تسجيل الحضور يدوياً أو استخدم تطبيق الهاتف.'
+        : 'Student camera scanning is not available in this Mac QA build. Ask the lecturer to record attendance manually or use the mobile app.');
+      return;
+    }
     let cancelled = false;
     let scanner: any;
 

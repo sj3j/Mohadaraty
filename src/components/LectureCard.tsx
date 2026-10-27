@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { doc, deleteDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
-import { useOfflinePDF, readStoredPdf } from '../hooks/useOfflinePDF';
+import { useOfflinePDF } from '../hooks/useOfflinePDF';
 import { forceDownload, getYoutubeEmbedUrl } from '../lib/utils';
 import { useMCQStatus } from '../hooks/useMCQStatus';
 import { shareFile } from '../lib/shareFile';
@@ -72,6 +72,9 @@ export default React.memo(function LectureCard({
       });
       if (res.message) {
         setShareToast(res.message);
+      } else if (!res.success && !res.cancelled) {
+        const suffix = res.errorCode ? ` (${res.errorCode})` : '';
+        setShareToast(`${isRtl ? 'تعذّر تحميل الملف' : 'Download failed'}${suffix}`);
       }
     } catch (err) {
       console.error('Local export failed:', err);
@@ -84,15 +87,15 @@ export default React.memo(function LectureCard({
   /**
    * Hand the lecture's actual PDF to the OS share sheet.
    *
-   * This replaces a button that posted the lecture into the group chat. Bytes
-   * come from the offline copy when the student has already downloaded it, so
-   * the share works with no connection at all; otherwise they are fetched.
+   * This replaces a button that posted the lecture into the group chat. Native
+   * sharing copies/downloads directly in the Capacitor layer, keeping large
+   * PDFs out of the WebView heap.
    */
   const handleShare = async () => {
     if (isSharing) return;
     setIsSharing(true);
     try {
-      const stored = await readStoredPdf(lecture.pdfUrl, lecture.id).catch(() => null);
+      let errorCode = '';
       const result = await shareFile({
         lectureId: lecture.id,
         url: lecture.pdfUrl,
@@ -102,14 +105,15 @@ export default React.memo(function LectureCard({
         extension: 'pdf',
         mimeType: 'application/pdf',
         title: lecture.title,
-        bytes: stored,
+        onError: code => { errorCode = code; },
       });
       // 'shared' needs no toast - the chooser was the feedback - and neither
       // does 'cancelled', which is the student changing their mind.
       if (result === 'downloaded') {
         setShareToast(isRtl ? 'تم تنزيل الملف' : 'File downloaded');
       } else if (result === 'failed') {
-        setShareToast(isRtl ? 'تعذّرت المشاركة' : 'Could not share');
+        const suffix = errorCode ? ` (${errorCode})` : '';
+        setShareToast(`${isRtl ? 'تعذّرت المشاركة' : 'Could not share'}${suffix}`);
       }
     } finally {
       setIsSharing(false);

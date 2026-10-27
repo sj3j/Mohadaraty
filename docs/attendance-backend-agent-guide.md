@@ -9,7 +9,7 @@
 | Tier | Primary User Role | Navigation Entry Point | Main Frontend Components | Core Backend Integration Points |
 | :--- | :--- | :--- | :--- | :--- |
 | **Tier 1: Management** | Master Admin (`role: 'admin'`) | Settings (`الإعدادات`) → Manage Attendance & Doctors | [`SettingsScreen.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/settings/SettingsScreen.tsx) (Line ~536) | Create Firebase Auth credentials, write to `users` collection with `role: 'doctor'`, `assignedStageId`, and `assignedSubjects`. |
-| **Tier 2: Lecturers** | Doctor / Lecturer (`role: 'doctor'`) | Direct App Launch (Bypasses student shell via [`App.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/App.tsx#L1055)) | [`DoctorPortal.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorPortal.tsx), [`DoctorLiveSessionView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorLiveSessionView.tsx), [`DoctorExcelTimetableView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorExcelTimetableView.tsx), [`DoctorAnalyticsView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorAnalyticsView.tsx), [`SubjectModeModal.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/SubjectModeModal.tsx) | Live hall QR session creation (`POST /api/attendance/sessions`), dynamic rotating QR tokens (~15s), batch updating student attendance cell states (`present`, `absent`, `excused`). |
+| **Tier 2: Lecturers** | Doctor / Lecturer (`role: 'doctor'`) | Direct App Launch (Bypasses student shell via [`App.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/App.tsx#L1055)) | [`DoctorPortal.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorPortal.tsx), [`DoctorLiveSessionView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorLiveSessionView.tsx), [`DoctorExcelTimetableView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorExcelTimetableView.tsx), [`DoctorAnalyticsView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorAnalyticsView.tsx), [`SubjectModeModal.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/SubjectModeModal.tsx) | Device-bound offline authority refreshed automatically while online, static signed QR per session, and queued local session edits/manual attendance. |
 | **Tier 3: Students** | Student (`role: 'student'`) | Services Hub (`الخدمات`) → Attendance (`الحضور`) | [`SimosanPage.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/simosan/SimosanPage.tsx), [`StudentSimosanView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/simosan/StudentSimosanView.tsx), [`QrScannerModal.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/simosan/QrScannerModal.tsx) | Decode live camera QR, offline receipt generation (`LocalAttendanceReceipt` in IndexedDB), sync to `attendance_records`, fetch confirmed weeks timeline with substitution indicators. |
 
 ---
@@ -66,9 +66,12 @@
 ### Three Core Sub-Screens
 1. **Screen 1: Live QR Hall Session & Projector Display** ([`DoctorLiveSessionView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorLiveSessionView.tsx))
    - **Projector View**: Large high-contrast QR display meant to be projected onto hall monitors.
-   - **Dynamic Rotating Tokens**: Backend must generate time-sensitive tokens (~15–30 seconds validity) so students in WhatsApp groups cannot photograph and forward the code to absent peers.
+   - **Static signed QR**: The QR proves which authorised lecturer created a session, but is not claimed to prove a scan time. GPS/device evidence and review remain the anti-abuse controls.
    - **Live Roster Feed**: Real-time counter and attendee ticker showing verified student check-ins as they happen.
-   - **Session Finalization**: Button to close the session, locking it against late scans.
+   - **Session Closure**: Closing stops QR display and queues a durable local close command. A receipt first received after server-recorded closure remains reviewable; the student's clock cannot establish when a QR image was scanned.
+   - **Independent Counts**: The nullable physical hall count is editable during or after the lecture. It is separate from confirmed receipts and is absent from V2 QR claims.
+   - **Offline Preparation**: A device-bound schedule, roster, and seven-day signing permit refresh automatically on login and reconnect. A failed refresh leaves the current valid pack intact. Multiple sessions and their edits remain queued per session.
+   - **Emergency Draft**: Without a valid pack and network connection, only a local manual attendance draft is available. Its lecture and student are matched after reconnect; ambiguous matches require lecturer review.
 
 2. **Screen 2: Excel-Like Master Timetable Spreadsheet** ([`DoctorExcelTimetableView.tsx`](file:///f:/Developing/Mohadaraty/MyLecture/src/components/doctor/DoctorExcelTimetableView.tsx))
    - **Spreadsheet Grid**: Sticky right-to-left column for student names, academic codes, and groups.
@@ -149,8 +152,8 @@
 1. **Hardware / Device Fingerprinting**:
    - Use the device policy defined in `supabase/migrations/20261015073458_attendance_device_policy.sql`.
    - Ensure a single student account cannot be used on multiple devices during the same lecture window to prevent proxy attendance ("تسجيل بديل").
-2. **Rotating QR Anti-Tampering**:
-   - The QR code on the doctor's projector must change every ~15–30 seconds.
-   - Scanned receipts must include the cryptographic rotation hash; stale hashes must be rejected.
+2. **Static QR limitation**:
+   - A static QR is intentionally a convenience trade-off; do not claim that a screenshot can be detected from client timestamps alone.
+   - Use device-bound receipts, the mandatory location gate, and explicit review for suspicious or late evidence.
 3. **Grace Period for Offline Sync**:
    - Allow students who scanned offline up to **36 hours** after the lecture end time to upload their receipt, as per university guidelines.

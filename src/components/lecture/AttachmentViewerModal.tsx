@@ -305,9 +305,7 @@ export default function AttachmentViewerModal({
 
   const isStaff = canManageLectures(user);
 
-  const canDeleteCurrent = Boolean(
-    isStaff || (user && user.uid === current.uploadedBy)
-  );
+  const canDeleteCurrent = Boolean(isStaff);
 
   const formattedDate = (() => {
     try {

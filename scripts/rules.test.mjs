@@ -52,6 +52,11 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'app_settings/academicCalendar'), {
     yearLabel: '2026-2027', timezone: 'Asia/Baghdad', terms: [],
   });
+  await setDoc(doc(db, 'app_settings/mobileReleasePolicy'), {
+    enforcementEnabled: false,
+    android: { enabled: false, minBuild: 22, storeUrl: 'https://play.google.com/store/apps/details?id=com.mohadaraty.app' },
+    ios: { enabled: false, minBuild: 32, storeUrl: 'https://apps.apple.com/iq/app/id6814124686' },
+  });
 
   // A stage representative for stage_3.
   await setDoc(doc(db, 'users/rep_uid'), {
@@ -669,6 +674,16 @@ await check('student CANNOT write the academic calendar',
   assertFails(setDoc(doc(student, 'app_settings/academicCalendar'), { yearLabel: 'hacked', terms: [] })));
 await check('student CAN read the academic calendar',
   assertSucceeds(getDoc(doc(student, 'app_settings/academicCalendar'))));
+await check('student CAN read the mobile release policy',
+  assertSucceeds(getDoc(doc(student, 'app_settings/mobileReleasePolicy'))));
+await check('representative CANNOT change the mobile release policy',
+  assertFails(updateDoc(doc(rep, 'app_settings/mobileReleasePolicy'), { enforcementEnabled: true })));
+await check('moderator CANNOT change the mobile release policy',
+  assertFails(updateDoc(doc(mod, 'app_settings/mobileReleasePolicy'), { enforcementEnabled: true })));
+await check('student CANNOT change the mobile release policy',
+  assertFails(updateDoc(doc(student, 'app_settings/mobileReleasePolicy'), { enforcementEnabled: true })));
+await check('master admin CAN change the mobile release policy',
+  assertSucceeds(updateDoc(doc(master, 'app_settings/mobileReleasePolicy'), { enforcementEnabled: true })));
 await check('representative CANNOT write system-wide streak settings',
   assertFails(setDoc(doc(rep, 'app_settings/streak'), { gracePeriodHours: 3 }, { merge: true })));
 
@@ -1628,8 +1643,8 @@ await check('representative CAN approve an attachment',
 await check('student CANNOT approve an attachment',
   assertFails(updateDoc(doc(student, 'lecture_attachments/att_pending_stu'), { status: 'approved' })));
 
-await check('student CAN delete their own attachment',
-  assertSucceeds(deleteDoc(doc(student, 'lecture_attachments/att_new'))));
+await check('student CANNOT delete an attachment',
+  assertFails(deleteDoc(doc(student, 'lecture_attachments/att_new'))));
 
 await check('student CANNOT delete someone else attachment',
   assertFails(deleteDoc(doc(student, 'lecture_attachments/att_pending_other'))));

@@ -70,7 +70,9 @@ import { usePushNotifications } from './hooks/usePushNotifications';
 import { type UserFile, getUserFileBlob } from './lib/localDb';
 import { syncPendingSubmissions } from './services/mcqAnswerService';
 import { apiUrl } from './lib/apiBase';
-import { startAttendanceSync } from './services/attendanceService';
+import { ensureOfflineAttendancePrepared, startAttendanceSync } from './services/attendanceService';
+import { useMobileReleaseGate } from './hooks/useMobileReleaseGate';
+import ForceUpdateScreen from './components/ForceUpdateScreen';
 
 type SortField = 'title' | 'date' | 'number';
 type SortOrder = 'asc' | 'desc';
@@ -122,6 +124,7 @@ export default function App() {
     return wasSignedIn ? getCachedUserProfile() : null;
   });
   const [authenticatedUid, setAuthenticatedUid] = useState<string | null>(null);
+  const mobileReleaseGate = useMobileReleaseGate(user?.role, authenticatedUid);
   const authGenerationRef = useRef(0);
   const streakActivitySingleFlight = useMemo(createSingleFlight, []);
 
@@ -186,6 +189,16 @@ export default function App() {
     if (!user?.uid) return;
     return startAttendanceSync(user.uid);
   }, [user?.uid]);
+  useEffect(() => {
+    const doctorStageId = user?.assignedStageId || user?.stageId;
+    if (user?.role !== 'doctor' || !doctorStageId) return;
+    const prepare = () => { void ensureOfflineAttendancePrepared(doctorStageId, user.uid).catch(() => undefined); };
+    const reconnect = () => { void ensureOfflineAttendancePrepared(doctorStageId, user.uid, true).catch(() => undefined); };
+    prepare();
+    window.addEventListener('online', reconnect);
+    window.addEventListener('focus', prepare);
+    return () => { window.removeEventListener('online', reconnect); window.removeEventListener('focus', prepare); };
+  }, [user?.uid, user?.role, user?.assignedStageId, user?.stageId]);
   const [showUpload, setShowUpload] = useState(false);
   const [lectureToEdit, setLectureToEdit] = useState<Lecture | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -601,7 +614,10 @@ export default function App() {
               mustChangePassword: studentData?.mustChangePassword === true,
               googleEmail: studentData?.googleEmail || undefined,
               examCodePromptSnoozedUntil: userDoc.data().examCodePromptSnoozedUntil || undefined,
-              group: userDoc.data().group || undefined,
+              // Older user documents can lack `group` even when the canonical
+              // roster record has `subgroup`. Preserve that entitlement while
+              // the profile is being repaired rather than suppressing lectures.
+              group: userDoc.data().group || studentData?.subgroup || undefined,
               favorites: userDoc.data().favorites || [],
               studied: userDoc.data().studied || [],
               completedWeeklyTasks: userDoc.data().completedWeeklyTasks || [],
@@ -656,6 +672,7 @@ export default function App() {
               isMasterAdmin,
               photoUrl: firebaseUser.photoURL || undefined,
               examCode: studentData?.examCode || undefined,
+              group: studentData?.subgroup || undefined,
               mustChangePassword: studentData?.mustChangePassword === true,
               googleEmail: studentData?.googleEmail || undefined,
               favorites: [],
@@ -693,6 +710,7 @@ export default function App() {
             isMasterAdmin,
             photoUrl: firebaseUser.photoURL || undefined,
             examCode: studentData?.examCode || undefined,
+            group: studentData?.subgroup || undefined,
             mustChangePassword: studentData?.mustChangePassword === true,
             googleEmail: studentData?.googleEmail || undefined,
             favorites: [],
@@ -923,7 +941,7 @@ export default function App() {
 
   // Announcements Listener for Notifications
   useEffect(() => {
-    if (!user || (!user.group && user.role === 'student')) return;
+    if (!user) return;
     if (!effectiveStageId) return;
 
     const q = query(collection(db, 'announcements'), where('stageId', '==', effectiveStageId), orderBy('createdAt', 'desc'), limit(1));
@@ -964,10 +982,12 @@ export default function App() {
       authenticatedUid,
       isAuthReady,
       effectiveStageId,
-      canBrowseLectures: Boolean(user && (user.group || user.role !== 'student')),
+      // Stage entitlement is authoritative. Legacy accounts may legitimately
+      // have no users.group while still carrying a valid users/students stage.
+      canBrowseLectures: Boolean(user),
     });
 
-    if (!user || (!user.group && user.role === 'student')) {
+    if (!user) {
       setLectures([]);
       setIsLoading(false);
       setLectureLoadState(decision.state);
@@ -1038,7 +1058,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user?.uid, user?.group, user?.role, effectiveStageId, authenticatedUid, isAuthReady, lectureRetry]);
+  }, [user?.uid, user?.role, effectiveStageId, authenticatedUid, isAuthReady, lectureRetry]);
 
   const retryLectures = useCallback(() => setLectureRetry(value => value + 1), []);
 
@@ -1133,6 +1153,10 @@ export default function App() {
     return <LoginScreen lang={lang} externalError={loginError} onClearError={() => setLoginError(null)} />;
   }
 
+  if (user.role === 'student' && mobileReleaseGate.required) {
+    return <ForceUpdateScreen gate={mobileReleaseGate} lang={lang} />;
+  }
+
   // Dedicated Doctor Portal Pathway:
   // When a doctor logs in (role === 'doctor'), all standard app screens, bottom tabs,
   // and student navigation are dropped to provide a focused attendance interface.
@@ -1182,7 +1206,9 @@ export default function App() {
     return <PasswordChangeGate lang={lang} onDone={() => setPasswordChanged(true)} />;
   }
 
-  if (!user.group && user.role === 'student') {
+  // A legacy account can legitimately be stage-assigned before its old group
+  // field is backfilled. Stage access is sufficient to enter the content UI.
+  if (!user.group && !user.stageId && user.role === 'student') {
     return <OnboardingScreen user={user} lang={lang} />;
   }
 

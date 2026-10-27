@@ -64,7 +64,9 @@ function verifyOfflinePermit(token: string): AttendanceOfflinePermitClaims {
   const header = jwt.decode(token, { complete: true })?.header;
   const key = header?.kid ? qrKeyConfig().publicKeys[header.kid] : undefined;
   if (!key) throw new Error('unknown_qr_key');
-  try { return jwt.verify(token, key, { algorithms: ['ES256'] }) as AttendanceOfflinePermitClaims; }
+  // A QR issued during the permit window may be uploaded after the permit expires.
+  // The server-side grant and dated occurrence are checked during import.
+  try { return jwt.verify(token, key, { algorithms: ['ES256'], ignoreExpiration: true }) as AttendanceOfflinePermitClaims; }
   catch { throw new Error('invalid_offline_permit'); }
 }
 
@@ -84,7 +86,7 @@ export function verifyAttendanceQr(token: string): AttendanceQrClaims {
   } catch {
     throw new Error('invalid_qr');
   }
-  if (claims.v !== ATTENDANCE_QR_VERSION || claims.typ !== 'simosan-attendance') throw new Error('invalid_qr');
+  if ((claims.v !== 1 && claims.v !== ATTENDANCE_QR_VERSION) || claims.typ !== 'simosan-attendance') throw new Error('invalid_qr');
   if (![claims.sessionId, claims.challengeId, claims.occurrenceId, claims.stageId, claims.lectureDate, claims.title, claims.startTime, claims.endTime]
     .every(value => typeof value === 'string' && value.length > 0 && value.length <= 512)) {
     throw new Error('invalid_qr');
@@ -377,7 +379,7 @@ function sessionFromRows(row: any, occurrence: any): AttendanceSessionView {
   return {
     id: row.id,
     occurrenceId: row.occurrence_id,
-    expectedHeadcount: row.expected_headcount,
+    physicalHeadcount: row.physical_headcount ?? null,
     notes: row.notes || '',
     status: row.status,
     createdAt: row.created_at,
@@ -432,17 +434,23 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const sessionRows = await attendanceRowsByIds(supabase, 'attendance_sessions', 'occurrence_id', authorized.map(item => item.id));
       const byId = new Map(history.rows.map(item => [item.id, item]));
       const records: any[] = [];
+      const reviewCounts: Record<string, number> = {};
       for (let offset = 0; offset < sessionRows.length; offset += 20) {
         const ids = sessionRows.slice(offset, offset + 20).map(row => row.id);
-        const page = await boundedAttendanceRows(() => supabase.from('attendance_records').select('*').in('session_id', ids).order('id'), 20000);
-        if (!page.complete) throw new Error('attendance_history_too_long');
-        records.push(...page.rows);
+        const [recordPage, reviewPage] = await Promise.all([
+          boundedAttendanceRows(() => supabase.from('attendance_records').select('*').in('session_id', ids).order('id'), 20000),
+          boundedAttendanceRows(() => supabase.from('attendance_receipts').select('session_id,request_id').in('session_id', ids).eq('resolution', 'needs_review').order('session_id').order('request_id'), 20000),
+        ]);
+        if (!recordPage.complete || !reviewPage.complete) throw new Error('attendance_history_too_long');
+        records.push(...recordPage.rows);
+        for (const row of reviewPage.rows) reviewCounts[row.session_id] = (reviewCounts[row.session_id] || 0) + 1;
       }
       res.json({ stageId, subjects,
         roster: await officialRoster(admin, stageId, occurrences[0]),
         bootstrap: { serverNow: new Date().toISOString(), timezone: ATTENDANCE_TIMEZONE, stageId, term: termPayload(ctx.calendar, ctx.term), occurrences, canManage: true },
         sessions: sessionRows.map(row => sessionFromRows(row, byId.get(row.occurrence_id)!)),
         records: records.map(recordFromRow),
+        reviewCounts,
       });
     } catch (error: any) {
       if (error?.status === 403) return res.status(403).json({ error: error.message });
@@ -460,16 +468,18 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const occurrences = buildAttendanceOccurrences(ctx.calendar, timetable, stageId, ctx.today, 1, 52).filter(item => canManageOccurrence(actor, item));
       if (!occurrences.length || occurrences.length > 5000) throw new Error('invalid_offline_schedule');
       const id = requestId();
-      const permit = signServerCredential({ typ: 'simosan-offline-permit', id, professorUid: actor.uid, stageId, publicKey });
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const permit = signServerCredential({ typ: 'simosan-offline-permit', id, professorUid: actor.uid, stageId, publicKey, exp: Math.floor(expiresAt.getTime() / 1000) });
       const roster = await officialRoster(admin, stageId, occurrences[0]);
       const term = termPayload(ctx.calendar, ctx.term)!;
       const { error } = await supabaseOrThrow().from('attendance_offline_grants').insert({
         id, professor_uid: actor.uid, stage_id: stageId, token_hash: sha256(permit), term,
+        expires_at: expiresAt.toISOString(),
         occurrences: Object.fromEntries(occurrences.map(item => [item.id, item])), roster,
         session_ids: Object.fromEntries(occurrences.map(item => [item.id, attendanceSessionId(item.id)])),
       });
       if (error) throw error;
-      res.json({ ownerUid: actor.uid, permit, roster, sessions: Object.fromEntries(occurrences.map(item => [item.id, attendanceSessionId(item.id)])), bootstrap: {
+      res.json({ ownerUid: actor.uid, permit, roster, expiresAt: expiresAt.toISOString(), sessions: Object.fromEntries(occurrences.map(item => [item.id, attendanceSessionId(item.id)])), bootstrap: {
         serverNow: new Date().toISOString(), timezone: ATTENDANCE_TIMEZONE, stageId, term, occurrences, canManage: true,
       } });
     } catch (error: any) {
@@ -489,11 +499,12 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
     if (!pack || pack.revoked_at || pack.token_hash !== sha256(credential) || pack.professor_uid !== permit.professorUid) throw new Error('invalid_offline_permit');
     const occurrence = pack.occurrences[claims.occurrenceId] as AttendanceOccurrenceCandidate | undefined;
     if (!occurrence || ['stageId', 'lectureDate', 'title', 'startTime', 'endTime'].some(field => (occurrence as any)[field] !== (claims as any)[field])) throw new Error('invalid_offline_occurrence');
+    if (pack.expires_at && Date.parse(occurrence.startAt) > Date.parse(pack.expires_at)) throw new Error('offline_permit_expired');
     const lecturer = await actorFor(admin, { user: { uid: permit.professorUid } });
     if (!canManageOccurrence(lecturer, occurrence)) throw new Error('offline_authority_unavailable');
     const result = await supabase.rpc('attendance_import_offline_session', {
       p_grant_id: permit.id, p_grant_hash: sha256(credential), p_occurrence_id: occurrence.id,
-      p_session_id: claims.sessionId, p_challenge_id: claims.challengeId, p_qr_token: qrToken, p_token_hash: sha256(qrToken), p_headcount: claims.expectedHeadcount,
+      p_session_id: claims.sessionId, p_challenge_id: claims.challengeId, p_qr_token: qrToken, p_token_hash: sha256(qrToken), p_headcount: claims.v === 1 ? claims.expectedHeadcount : 1,
     });
     if (result.error) throw result.error;
     return { claims, result: result.data };
@@ -542,9 +553,9 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
         .find(item => item.id === req.body?.occurrenceId);
       if (!occurrence) return res.status(400).json({ error: 'invalid_occurrence' });
       if (!canManageOccurrence(actor, occurrence)) return res.status(403).json({ error: 'manage_attendance_forbidden' });
-      const expectedHeadcount = Number(req.body?.expectedHeadcount);
+      const physicalHeadcount = req.body?.physicalHeadcount == null ? null : Number(req.body.physicalHeadcount);
       const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : '';
-      if (!Number.isInteger(expectedHeadcount) || expectedHeadcount < 1 || expectedHeadcount > 10000) {
+      if (physicalHeadcount != null && (!Number.isInteger(physicalHeadcount) || physicalHeadcount < 0 || physicalHeadcount > 10000)) {
         return res.status(400).json({ error: 'invalid_headcount' });
       }
       if (notes.length > 2000) return res.status(400).json({ error: 'notes_too_long' });
@@ -570,14 +581,14 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       scheduledEnd.setUTCHours(scheduledEnd.getUTCHours() + ATTENDANCE_RECONCILIATION_HOURS);
       const term = termPayload(ctx.calendar, ctx.term)!;
       const { keyId } = qrKeyConfig();
-      const { data, error } = await supabaseOrThrow().rpc('attendance_create_session', {
+      const { data, error } = await supabaseOrThrow().rpc('attendance_create_session_v2', {
         p_term: term,
         p_occurrence: occurrence,
         p_session: {
           id: sessionId,
           requestId: creationRequestId,
           professorUid: actor.uid,
-          expectedHeadcount,
+          physicalHeadcount,
           notes,
           reconciliationDeadline: scheduledEnd.toISOString(),
         },
@@ -757,7 +768,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
           confirmed,
           voided: mappedRecords.filter(record => record.status === 'voided').length,
           review: (review || []).length,
-          discrepancy: Math.max(0, confirmed - loaded.session.expected_headcount),
+          discrepancy: loaded.session.physical_headcount == null ? 0 : Math.max(0, confirmed - loaded.session.physical_headcount),
         },
       });
     } catch (error: any) {
@@ -766,21 +777,38 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
     }
   }
 
+  async function sessionQr(req: any, res: any) {
+    try {
+      const loaded = await loadSessionAuthorized(admin, req, req.params.sessionId);
+      if (loaded.session.status !== 'active') return res.status(409).json({ error: 'session_not_active' });
+      const { data, error } = await loaded.supabase.from('attendance_challenges')
+        .select('qr_token').eq('session_id', loaded.session.id).is('revoked_at', null)
+        .order('issued_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      if (!data?.qr_token) return res.status(404).json({ error: 'attendance_qr_missing' });
+      return res.json({ qrToken: data.qr_token });
+    } catch (error: any) {
+      if (error?.status === 403) return res.status(403).json({ error: error.message });
+      return attendanceError(res, error, 'session qr');
+    }
+  }
+
   async function updateSession(req: any, res: any) {
     try {
       const loaded = await loadSessionAuthorized(admin, req, req.params.sessionId);
       const expectedRevision = Number(req.body?.expectedRevision);
       if (!Number.isInteger(expectedRevision)) return res.status(400).json({ error: 'invalid_revision' });
-      const expectedHeadcount = req.body?.expectedHeadcount == null ? null : Number(req.body.expectedHeadcount);
+      const physicalHeadcount = req.body?.physicalHeadcount == null ? null : Number(req.body.physicalHeadcount);
       const notes = req.body?.notes == null ? null : String(req.body.notes);
       const nextStatus = req.body?.status == null ? null : String(req.body.status);
       const reason = assertReason(req.body?.reason, nextStatus != null);
-      const { data, error } = await loaded.supabase.rpc('attendance_update_session', {
+      const { data, error } = await loaded.supabase.rpc('attendance_update_session_v2', {
         p_request_id: typeof req.body?.requestId === 'string' ? req.body.requestId : requestId(),
         p_session_id: loaded.session.id,
         p_actor_uid: loaded.actor.uid,
         p_expected_revision: expectedRevision,
-        p_expected_headcount: expectedHeadcount,
+        p_physical_headcount: physicalHeadcount,
+        p_physical_headcount_set: Object.prototype.hasOwnProperty.call(req.body || {}, 'physicalHeadcount'),
         p_notes: notes,
         p_next_status: nextStatus,
         p_reason: reason,
@@ -933,6 +961,7 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
     syncReceipts,
     mine,
     sessionSnapshot,
+    sessionQr,
     updateSession,
     manualRecord,
     voidRecord: (req: any, res: any) => setRecordStatus(req, res, 'voided'),

@@ -116,6 +116,9 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
     && !!sourceTransferStage && !!destinationTransferStage
     && destinationTransferStage.order > sourceTransferStage.order;
   const hasRealStageList = !isLoadingStages && stagesError === null && stages.length > 0;
+  const creationStageIsValid = hasRealStageList && Boolean(
+    effectiveStageId && stages.some(stage => stage.id === effectiveStageId),
+  );
 
   useEffect(() => {
     if (!canPreserveTahmeel && transferTahmeelHandling === 'preserve') {
@@ -623,6 +626,11 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
     setSuccess(null);
 
     try {
+      if (!creationStageIsValid) {
+        throw new Error(isRtl
+          ? 'تعذّر تحديد مرحلة دراسية صحيحة. أعد تحميل المراحل قبل إضافة الطالب.'
+          : 'A valid stage is required. Reload the stages before adding a student.');
+      }
       const emailLower = email.toLowerCase();
 
       // Checked against the loaded roster rather than with a getDoc. The
@@ -1536,6 +1544,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                     lang={lang}
                     students={students}
                     effectiveStageId={effectiveStageId}
+                    creationStageIsValid={creationStageIsValid}
                     groupConfig={groupConfig}
                     onImported={fetchStudents}
                   />

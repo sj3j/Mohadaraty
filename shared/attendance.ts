@@ -4,7 +4,8 @@ import type { AttendanceAdvisory, AttendanceTelemetry } from './attendanceSecuri
 
 export const ATTENDANCE_TIMEZONE = 'Asia/Baghdad';
 export const ATTENDANCE_RECONCILIATION_HOURS = 36;
-export const ATTENDANCE_QR_VERSION = 1;
+/** V2 removes the hall count from the signed QR payload. */
+export const ATTENDANCE_QR_VERSION = 2;
 
 export type AttendanceSessionStatus = 'active' | 'ended' | 'finalized' | 'cancelled';
 export type AttendanceRecordStatus = 'confirmed' | 'voided';
@@ -33,7 +34,7 @@ export interface AttendanceOccurrenceCandidate {
 }
 
 export interface AttendanceQrClaims {
-  v: 1;
+  v: 1 | 2;
   typ: 'simosan-attendance';
   sessionId: string;
   challengeId: string;
@@ -43,6 +44,7 @@ export interface AttendanceQrClaims {
   title: string;
   startTime: string;
   endTime: string;
+  /** Present only on legacy V1 offline QR codes. */
   expectedHeadcount?: number;
 }
 
@@ -52,6 +54,8 @@ export interface AttendanceOfflinePermitClaims {
   professorUid: string;
   stageId: string;
   publicKey: JsonWebKey;
+  exp?: number;
+  iat?: number;
 }
 
 export interface AttendanceOfflinePack {
@@ -60,6 +64,8 @@ export interface AttendanceOfflinePack {
   bootstrap: AttendanceBootstrap;
   roster: AttendanceRosterEntry[];
   sessions: Record<string, string>;
+  /** Server-issued expiry for the device-bound offline authority. */
+  expiresAt: string;
 }
 
 export interface LocalAttendanceReceipt {
@@ -110,7 +116,8 @@ export interface AttendanceRecordView {
 export interface AttendanceSessionView {
   id: string;
   occurrenceId: string;
-  expectedHeadcount: number;
+  /** Actual people observed in the hall; deliberately independent of QR scans. */
+  physicalHeadcount: number | null;
   notes: string;
   status: AttendanceSessionStatus;
   createdAt: string;
@@ -162,6 +169,7 @@ export interface AttendanceDoctorWorkspace {
   roster: AttendanceRosterEntry[];
   sessions: AttendanceSessionView[];
   records: AttendanceRecordView[];
+  reviewCounts?: Record<string, number>;
 }
 
 export interface AttendanceMine {
@@ -308,7 +316,7 @@ export function parseUnverifiedAttendanceQr(raw: string): AttendanceQrClaims | n
       ? decodeURIComponent(Array.from(atob(padded), char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''))
       : Buffer.from(padded, 'base64').toString('utf8');
     const claims = JSON.parse(json) as Partial<AttendanceQrClaims>;
-    if (claims.v !== ATTENDANCE_QR_VERSION || claims.typ !== 'simosan-attendance') return null;
+    if ((claims.v !== 1 && claims.v !== ATTENDANCE_QR_VERSION) || claims.typ !== 'simosan-attendance') return null;
     if (![claims.sessionId, claims.challengeId, claims.occurrenceId, claims.stageId, claims.lectureDate, claims.title, claims.startTime, claims.endTime]
       .every(value => typeof value === 'string' && value.length > 0 && value.length <= 512)) return null;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(claims.lectureDate!) || !/^\d{2}:\d{2}$/.test(claims.startTime!) || !/^\d{2}:\d{2}$/.test(claims.endTime!)) return null;

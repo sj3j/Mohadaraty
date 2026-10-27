@@ -56,6 +56,10 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>يحتاج التطبيق للوصول إلى الكاميرا لالتقاط صورة الملف الشخصي أو تصوير المستندات الدراسية.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

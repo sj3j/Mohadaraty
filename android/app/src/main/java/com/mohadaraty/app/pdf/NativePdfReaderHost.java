@@ -25,7 +25,7 @@ public class NativePdfReaderHost extends FrameLayout {
     public NativePdfReaderHost(Context context, PDFView pdfView) {
         super(context);
         this.pdfView = pdfView;
-        this.inkOverlayView = new PdfInkOverlayView(context);
+        this.inkOverlayView = new PdfInkOverlayView(context, pdfView);
         this.gestureCoordinator = new NativeGestureCoordinator(pdfView, inkOverlayView);
 
         LayoutParams layoutParams = new LayoutParams(
@@ -57,6 +57,14 @@ public class NativePdfReaderHost extends FrameLayout {
             boolean fingerDrawing,
             boolean nativeInkV2Active
     ) {
+        boolean interactionChanged = this.isAnnotationMode != isAnnotationMode
+                || !this.activeTool.equals(activeTool);
+        if (interactionChanged) {
+            // A mode/tool switch must never commit the half-finished stroke using
+            // the newly selected tool. The WebView router defers state changes
+            // during a stream, but this also covers direct/native transitions.
+            inkOverlayView.cancelActiveStroke();
+        }
         this.isAnnotationMode = isAnnotationMode;
         this.activeTool = activeTool;
         this.fingerDrawing = fingerDrawing;
@@ -66,12 +74,15 @@ public class NativePdfReaderHost extends FrameLayout {
         inkOverlayView.setActiveColor(activeColor);
         inkOverlayView.setActiveWidth(activeWidth);
 
-        // Visibility / interaction optimization:
-        if (!nativeInkV2Active || (!isAnnotationMode && !"hand".equals(activeTool))) {
-            inkOverlayView.setVisibility(VISIBLE);
-        } else {
-            inkOverlayView.setVisibility(VISIBLE);
-        }
+        // The overlay is the top child in this FrameLayout. Leaving it visible
+        // outside an active ink tool makes the legacy ViewGroup dispatcher hand
+        // every ACTION_DOWN to it and prevents PDFView from scrolling.
+        boolean isInkTool = "pencil".equals(activeTool)
+                || "free_highlighter".equals(activeTool)
+                || "eraser".equals(activeTool);
+        boolean shouldReceiveInk = nativeInkV2Active && isAnnotationMode && isInkTool;
+        inkOverlayView.setInteractive(shouldReceiveInk);
+        inkOverlayView.setVisibility(shouldReceiveInk ? VISIBLE : GONE);
     }
 
     public void onPageChanged(int page) {

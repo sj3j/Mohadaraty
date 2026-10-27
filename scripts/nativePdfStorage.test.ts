@@ -47,6 +47,7 @@ function check(name: string, ok: boolean, detail = '') {
 // In-memory mock for @capacitor/filesystem and @capacitor/file-transfer
 const mockFiles: Record<string, Uint8Array> = {};
 let failNextManifestWrite = false;
+let failNextManifestRename = false;
 
 function bytesToBase64(bytes: Uint8Array): string {
   return arrayBufferToBase64(bytes.slice().buffer);
@@ -81,6 +82,13 @@ const mockFilesystem = {
   rename: async (opts: { from: string; to: string }) => {
     const bytes = mockFiles[opts.from];
     if (bytes === undefined) throw new Error('Source file not found');
+    if (failNextManifestRename && opts.to === 'offline_manifest.json') {
+      failNextManifestRename = false;
+      // Match the iOS plugin's replacement behavior: it can remove the old
+      // destination before the move fails.
+      delete mockFiles[opts.to];
+      throw new Error('Manifest replacement interrupted');
+    }
     mockFiles[opts.to] = bytes.slice();
     delete mockFiles[opts.from];
   },
@@ -148,6 +156,15 @@ console.log('\n--- 2. Staging & Atomic Publication Flow ---');
 const emptyManifest = await loadNativeManifest();
 check('loadNativeManifest returns empty record initially', Object.keys(emptyManifest).length === 0);
 
+await saveNativeManifest({ previous: { id: 'previous', title: 'Previous', pdfUrl: 'https://example.com/previous.pdf', savedAt: 1 } });
+failNextManifestRename = true;
+try {
+  await saveNativeManifest({ replacement: { id: 'replacement', title: 'Replacement', pdfUrl: 'https://example.com/replacement.pdf', savedAt: 2 } });
+} catch {
+  // Expected: the temporary replacement failed after preserving the backup.
+}
+check('Manifest backup survives an interrupted replacement', (await loadNativeManifest()).previous?.title === 'Previous');
+
 // Test failed download (network failure)
 const failedLecture: Omit<OfflineLecture, 'savedAt'> = {
   id: 'lec_fail_1',
@@ -189,6 +206,7 @@ check('Staging file is removed after atomic publish', Object.keys(mockFiles).eve
 const manifest = await loadNativeManifest();
 check('Manifest contains published lecture entry', manifest['lec_success_1']?.title === 'علم الأدوية');
 check('isNativeLectureDownloaded reports true for published lecture', await isNativeLectureDownloaded('lec_success_1'));
+check('isNativeLectureDownloaded rejects a stale URL for the same lecture ID', !(await isNativeLectureDownloaded('lec_success_1', 'https://storage.example.com/replaced.pdf')));
 check('isNativeLectureDownloaded reports false for non-existent lecture', !(await isNativeLectureDownloaded('non_existent')));
 
 // Verify reading bytes
@@ -201,6 +219,9 @@ console.log('\n--- 3. Native Sharing Preparation (Zero FileReader) ---');
 const shareUriDownloaded = await getNativeShareUri('lec_success_1', 'pharmacology_lec3.pdf', 'https://storage.example.com/pharmacology.pdf');
 check('getNativeShareUri returns file:// URI for downloaded lecture', shareUriDownloaded.startsWith('file:///'));
 check('File is copied into shared cache', !!mockFiles['shared/pharmacology_lec3.pdf']);
+
+const staleShareUri = await getNativeShareUri('lec_success_1', 'replaced_lecture.pdf', 'https://storage.example.com/replaced.pdf');
+check('getNativeShareUri downloads the replacement instead of sharing a stale local PDF', staleShareUri.endsWith('shared/replaced_lecture.pdf'));
 
 // Share non-downloaded lecture (downloads directly to cache via native transfer)
 const shareUriRemote = await getNativeShareUri(undefined, 'remote_lecture.pdf', 'https://storage.example.com/remote.pdf');

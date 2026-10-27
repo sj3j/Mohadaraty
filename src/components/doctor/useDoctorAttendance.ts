@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AttendanceDoctorWorkspace, AttendanceSessionSnapshot, AttendanceRecordView } from '../../../shared/attendance';
 import { parseUnverifiedAttendanceQr } from '../../../shared/attendance';
 import {
-  getDoctorAttendanceWorkspace, getAttendanceSessionSnapshot, getOfflineAttendancePack,
-  prepareOfflineAttendance, createAttendanceSession, createOfflineAttendanceSession,
+  getDoctorAttendanceWorkspace, getAttendanceSessionSnapshot, getAttendanceSessionQr,
+  ensureOfflineAttendancePrepared, createAttendanceSession, createOfflineAttendanceSession,
   updateAttendanceSession, markAttendanceManually, setAttendanceRecordStatus,
   listDoctorAttendanceCommands, subscribeAttendanceChanges, resolveAttendanceReview,
   type DoctorAttendanceCommand,
@@ -18,6 +18,7 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   const [occurrenceId, selectOccurrence] = useState('');
   const [qrToken, setQrToken] = useState('');
   const [offlineReady, setOfflineReady] = useState(false);
+  const [offlineOccurrenceIds, setOfflineOccurrenceIds] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const active = useRef(true);
@@ -51,6 +52,11 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
         ? 'تعذر إتمام طلب الحضور. يرجى المحاولة مرة أخرى.'
         : 'The attendance request failed. Please try again.';
     }
+    if (code === 'offline_setup_required') {
+      return isRtl
+        ? 'هذه المحاضرة غير مجهزة على الجهاز أو انتهى تصريح الأوفلاين. اتصل بالإنترنت أو احفظ مسودة حضور يدوية للطوارئ.'
+        : 'This lecture is not prepared on this device or its offline permit has expired. Connect or save an emergency manual draft.';
+    }
     if (code === 'Failed to fetch' || code.includes('NetworkError') || code === 'network_error' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
       return isRtl
         ? 'تعذر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت أو استخدام الحزمة غير المتصلة.'
@@ -60,10 +66,17 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   };
   const refresh = useCallback(async () => {
     const result = await getDoctorAttendanceWorkspace(ownerUid, stageId);
-    const pack = await getOfflineAttendancePack(ownerUid, result.stageId);
+    const pack = await ensureOfflineAttendancePrepared(result.stageId, ownerUid);
+    const savedCommands = await listDoctorAttendanceCommands(ownerUid);
+    const savedSessions = await Promise.all(savedCommands.filter(command => command.kind === 'import').map(command =>
+      getAttendanceSessionSnapshot(command.sessionId, ownerUid).then(data => data.session).catch(() => null)));
+    const sessions = [...result.sessions];
+    for (const session of savedSessions) if (session && !sessions.some(item => item.id === session.id)) sessions.push(session);
     if (!active.current) return;
-    setWorkspace(result);
+    setWorkspace({ ...result, sessions });
+    setCommands(savedCommands);
     setOfflineReady(!!pack);
+    setOfflineOccurrenceIds(pack?.bootstrap.occurrences.map(item => item.id) || []);
     setError('');
   }, [ownerUid, stageId]);
   useEffect(() => {
@@ -74,6 +87,11 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     const unsubscribe = subscribeAttendanceChanges(reloadCommands);
     return () => { active.current = false; unsubscribe(); };
   }, [ownerUid, refresh]);
+  useEffect(() => {
+    const online = () => { void refresh().catch(failure => setError(errorMessage(failure))); };
+    window.addEventListener('online', online);
+    return () => window.removeEventListener('online', online);
+  }, [refresh]);
   const selectedSession = workspace?.sessions.find(session => session.occurrenceId === occurrenceId);
   const importedSessionId = commands.find(command => command.kind === 'import' && parseUnverifiedAttendanceQr(String(command.input.qrToken || ''))?.occurrenceId === occurrenceId)?.sessionId;
   const sessionId = selectedSession?.id || importedSessionId;
@@ -87,7 +105,12 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
       fetching = true;
       try {
         const data = await getAttendanceSessionSnapshot(sessionId, ownerUid);
-        if (live) setSnapshot(data);
+        if (live) {
+          setSnapshot(data);
+          if (data.session.status === 'active') {
+            void getAttendanceSessionQr(sessionId, ownerUid).then(token => { if (live) setQrToken(token); }).catch(() => undefined);
+          } else setQrToken('');
+        }
       } catch (failure) { if (live) setError(errorMessage(failure)); }
       finally { fetching = false; }
     };
@@ -105,16 +128,11 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     catch (failure) { setError(errorMessage(failure)); }
     finally { setBusy(false); actionRunning.current = false; }
   };
-  const prepare = () => run(async () => {
-    if (!workspace) return;
-    await prepareOfflineAttendance(workspace.stageId, ownerUid);
-    setOfflineReady(true);
-  });
-  const start = (expectedHeadcount: number) => run(async () => {
+  const start = (physicalHeadcount: number | null = null) => run(async () => {
     if (!workspace || !occurrenceId) throw new Error('select_lecture');
-    if (!Number.isInteger(expectedHeadcount) || expectedHeadcount < 1) throw new Error('invalid_headcount');
-    const input = { stageId: workspace.stageId, occurrenceId, expectedHeadcount };
-    const result = offlineReady
+    if (physicalHeadcount != null && (!Number.isInteger(physicalHeadcount) || physicalHeadcount < 0 || physicalHeadcount > 10000)) throw new Error('invalid_headcount');
+    const input = { stageId: workspace.stageId, occurrenceId, physicalHeadcount };
+    const result = workspace.offline || (offlineReady && offlineOccurrenceIds.includes(occurrenceId))
       ? await createOfflineAttendanceSession(input, ownerUid)
       : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
     const data = await getAttendanceSessionSnapshot(result.sessionId, ownerUid);
@@ -127,8 +145,15 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   const saveSession = (patch: Record<string, unknown>) => run(async () => {
     if (!snapshot) throw new Error('select_active_session');
     await updateAttendanceSession(snapshot.session.id, { ...patch, requestId: secureRequestId(), expectedRevision: snapshot.session.revision }, ownerUid);
-    setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
+    const updated = await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid);
+    setSnapshot(updated);
+    setWorkspace(current => current ? { ...current, sessions: current.sessions.map(session => session.id === updated.session.id ? updated.session : session) } : current);
     if (patch.status === 'ended') setQrToken('');
+  });
+  const refreshQr = () => run(async () => {
+    if (!sessionId) throw new Error('select_active_session');
+    const token = await getAttendanceSessionQr(sessionId, ownerUid);
+    setQrToken(token);
   });
   const records = [...(workspace?.records || []).filter(record => record.sessionId !== snapshot?.session.id), ...(snapshot?.records || [])];
   const sessions = [...(workspace?.sessions || []).filter(session => session.id !== snapshot?.session.id), ...(snapshot ? [snapshot.session] : [])];
@@ -155,9 +180,8 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     let session = sessions.find(item => item.occurrenceId === targetOccurrenceId);
     if (!session) {
       if (!workspace) throw new Error('attendance_workspace_unavailable');
-      const expectedHeadcount = 60;
-      const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, expectedHeadcount };
-      const created = offlineReady
+      const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, physicalHeadcount: null };
+      const created = workspace.offline || (offlineReady && offlineOccurrenceIds.includes(targetOccurrenceId))
         ? await createOfflineAttendanceSession(input, ownerUid)
         : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
       const data = await getAttendanceSessionSnapshot(created.sessionId, ownerUid);
@@ -179,5 +203,5 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, allowLateConfirmation: allowLateConfirmation === true, expectedRevision: targetReceipt?.reviewRevision || 1, requestId: secureRequestId() });
     setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
   });
-  return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, prepare, start, saveSession, students, updateCell, review, refresh: () => run(refresh) };
+  return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, start, saveSession, refreshQr, students, updateCell, review, refresh: () => run(refresh) };
 }

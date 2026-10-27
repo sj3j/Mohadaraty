@@ -35,6 +35,8 @@ function reshapeArabic(text: string): string {
 
 export interface PdfExportOptions {
   lectureId: string;
+  /** Account-scoped canonical document key; defaults to legacy lectureId. */
+  annotationDocumentId?: string;
   lectureTitle: string;
   pdfUrl?: string;
   pdfArrayBuffer?: ArrayBuffer;
@@ -86,8 +88,12 @@ export async function loadTajawalFontBytes(): Promise<Uint8Array | null> {
       const candidatePaths = [
         path.resolve(process.cwd(), 'public/fonts/Tajawal-Regular.ttf'),
         path.resolve(process.cwd(), 'dist/fonts/Tajawal-Regular.ttf'),
-        path.resolve(__dirname, '../../public/fonts/Tajawal-Regular.ttf'),
       ];
+      // __dirname is absent in the ESM test/browser build. Do not let that
+      // optional fallback prevent the process.cwd() candidates from running.
+      if (typeof __dirname !== 'undefined') {
+        candidatePaths.push(path.resolve(__dirname, '../../public/fonts/Tajawal-Regular.ttf'));
+      }
       for (const p of candidatePaths) {
         if (fs.existsSync(p)) {
           const buf = fs.readFileSync(p);
@@ -159,7 +165,7 @@ export function shapeAndOrderText(text: string): string {
  * Generates an annotated PDF document without modifying the original.
  */
 export async function exportAnnotatedPdf(options: PdfExportOptions): Promise<PdfExportResult> {
-  const { lectureId, lectureTitle, pdfUrl, pdfArrayBuffer, onProgress } = options;
+  const { lectureId, annotationDocumentId = lectureId, lectureTitle, pdfUrl, pdfArrayBuffer, onProgress } = options;
 
   try {
     onProgress?.(10, 'Loading original lecture PDF...');
@@ -206,7 +212,13 @@ export async function exportAnnotatedPdf(options: PdfExportOptions): Promise<Pdf
     const pageCount = pages.length;
 
     onProgress?.(50, 'Loading canonical annotations...');
-    const docState = await loadCanonicalDocument(lectureId, pageCount);
+    let docState = await loadCanonicalDocument(annotationDocumentId, pageCount);
+    // Account-scoped V3 data wins. A legacy document is read only when V3 has
+    // no annotations, preserving historical exports without auto-migrating
+    // viewport-relative geometry.
+    if (annotationDocumentId !== lectureId && Object.keys(docState.annotationsByPage).length === 0) {
+      docState = await loadCanonicalDocument(lectureId, pageCount);
+    }
 
     // Load Unicode font for Arabic & English annotations
     let unicodeFont: PDFFont | null = null;
@@ -218,14 +230,29 @@ export async function exportAnnotatedPdf(options: PdfExportOptions): Promise<Pdf
         console.warn('[PdfExportService] Tajawal font embedding failed, falling back:', fontErr);
       }
     }
-    const helveticaFallback = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const textAnnotations = Object.values(docState.annotationsByPage)
+      .flatMap((annotations) => annotations.filter((annotation): annotation is CanonicalTextAnnotation => annotation.kind === 'text'));
+    const requiresUnicodeFont = textAnnotations.some((annotation) =>
+      /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(annotation.text),
+    );
+    // Replacing missing Arabic glyphs with spaces produces a technically valid
+    // but academically unusable PDF. Export must fail loudly instead.
+    if (requiresUnicodeFont && !unicodeFont) {
+      throw new Error('Required Tajawal font could not be embedded for text annotations.');
+    }
+    const helveticaFallback = unicodeFont ? null : await pdfDoc.embedFont(StandardFonts.Helvetica);
     const activeFont = unicodeFont || helveticaFallback;
 
     onProgress?.(70, 'Rendering annotations onto pages...');
     for (let pIndex = 0; pIndex < pageCount; pIndex++) {
       const pageNum = pIndex + 1;
       const page = pages[pIndex];
-      const { width: pageWidth, height: pageHeight } = page.getSize();
+      // Canonical coordinates are relative to the visible crop box, not the
+      // media box. PDF pages can have a non-zero crop origin and a different
+      // crop size; using getSize() silently displaces annotations on them.
+      const cropBox = page.getCropBox();
+      const pageWidth = cropBox.width;
+      const pageHeight = cropBox.height;
       const annotations: CanonicalAnnotation[] = docState.annotationsByPage[pageNum] || [];
 
       for (const anno of annotations) {
@@ -244,10 +271,10 @@ export async function exportAnnotatedPdf(options: PdfExportOptions): Promise<Pdf
             const p1 = ink.points[i];
             const p2 = ink.points[i + 1];
 
-            const x1 = p1.x * pageWidth;
-            const y1 = (1.0 - p1.y) * pageHeight;
-            const x2 = p2.x * pageWidth;
-            const y2 = (1.0 - p2.y) * pageHeight;
+            const x1 = cropBox.x + p1.x * pageWidth;
+            const y1 = cropBox.y + (1.0 - p1.y) * pageHeight;
+            const x2 = cropBox.x + p2.x * pageWidth;
+            const y2 = cropBox.y + (1.0 - p2.y) * pageHeight;
 
             page.drawLine({
               start: { x: x1, y: y1 },
@@ -265,19 +292,19 @@ export async function exportAnnotatedPdf(options: PdfExportOptions): Promise<Pdf
           const pdfColor = rgb(colorRgb.r, colorRgb.g, colorRgb.b);
           const fontSize = textAnno.fontSize === 'lg' ? 18 : textAnno.fontSize === 'sm' ? 11 : 14;
 
-          const x = (textAnno.point?.x ?? 0.1) * pageWidth;
-          const y = (1.0 - (textAnno.point?.y ?? 0.1)) * pageHeight;
+          const x = cropBox.x + (textAnno.point?.x ?? 0.1) * pageWidth;
+          const y = cropBox.y + (1.0 - (textAnno.point?.y ?? 0.1)) * pageHeight;
 
           const lines = textAnno.text.split('\n');
           lines.forEach((lineText, lineIdx) => {
-            const shapedText = unicodeFont ? shapeAndOrderText(lineText) : lineText.replace(/[^\x20-\x7E]/g, ' ');
+            const shapedText = shapeAndOrderText(lineText);
             const lineY = y - (lineIdx * fontSize * 1.25);
 
             page.drawText(shapedText, {
-              x: Math.max(10, Math.min(pageWidth - 60, x)),
-              y: Math.max(10, Math.min(pageHeight - 20, lineY)),
+              x: Math.max(cropBox.x + 10, Math.min(cropBox.x + pageWidth - 60, x)),
+              y: Math.max(cropBox.y + 10, Math.min(cropBox.y + pageHeight - 20, lineY)),
               size: fontSize,
-              font: activeFont,
+              font: activeFont!,
               color: pdfColor,
             });
           });

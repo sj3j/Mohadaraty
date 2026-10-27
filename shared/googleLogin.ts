@@ -27,6 +27,7 @@ import {
   resolveSessionUid,
 } from './studentLookup.js';
 import { linkGoogleToStudent, FieldValueLike } from './accountSelfService.js';
+import type { StudentProfileSource } from './studentProfile.js';
 
 export interface GoogleIdentity {
   email: string;
@@ -150,11 +151,11 @@ export async function resolveGoogleLogin(
   opts: {
     masterAdminEmails: string[];
     fallbackUid: string;
-    syncUserStage: (uid: string, source: any) => Promise<void>;
+    syncUserStage: (uid: string, source: StudentProfileSource | { managedStageId?: string | null }) => Promise<void>;
   },
 ): Promise<GoogleLoginResult> {
   const emailLower = identity.email;
-  let stageSource: { stageId?: string | null; managedStageId?: string | null } = {};
+  let stageSource: StudentProfileSource | { managedStageId?: string | null } = {};
 
   // The string this account is keyed by everywhere else: the students document
   // id, the auth uid, and the token's `email` claim.
@@ -211,7 +212,7 @@ export async function resolveGoogleLogin(
       if (studentData?.isActive === false) {
         throw new GoogleLoginError('الحساب معطل', 401, 'DISABLED');
       }
-      stageSource = { stageId: studentData?.stageId };
+      stageSource = { studentId, stageId: studentData?.stageId };
     }
   }
 
@@ -219,8 +220,14 @@ export async function resolveGoogleLogin(
   const usersQuery = await db.collection('users').where('email', '==', identityKey).limit(1).get();
   if (!usersQuery.empty) {
     targetUid = usersQuery.docs[0].id;
-    await opts.syncUserStage(targetUid, stageSource);
+  } else if ('studentId' in stageSource) {
+    const directUser = await db.collection('users').doc(stageSource.studentId).get();
+    if (directUser.exists) targetUid = directUser.id;
   }
+
+  // The email query cannot find a purchase-created users/{studentId} stub with
+  // no email. targetUid already falls back to that canonical document ID.
+  await opts.syncUserStage(targetUid, stageSource);
 
   const customToken = await adminAuth.createCustomToken(targetUid, { email: identityKey });
   return { customToken, uid: targetUid, email: identityKey };
@@ -261,7 +268,7 @@ export async function claimAccountWithGoogle(
   input: { identifier?: string; password?: string },
   opts: {
     masterAdminEmails: string[];
-    syncUserStage: (uid: string, source: any) => Promise<void>;
+    syncUserStage: (uid: string, source: StudentProfileSource | { managedStageId?: string | null }) => Promise<void>;
     FieldValue: FieldValueLike;
   },
 ): Promise<GoogleLoginResult & { alreadyOwned: boolean }> {

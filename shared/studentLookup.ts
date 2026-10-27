@@ -14,6 +14,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { nameKeyFor, looksLikeLoginCode, loginCodeKeyFor } from './rosterIdentity.js';
+import type { StudentProfileSource } from './studentProfile.js';
 
 export interface StudentRecord {
   /** The document id - also the auth uid and the token's `email` claim. */
@@ -175,15 +176,18 @@ export async function resolveStudentLogin(
 export async function resolveSessionUid(
   db: FirebaseFirestore.Firestore,
   student: StudentRecord,
-  syncUserStage: (uid: string, source: any) => Promise<void>,
+  syncUserStage: (uid: string, source: StudentProfileSource) => Promise<void>,
 ): Promise<{ uid: string; emailClaim: string }> {
   let uid = student.id;
   const usersQuery = await db.collection('users')
     .where('email', '==', student.id).limit(1).get();
   if (!usersQuery.empty) {
     uid = usersQuery.docs[0].id;
-    await syncUserStage(uid, { stageId: student.data.stageId });
   }
+  // A sparse users/{student.id} document has no email field and is invisible to
+  // the query above. The canonical document ID is the safe fallback. Reconcile
+  // on every login, including when no users document exists yet.
+  await syncUserStage(uid, { studentId: student.id, stageId: student.data.stageId });
   return { uid, emailClaim: student.id };
 }
 

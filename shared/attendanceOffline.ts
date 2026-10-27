@@ -28,7 +28,8 @@ export function verifyOfflineAttendanceToken(token: string, verifyPermit: (permi
   let claims: AttendanceQrClaims;
   try { claims = jwt.verify(token, key, { algorithms: ['ES256'] }) as AttendanceQrClaims; }
   catch { throw new Error('invalid_qr'); }
-  if (claims.v !== 1 || claims.typ !== 'simosan-attendance' || claims.stageId !== permit.stageId || claims.sessionId !== attendanceSessionId(claims.occurrenceId)
-    || !/^[0-9a-f-]{36}$/i.test(claims.challengeId) || !Number.isInteger(claims.expectedHeadcount) || claims.expectedHeadcount! < 1 || claims.expectedHeadcount! > 10000) throw new Error('invalid_qr');
+  if ((claims.v !== 1 && claims.v !== 2) || claims.typ !== 'simosan-attendance' || claims.stageId !== permit.stageId || claims.sessionId !== attendanceSessionId(claims.occurrenceId)
+    || !/^[0-9a-f-]{36}$/i.test(claims.challengeId)
+    || (claims.v === 1 && (!Number.isInteger(claims.expectedHeadcount) || claims.expectedHeadcount! < 1 || claims.expectedHeadcount! > 10000))) throw new Error('invalid_qr');
   return { claims, permit, credential: header.permit };
 }

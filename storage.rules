@@ -145,20 +145,21 @@ service firebase.storage {
                        request.resource.contentType.matches('image/.*'));
     }
 
-    // Lecture attachments (images of whiteboards, notes, diagrams, and PDF translations/summaries).
-    // Students can upload images capped at 10MB or PDFs capped at 30MB prefixed with their UID.
-    // Staff can upload or manage any attachment.
+    // Lecture attachments (images of whiteboards, notes, diagrams, and PDF summaries/translations).
+    // Students can upload images capped at 10MB or PDFs capped at 30MB into a pending state.
+    // Moderation and updates are staff-only.
+    // Deletion is strictly staff-only.
     match /lecture_attachments/{stageId}/{lectureId}/{fileName} {
       allow read: if isAuthenticated();
-      allow delete: if isAuthenticated()
-                   && (isStaff() || fileName.matches(request.auth.uid + ".*"));
-      allow create, update: if isAuthenticated()
-                   && (isStaff() || fileName.matches(request.auth.uid + ".*"))
+      allow delete: if isAuthenticated() && isStaff();
+      allow create: if isAuthenticated()
                    && (
                      (request.resource.contentType != null && request.resource.contentType.matches('image/.*') && request.resource.size < 10 * 1024 * 1024) ||
+                     (request.resource.contentType != null && request.resource.contentType.matches('application/pdf.*') && request.resource.size < 30 * 1024 * 1024) ||
                      (request.resource.contentType == 'application/pdf' && request.resource.size < 30 * 1024 * 1024) ||
                      (request.resource.contentType == null && request.resource.size < 30 * 1024 * 1024)
                    );
+      allow update: if isAuthenticated() && isStaff();
     }
 
     // Default fallback

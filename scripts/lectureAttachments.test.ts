@@ -58,9 +58,13 @@ check(
 );
 
 check(
-  'storage.rules explicitly allows delete without failing on request.resource.size',
-  storageRules.includes('allow delete: if isAuthenticated()') ||
-    storageRules.includes('request.resource == null ||')
+  'storage.rules explicitly allows delete to staff only without failing on request.resource.size',
+  storageRules.includes('allow delete: if isAuthenticated() && isStaff()')
+);
+
+check(
+  'firestore.rules strictly restricts attachment deletion to staff only',
+  firestoreRules.includes("allow delete: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures');")
 );
 
 console.log('\n--- 2. Attribution & Data Model Validation ---');
@@ -172,6 +176,11 @@ check(
   'Service contains approveAttachment and rejectAttachment exports',
   serviceCode.includes('export async function approveAttachment') &&
     serviceCode.includes('export async function rejectAttachment')
+);
+
+check(
+  'Service contains getStudentApprovedSemesterAttachmentsCount export for 3-upload unlock',
+  serviceCode.includes('export async function getStudentApprovedSemesterAttachmentsCount')
 );
 
 check(

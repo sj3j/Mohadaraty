@@ -86,7 +86,10 @@ export async function signInStudent<TCredential>(
       const response = await fetchImpl(options.endpoint || apiUrl('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: typed, email: typed, password: options.password.trim() }),
+        // Identifiers are whitespace-insensitive, but passwords are not.
+        // Trimming here made valid passwords containing a leading/trailing
+        // space impossible to sign in with.
+        body: JSON.stringify({ identifier: typed, email: typed, password: options.password }),
         signal: controller.signal,
       });
       clearTimeout(timeout);

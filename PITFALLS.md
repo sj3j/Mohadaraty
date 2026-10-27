@@ -103,6 +103,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - A permission-denied `onSnapshot` is not inert: the backend rejects the target
   and the client re-adds it, which is its own source of watch-stream target
   churn. Rule out a missing rule before blaming the SDK.
+- Storage rules using dynamic regex `fileName.matches(request.auth.uid + ".*")` break on emails, dots, and metacharacters in custom token UIDs → allow authenticated creates with content/size guards under scoped lecture prefixes, and restrict updates/deletions with `isStaff()`.
 
 ## Data model & consistency
 - Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.
@@ -379,7 +380,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   transform becomes the sibling's containing block.
 - A search overlay inside a reader chrome must have a higher z-index than header capsules (use `z-50` over `z-40`) and hide the header pill while open, or touches hit occluded navigation buttons.
 - A floating page counter pill at `bottom-5` collides with a centered bottom annotation dock on mobile — elevate the page pill to `bottom-20` when annotation mode is active.
-- A full-screen `WKWebView` over native `PDFView` on iOS intercepts all gestures despite transparent backgrounds — swizzle `WKWebView.hitTest` to return `nil` outside registered `interactiveZones` so 120Hz pinch/scroll reaches UIKit.
+- A full-screen `WKWebView` over native `PDFView` intercepts gestures, but swizzling its inherited `hitTest` changes `UIView` touch handling process-wide and can crash on the login screen; use a dedicated `WKWebView` subclass and route touches only while a PDF is open.
 - A floating editor card with an `onBlur` auto-commit unmounts before its toolbar button `onClick` fires — add `onMouseDown` `e.preventDefault()` to toolbar buttons so clicking them does not steal focus or cancel the action.
 
 - A cross-platform push plugin returns a DIFFERENT KIND of token per platform:
@@ -492,3 +493,4 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   twenty rows already fetched, and the screen reads "no students in this stage"
   rather than "rank unavailable".
 - A native PDF view inserted behind Capacitor's WebView is occluded if background screens (HomeScreen) or root containers remain rendered and opaque; unmount background screens and apply transparent body/#root styling when the native overlay opens, with automatic restoration on close or fallback.
+- `@capacitor/file-transfer` on Android 10 and older checks legacy public-storage permission even for app-private destinations; use the app-private native stream there, and reserve storage permission or MediaStore for a user-visible Downloads export.

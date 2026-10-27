@@ -3,12 +3,17 @@ import { getToken, onMessage } from 'firebase/messaging';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { messaging, db } from '../lib/firebase';
 import { UserProfile } from '../types';
+import { IS_MACOS_BUILD } from '../lib/platform';
 
 export function usePushNotifications(user: UserProfile | null) {
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default');
   const [isRequesting, setIsRequesting] = useState(false);
 
   useEffect(() => {
+    if (IS_MACOS_BUILD) {
+      setPermission('unsupported');
+      return;
+    }
     if (typeof window !== 'undefined') {
       if ('Notification' in window) {
         setPermission(Notification.permission);
@@ -42,7 +47,7 @@ export function usePushNotifications(user: UserProfile | null) {
 
   /* NEEDS_ANDROID_PERMISSION (POST_NOTIFICATIONS) */
   const requestPermission = async () => {
-    if (!user || isRequesting) return;
+    if (IS_MACOS_BUILD || !user || isRequesting) return;
     try {
       // Request permission FIRST before any async operations or state updates to preserve user gesture context on iOS
       const perm = await Notification.requestPermission();

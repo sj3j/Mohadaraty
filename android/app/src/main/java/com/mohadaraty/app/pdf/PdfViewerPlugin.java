@@ -18,6 +18,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.github.barteksc.pdfviewer.PDFView;
 import com.github.barteksc.pdfviewer.listener.OnLongPressListener;
+import com.github.barteksc.pdfviewer.listener.OnDrawListener;
 import com.github.barteksc.pdfviewer.listener.OnPageChangeListener;
 import com.github.barteksc.pdfviewer.listener.OnTapListener;
 
@@ -36,6 +37,7 @@ public class PdfViewerPlugin extends Plugin {
     private static final float TOP_CHROME_DP = 120f;
     private static final float BOTTOM_CHROME_DP = 100f;
     private static final float BOTTOM_CHROME_WIDTH_DP = 240f;
+    private static final float ANNOTATION_DOCK_HEIGHT_DP = 240f;
 
     private enum TouchOwner { NONE, WEB, PDF }
 
@@ -178,6 +180,17 @@ public class PdfViewerPlugin extends Plugin {
                         .enableAnnotationRendering(true)
                         .nightMode(nightMode)
                         .spacing(12)
+                        // The callback is invoked in PDFView's page drawing
+                        // pipeline. Saved ink therefore inherits the exact
+                        // same scroll, zoom and centring transform as the PDF.
+                        .onDrawAll(new OnDrawListener() {
+                            @Override
+                            public void onLayerDrawn(android.graphics.Canvas canvas, float width, float height, int page) {
+                                if (readerHost != null) {
+                                    readerHost.getInkOverlayView().drawPageStrokes(canvas, width, height, page);
+                                }
+                            }
+                        })
                         .onPageChange(new OnPageChangeListener() {
                             @Override
                             public void onPageChanged(int page, int pageCount) {
@@ -213,9 +226,11 @@ public class PdfViewerPlugin extends Plugin {
 
                 touchRouter = this::routeTouch;
                 webView.setOnTouchListener(touchRouter);
+                applyInteraction(interactionState);
 
                 JSObject res = new JSObject();
                 res.put("success", true);
+                res.put("nativeInkAvailable", nativeInkV2);
                 call.resolve(res);
             } catch (Exception exception) {
                 detachPdfView(bridge.getWebView(), true);
@@ -416,6 +431,14 @@ public class PdfViewerPlugin extends Plugin {
         if (target == null) return false;
         float density = getContext().getResources().getDisplayMetrics().density;
         if (y <= TOP_CHROME_DP * density) return true;
+
+        boolean isAnnotate = "annotate".equals(interactionState.mode);
+        if (isAnnotate) {
+            // Full width bottom dock + color/width popovers
+            return y >= target.getHeight() - ANNOTATION_DOCK_HEIGHT_DP * density;
+        }
+
+        // Read mode: bottom left page counter pill
         return y >= target.getHeight() - BOTTOM_CHROME_DP * density
                 && x <= BOTTOM_CHROME_WIDTH_DP * density;
     }

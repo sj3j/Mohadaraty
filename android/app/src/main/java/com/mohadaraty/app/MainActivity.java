@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
         EdgeToEdge.enable(this);
         registerPlugin(SystemBarsPlugin.class);
         registerPlugin(SettingsLauncherPlugin.class);
+        registerPlugin(NativeFilesPlugin.class);
         registerPlugin(com.mohadaraty.app.attendance.AttendanceStoragePlugin.class);
         registerPlugin(com.mohadaraty.app.pdf.PdfViewerPlugin.class);
         super.onCreate(savedInstanceState);

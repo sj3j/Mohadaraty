@@ -47,6 +47,8 @@ let leaseHeld = false;
 let generation = 0;
 let lastRenewedAt = 0;
 let renewalError: string | null = null;
+let lastAcquireStatus: LeaseAcquireResult['status'] | null = null;
+let lastAcquireAt = 0;
 
 export const holdsLease = (): boolean => leaseHeld;
 export const leaseGeneration = (): number => generation;
@@ -55,7 +57,21 @@ export const leaseHealth = () => ({
   generation,
   lastRenewedAt: lastRenewedAt || null,
   renewalError,
+  lastAcquireStatus,
+  lastAcquireAt: lastAcquireAt || null,
 });
+
+export function leaseUnavailableReason(
+  status: LeaseAcquireResult['status'] | null,
+): 'lease_permission_denied' | 'lease_held_by_other' | 'firestore_unavailable' | 'lease_acquisition_failed' | 'lease_not_held' {
+  if (status === 'LEASE_PERMISSION_DENIED') return 'lease_permission_denied';
+  if (status === 'LEASE_HELD_BY_OTHER') return 'lease_held_by_other';
+  if (status === 'LEASE_SERVICE_UNAVAILABLE') return 'firestore_unavailable';
+  if (status === 'LEASE_TRANSACTION_FAILED' || status === 'LEASE_UNEXPECTED_ERROR') {
+    return 'lease_acquisition_failed';
+  }
+  return 'lease_not_held';
+}
 
 /** Transactionally acquires the lease and increments a fencing generation. */
 export async function acquireLease(): Promise<LeaseAcquireResult> {
@@ -97,12 +113,16 @@ export async function acquireLease(): Promise<LeaseAcquireResult> {
     });
 
     if (result.status === 'LEASE_ACQUIRED') {
+      lastAcquireStatus = result.status;
+      lastAcquireAt = Date.now();
       generation = result.generation;
       leaseHeld = true;
       lastRenewedAt = Date.now();
       renewalError = null;
       log.info('lease.acquired', { generation });
     } else {
+      lastAcquireStatus = result.status;
+      lastAcquireAt = Date.now();
       log.warn('lease.held_by_other', {
         holder: result.holder,
         remainingMs: result.remainingMs,
@@ -111,6 +131,8 @@ export async function acquireLease(): Promise<LeaseAcquireResult> {
     return result;
   } catch (error) {
     const status = classifyLeaseError(error);
+    lastAcquireStatus = status;
+    lastAcquireAt = Date.now();
     log.error('lease.acquire_failed', { status, ...errFields(error) });
     return { status, error };
   }
@@ -187,6 +209,7 @@ export function stopLeaseRenewal(): void {
 
 /** Releases only the exact lease generation this process acquired. */
 export async function releaseLease(): Promise<void> {
+  if (generation <= 0) return;
   const ownedGeneration = generation;
   try {
     await db.runTransaction(async tx => {

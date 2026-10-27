@@ -32,7 +32,10 @@ let removeListener: (() => void) | null = null;
 let starting = false;
 
 async function handleBack(canGoBack: boolean) {
-  const top = layers.pop();
+  // Peek rather than pop. Normal dismissals unmount and remove their own layer;
+  // a non-dismissible layer (the forced-update gate) must remain on the stack
+  // for every subsequent Back press as well as the first.
+  const top = layers[layers.length - 1];
   if (top) {
     top.dismiss();
     return;

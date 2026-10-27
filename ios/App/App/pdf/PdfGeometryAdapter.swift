@@ -88,7 +88,9 @@ public enum PdfGeometryAdapter {
     ) -> CGPoint {
         CGPoint(
             x: pageBounds.origin.x + normalized.x * pageBounds.width,
-            y: pageBounds.origin.y + normalized.y * pageBounds.height
+            // Canonical annotations use a top-left origin. PDF page space is
+            // bottom-left, including when the crop box has a non-zero origin.
+            y: pageBounds.origin.y + (1.0 - normalized.y) * pageBounds.height
         )
     }
 
@@ -99,18 +101,56 @@ public enum PdfGeometryAdapter {
         pressure: CGFloat = 1.0
     ) -> PdfNormalizedPoint {
         let clampedX = max(0, min(1, (point.x - pageBounds.origin.x) / max(1, pageBounds.width)))
-        let clampedY = max(0, min(1, (point.y - pageBounds.origin.y) / max(1, pageBounds.height)))
+        let clampedY = max(0, min(1, 1.0 - (point.y - pageBounds.origin.y) / max(1, pageBounds.height)))
         return PdfNormalizedPoint(x: clampedX, y: clampedY, p: pressure)
     }
 
-    /// Converts PencilKit PKStroke into a normalized PdfBridgeStroke
+    /// Converts an overlay point to crop-box-normalized PDF coordinates.  A
+    /// PKCanvasView is not guaranteed to use PDF crop-box coordinates (zoom,
+    /// rotation and non-zero crop origins all change its relationship with the
+    /// PDFView), so raw canvas dimensions must never be used here.
+    public static func canvasToNormalizedPoint(
+        _ point: CGPoint,
+        canvas: UIView,
+        pdfView: PDFView,
+        page: PDFPage,
+        pressure: CGFloat = 1.0
+    ) -> PdfNormalizedPoint {
+        let pointInPdfView = canvas.convert(point, to: pdfView)
+        let pointOnPage = pdfView.convert(pointInPdfView, to: page)
+        return viewToNormalizedPoint(
+            point: pointOnPage,
+            pageBounds: page.bounds(for: .cropBox),
+            pressure: pressure
+        )
+    }
+
+    /// Converts a canonical crop-box-normalized point into the current page
+    /// overlay coordinate system.
+    public static func normalizedToCanvasPoint(
+        _ normalized: PdfNormalizedPoint,
+        canvas: UIView,
+        pdfView: PDFView,
+        page: PDFPage
+    ) -> CGPoint {
+        let pagePoint = normalizedToViewPoint(
+            normalized: normalized,
+            pageBounds: page.bounds(for: .cropBox)
+        )
+        let pointInPdfView = pdfView.convert(pagePoint, from: page)
+        return canvas.convert(pointInPdfView, from: pdfView)
+    }
+
+    /// Converts PencilKit PKStroke into a normalized PdfBridgeStroke.
     public static func strokeFromPencilKit(
         pkStroke: PKStroke,
         pageIndex: Int,
         tool: String,
         colorHex: String,
         strokeWidth: CGFloat,
-        pageBounds: CGRect
+        canvas: UIView,
+        pdfView: PDFView,
+        page: PDFPage
     ) -> PdfBridgeStroke {
         var points: [PdfNormalizedPoint] = []
         let path = pkStroke.path
@@ -118,9 +158,11 @@ public enum PdfGeometryAdapter {
 
         for i in 0..<count {
             let point = path[i]
-            let normalized = viewToNormalizedPoint(
-                point: point.location,
-                pageBounds: pageBounds,
+            let normalized = canvasToNormalizedPoint(
+                point.location,
+                canvas: canvas,
+                pdfView: pdfView,
+                page: page,
                 pressure: point.force
             )
             points.append(normalized)
@@ -135,6 +177,33 @@ public enum PdfGeometryAdapter {
             opacity: tool == "free_highlighter" ? 0.38 : 1.0,
             points: points,
             createdAt: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+    }
+
+    public static func pencilKitStroke(
+        from bridgeStroke: PdfBridgeStroke,
+        canvas: UIView,
+        pdfView: PDFView,
+        page: PDFPage
+    ) -> PKStroke? {
+        guard bridgeStroke.points.count >= 2 else { return nil }
+        let color = colorFromHex(bridgeStroke.color).withAlphaComponent(bridgeStroke.opacity)
+        let inkType: PKInkingTool.InkType = bridgeStroke.tool == "free_highlighter" ? .marker : .pen
+        let width = max(0.5, bridgeStroke.width)
+        let controls = bridgeStroke.points.enumerated().map { index, point in
+            PKStrokePoint(
+                location: normalizedToCanvasPoint(point, canvas: canvas, pdfView: pdfView, page: page),
+                timeOffset: TimeInterval(index) / 120.0,
+                size: CGSize(width: width, height: width),
+                opacity: bridgeStroke.opacity,
+                force: point.p ?? 1.0,
+                azimuth: 0,
+                altitude: .pi / 2
+            )
+        }
+        return PKStroke(
+            ink: PKInk(inkType, color: color),
+            path: PKStrokePath(controlPoints: controls, creationDate: Date(timeIntervalSince1970: TimeInterval(bridgeStroke.createdAt) / 1000))
         )
     }
 

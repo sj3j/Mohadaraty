@@ -24,7 +24,8 @@ export default defineConfig(({mode}) => {
   // read and what IS_STORE_BUILD has always meant. `isIos` is the narrower
   // "may sell, through Apple".
   const isIos = mode === 'ios';
-  const isBundled = mode === 'native' || isIos;
+  const isMacos = mode === 'macos';
+  const isBundled = mode === 'native' || isIos || isMacos;
 
   return {
     base: './',
@@ -78,7 +79,7 @@ export default defineConfig(({mode}) => {
       react(), 
       VitePWA({
         registerType: 'autoUpdate',
-        injectRegister: 'script',
+        injectRegister: isMacos ? null : 'script',
         // The APK already carries every asset locally, so precaching buys nothing
         // there - and actively harms: a Workbox SW registered by an older build
         // keeps serving its cached shell after the user installs a new APK, so
@@ -214,6 +215,7 @@ export default defineConfig(({mode}) => {
       // derived from the flag below.
       '__NATIVE_BUILD__': JSON.stringify(isBundled),
       '__IOS_BUILD__': JSON.stringify(isIos),
+      '__MACOS_BUILD__': JSON.stringify(isMacos),
     },
     resolve: {
       // Array form so the native entries can match on a REGEX. Vite resolves
@@ -279,6 +281,22 @@ export default defineConfig(({mode}) => {
           },
         ] : []),
 
+        // -- macOS QA: entitlement display only until StoreKit is implemented --
+        ...(isMacos ? [
+          {
+            find: /^.*\/components\/SubscriptionScreen$/,
+            replacement: path.resolve(__dirname, 'src/macos/SubscriptionScreen.macos.tsx'),
+          },
+          {
+            find: /^.*\/components\/SubscriptionPaywall$/,
+            replacement: path.resolve(__dirname, 'src/macos/SubscriptionPaywall.macos.tsx'),
+          },
+          {
+            find: /^.*\/i18n\/payments$/,
+            replacement: path.resolve(__dirname, 'src/native-stubs/payments.ts'),
+          },
+        ] : []),
+
         // -- iOS ONLY: an APPLE purchase surface ----------------------------
         //
         // Same three specifiers, different destinations. The iOS components
@@ -314,6 +332,7 @@ export default defineConfig(({mode}) => {
         ignored: [
           '**/android/**',
           '**/ios/**',
+          '**/macos/**',
           '**/.gradle/**',
           '**/dist/**',
           '**/*.log',

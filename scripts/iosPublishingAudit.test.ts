@@ -5,7 +5,8 @@
  * 1. PrivacyInfo.xcprivacy is registered in project.pbxproj (BuildFile, FileReference, Resources phase).
  * 2. Info.plist contains required Camera & Photo Library usage descriptions.
  * 3. AppDelegate.swift forwards APNs remote notification callbacks to Capacitor.
- * 4. LoginScreen.tsx guards Google Sign-In with !IS_IOS_BUILD for Apple Guideline 4.8 compliance.
+ * 4. The native PDF reader scopes hit testing to the app web view.
+ * 5. LoginScreen.tsx guards Google Sign-In with !IS_IOS_BUILD for Apple Guideline 4.8 compliance.
  */
 import fs from 'fs';
 
@@ -74,22 +75,39 @@ check(
     appDelegate.includes('capacitorDidFailToRegisterForRemoteNotifications'),
 );
 
-// 4. LoginScreen.tsx Guideline 4.8 compliance
-const loginSrc = fs.readFileSync('src/components/LoginScreen.tsx', 'utf8');
+// 4. A PDF plugin loads at startup, before a PDF opens. Exchanging an inherited
+// UIView.hitTest implementation changes touch handling for unrelated views.
+const pdfPluginSrc = fs.readFileSync('ios/App/App/pdf/PdfViewerPlugin.swift', 'utf8');
 check(
-  'LoginScreen.tsx imports IS_IOS_BUILD',
-  loginSrc.includes('import { IS_IOS_BUILD } from') || loginSrc.includes('IS_IOS_BUILD'),
+  'iOS PDF reader does not exchange process-wide touch implementations',
+  !pdfPluginSrc.includes('method_exchangeImplementations') &&
+    !pdfPluginSrc.includes('class_getInstanceMethod'),
 );
 check(
-  'LoginScreen.tsx conditionally hides Google Sign-In with !IS_IOS_BUILD',
-  loginSrc.includes('!IS_IOS_BUILD &&'),
+  'Capacitor creates a web view with PDF-scoped touch routing',
+  appDelegate.includes('override func webView(with frame: CGRect, configuration: WKWebViewConfiguration)') &&
+    appDelegate.includes('MohadaratyWebView(frame: frame, configuration: configuration)') &&
+    pdfPluginSrc.includes('final class MohadaratyWebView: WKWebView') &&
+    pdfPluginSrc.includes('override func hitTest(_ point: CGPoint, with event: UIEvent?)') &&
+    pdfPluginSrc.includes('return super.hitTest(point, with: event)'),
+);
+
+// 5. LoginScreen.tsx Guideline 4.8 compliance
+const loginSrc = fs.readFileSync('src/components/LoginScreen.tsx', 'utf8');
+check(
+  'LoginScreen.tsx imports an Apple-store build guard',
+  loginSrc.includes('IS_APPLE_STORE_BUILD') || loginSrc.includes('IS_IOS_BUILD'),
+);
+check(
+  'LoginScreen.tsx conditionally hides Google Sign-In on Apple builds',
+  loginSrc.includes('!IS_APPLE_STORE_BUILD &&') || loginSrc.includes('!IS_IOS_BUILD &&'),
 );
 
 // 5. AccountSecuritySettings.tsx Guideline 4.8 compliance
 const accountSecSrc = fs.readFileSync('src/components/settings/AccountSecuritySettings.tsx', 'utf8');
 check(
-  'AccountSecuritySettings.tsx conditionally hides Google linking with !IS_IOS_BUILD',
-  accountSecSrc.includes('!IS_IOS_BUILD &&'),
+  'AccountSecuritySettings.tsx conditionally hides Google linking on Apple builds',
+  accountSecSrc.includes('!IS_APPLE_STORE_BUILD &&') || accountSecSrc.includes('!IS_IOS_BUILD &&'),
 );
 
 console.log(`\nAudit Results: ${passed} passed, ${failed} failed.\n`);

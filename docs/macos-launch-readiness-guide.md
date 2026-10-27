@@ -1,94 +1,104 @@
-# دليل جاهزية وتفعيل تطبيق "محاضراتي" على أجهزة Mac (macOS)
-# MyLecture macOS Launch & Readiness Guide
+# Apple silicon Mac release of the iPad app
 
-تاريخ الحفظ: 19 أكتوبر 2026  
-الحالة: التطبيق منشور بالفعل على متجر App Store (iOS/iPadOS).
+This guide covers only the existing iPad app running on Apple silicon. For a
+separate native macOS binary and macOS App Store version, use
+[`native-macos-implementation-plan.md`](native-macos-implementation-plan.md).
 
----
+Mohadaraty uses the existing iOS/iPadOS app (`com.mohadaraty.app`) on Apple
+silicon Macs. The repository has an iOS IPA workflow and an iPad target
+(`TARGETED_DEVICE_FAMILY = "1,2"`); it does not have a native macOS or
+Mac Catalyst target. The separate **macOS App Version 1.0** draft in App Store
+Connect is not part of this release. Do not submit that draft or upload a Mac
+binary for this route.
 
-## 1. الإجابة المباشرة: هل نحتاج ملف IPA منفصل أم نفس النسخة؟
+## Current evidence and release gates
 
-**نفس نسخة الـ iOS (ملف IPA نفسه تماماً) وبدون أي كود برمجي جديد وبدون خط إنتاج CI/CD منفصل!**
+| Gate | Evidence required | Current status |
+| --- | --- | --- |
+| iOS 1.0.3 release | Confirm the processed Codemagic `ios-release` IPA, build number, and App Store Connect **Ready for Distribution** status. | Public Iraq storefront lookup on 2026-10-24 still reports **1.0.2**. The last supplied App Store Connect screenshot showed 1.0.3 **Waiting for Review**. |
+| Mac compile | Run `ios-mac-qa` and keep its Xcode destination/build log. | Workflow prepared; no Mac build has run in this workspace. |
+| Mac runtime | Run **My Mac (Designed for iPad)** on the Codemagic Apple silicon builder and record the checks below. | Unverified. A successful compile is not a runtime pass. |
+| iOS screenshots | Inspect the iOS product page for its required iPhone and 13-inch iPad screenshots. | Public storefront lookup reports five iPhone and four iPad images for 1.0.2; the 1.0.3 draft assets and exact screenshot slots remain unverified. |
+| Mac availability | Select **Make this app available** in App Store Connect after the gates above pass. | Unverified without App Store Connect access. |
+| Mac storefront | Find the approved app under **iPhone & iPad Apps** on an Apple silicon Mac and install it. | Unverified. |
 
-في نظام آبل البيئي (Apple Ecosystem):
-- جميع أجهزة Mac الحديثة التي تم تصنيعها منذ أواخر عام 2020 تعمل بمعالجات **Apple Silicon (M1, M2, M3, M4)**.
-- تسمح شركة آبل لأي تطبيق مخصص لـ iPad أن يعمل تلقائياً وبشكل أصلي (Natively) على أجهزة Mac العاملة بمعالجات M عبر خاصية رسمية تُدعى **"Designed for iPad on Mac"**.
-- لا توجد رسوم إضافية ($99 تغطي كافة منصات آبل: iOS, iPadOS, macOS).
-- نفس معرّف الحزمة (`com.mohadaraty.app`).
-- نفس عمليات الشراء والاشتراكات (RevenueCat و StoreKit ترتبط تلقائياً بحساب Apple ID المسجل في جهاز الماك).
+Apple's Mac availability option is **app-wide**, so enabling it while iOS
+1.0.2 is still the live version could expose that version on Macs. Wait until
+the corrected 1.0.3 build is live and Mac runtime QA passes. The 1.0.2
+touch-crash report has not been confirmed against a symbolicated binary.
 
----
+## Run the Mac QA workflow
 
-## 2. متطلبات شركة آبل (Apple Requirements)
+1. In Codemagic, start the manual `ios-mac-qa` workflow from the intended
+   Git commit and select **Enable SSH/VNC access**. It uses an Apple M2 builder,
+   prepares the iOS web/PDF bundle, checks the iPad Mac destination, and
+   compiles the same iOS target for that destination. It does not publish.
+2. During the build, use **Explore build machine via SSH or VNC/RDP client**.
+   Connect with the per-build VNC host, port, username, and password shown by
+   Codemagic. The workflow keeps the machine available for 20 minutes after
+   compilation. Change `MAC_QA_HOLD_SECONDS` for this run if needed, up to
+   1800 seconds. Credentials expire after the build session.
+3. In the remote desktop, open `ios/App/App.xcworkspace` in Xcode. Choose
+   **My Mac (Designed for iPad)** and run the app. If that destination is
+   absent, the workflow will stop and save `destinations.txt`; investigate
+   the builder/Xcode configuration before claiming Mac compatibility. If
+   local launch requires signing, configure a suitable development profile
+   in Codemagic and record that result; the unsigned compile alone is not a
+   runtime test.
+4. Record the Git commit, Xcode/macOS versions, build number, and each result
+   below. Use test accounts and PDF fixtures without private student data.
+   Capture a screenshot or a short screen recording for failures.
 
-| المتطلب | الحالة في مشروعك الحالي | الإجراء المطلوب |
-| :--- | :--- | :--- |
-| **دعم أجهزة iPad** | مدعوم بالفعل: `TARGETED_DEVICE_FAMILY = "1,2"` في `project.pbxproj` | لا شيء، المشروع معد بالفعل للايباد |
-| **تفعيل خيار الماك في لوحة التحكم** | يتم تفعيله تلقائياً من آبل افتراضياً ما لم يتم إلغاؤه يدوياً | فحص لوحة App Store Connect للتأكد من تفعيل الخيار |
-| **سياسة تسجيل الدخول (Guideline 4.8)** | محققة ومحمية في الكود: تسجيل دخول Google محجوب عبر `!IS_IOS_BUILD` | متوافق تماماً |
-| **سياسة الاشتراكات والدفع (Guideline 3.1.2)** | نصوص الاشتراكات ومطابقتها مفحوصة في `iosPaywallCompliance.test.ts` | متوافق تماماً |
-| **توافق النظام (Guideline 2.4)** | عدم وجود كراش عند تكبير وتصغير النافذة أو استخدام الماوس | تم فحص الواجهات والتأكد من دعمها لـ Responsive |
+### Runtime checks
 
----
+| Area | Expected result | Result / evidence |
+| --- | --- | --- |
+| Login and session | Empty clicks, fields, buttons, sign-in, and relaunch stay stable; valid session restores. | Pending |
+| PDF | Open/close, page navigation, mouse or trackpad zoom, reading, and annotation work. | Pending |
+| Local files | Download one and several PDFs, quit/reopen, read offline, share, and save to Files. | Pending |
+| Subscriptions | Paywall and existing entitlements load; purchase/restore can complete in an appropriate sandbox account. | Pending |
+| Window | Resize, scroll, modal layout, and landscape/portrait content stay usable. | Pending |
+| Camera | The QR scanner uses an available Mac camera or presents its manual attendance fallback. | Pending |
+| Location | Attendance handles location permission and low precision without a crash; record whether the campus check succeeds. | Pending |
+| Notifications | Permission request and delivery behavior are checked; unsupported behavior is clearly reported. | Pending |
 
-## 3. المتطلبات البرمجية والتصميمية في الكود (Programming & Codebase Requirements)
+The camera and location paths depend on Mac hardware and permission behavior.
+PDFKit/PencilKit mouse input and Capacitor share/filesystem behavior also need
+the runtime pass. Source review does not establish their Mac compatibility.
 
-تم فحص الكود البرمجي للمشروع والتأكد من النقاط التالية:
+If the VNC builder cannot run iOS apps on Mac, use a TestFlight tester with
+an Apple silicon Mac instead. Apple lets a TestFlight group enable
+**Test iPhone and iPad apps on Apple silicon Macs** separately from public
+Mac availability.
 
-1. **شريط التنقل السفلي (BottomNav.tsx):**
-   - مُحدد بالعرض `max-w-md mx-auto` مع `flex justify-center`.
-   - **النتيجة على الماك:** لن يتمدد الشريط على كامل الشاشة (مثلاً 2000 بكسل)، بل سيبقى مركزاً ومريحاً في منتصف أسفل الشاشة مثل منصات الهواتف والتابلت.
+## Product page and release
 
-2. **الشاشة الرئيسية وشاشات المواد (HomeScreen.tsx & SubjectBrowser.tsx):**
-   - تستخدم حاويات `max-w-7xl mx-auto px-4 sm:px-6 lg:px-8`.
-   - تستجيب بدقة لشبكات العرض العريضة (Desktop Grids).
+1. In App Store Connect, inspect the **iOS App** record, not the separate
+   macOS 1.0 draft. Confirm 1.0.3 has finished processing and is **Ready for
+   Distribution**. Match its build number to the Codemagic artifact. Do not
+   infer this from a source version string or an old screenshot.
+2. In the iOS product page, verify at least one iPhone Dynamic Island
+   screenshot and one 13-inch iPad screenshot. The separate macOS draft's
+   screenshot slots do not apply to this iPad-app route. If replacement iOS
+   images are needed, capture the real app on Codemagic simulators with test
+   data and add them to an editable iOS version. A version already
+   **Waiting for Review** may require a status change before editing.
+3. After the Mac checks pass, open **Pricing and Availability → iPhone and
+   iPad Apps on Apple Silicon Mac**. Select **Make this app available**,
+   inspect the minimum macOS version and available territories, then save.
+   Only select **Verify Compatibility** after a complete runtime pass.
+4. On an Apple silicon Mac in an enabled territory, find Mohadaraty under
+   **iPhone & iPad Apps**, install it, and repeat login, PDF, offline, and
+   sharing smoke tests on the store build. Record the store link and version.
+5. If the availability option is missing or disabled because of the separate
+   macOS draft or universal-purchase configuration, contact App Store Connect
+   support about that record. Preserve the published iOS app record.
 
-3. **شاشة قارئ ملفات الـ PDF (PdfReaderOverlay.tsx):**
-   - تعتمد على محاذاة `flex flex-col items-center` مع معالجة التمرير عبر الماوس والـ Trackpad طبيعياً.
+## Sources
 
-4. **بوابة الدكتور وجلسة الحضور المباشرة (DoctorPortal.tsx & DoctorLiveSessionView.tsx):**
-   - **ميزة كبرى على الماك:** تحتوي جلسة الحضور المباشرة على زر تكبير كامل الشاشة (`requestFullscreen`) لرمز الـ QR بدقة 800px. عندما يقوم الدكتور بربط لابتوب الماك بعارض القاعة (Projector) عبر منفذ HDMI أو AirPlay، يمكنه عرض الباركود بملء الشاشة بوضوح فائق ليقوم الطلاب بمسحه من مقاعدهم.
-   - جدول الحضور الشبيه بالإكسل (`DoctorExcelTimetableView.tsx`) يظهر بمساحة أوسع ومريحة جداً للمعاينة والفرز على الماك.
-
----
-
-## 4. خطوات التحقق الفوري للدكتور (كيف يقوم الدكتور بتحميل التطبيق الآن؟)
-
-### الخطوة 1: فحص إتاحة الماك في حساب المطور (App Store Connect)
-1. افتح موقع [App Store Connect](https://appstoreconnect.apple.com).
-2. اختر تطبيق **محاضراتي** (`com.mohadaraty.app`).
-3. انتقل إلى قسم **Pricing and Availability** (الأسعار والتوافر) أو تفاصيل التطبيق.
-4. ابحث عن قسم **"iPhone and iPad Apps on Mac"** (تطبيقات iPhone و iPad على Mac).
-5. تأكد من أن علامة الصح **مفعلة (Checked)** على خيار:  
-   *`Make this app available on Mac`*.  
-   *(إذا قمت بتفعيلها للتو، اضغط حفظ وسيظهر التطبيق في متجر الماك فوراً دون الحاجة لإعادة مراجعة من آبل).*
-
-### الخطوة 2: تعليمات التحميل التي تعطيها للدكتور
-وجّه الدكتور للقيام بالخطوات التالية على جهاز الماك الخاص به:
-1. يفتح تطبيق **App Store** المثبت على جهاز الماك.
-2. يكتب في شريط البحث: `محاضراتي` (أو اسم التطبيق بالإنجليزية إذا كان الاسم مسجلاً به).
-3. في صفحة نتائج البحث، سيجد تبويبين في الأعلى:
-   - **Mac Apps (تطبيقات Mac)**
-   - **iPhone & iPad Apps (تطبيقات iPhone و iPad)**  *(يجب الضغط على هذا التبويب)*.
-4. سيظهر تطبيق محاضراتي مباشرة، يقوم بالضغط على **Get (تثبيت)**.
-5. سيفتح التطبيق في نافذة مستقلة أنيقة على سطح مكتب الماك.
-
----
-
-## 5. الحالات الشاذة وحلولها (Troubleshooting & Failure Modes)
-
-1. **ماذا لو لم يظهر التطبيق في بحث متجر الماك للدكتور؟**
-   - **السبب أ:** جهاز الماك قديم جداً (يعمل بمعالج Intel قبل أواخر 2020). للتأكد: يضغط الدكتور على تفاحة آبل أعلى الشاشة -> `About This Mac` -> إذا كان المعالج مكتوباً عليه `Apple M1 / M2 / M3 / M4` فهو مدعوم، أما إذا كان `Intel` فلا يدعم تشغيل تطبيقات الـ iOS.
-   - **السبب ب:** خيار الماك في لوحة App Store Connect غير مفعّل. (راجع الخطوة 1 أعلاه لتفعيله).
-   - **السبب ج:** دولة حساب Apple ID الخاص بالدكتور تختلف عن الدول المتاح فيها التطبيق (مثلاً متجر التطبيق عراقي بينما حساب الدكتور أمريكي). الحل هو التأكد من إتاحة التطبيق في كافة الدول في قسم التسعير والتوافر.
-
-2. **كيف يسجل الدكتور دخوله؟**
-   - يسجل دخوله بنفس بيانات حسابه الجامعي/الرسمي (البريد وكلمة المرور) بشكل طبيعي وفوري.
-
----
-
-## 6. ملخص الجلسة وما بعد العودة
-
-- كافة النقاط تم فحصها داخل مجلدات المشروع (`ios/App/App.xcodeproj`, `Info.plist`, `capacitor.config.ts`, `HomeScreen.tsx`, `DoctorPortal.tsx`, `PdfReaderOverlay.tsx`).
-- تم التأكد من عدم وجود أي تعارض في البناء أو البرمجة.
-- هذا الملف محفوظ داخل مجلد `docs/macos-launch-readiness-guide.md` في المشروع ليبقى دائماً لديك حتى لو حدث إغلاق مفاجئ للكمبيوتر.
+- [Apple: Manage availability of iPhone and iPad apps on Macs with Apple silicon](https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/manage-availability-of-iphone-and-ipad-apps-on-macs-with-apple-silicon)
+- [Apple: Running your iOS apps in macOS](https://developer.apple.com/documentation/apple-silicon/running-your-ios-apps-in-macos)
+- [Apple: Test iPhone and iPad apps on Macs with Apple silicon using TestFlight](https://developer.apple.com/help/app-store-connect/test-a-beta-version/test-iphone-and-ipad-apps-on-macs-with-apple-silicon/)
+- [Apple: Screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications)
+- [Codemagic: Remote access to a build machine](https://docs.codemagic.io/troubleshooting/accessing-builder-machine-via-ssh/)
+- [Apple public Iraq storefront lookup for Mohadaraty](https://itunes.apple.com/lookup?id=6814124686&country=iq) (public live listing only; it does not report App Store Connect review state)

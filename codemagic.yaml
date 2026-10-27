@@ -13,6 +13,83 @@
 # purchase surface in the store build".
 
 workflows:
+  # Manual compatibility run. It builds the existing iOS target for the
+  # "Designed for iPad" Mac destination; it does not publish a Mac binary.
+  ios-mac-qa:
+    name: iOS app on Apple silicon Mac - interactive QA
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+
+    environment:
+      groups:
+        - revenuecat
+      vars:
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        MAC_QA_HOLD_SECONDS: "1200"
+      xcode: latest
+      cocoapods: default
+      node: v22.11.0
+
+    scripts:
+      - name: Check iOS configuration and dependencies
+        script: |
+          test -n "$VITE_REVENUECAT_IOS_KEY"
+          case "$VITE_REVENUECAT_IOS_KEY" in
+            appl_*) ;;
+            *) echo "Expected an iOS RevenueCat public key (appl_*)."; exit 1 ;;
+          esac
+          test -f ios/App/App/GoogleService-Info.plist
+          npm ci
+          npm run test:ios-audit
+
+      - name: Prepare the iOS app and its PDF assets
+        script: |
+          npm run ios:sync
+          npm run check:payment-surface:ios
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          cd ios/App && pod install
+
+      - name: Check the Designed for iPad Mac destination
+        script: |
+          mkdir -p build/mac-qa
+          xcodebuild -showdestinations \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme "$XCODE_SCHEME" \
+            > build/mac-qa/destinations.txt
+          cat build/mac-qa/destinations.txt
+          if ! grep -Eq 'variant:Designed for (iPad|\[iPad,iPhone\]|\[iPhone,iPad\])' build/mac-qa/destinations.txt; then
+            echo "Xcode did not offer a Designed for iPad Mac destination on this builder."
+            exit 1
+          fi
+
+      - name: Build the iPad app for Mac compatibility
+        script: |
+          xcodebuild build \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Debug \
+            -destination 'platform=macOS,variant=Designed for iPad' \
+            -derivedDataPath build/mac-qa/DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Keep the remote Mac available for interactive QA
+        script: |
+          case "$MAC_QA_HOLD_SECONDS" in
+            ''|*[!0-9]*) echo "MAC_QA_HOLD_SECONDS must be a nonnegative integer."; exit 1 ;;
+          esac
+          if [ "$MAC_QA_HOLD_SECONDS" -gt 1800 ]; then
+            echo "MAC_QA_HOLD_SECONDS must be at most 1800."; exit 1
+          fi
+          echo "Use this time to connect by VNC and run My Mac (Designed for iPad) in Xcode."
+          sleep "$MAC_QA_HOLD_SECONDS"
+
+    artifacts:
+      - build/mac-qa/destinations.txt
+      - /tmp/xcodebuild_logs/*.log
+
   # ---------------------------------------------------------------------
   # 1. مسار المحاكي: مخصص لـ App Preview (تمت إضافته)
   # ---------------------------------------------------------------------
@@ -30,7 +107,7 @@ workflows:
         VITE_ENABLE_VCONSOLE: "true"
       xcode: latest
       cocoapods: default
-      node: 20
+      node: v22.11.0
 
     scripts:
       - name: Preflight - the RevenueCat public key must be present
@@ -56,8 +133,19 @@ workflows:
       - name: Install node dependencies
         script: npm ci
 
+      - name: Check iOS native touch and publishing contracts
+        script: npm run test:ios-audit
+
       - name: Build the web bundle and sync it into the Xcode project
         script: npm run ios:sync
+
+      - name: Verify bundled iOS app and PDF assets
+        script: |
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          test -s ios/App/App/public/pdfjs/cmaps/78-EUC-H.bcmap
+          find ios/App/App/public/assets -maxdepth 1 -name 'pdfWorkerEntry-*.js' | grep -q .
 
       - name: Store-compliance gate - no off-Apple purchase surface
         script: npm run check:payment-surface:ios
@@ -103,7 +191,7 @@ workflows:
         BUNDLE_ID: "com.mohadaraty.app"
       xcode: latest
       cocoapods: default
-      node: 20
+      node: v22.11.0
 
     scripts:
       - name: Preflight - reject debug tools in release
@@ -140,8 +228,19 @@ workflows:
       - name: Install node dependencies
         script: npm ci
 
+      - name: Check iOS native touch and publishing contracts
+        script: npm run test:ios-audit
+
       - name: Build the web bundle and sync it into the Xcode project
         script: npm run ios:sync
+
+      - name: Verify bundled iOS app and PDF assets
+        script: |
+          test -s ios/App/App/public/index.html
+          test -s ios/App/App/public/sw.js
+          test -s ios/App/App/public/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          test -s ios/App/App/public/pdfjs/cmaps/78-EUC-H.bcmap
+          find ios/App/App/public/assets -maxdepth 1 -name 'pdfWorkerEntry-*.js' | grep -q .
 
       - name: Store-compliance gate - no off-Apple purchase surface
         script: npm run check:payment-surface:ios
@@ -159,6 +258,10 @@ workflows:
 
       - name: Set a unique build number
         script: |
+          if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [ "$BUILD_NUMBER" -le 31 ]; then
+            echo "iOS 1.0.3 requires a numeric build number greater than installed build 31."
+            exit 1
+          fi
           sed -i '' "s/CURRENT_PROJECT_VERSION = .*;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/g" \
             ios/App/App.xcodeproj/project.pbxproj
           grep -n "CURRENT_PROJECT_VERSION" ios/App/App.xcodeproj/project.pbxproj
@@ -172,12 +275,141 @@ workflows:
             --workspace "$XCODE_WORKSPACE" \
             --scheme "$XCODE_SCHEME"
 
+      - name: Verify App Store archive contains the web and PDF assets
+        script: |
+          ipa=$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)
+          test -n "$ipa"
+          archive_entries=$(unzip -Z1 "$ipa")
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/index\.html$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/sw\.js$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/pdfjs/standard_fonts/LiberationSans-Regular\.ttf$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/pdfjs/cmaps/78-EUC-H\.bcmap$' >/dev/null
+          printf '%s\n' "$archive_entries" | grep -E '^Payload/[^/]+\.app/public/assets/pdfWorkerEntry-[^/]+\.js$' >/dev/null
+
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-      - ios/App/build/**/*.dSYM
+      - build/ios/**/*.dSYM
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
 
     publishing:
       app_store_connect:
         auth: integration
         submit_to_testflight: true
+
+  # Separate native macOS application. This does not use the iOS workspace,
+  # CocoaPods, ios_signing, or the Designed-for-iPad destination.
+  macos-qa:
+    name: Native macOS - unsigned QA
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+
+    environment:
+      vars:
+        MACOS_PROJECT: "macos/MohadaratyMac.xcodeproj"
+        MACOS_SCHEME: "MohadaratyMac"
+        MACOS_QA_HOLD_SECONDS: "0"
+      xcode: latest
+      node: v22.11.0
+
+    scripts:
+      - name: Install dependencies and verify platform isolation
+        script: |
+          npm ci
+          npm run lint
+          npm run test:attendance
+          npm run test:macos-bridge
+          npm run test:ios-audit
+
+      - name: Build and validate the embedded Mac web bundle
+        script: |
+          npm run build:macos
+          test -s macos/MohadaratyMac/Resources/WebApp/index.html
+          test -s macos/MohadaratyMac/Resources/WebApp/pdfjs/standard_fonts/LiberationSans-Regular.ttf
+          test -s macos/MohadaratyMac/Resources/WebApp/pdfjs/cmaps/78-EUC-H.bcmap
+          find macos/MohadaratyMac/Resources/WebApp/assets -maxdepth 1 -name 'pdfWorkerEntry-*.js' | grep -q .
+
+      - name: Verify Xcode project and run native unit tests
+        script: |
+          mkdir -p build/macos
+          xcodebuild -list -project "$MACOS_PROJECT"
+          xcodebuild test \
+            -project "$MACOS_PROJECT" \
+            -scheme "$MACOS_SCHEME" \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/macos/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            -resultBundlePath build/macos/MohadaratyMacTests.xcresult
+
+      - name: Build the unsigned native Mac application
+        script: |
+          xcodebuild build \
+            -project "$MACOS_PROJECT" \
+            -scheme "$MACOS_SCHEME" \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/macos/DerivedData \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Launch online and offline runtime smoke checks
+        script: |
+          APP="build/macos/DerivedData/Build/Products/Debug/Mohadaraty.app"
+          EXECUTABLE="$APP/Contents/MacOS/Mohadaraty"
+          test -x "$EXECUTABLE"
+          rm -f build/macos/smoke-online.json build/macos/smoke-offline.json
+          "$EXECUTABLE" --ci-smoke-output "$CM_BUILD_DIR/build/macos/smoke-online.json" > build/macos/runtime-online.log 2>&1 &
+          online_pid=$!
+          for i in $(seq 1 45); do test -s build/macos/smoke-online.json && break; sleep 1; done
+          kill "$online_pid" 2>/dev/null || true
+          test -s build/macos/smoke-online.json
+          grep -q '"origin":"capacitor://localhost"' build/macos/smoke-online.json
+          grep -q '"secureContext":true' build/macos/smoke-online.json
+          grep -q '"webCrypto":true' build/macos/smoke-online.json
+          grep -q '"rootMounted":true' build/macos/smoke-online.json
+          grep -q '"loginReady":true' build/macos/smoke-online.json
+
+          "$EXECUTABLE" --ci-offline --ci-smoke-output "$CM_BUILD_DIR/build/macos/smoke-offline.json" > build/macos/runtime-offline.log 2>&1 &
+          offline_pid=$!
+          for i in $(seq 1 45); do test -s build/macos/smoke-offline.json && break; sleep 1; done
+          kill "$offline_pid" 2>/dev/null || true
+          test -s build/macos/smoke-offline.json
+          grep -q '"offline":true' build/macos/smoke-offline.json
+          grep -q '"rootMounted":true' build/macos/smoke-offline.json
+
+      - name: Inspect and package the app artifact
+        script: |
+          APP="build/macos/DerivedData/Build/Products/Debug/Mohadaraty.app"
+          test -s "$APP/Contents/Resources/WebApp/index.html"
+          test -s "$APP/Contents/Resources/WebApp/pdfjs/standard_fonts/LiberationSans-Regular.ttf"
+          plutil -lint "$APP/Contents/Info.plist"
+          file "$APP/Contents/MacOS/Mohadaraty" | tee build/macos/executable.txt
+          grep -q 'arm64' build/macos/executable.txt
+          if otool -L "$APP/Contents/MacOS/Mohadaraty" | grep -qi capacitor; then
+            echo "Capacitor framework unexpectedly linked into the native Mac app."
+            exit 1
+          fi
+          npm run test:macos-audit
+          ditto -c -k --sequesterRsrc --keepParent "$APP" build/macos/Mohadaraty.app.zip
+
+      - name: Keep remote Mac available for optional VNC QA
+        script: |
+          case "$MACOS_QA_HOLD_SECONDS" in
+            ''|*[!0-9]*) echo "MACOS_QA_HOLD_SECONDS must be a nonnegative integer."; exit 1 ;;
+          esac
+          if [ "$MACOS_QA_HOLD_SECONDS" -gt 1800 ]; then
+            echo "MACOS_QA_HOLD_SECONDS must be at most 1800."
+            exit 1
+          fi
+          sleep "$MACOS_QA_HOLD_SECONDS"
+
+    artifacts:
+      - build/macos/Mohadaraty.app.zip
+      - build/macos/*.json
+      - build/macos/*.log
+      - build/macos/*.txt
+      - build/macos/*.xcresult
+      - /tmp/xcodebuild_logs/*.log

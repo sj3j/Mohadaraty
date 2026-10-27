@@ -14,14 +14,26 @@
  * panel runs `npm install` from the emitted package.json anyway.
  */
 import { build } from 'esbuild';
-import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const stage = resolve(root, 'build-output/wispbyte');
 const zip = resolve(root, 'build-output/mylecture-telegram-bot.zip');
+const checksumFile = `${zip}.sha256`;
+const releaseFile = resolve(root, 'build-output/mylecture-telegram-bot.release.txt');
+const commit = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+  cwd: root,
+  encoding: 'utf8',
+}).trim();
+const botDirty = execFileSync('git', [
+  'status', '--porcelain', '--', 'bot', 'scripts/bundleBot.mjs',
+  'shared/telegramMirror.ts', 'src/types/announcement.types.ts', 'src/lib/richText.ts',
+], { cwd: root, encoding: 'utf8' }).trim().length > 0;
+const buildVersion = `${commit}${botDirty ? '+working-tree' : ''}`;
 
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
@@ -35,6 +47,7 @@ await build({
   format: 'cjs',
   target: 'node22',
   packages: 'external',
+  define: { 'process.env.BOT_BUILD_VERSION': JSON.stringify(buildVersion) },
   outfile: resolve(stage, 'index.js'),
 });
 
@@ -68,6 +81,8 @@ const readme = resolve(root, 'bot/DEPLOY.txt');
 if (existsSync(readme)) copyFileSync(readme, resolve(stage, 'README.txt'));
 
 rmSync(zip, { force: true });
+rmSync(checksumFile, { force: true });
+rmSync(releaseFile, { force: true });
 // Compress-Archive on Windows, zip elsewhere. Entries must sit at the archive
 // root: the startup command looks for index.js in the server root, and a
 // nested folder is the most common reason a first upload does not boot.
@@ -83,6 +98,19 @@ if (process.platform === 'win32') {
   execFileSync('zip', ['-r', '-9', zip, '.'], { cwd: stage, stdio: 'inherit' });
 }
 
+const checksum = createHash('sha256').update(readFileSync(zip)).digest('hex');
+writeFileSync(checksumFile, `${checksum}  mylecture-telegram-bot.zip\n`);
+writeFileSync(releaseFile, [
+  `Commit: ${commit}`,
+  `Build-Version: ${buildVersion}`,
+  `SHA256: ${checksum}`,
+  '',
+].join('\n'));
+
 console.log(`\nPackaged: ${zip}`);
+console.log(`Build version: ${buildVersion}`);
+console.log(`SHA256: ${checksum}`);
+console.log(`Release record: ${releaseFile}`);
 console.log('Upload its FOUR files to the server root, set the startup command');
 console.log('to `node index.js`, and make sure the panel runs `npm install`.');
+console.log(`Set GIT_SHA=${buildVersion} in the panel so the boot log identifies this release.`);

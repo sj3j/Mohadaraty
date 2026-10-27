@@ -37,6 +37,22 @@ test('invalid credentials are not retried', async () => {
   assert.equal(calls, 1);
 });
 
+test('password whitespace is preserved while the identifier is normalized', async () => {
+  let request: any;
+  await signInStudent({
+    identifier: '  student-1  ',
+    password: ' secret-with-spaces ',
+    signInWithToken,
+    fetchImpl: async (_input, init) => {
+      request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ token: 'custom-token', studentId: 'student-1' }), { status: 200 });
+    },
+  });
+
+  assert.equal(request.identifier, 'student-1');
+  assert.equal(request.password, ' secret-with-spaces ');
+});
+
 test('malformed server success response is distinguishable', async () => {
   await assert.rejects(
     signInStudent({

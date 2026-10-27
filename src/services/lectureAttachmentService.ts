@@ -23,6 +23,7 @@ export interface UploadAttachmentOptions {
   lectureTitle?: string;
   lectureNumber?: number;
   stageId: string;
+  courseId?: string;
   subjectId?: string;
   subjectName?: string;
   subjectNameAr?: string;
@@ -168,6 +169,7 @@ export async function uploadAttachment({
   lectureTitle,
   lectureNumber,
   stageId,
+  courseId,
   subjectId,
   subjectName,
   subjectNameAr,
@@ -219,6 +221,7 @@ export async function uploadAttachment({
         lectureId,
         stageId: cleanStageId,
         fileType,
+        courseId: courseId || '',
       },
     });
 
@@ -247,6 +250,7 @@ export async function uploadAttachment({
     lectureTitle: (lectureTitle || '').trim(),
     lectureNumber: typeof lectureNumber === 'number' ? lectureNumber : null,
     stageId: cleanStageId,
+    courseId: courseId || null,
     subjectId: subjectId || '',
     subjectName: (subjectName || '').trim() || null,
     subjectNameAr: (subjectNameAr || subjectName || '').trim() || null,
@@ -407,8 +411,43 @@ export async function deleteAttachment(attachment: LectureAttachment): Promise<v
 }
 
 /**
+ * Count approved attachments uploaded by a student for their academic course/semester.
+ * Community contributor rule: 3 approved uploads unlocks all attachments for that semester.
+ */
+export async function getStudentApprovedSemesterAttachmentsCount(
+  userId: string,
+  stageId?: string | null,
+  courseId?: string | null
+): Promise<number> {
+  if (!userId) return 0;
+  try {
+    const q = query(
+      collection(db, 'lecture_attachments'),
+      where('uploadedBy', '==', userId),
+      where('status', '==', 'approved')
+    );
+    const snap = await getDocs(q);
+    let count = 0;
+    snap.forEach((d) => {
+      const data = d.data();
+      if (stageId && data.stageId && data.stageId !== stageId) {
+        return;
+      }
+      if (courseId && data.courseId && data.courseId !== courseId) {
+        return;
+      }
+      count++;
+    });
+    return count;
+  } catch (err) {
+    console.warn('[lectureAttachmentService] Failed to count approved semester attachments:', err);
+    return 0;
+  }
+}
+
+/**
  * Count approved attachments uploaded by a student for a specific course/subject.
- * Used for the community contributor rule: 5 approved uploads unlocks all attachments for that course.
+ * Kept for backward compatibility.
  */
 export async function getStudentApprovedCourseAttachmentsCount(
   userId: string,

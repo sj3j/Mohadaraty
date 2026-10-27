@@ -210,7 +210,7 @@ export const env = {
   healthPort: Number(process.env.HEALTH_PORT ?? process.env.SERVER_PORT ?? 8081),
   /** Identifies this container in the lease and the status document. */
   instanceId: process.env.INSTANCE_ID || `bot-${process.pid}-${Date.now().toString(36)}`,
-  version: process.env.GIT_SHA || 'dev',
+  version: process.env.GIT_SHA || process.env.BOT_BUILD_VERSION || 'dev',
 
   /**
    * Announcements older than this are never mirrored outbound.
