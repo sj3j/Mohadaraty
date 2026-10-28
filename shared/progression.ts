@@ -269,12 +269,18 @@ export function completedProgressionFields(yearLabel: string) {
  * doc created at first login. Mirrors how stageId/subgroup are carried over
  * there: the importer cannot write to a uid that does not exist yet.
  */
-export function carriedProgressionFields(studentData: any): Partial<ReturnType<typeof completedProgressionFields>> {
-  if (!studentData?.progressionYear) return {};
-  return {
-    progressionYear: studentData.progressionYear,
-    progressionState: studentData.progressionState,
-    hasCompletedProgression: studentData.hasCompletedProgression,
-    lastProgressionYear: studentData.lastProgressionYear,
-  };
+export function carriedProgressionFields(studentData: any): Record<string, any> {
+  const fields: Record<string, any> = {};
+  if (studentData?.progressionYear) {
+    fields.progressionYear = studentData.progressionYear;
+    fields.progressionState = studentData.progressionState;
+    fields.hasCompletedProgression = studentData.hasCompletedProgression;
+    fields.lastProgressionYear = studentData.lastProgressionYear;
+  }
+  if (Array.isArray(studentData?.tahmeelSubjects) && studentData.tahmeelSubjects.length > 0
+      && typeof studentData?.tahmeelStageId === 'string') {
+    fields.tahmeelSubjects = studentData.tahmeelSubjects;
+    fields.tahmeelStageId = studentData.tahmeelStageId;
+  }
+  return fields;
 }

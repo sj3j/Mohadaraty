@@ -26,6 +26,7 @@ export interface SubmitResult {
   stageNameAr: string | null;
   stageNameEn: string | null;
   tahmeelSubjects: string[];
+  tahmeelStageId: string | null;
   purged?: boolean;
 }
 
@@ -98,6 +99,7 @@ export async function submitProgression(
     }
     const requested = Array.from(new Set(opts.tahmeelSubjects || []));
     if (requested.length === 0) throw new ProgressionError('Choose at least one carried subject');
+    if (requested.length > 20) throw new ProgressionError('Choose no more than 20 carried subjects');
 
     const subjectsSnap = await db.collection('subjects')
       .where('stageId', '==', user.stageId || '')
@@ -157,6 +159,7 @@ export async function submitProgression(
       ? FieldValue.serverTimestamp()
       : FieldValue.delete(),
     tahmeelSubjects: outcome.tahmeelSubjects,
+    tahmeelStageId: outcome.tahmeelSubjects.length > 0 ? user.stageId : FieldValue.delete(),
     progressionYear: calendar.yearLabel,
     progressionState: outcome.progressionState,
     graduated: outcome.graduated,
@@ -200,7 +203,11 @@ export async function submitProgression(
   if (email) {
     const studentRef = db.collection('students').doc(email);
     if ((await studentRef.get()).exists) {
-      const studentPatch: Record<string, any> = { stageId: outcome.stageId };
+      const studentPatch: Record<string, any> = {
+        stageId: outcome.stageId,
+        tahmeelSubjects: outcome.tahmeelSubjects,
+        tahmeelStageId: outcome.tahmeelSubjects.length > 0 ? user.stageId : FieldValue.delete(),
+      };
       if (outcome.promoted) studentPatch.subgroup = FieldValue.delete();
       batch.set(studentRef, studentPatch, { merge: true });
     }
@@ -308,6 +315,7 @@ export async function submitProgression(
     stageNameAr: landed?.nameAr ?? null,
     stageNameEn: landed?.nameEn ?? null,
     tahmeelSubjects: outcome.tahmeelSubjects,
+    tahmeelStageId: outcome.tahmeelSubjects.length > 0 ? user.stageId : null,
     purged,
   };
 }
@@ -372,6 +380,7 @@ export async function resetProgression(
       progressionAnsweredAt: FieldValue.delete(),
       graduated: false,
       tahmeelSubjects: [],
+      tahmeelStageId: FieldValue.delete(),
     };
     if (opts.stageId) {
       userPatch.stageId = opts.stageId;
@@ -412,6 +421,8 @@ export async function resetProgression(
         progressionState: FieldValue.delete(),
         hasCompletedProgression: FieldValue.delete(),
         lastProgressionYear: FieldValue.delete(),
+        tahmeelSubjects: [],
+        tahmeelStageId: FieldValue.delete(),
       };
       if (opts.stageId) {
         studentPatch.stageId = opts.stageId;

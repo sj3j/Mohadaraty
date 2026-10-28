@@ -332,6 +332,8 @@ export interface UserProfile {
   pendingProgressionYear?: string | null;
   pendingProgressionSetAt?: any; // Firestore Timestamp
   tahmeelSubjects?: string[];
+  /** Stage that owns tahmeelSubjects. Carry-over access is valid only for this stage. */
+  tahmeelStageId?: string;
   managedStageId?: string;
   hasCompletedProgression?: boolean;
   lastProgressionYear?: string;
@@ -376,6 +378,9 @@ export interface Student {
   subgroup?: string;
   /** Set by every write path; the whitelist copy that syncUserStage reads on login. */
   stageId?: string;
+  /** Subject slugs carried from tahmeelStageId for the student's current stage only. */
+  tahmeelSubjects?: string[];
+  tahmeelStageId?: string;
   /**
    * normalizeName(name) - what name login queries. Written by every path that
    * writes `name`; a student without it can only sign in by email or code.

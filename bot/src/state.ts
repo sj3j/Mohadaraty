@@ -11,6 +11,7 @@ export const LEASE_TTL_MS = 90_000;
 
 export type LeaseFailureStatus =
   | 'LEASE_PERMISSION_DENIED'
+  | 'LEASE_TRANSPORT_DENIED'
   | 'LEASE_SERVICE_UNAVAILABLE'
   | 'LEASE_TRANSACTION_FAILED'
   | 'LEASE_UNEXPECTED_ERROR';
@@ -25,9 +26,20 @@ function errorCode(error: unknown): string {
   return String(raw ?? '').toLowerCase();
 }
 
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).toLowerCase();
+}
+
 /** Firebase may expose gRPC numeric codes or symbolic HTTP-style names. */
 export function classifyLeaseError(error: unknown): LeaseFailureStatus {
   const code = errorCode(error);
+  const message = errorMessage(error);
+  if (
+    (code === '7' || code.includes('permission-denied') || code.includes('permission_denied'))
+    && message.includes('received http status code 403')
+  ) {
+    return 'LEASE_TRANSPORT_DENIED';
+  }
   if (code === '7' || code.includes('permission-denied') || code.includes('permission_denied')) {
     return 'LEASE_PERMISSION_DENIED';
   }
@@ -63,8 +75,9 @@ export const leaseHealth = () => ({
 
 export function leaseUnavailableReason(
   status: LeaseAcquireResult['status'] | null,
-): 'lease_permission_denied' | 'lease_held_by_other' | 'firestore_unavailable' | 'lease_acquisition_failed' | 'lease_not_held' {
+): 'lease_permission_denied' | 'firestore_transport_denied' | 'lease_held_by_other' | 'firestore_unavailable' | 'lease_acquisition_failed' | 'lease_not_held' {
   if (status === 'LEASE_PERMISSION_DENIED') return 'lease_permission_denied';
+  if (status === 'LEASE_TRANSPORT_DENIED') return 'firestore_transport_denied';
   if (status === 'LEASE_HELD_BY_OTHER') return 'lease_held_by_other';
   if (status === 'LEASE_SERVICE_UNAVAILABLE') return 'firestore_unavailable';
   if (status === 'LEASE_TRANSACTION_FAILED' || status === 'LEASE_UNEXPECTED_ERROR') {

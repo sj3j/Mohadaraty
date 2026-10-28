@@ -40,7 +40,18 @@ export interface TelegramStatus {
   bootedAt?: string;
   version?: string;
   updatedAt?: string;
-  pollState?: 'polling' | 'backoff' | 'stalled';
+  pollState?: 'starting' | 'polling' | 'backoff' | 'stalled' | 'recovering';
+  runtimePhase?: 'starting' | 'polling' | 'backoff' | 'stalled' | 'recovering';
+  transport?: 'rest' | 'grpc';
+  generation?: number;
+  lease?: {
+    held?: boolean;
+    generation?: number;
+    lastRenewedAt?: number | null;
+    renewalError?: string | null;
+    lastAcquireStatus?: string | null;
+    lastAcquireAt?: number | null;
+  };
   lastUpdateId?: number;
   lastBatchAt?: string;
   configError?: string | null;
@@ -99,7 +110,10 @@ export function useTelegramMirror() {
   }, []);
 
   const heartbeatAge = status?.updatedAt ? Date.now() - Date.parse(status.updatedAt) : Infinity;
-  const isBotOnline = Number.isFinite(heartbeatAge) && heartbeatAge < HEARTBEAT_STALE_MS;
+  const isBotOnline = Number.isFinite(heartbeatAge)
+    && heartbeatAge < HEARTBEAT_STALE_MS
+    && status?.lease?.held === true
+    && Number(status?.generation ?? status?.lease?.generation ?? 0) > 0;
 
   return { config, status, isBotOnline, isLoading, loadError, saveConfig };
 }

@@ -44,6 +44,23 @@ check('permission failures retry at a bounded one-minute interval',
 check('health names an IAM denial explicitly',
   leaseUnavailableReason('LEASE_PERMISSION_DENIED') === 'lease_permission_denied');
 
+const transportSleeps: number[] = [];
+await waitForLease({
+  acquire: sequence([
+    {
+      status: 'LEASE_TRANSPORT_DENIED',
+      error: new Error('7 PERMISSION_DENIED: Received HTTP status code 403'),
+    },
+    { status: 'LEASE_ACQUIRED', generation: 10 },
+  ]),
+  shouldContinue: () => true,
+  random: () => 0,
+  sleep: async ms => { transportSleeps.push(ms); },
+});
+check('a transport 403 retries with transient backoff', transportSleeps[0] === 2_000);
+check('health names a transport denial separately',
+  leaseUnavailableReason('LEASE_TRANSPORT_DENIED') === 'firestore_transport_denied');
+
 const overlapSleeps: number[] = [];
 await waitForLease({
   acquire: sequence([

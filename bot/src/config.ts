@@ -1,5 +1,7 @@
 import { db, FieldValue } from './firebase.ts';
 import { log } from './log.ts';
+import { env } from './env.ts';
+import { firestoreStreamsEnabled } from './firestoreTransport.ts';
 import {
   DEFAULT_TELEGRAM_CONFIG,
   MIRROR_STAGE_IDS,
@@ -139,14 +141,20 @@ export function watchConfig(): () => void {
     }
   };
 
-  const unsubscribe = ref.onSnapshot(
-    snap => { void applyConfig(snap.exists ? snap.data() : undefined, 'stream'); },
-    error => {
-      configError = String(error);
-      log.error('config.listener_error', { err: String(error), fallback: 'poll' });
-      void poll();
-    },
-  );
+  const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
+    ? ref.onSnapshot(
+        snap => { void applyConfig(snap.exists ? snap.data() : undefined, 'stream'); },
+        error => {
+          configError = String(error);
+          log.error('config.listener_error', { err: String(error), fallback: 'poll' });
+          void poll();
+        },
+      )
+    : () => {};
+
+  if (!firestoreStreamsEnabled(env.firestoreTransport)) {
+    log.info('config.stream_disabled', { transport: env.firestoreTransport, pollMs: CONFIG_POLL_MS });
+  }
 
   // Unary reads work on hosts where the long-lived Firestore stream is blocked.
   void poll();

@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Test-only emulator rules. Production Admin SDK calls use IAM and bypass
+    // firestore.rules; the REST fallback emulator does not emulate that bypass.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -113,6 +113,12 @@ export const queueDepths = (): Record<string, number> =>
 export const queueOldestPendingAges = (): Record<string, number> =>
   Object.fromEntries([...queues.entries()].map(([chatId, q]) => [String(chatId), q.oldestPendingAgeMs]));
 
-export async function stopAllQueues(): Promise<void> {
-  await Promise.all([...queues.values()].map(q => q.stop()));
+export async function stopAllQueues(reset = false): Promise<void> {
+  const active = [...queues.entries()];
+  await Promise.all(active.map(([, queue]) => queue.stop()));
+  if (reset) {
+    for (const [chatId, queue] of active) {
+      if (queues.get(chatId) === queue) queues.delete(chatId);
+    }
+  }
 }

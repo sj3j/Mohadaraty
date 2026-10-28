@@ -27,6 +27,7 @@ export function leaseRetryDelayMs(result: LeaseAcquireResult, attempt: number): 
     return Math.min(60_000, Math.max(2_000, result.remainingMs + 1_000));
   }
   if (result.status === 'LEASE_PERMISSION_DENIED') return 60_000;
+  if (result.status === 'LEASE_TRANSPORT_DENIED') return Math.min(60_000, 2 ** Math.min(attempt, 6) * 1_000);
   return Math.min(60_000, 2 ** Math.min(attempt, 6) * 1_000);
 }
 

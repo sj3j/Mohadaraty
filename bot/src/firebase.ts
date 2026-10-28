@@ -2,6 +2,7 @@ import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { env } from './env.ts';
+import { firestoreSettings } from './firestoreTransport.ts';
 
 /**
  * The Admin SDK handles for this process.
@@ -28,5 +29,6 @@ if (getApps().length === 0) {
 }
 
 export const db = getFirestore();
+db.settings(firestoreSettings(env.firestoreTransport));
 export const bucket = getStorage().bucket(env.firebase.storageBucket);
 export { FieldValue, Timestamp };

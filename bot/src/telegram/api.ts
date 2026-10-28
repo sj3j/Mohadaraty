@@ -74,13 +74,19 @@ function timeoutFor(payload: unknown): number {
  * was enough to kill the process two seconds after start - too fast for the
  * host's own restart policy to take it seriously.
  */
-async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<T> {
+async function call<T>(
+  method: string,
+  payload?: unknown,
+  attempt = 0,
+  externalSignal?: AbortSignal,
+): Promise<T> {
   try {
+    const timeoutSignal = AbortSignal.timeout(timeoutFor(payload));
     const response = await fetch(`${BASE}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload ?? {}),
-      signal: AbortSignal.timeout(timeoutFor(payload)),
+      signal: externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal,
     });
     return await parseResponse<T>(response, method);
   } catch (error) {
@@ -90,7 +96,7 @@ async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<
         : Math.min(30_000, 2 ** attempt * 1000);
       log.warn('tg.rate_limited', { method, retryAfter: error.retryAfter, waitMs, attempt });
       await new Promise(resolve => setTimeout(resolve, waitMs));
-      return call<T>(method, payload, attempt + 1);
+      return call<T>(method, payload, attempt + 1, externalSignal);
     }
     if (isNetworkError(error) && attempt < 4) {
       const waitMs = Math.min(15_000, 2 ** attempt * 1000);
@@ -100,7 +106,7 @@ async function call<T>(method: string, payload?: unknown, attempt = 0): Promise<
         ...errFields(error),
       });
       await new Promise(resolve => setTimeout(resolve, waitMs));
-      return call<T>(method, payload, attempt + 1);
+      return call<T>(method, payload, attempt + 1, externalSignal);
     }
     throw error;
   }
@@ -160,12 +166,12 @@ export const telegram = {
    * inline query the bot can see, and those consume update_ids the bot then has
    * to acknowledge.
    */
-  getUpdates: (offset: number, timeoutSeconds = 50) =>
+  getUpdates: (offset: number, timeoutSeconds = 50, signal?: AbortSignal) =>
     call<TgUpdate[]>('getUpdates', {
       offset,
       timeout: timeoutSeconds,
       allowed_updates: ['channel_post', 'edited_channel_post', 'my_chat_member'],
-    }),
+    }, 0, signal),
 
   /** Clears any registered webhook. A webhook and getUpdates are mutually
    *  exclusive - with one registered, getUpdates returns 409 forever. */

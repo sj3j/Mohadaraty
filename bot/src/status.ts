@@ -1,9 +1,10 @@
-import { db, FieldValue } from './firebase.ts';
+import { db } from './firebase.ts';
 import { env } from './env.ts';
 import { log } from './log.ts';
 import { queueDepths, queueOldestPendingAges } from './queue.ts';
 import { getConfigError } from './config.ts';
-import { leaseHealth } from './state.ts';
+import { holdsLease, leaseGeneration, leaseHealth } from './state.ts';
+import { statusWriteAllowed } from './statusOwnership.ts';
 
 /**
  * The bot's self-reported health, written to `admin_config/telegram_status`.
@@ -33,8 +34,11 @@ interface ChannelStatus {
 
 const channels: Record<string, ChannelStatus> = {};
 const counters: Record<string, number> = {};
-let pollState: 'polling' | 'backoff' | 'stalled' = 'polling';
+export type RuntimePhase = 'starting' | 'polling' | 'backoff' | 'stalled' | 'recovering';
+let pollState: RuntimePhase = 'starting';
 let inboxMetrics: Record<string, unknown> = {};
+let reporting = false;
+let bootedAt: string | null = null;
 
 export function updateInboxMetrics(next: Record<string, unknown>): void {
   inboxMetrics = next;
@@ -46,7 +50,7 @@ export function setPollState(next: typeof pollState): void {
     pollState = next;
     // A state transition is worth reporting immediately rather than waiting
     // out the debounce - it is exactly what someone opening the screen wants.
-    void flush(true);
+    if (canWriteStatus()) void flush(true);
   }
 }
 
@@ -100,14 +104,15 @@ let lastWriteAt = 0;
 /** At most one write every 30s. ~2,880/day, which is negligible - and enough
  *  for the UI to call the bot offline after two missed beats. */
 const MIN_INTERVAL_MS = 30_000;
+let heartbeatTimer: NodeJS.Timeout | null = null;
+let flushInFlight: Promise<void> | null = null;
 
-// Keep the admin screen truthful even when both directions are idle. Without
-// this heartbeat, `updatedAt` only changed when some other metric changed and
-// the UI declared a perfectly healthy bot offline after two minutes.
-const heartbeatTimer = setInterval(() => { void flush(true); }, MIN_INTERVAL_MS);
-heartbeatTimer.unref();
+export function canWriteStatus(): boolean {
+  return statusWriteAllowed(reporting, holdsLease(), leaseGeneration());
+}
 
 function schedule(): void {
+  if (!canWriteStatus()) return;
   if (timer) return;
   const wait = Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastWriteAt));
   timer = setTimeout(() => { timer = null; void flush(); }, wait);
@@ -115,13 +120,21 @@ function schedule(): void {
 }
 
 async function flush(immediate = false): Promise<void> {
+  if (!canWriteStatus()) return;
   if (!immediate && Date.now() - lastWriteAt < MIN_INTERVAL_MS) return schedule();
+  if (flushInFlight) return;
   lastWriteAt = Date.now();
 
-  try {
-    await db.collection('admin_config').doc('telegram_status').set({
+  const activeGeneration = leaseGeneration();
+  flushInFlight = (async () => {
+    try {
+      await db.collection('admin_config').doc('telegram_status').set({
       instanceId: env.instanceId,
       version: env.version,
+      bootedAt,
+      transport: env.firestoreTransport,
+      generation: activeGeneration,
+      runtimePhase: pollState,
       pollState,
       configError: getConfigError(),
       channels,
@@ -133,26 +146,60 @@ async function flush(immediate = false): Promise<void> {
       // An ISO string, not serverTimestamp: the UI computes heartbeat age from
       // it, and a sentinel would read back as null until the write lands.
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  } catch (error) {
-    log.warn('status.write_failed', { err: String(error) });
+      }, { merge: false });
+    } catch (error) {
+      log.warn('status.write_failed', {
+        generation: activeGeneration,
+        transport: env.firestoreTransport,
+        err: String(error),
+      });
+    }
+  })();
+
+  try {
+    await flushInFlight;
+  } finally {
+    flushInFlight = null;
   }
 }
 
-export async function reportBoot(): Promise<void> {
-  await db.collection('admin_config').doc('telegram_status').set({
-    instanceId: env.instanceId,
-    version: env.version,
-    bootedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    pollState: 'polling',
-    channels: {},
-    startedAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
+function clearRecord(record: Record<string, unknown>): void {
+  for (const key of Object.keys(record)) delete record[key];
+}
+
+/** Starts the single lease owner's complete, non-merge status heartbeat. */
+export async function startStatusReporting(): Promise<void> {
+  reporting = true;
+  bootedAt = new Date().toISOString();
+  pollState = 'starting';
+  clearRecord(channels as Record<string, unknown>);
+  clearRecord(counters as Record<string, unknown>);
+  inboxMetrics = {};
+  lastWriteAt = 0;
+  if (timer) clearTimeout(timer);
+  timer = null;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+
+  await flush(true);
+  heartbeatTimer = setInterval(() => { void flush(true); }, MIN_INTERVAL_MS);
+  heartbeatTimer.unref();
+}
+
+/** Prevents a stale or recovering generation from refreshing global status. */
+export async function stopStatusReporting(): Promise<void> {
+  reporting = false;
+  if (timer) clearTimeout(timer);
+  timer = null;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  await flushInFlight;
 }
 
 export const snapshot = () => ({
   pollState,
+  runtimePhase: pollState,
+  transport: env.firestoreTransport,
+  generation: leaseGeneration(),
   channels,
   counters,
   queueDepth: queueDepths(),

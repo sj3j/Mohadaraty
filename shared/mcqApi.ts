@@ -484,33 +484,130 @@ export function createMcqHandlers(deps: McqDeps) {
       return res.status(400).json({ error: 'storagePath is required' });
     }
     if (storagePath.includes('..')) return res.status(400).json({ error: 'bad_path' });
-    if (!ai) return res.status(503).json({ error: 'not_configured' });
+
+    // Check if at least one AI provider is available
+    if (!ai && !paidAi) {
+      const altKeys = await getActiveAlternativeKeys(admin);
+      if (!altKeys.length) {
+        return res.status(503).json({ error: 'not_configured' });
+      }
+    }
+
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'mylectures-app.firebasestorage.app';
+    let bucket: any;
+    try {
+      bucket = admin.storage().bucket(bucketName);
+    } catch {
+      bucket = admin.storage().bucket();
+    }
 
     try {
-      const file = admin.storage().bucket().file(storagePath);
+      const file = bucket.file(storagePath);
       const [exists] = await file.exists();
       if (!exists) return res.status(404).json({ error: 'file_not_found' });
 
       const [buf] = await file.download();
-      if (buf.length > MAX_INLINE_PDF_BYTES) return res.status(413).json({ error: 'pdf_too_large' });
+      if (buf.length > MAX_PDF_BYTES) return res.status(413).json({ error: 'pdf_too_large' });
 
-      const response = await ai.models.generateContent({
-        model: MCQ_MODEL,
-        contents: [{
-          role: 'user',
-          parts: [
-            { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } },
-            { text: BANK_EXTRACTION_PROMPT },
-          ],
-        }],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: BANK_EXTRACTION_SCHEMA as any,
-        },
-      });
+      const startTime = Date.now();
+      let response: any;
+      let primaryErr: any = null;
 
-      const parsed = JSON.parse(response.text || '{}');
-      res.json({ ok: true, questions: Array.isArray(parsed.questions) ? parsed.questions : [] });
+      const runWithGenAi = async (targetAi: any) => {
+        let uploadedFile: any = null;
+        let pdfPart: any;
+
+        if (buf.length <= 14 * 1024 * 1024) {
+          pdfPart = { inlineData: { data: buf.toString('base64'), mimeType: 'application/pdf' } };
+        } else {
+          const uploaded = await targetAi.files.upload({
+            file: new Blob([buf], { type: 'application/pdf' }),
+            config: { mimeType: 'application/pdf', displayName: `bank-extract-${Date.now()}` },
+          });
+          uploadedFile = uploaded;
+
+          let f = uploaded;
+          const deadline = Date.now() + 30_000;
+          while (f.state === 'PROCESSING' && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 700));
+            f = await targetAi.files.get({ name: f.name as string });
+          }
+          if (f.state !== 'ACTIVE' || !f.uri) {
+            throw new Error('pdf_too_large');
+          }
+          uploadedFile = f;
+          pdfPart = { fileData: { fileUri: f.uri, mimeType: f.mimeType || 'application/pdf' } };
+        }
+
+        try {
+          return await generateWithRetry(async () => {
+            return await targetAi.models.generateContent({
+              model: MCQ_MODEL,
+              contents: [{
+                role: 'user',
+                parts: [
+                  pdfPart,
+                  { text: BANK_EXTRACTION_PROMPT },
+                ],
+              }],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: BANK_EXTRACTION_SCHEMA as any,
+              },
+            });
+          }, startTime);
+        } finally {
+          if (uploadedFile?.name) {
+            targetAi.files.delete({ name: uploadedFile.name }).catch(() => {});
+          }
+        }
+      };
+
+      // 1. Primary free-tier AI
+      if (ai) {
+        try {
+          response = await runWithGenAi(ai);
+        } catch (err: any) {
+          primaryErr = err;
+          const classified = classifyFailure(err);
+          if (classified !== 'free_tier_limit' && classified !== 'not_configured') {
+            throw err;
+          }
+        }
+      }
+
+      // 2. Alternative keys fallback
+      if (!response) {
+        const altKeys = await getActiveAlternativeKeys(admin);
+        for (const altKey of altKeys) {
+          try {
+            const altAi = new GoogleGenAI({ apiKey: altKey.key });
+            response = await runWithGenAi(altAi);
+            break;
+          } catch (altErr: any) {
+            const altClassified = classifyFailure(altErr);
+            if (altClassified === 'free_tier_limit') {
+              await markAlternativeKeyStatus(admin, altKey.id, 'quota_exhausted');
+            } else if (altClassified === 'not_configured') {
+              await markAlternativeKeyStatus(admin, altKey.id, 'invalid');
+            }
+          }
+        }
+      }
+
+      // 3. Fallback to paid AI if available
+      if (!response) {
+        if (paidAi) {
+          console.warn('[mcq-extract] free tier & alternative keys quota exhausted. Attempting fallback with paid key');
+          response = await runWithGenAi(paidAi);
+        } else {
+          throw primaryErr || Object.assign(new Error('free_tier_limit'), { status: 429 });
+        }
+      }
+
+      const parsed = JSON.parse(response?.text || '{}');
+      const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+      res.json({ ok: true, questions });
     } catch (e: any) {
       const reason = classifyFailure(e);
       console.error('[mcq] extract failed', String(e?.message || e).slice(0, 200));

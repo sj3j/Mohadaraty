@@ -82,6 +82,11 @@ REQUIRED. The bot exits immediately with a named error if any is missing.
 
 OPTIONAL
   LOG_LEVEL                 debug | info (default) | warn | error
+  FIRESTORE_TRANSPORT       rest (default) | grpc
+                            Keep rest on Wispbyte. It uses HTTP/1.1 for reads,
+                            writes and transactions and polls configuration and
+                            outbound announcements every 30 seconds. grpc keeps
+                            snapshot listeners for hosts that support them.
   MIRROR_MAX_AGE_MS         default 86400000 (24h). Announcements older than
                             this are never mirrored outbound — the guard that
                             stops a first boot re-posting the back catalogue.
@@ -168,6 +173,9 @@ WHAT YOU SHOULD SEE IN THE CONSOLE
 ----------------------------------
   {"level":"info","event":"boot",...}
   {"level":"info","event":"tg.identity","botUserId":...}
+  {"level":"info","event":"config.stream_disabled","transport":"rest",...}
+  {"level":"info","event":"lease.acquired","generation":...}
+  {"level":"info","event":"runtime.started","transport":"rest"}
   {"level":"info","event":"state.offset_resumed","offset":...}
   {"level":"warn","event":"state.offset_missing_replay","offset":0,...}
   {"level":"info","event":"tg.channel_ok","stageId":"stage_3",...}
@@ -299,6 +307,14 @@ be read: ..."
     permission confirms that the intended service account lacks Firestore data
     access. IAM changes can take several minutes to propagate. The bot stays up,
     reports HTTP 503, and retries once per minute while access is repaired.
+
+"firestore_transport_denied" from /healthz, or "LEASE_TRANSPORT_DENIED" in logs
+    The host returned a generic HTTP 403 while the Firestore client was opening
+    its transport. This is distinct from an IAM denial. On Wispbyte, confirm
+    FIRESTORE_TRANSPORT=rest and that boot logs report firestoreTransport=rest.
+    REST mode deliberately avoids every onSnapshot listener, because creating
+    one makes the SDK switch the whole client back to gRPC. The process remains
+    alive, returns HTTP 503, and reacquires the lease when transport recovers.
 
 "lease_held_by_other" from /healthz
     A different instance owns the unexpired fenced poller lease. This is an

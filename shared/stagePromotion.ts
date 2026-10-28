@@ -245,6 +245,8 @@ export async function applyPromotion(
     batch.set(db.collection('students').doc(m.email), {
       stageId: plan.to,
       subgroup: m.subgroup,
+      tahmeelSubjects: [],
+      tahmeelStageId: FieldValue.delete(),
     }, { merge: true });
     ops++;
     result.studentsUpdated++;
@@ -255,6 +257,7 @@ export async function applyPromotion(
         stageId: plan.to,
         group: m.subgroup,          // what App.tsx actually gates on
         tahmeelSubjects: [],        // ids from the old stage; stale after a move
+        tahmeelStageId: FieldValue.delete(),
         ...completedProgressionFields(opts.progressionYear),
       };
       // Same rule as submitProgression: a representative or moderator represents

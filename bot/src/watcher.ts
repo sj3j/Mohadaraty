@@ -10,6 +10,7 @@ import {
   type OutboundDoc,
 } from './sync/outbound.ts';
 import { noteOutbound, markChannel } from './status.ts';
+import { firestoreStreamsEnabled } from './firestoreTransport.ts';
 
 /**
  * Firestore -> Telegram.
@@ -195,39 +196,38 @@ function attach(stageId: string): void {
     }
   };
 
-  const unsubscribe = query.onSnapshot(
-      snapshot => {
-        // Apply one snapshot sequentially. This supplies real backpressure to
-        // the bounded per-chat queue during reconnect bursts.
-        void (async () => {
-          for (const change of snapshot.docChanges()) {
-            if (change.type === 'removed') {
-              if (!known.has(change.doc.id)) continue;
-              known.delete(change.doc.id);
-              await handleRemoval(change.doc.id, change.doc.data());
-            } else {
-              await applyUpsert(
-                change.doc.id,
-                change.doc.data(),
-                change.doc.updateTime.toMillis(),
-                'stream',
-              );
+  const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
+    ? query.onSnapshot(
+        snapshot => {
+          // Apply one snapshot sequentially. This supplies real backpressure
+          // to the bounded per-chat queue during reconnect bursts.
+          void (async () => {
+            for (const change of snapshot.docChanges()) {
+              if (change.type === 'removed') {
+                if (!known.has(change.doc.id)) continue;
+                known.delete(change.doc.id);
+                await handleRemoval(change.doc.id, change.doc.data());
+              } else {
+                await applyUpsert(
+                  change.doc.id,
+                  change.doc.data(),
+                  change.doc.updateTime.toMillis(),
+                  'stream',
+                );
+              }
             }
-          }
-        })().catch(error => {
-          log.error('watcher.snapshot_failed', { stageId, ...errFields(error) });
+          })().catch(error => {
+            log.error('watcher.snapshot_failed', { stageId, ...errFields(error) });
+            markChannel(stageId, { state: 'degraded', lastError: String(error) });
+          });
+        },
+        error => {
+          log.error('listener.error', { stageId, ...errFields(error) });
           markChannel(stageId, { state: 'degraded', lastError: String(error) });
-        });
-      },
-      error => {
-        // A terminal listener error (PERMISSION_DENIED, UNAUTHENTICATED) is not
-        // retried by the SDK - the listener is simply dead. Re-attach with a
-        // delay rather than leaving the stage silently unmirrored.
-        log.error('listener.error', { stageId, ...errFields(error) });
-        markChannel(stageId, { state: 'degraded', lastError: String(error) });
-        void poll();
-      },
-    );
+          void poll();
+        },
+      )
+    : () => {};
 
   void poll();
   const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);
@@ -243,6 +243,7 @@ function attach(stageId: string): void {
     stageId,
     cutoff: cutoff.toDate().toISOString(),
     fallbackPollMs: WATCHER_POLL_MS,
+    transport: env.firestoreTransport,
   });
 }
 

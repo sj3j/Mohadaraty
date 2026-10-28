@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch server.ts",
@@ -55,6 +55,7 @@
     "test:timetable": "npx tsx scripts/timetable.test.ts",
     "test:timetable:fallback": "npx tsx scripts/timetableFallback.test.ts",
     "test:mcq:fallback": "npx tsx scripts/mcqPaidFallback.test.ts",
+    "test:mcq:extract": "npx tsx scripts/mcqExtract.test.ts",
     "test:homework": "npx tsx scripts/homeworkSchedule.test.ts",
     "test:offline": "npx tsx scripts/offlinePersistence.test.ts",
     "test:auth-session": "npx tsx scripts/authSession.test.ts",

@@ -83,9 +83,17 @@ export function startHealthServer(): void {
   }
 }
 
-export function startWatchdog(): void {
+export function startWatchdog(): () => void {
   const timer = setInterval(() => {
     const health = assess();
+
+    // A process without the lease is intentionally waiting in the supervisor.
+    // Restarting it would only recreate the same waiter and can trigger the
+    // panel's crash-loop suppression.
+    if (!holdsLease()) {
+      unhealthySince = null;
+      return;
+    }
 
     if (health.ok) {
       if (unhealthySince) log.info('health.recovered', {});
@@ -107,6 +115,10 @@ export function startWatchdog(): void {
     }
   }, 30_000);
   timer.unref();
+  return () => {
+    clearInterval(timer);
+    unhealthySince = null;
+  };
 }
 
 export function stopHealthServer(): void {

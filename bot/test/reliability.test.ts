@@ -1,4 +1,4 @@
-import { SerialQueue } from '../src/queue.ts';
+import { queueFor, SerialQueue, stopAllQueues } from '../src/queue.ts';
 import {
   albumIsReady, checkpointAfter, durablyReceiveBatch, retryDelayMs, safeBootstrapOffset,
 } from '../src/reliabilityCore.ts';
@@ -105,8 +105,12 @@ check('an empty skip can be promoted by a meaningful edit',
   isPromotableSkip({ announcementId: null, skipped: 'empty', messageIds: [9] }));
 check('a poll-only skip remains intentionally unsupported',
   !isPromotableSkip({ announcementId: null, skipped: 'poll_only', messageIds: [9] }));
-check('Firestore 403 is not mislabeled as a held lease',
-  classifyLeaseError(Object.assign(new Error('denied'), { code: 7 })) === 'LEASE_PERMISSION_DENIED');
+check('an explicit Firestore denial is classified as IAM permission',
+  classifyLeaseError(Object.assign(new Error('Missing or insufficient permissions.'), { code: 7 }))
+    === 'LEASE_PERMISSION_DENIED');
+check('the generic Wisp HTTP 403 is classified as a transport denial',
+  classifyLeaseError(Object.assign(new Error('7 PERMISSION_DENIED: Received HTTP status code 403'), { code: 7 }))
+    === 'LEASE_TRANSPORT_DENIED');
 check('Firestore unavailable is classified as transient service failure',
   classifyLeaseError(Object.assign(new Error('down'), { code: 14 })) === 'LEASE_SERVICE_UNAVAILABLE');
 check('retry delay grows but remains bounded',
@@ -151,6 +155,13 @@ const stopping = shutdownQueue.stop();
 releaseShutdown();
 await Promise.all([shutdownJob, stopping]);
 check('shutdown drains work that was already accepted', shutdownRan);
+
+const recoverableQueue = queueFor(-100999);
+await recoverableQueue.push('before-recovery', async () => undefined);
+await stopAllQueues(true);
+let freshQueueRan = false;
+await queueFor(-100999).push('after-recovery', async () => { freshQueueRan = true; });
+check('a recovered generation receives a fresh queue', freshQueueRan);
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed === 0 ? 0 : 1);

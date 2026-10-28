@@ -632,6 +632,7 @@ export default function App() {
               assignedStageId: userDoc.data().assignedStageId || undefined,
               assignedSubjects: userDoc.data().assignedSubjects || undefined,
               tahmeelSubjects: userDoc.data().tahmeelSubjects || undefined,
+              tahmeelStageId: userDoc.data().tahmeelStageId || undefined,
               hasCompletedProgression: userDoc.data().hasCompletedProgression === true,
               lastProgressionYear: userDoc.data().lastProgressionYear || undefined,
               progressionYear: userDoc.data().progressionYear || undefined,

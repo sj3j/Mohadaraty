@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs } from 'firebase/firestore';
-import { addBankQuestion } from '../../services/questionBankService';
-import { extractMCQsFromStoragePath } from '../../services/mcqGenerationService';
+import { addBankQuestion, bankLectureIdFor } from '../../services/questionBankService';
+import { extractMCQsFromStoragePath, AIUnavailableError } from '../../services/mcqGenerationService';
 import { storage } from '../../lib/firebase';
 import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
-import { X, Upload, Loader2, Edit3, Save, CheckCircle, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Upload, Loader2, Edit3, Save, CheckCircle, FileText, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { QuestionScope, QuestionTag, QuestionType, Difficulty } from '../../types/questionBank.types';
 import { motion, AnimatePresence } from 'motion/react';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
@@ -15,36 +15,6 @@ import { useStageContext } from '../../contexts/StageContext';
 import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
-
-const PDF_EXTRACTION_PROMPT = `
-You are an expert educational assistant designed to extract questions from documents.
-Extract ALL multiple-choice questions (MCQs) and normal questions from the provided document.
-The document may be in Arabic or English. Please preserve the original language and text.
-
-CRITICAL RULES:
-1. Extract the question text (stem).
-2. Extract the choices/options for the question. If no choices exist, infer reasonable choices or simply label them A, B, C, D of blank.
-3. If an answer is indicated, mark it as "correctAnswer". Otherwise, just pick the first option as fallback.
-4. "choices" MUST be an array of objects with "label" (A,B,C,D) and "text" (the actual choice text string).
-5. If the document indicates an exam session or year (e.g., الدور الأول 2024, or الدور 1 2024), extract it into a "session" field. Otherwise leave it empty.
-6. Output MUST be ONLY a JSON object with a "questions" array.
-
-Return strictly in this format:
-{
-  "questions": [
-    {
-      "stem": "Question text...",
-      "choices": [
-        {"label": "A", "text": "Choice A text"},
-        {"label": "B", "text": "Choice B text"}
-      ],
-      "correctAnswer": "Exact text of the correct choice",
-      "explanation": "Optional explanation or empty string",
-      "session": "Optional session string like الدور 1 2024 or empty string"
-    }
-  ]
-}
-`;
 
 
 
@@ -163,15 +133,72 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
 
       const parsedQuestions = await extractMCQsFromStoragePath(uploadedPath);
 
-      if (parsedQuestions.length === 0) {
+      if (!parsedQuestions || parsedQuestions.length === 0) {
         throw new Error('لم يتم العثور على أسئلة في الملف. حاول التأكد من محتوى الملف أو صيغته.');
       }
 
-      setExtractedQuestions(parsedQuestions);
+      // Normalise questions so correctAnswer strictly matches a valid choice text
+      const normalisedQuestions = parsedQuestions.map(q => {
+        const rawChoices = Array.isArray(q.choices) ? q.choices : [];
+        const choices = rawChoices.map((c: any, idx: number) => ({
+          label: c.label || String.fromCharCode(65 + idx),
+          text: typeof c.text === 'string' ? c.text.trim() : '',
+        })).filter((c: any) => c.text !== '');
+
+        let ans = typeof q.correctAnswer === 'string' ? q.correctAnswer.trim() : '';
+
+        // Match by label (e.g. "A", "B", "C", "D")
+        const byLabel = choices.find(c => c.label.toUpperCase() === ans.toUpperCase());
+        if (byLabel) {
+          ans = byLabel.text;
+        } else {
+          // Match by exact text directly
+          const byText = choices.find(c => c.text.toLowerCase() === ans.toLowerCase());
+          if (byText) {
+            ans = byText.text;
+          } else {
+            // Check if ans starts with label + "." or ")" (e.g. "A. Aspirin" or "B) Paracetamol")
+            const byPrefixed = choices.find(c =>
+              ans.toUpperCase().startsWith(`${c.label.toUpperCase()}.`) ||
+              ans.toUpperCase().startsWith(`${c.label.toUpperCase()})`)
+            );
+            if (byPrefixed) {
+              ans = byPrefixed.text;
+            } else if (choices.length > 0) {
+              ans = choices[0].text;
+            }
+          }
+        }
+
+        return {
+          ...q,
+          stem: q.stem || '',
+          choices,
+          correctAnswer: ans,
+          explanation: q.explanation || '',
+          session: q.session || '',
+        };
+      });
+
+      setExtractedQuestions(normalisedQuestions);
       setStage('review');
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'فشل استخراج الأسئلة من الملف');
+      let msg = err?.message || '';
+      if (err instanceof AIUnavailableError || msg.includes('free_tier_limit') || msg.includes('quota')) {
+        msg = 'الخدمة مشغولة أو تجاوزت حد الاستهلاك اليومي للذكاء الاصطناعي. يرجى المحاولة لاحقاً.';
+      } else if (msg.includes('unavailable')) {
+        msg = 'خدمة الذكاء الاصطناعي غير متوفرة مؤقتاً بسبب ضغط الطلبات. يرجى إعادة المحاولة بعد قليل.';
+      } else if (msg.includes('not_configured')) {
+        msg = 'مفتاح الذكاء الاصطناعي غير مهيأ بالخادم.';
+      } else if (msg.includes('pdf_too_large')) {
+        msg = 'حجم الملف كبير جداً للمعالجة. الحد الأقصى 20MB.';
+      } else if (msg.includes('manageMcqSystem')) {
+        msg = 'غير مصرح لك بإدارة واستخراج بنك الأسئلة.';
+      } else if (!msg || msg === 'AI_UNAVAILABLE' || msg === 'error' || msg === 'request_failed') {
+        msg = 'فشل استخراج الأسئلة من الملف. يرجى التأكد من وضوح محتوى الـ PDF وإعادة المحاولة.';
+      }
+      setError(msg);
       setStage('upload');
     } finally {
       // The upload is a courier, not a record. Questions are stored in
@@ -191,8 +218,23 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
   
   const handleUpdateChoice = (qIndex: number, cIndex: number, newText: string) => {
     const updated = [...extractedQuestions];
+    const oldText = updated[qIndex].choices[cIndex].text;
     updated[qIndex].choices[cIndex].text = newText;
+    // Keep correctAnswer synchronized if user edited the selected answer
+    if (updated[qIndex].correctAnswer === oldText) {
+      updated[qIndex].correctAnswer = newText;
+    }
     setExtractedQuestions(updated);
+  };
+
+  const handleDeleteQuestion = (indexToDelete: number) => {
+    const updated = extractedQuestions.filter((_, i) => i !== indexToDelete);
+    setExtractedQuestions(updated);
+    if (expandedQuestionIndex === indexToDelete) {
+      setExpandedQuestionIndex(null);
+    } else if (expandedQuestionIndex !== null && expandedQuestionIndex > indexToDelete) {
+      setExpandedQuestionIndex(expandedQuestionIndex - 1);
+    }
   };
 
   const handleSaveToBank = async () => {
@@ -201,6 +243,10 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
     setCompletedSaves(0);
 
     const _tags = Array.from(tags) as QuestionTag[];
+    const selectedLecture = lectures.find(l => l.id === lectureId);
+    const resolvedLectureId = selectedLecture ? bankLectureIdFor(selectedLecture) : lectureId;
+    const resolvedStageId = effectiveStageId || (subjectMeta as any)?.stageId || null;
+
     try {
       for (const q of extractedQuestions) {
         // filter out empty choices
@@ -214,11 +260,11 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
         await addBankQuestion({
           scope,
           subjectId,
-          stageId: effectiveStageId || null,
+          stageId: resolvedStageId,
           courseId: subjectMeta?.courseId || null,
           subjectName: subjectMeta?.subjectName || null,
           subjectNameAr: subjectMeta?.subjectNameAr || null,
-          lectureId: scope === 'lecture' ? lectureId : null,
+          lectureId: scope === 'lecture' ? resolvedLectureId : null,
           tags: questionTags,
           year: null, // AI pdf extraction doesn't imply a specific year unless requested
           type: 'mcq',
@@ -491,7 +537,20 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
                               )}
                             </div>
                           </div>
-                          {isExpanded ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteQuestion(qIndex);
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors"
+                              title="حذف هذا السؤال"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                            {isExpanded ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                          </div>
                         </div>
 
                         <AnimatePresence>

@@ -10,7 +10,12 @@ import { watchConfig, waitForConfigReady, getConfig, onConfigChange, publishActi
 import { startPolling, stopPolling } from './poll.ts';
 import { startWatchers } from './watcher.ts';
 import { startHealthServer, startWatchdog, stopHealthServer } from './health.ts';
-import { reportBoot, markChannel } from './status.ts';
+import {
+  markChannel,
+  setPollState,
+  startStatusReporting,
+  stopStatusReporting,
+} from './status.ts';
 import { stopAllQueues } from './queue.ts';
 import { MIRROR_STAGE_IDS } from '../../shared/telegramMirror.ts';
 
@@ -25,7 +30,26 @@ import { MIRROR_STAGE_IDS } from '../../shared/telegramMirror.ts';
 
 let botUserId = 0;
 let shuttingDown = false;
-let runtimeTeardown: (() => Promise<void>) | undefined;
+let shutdownReason = 'shutdown';
+let resolveShutdown!: (reason: string) => void;
+const shutdownSignal = new Promise<string>(resolve => { resolveShutdown = resolve; });
+
+function requestShutdown(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  shutdownReason = reason;
+  log.info('shutdown.requested', { reason });
+  resolveShutdown(reason);
+}
+
+async function sleepOrShutdown(ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    new Promise<void>(resolve => { timer = setTimeout(resolve, ms); }),
+    shutdownSignal.then(() => undefined),
+  ]);
+  if (timer) clearTimeout(timer);
+}
 
 /** Waits safely through overlap, IAM repair, and transient Firestore outages. */
 async function acquireLeaseUntilAvailable(): Promise<void> {
@@ -33,6 +57,7 @@ async function acquireLeaseUntilAvailable(): Promise<void> {
     acquire: acquireLease,
     shouldContinue: () => !shuttingDown,
     onWait: fields => log.warn('boot.waiting_for_lease', { ...fields }),
+    sleep: sleepOrShutdown,
   });
 }
 
@@ -130,6 +155,7 @@ async function main(): Promise<void> {
     // the source, and this line is the only place that would ever say so.
     credentialSource: env.firebase.source,
     repairedBy: env.firebase.repairedBy,
+    firestoreTransport: env.firestoreTransport,
     // Printed before the first Telegram call on purpose: when the token is
     // rejected, this is the only line that says WHICH token was tried.
     botTokenFingerprint: env.botTokenFingerprint,
@@ -138,8 +164,9 @@ async function main(): Promise<void> {
   // Start diagnostics and signal handling before any remote dependency. During
   // IAM repair the process stays alive and /healthz names the lease failure.
   startHealthServer();
-  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
-  process.once('SIGINT', () => { void shutdown('SIGINT'); });
+  process.once('SIGTERM', () => { requestShutdown('SIGTERM'); });
+  process.once('SIGINT', () => { requestShutdown('SIGINT'); });
+  const stopWatchdog = startWatchdog();
 
   const me = await reachTelegram();
   botUserId = me.id;
@@ -157,56 +184,92 @@ async function main(): Promise<void> {
     await telegram.deleteWebhook();
   }
 
-  await acquireLeaseUntilAvailable();
-  startLeaseRenewal(() => { void shutdown('lease-lost'); });
-
-  await reportBoot();
-
-  const unwatchConfig = watchConfig();
-  // The first valid snapshot is an explicit readiness barrier. A timer cannot
-  // prove the channel map was loaded and risks acknowledging an unmapped post.
-  await waitForConfigReady();
-
-  await publishActiveStages();
-  await verifyChannels();
-  onConfigChange(() => { void verifyChannels(); });
-  // Membership can be revoked without any config change, so re-check on a timer.
-  setInterval(() => { void verifyChannels(); }, 15 * 60_000).unref();
-
-  const stopWatchers = startWatchers();
-  startWatchdog();
-
-  runtimeTeardown = async () => {
-    unwatchConfig();
-    stopWatchers();
-  };
-
-  await startPolling();
-}
-
-/**
- * Stops taking new work, lets in-flight work finish, then exits.
- *
- * The drain matters: a SIGTERM mid-batch loses nothing, because the offset was
- * never advanced - but it would leave Telegram to redeliver work that is
- * already half-applied. Finishing the queues first keeps that rare.
- */
-async function shutdown(reason: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  log.info('shutdown', { reason });
-
   try {
-    await stopPolling();
-    await stopAllQueues();
-    await runtimeTeardown?.();
-    stopLeaseRenewal();
-    await releaseLease();
-  } catch (error) {
-    log.error('shutdown.failed', errFields(error));
+    while (!shuttingDown) {
+      setPollState('recovering');
+      try {
+        await acquireLeaseUntilAvailable();
+      } catch (error) {
+        if (error instanceof LeaseWaitAbortedError && shuttingDown) break;
+        throw error;
+      }
+      if (shuttingDown) break;
+
+      let resolveLeaseLost!: () => void;
+      const leaseLost = new Promise<void>(resolve => { resolveLeaseLost = resolve; });
+      let unwatchConfig: () => void = () => {};
+      let stopWatchers: () => void = () => {};
+      let offConfigVerify: () => void = () => {};
+      let channelVerifyTimer: NodeJS.Timeout | null = null;
+      let pollingPromise: Promise<void> | null = null;
+
+      startLeaseRenewal(() => {
+        setPollState('recovering');
+        void stopPolling();
+        void stopStatusReporting();
+        resolveLeaseLost();
+      });
+
+      try {
+        await startStatusReporting();
+        unwatchConfig = watchConfig();
+        // A timer cannot prove the channel map was loaded. Do not acknowledge
+        // Telegram updates until a valid map has actually been read.
+        await waitForConfigReady();
+
+        await publishActiveStages();
+        await verifyChannels();
+        offConfigVerify = onConfigChange(() => { void verifyChannels(); });
+        channelVerifyTimer = setInterval(() => { void verifyChannels(); }, 15 * 60_000);
+        channelVerifyTimer.unref();
+
+        stopWatchers = startWatchers();
+        log.info('runtime.started', {
+          transport: env.firestoreTransport,
+        });
+
+        pollingPromise = startPolling();
+        const outcome = await Promise.race([
+          pollingPromise.then(() => 'polling-ended' as const),
+          leaseLost.then(() => 'lease-lost' as const),
+          shutdownSignal.then(() => 'shutdown' as const),
+        ]);
+        log.warn('runtime.stopping', { outcome });
+      } catch (error) {
+        if (!shuttingDown) log.error('runtime.failed', errFields(error));
+      } finally {
+        // Stop every producer before draining the queues. No callback or timer
+        // from an old lease generation may survive into the next one.
+        await stopPolling();
+        if (pollingPromise) {
+          try {
+            await pollingPromise;
+          } catch (error) {
+            if (!shuttingDown) log.warn('poll.teardown_failed', errFields(error));
+          }
+        }
+        unwatchConfig();
+        stopWatchers();
+        offConfigVerify();
+        if (channelVerifyTimer) clearInterval(channelVerifyTimer);
+        await stopAllQueues(true);
+        await stopStatusReporting();
+        stopLeaseRenewal();
+        await releaseLease();
+      }
+
+      if (!shuttingDown) {
+        setPollState('recovering');
+        log.warn('runtime.recovering', { transport: env.firestoreTransport });
+        await sleepOrShutdown(2_000);
+      }
+    }
+  } finally {
+    stopWatchdog();
+    stopHealthServer();
   }
-  stopHealthServer();
-  process.exit(reason === 'lease-lost' ? 1 : 0);
+
+  log.info('shutdown.complete', { reason: shutdownReason });
 }
 
 /**

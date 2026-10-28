@@ -13,6 +13,7 @@ import { setPollState } from './status.ts';
  */
 
 let running = false;
+let pollAbort: AbortController | null = null;
 let lastSuccessfulPollAt = Date.now();
 let lastReceivedAt = 0;
 export const lastPollAt = (): number => lastSuccessfulPollAt;
@@ -25,7 +26,7 @@ async function receiveLoop(): Promise<void> {
 
   while (running && holdsLease()) {
     try {
-      const updates = await telegram.getUpdates(offset);
+      const updates = await telegram.getUpdates(offset, 50, pollAbort?.signal);
       lastSuccessfulPollAt = Date.now();
       backoffMs = 1_000;
       setPollState('polling');
@@ -47,6 +48,7 @@ async function receiveLoop(): Promise<void> {
         lastReceivedAt = Date.now();
       }
     } catch (error) {
+      if (!running || !holdsLease()) break;
       setPollState('backoff');
       log.warn('poll.error', { backoffMs, ...errFields(error) });
       const jitter = Math.random() * 0.3 * backoffMs;
@@ -60,13 +62,21 @@ async function receiveLoop(): Promise<void> {
 }
 
 export async function startPolling(): Promise<void> {
+  if (running) throw new Error('Telegram polling is already running');
   running = true;
-  await Promise.all([
-    receiveLoop(),
-    runInboxWorker(() => running && holdsLease()),
-  ]);
+  pollAbort = new AbortController();
+  try {
+    await Promise.all([
+      receiveLoop(),
+      runInboxWorker(() => running && holdsLease()),
+    ]);
+  } finally {
+    running = false;
+    pollAbort = null;
+  }
 }
 
 export async function stopPolling(): Promise<void> {
   running = false;
+  pollAbort?.abort(new Error('Telegram polling stopped'));
 }

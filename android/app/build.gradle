@@ -18,10 +18,10 @@ android {
         applicationId "com.mohadaraty.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // Play requires versionCode to be strictly greater than anything already
-        // uploaded; code 21 is live, so this compatibility release is code 22.
-        versionCode 22
-        versionName "1.3.1"
+        // Play requires versionCode to be strictly greater than every build
+        // already uploaded. Version 1.4.0 advances the release code to 23.
+        versionCode 23
+        versionName "1.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { normalizePrivateKey, describePrivateKey, PrivateKeyFormatError } from './privateKey.ts';
 import { decodeServiceAccount, ServiceAccountFormatError, type Repair } from './serviceAccount.ts';
 import { parseBotToken, BotTokenFormatError } from './botToken.ts';
+import { parseFirestoreTransport } from './firestoreTransport.ts';
 
 /**
  * Environment, parsed and validated once at boot.
@@ -181,6 +182,13 @@ function requiredBotToken() {
 
 const botToken = requiredBotToken();
 
+let firestoreTransport: ReturnType<typeof parseFirestoreTransport>;
+try {
+  firestoreTransport = parseFirestoreTransport(process.env.FIRESTORE_TRANSPORT);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+
 export const env = {
   telegramBotToken: botToken.token,
   /** Public: the digits before the colon are the bot's own user id. */
@@ -211,6 +219,7 @@ export const env = {
   /** Identifies this container in the lease and the status document. */
   instanceId: process.env.INSTANCE_ID || `bot-${process.pid}-${Date.now().toString(36)}`,
   version: process.env.GIT_SHA || process.env.BOT_BUILD_VERSION || 'dev',
+  firestoreTransport,
 
   /**
    * Announcements older than this are never mirrored outbound.
