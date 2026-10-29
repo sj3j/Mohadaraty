@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { UserProfile, Language, TRANSLATIONS, Lecture } from '../types';
-import { Flame, BookOpen, Search, Upload, X, Clock, Sparkles } from 'lucide-react';
+import { UserProfile, Language, TRANSLATIONS, Lecture, COURSE_IDS, DEFAULT_COURSE_ID } from '../types';
+import { Flame, Search, Upload, X, Clock, Sparkles } from 'lucide-react';
 import { canManage } from '../lib/permissions';
 import { useStageContext } from '../contexts/StageContext';
 import SubjectBrowser from './SubjectBrowser';
@@ -11,6 +11,9 @@ import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
 import PersonalSpaceTab from './PersonalSpaceTab';
 import { type UserFile } from '../lib/localDb';
+import CourseTabs from './CourseTabs';
+import TahmeelSubjectsView from './TahmeelSubjectsView';
+import { useStageSubjects } from '../hooks/useStageSubjects';
 
 type InnerTab = 'lectures' | 'weekly' | 'records' | 'leaderboard' | 'downloads';
 
@@ -63,12 +66,23 @@ export default function HomeScreen({
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   const { isPendingProgression, provisionalStages, selectedStudentStage, setSelectedStudentStage, effectiveStageId } = useStageContext();
+  const { subjects: stageSubjects } = useStageSubjects();
+  const hasTahmeel = Boolean(user?.tahmeelSubjects?.length);
+  const [tahmeelActive, setTahmeelActive] = useState(false);
+  const courseCounts = COURSE_IDS.reduce((counts, courseId) => {
+    counts[courseId] = stageSubjects.filter(subject => (subject.courseId || DEFAULT_COURSE_ID) === courseId).length;
+    return counts;
+  }, {} as Record<(typeof COURSE_IDS)[number], number>);
   
   const [activeTab, setActiveTab] = useState<InnerTab>(initialTab);
 
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (!hasTahmeel) setTahmeelActive(false);
+  }, [hasTahmeel]);
 
 
   const getGreeting = () => {
@@ -262,14 +276,30 @@ export default function HomeScreen({
 
       {/* Content Area */}
       <div className="relative">
-        {activeTab === 'lectures' && (() => {
-          const currentLectures = lectures.filter(l => !user?.tahmeelSubjects?.includes(l.subjectId || ''));
-          const tahmeelLectures = lectures.filter(l => user?.tahmeelSubjects?.includes(l.subjectId || ''));
-          
-          return (
-            <div className="space-y-12">
+        {activeTab === 'lectures' && (
+          <div className="space-y-6">
+            {(stageSubjects.length > 0 || hasTahmeel) && (
+              <CourseTabs
+                lang={lang}
+                counts={courseCounts}
+                showTahmeel={hasTahmeel}
+                tahmeelActive={tahmeelActive}
+                tahmeelCount={user?.tahmeelSubjects?.length}
+                onTahmeelActiveChange={setTahmeelActive}
+              />
+            )}
+            {tahmeelActive && user ? (
+              <TahmeelSubjectsView
+                user={user}
+                lang={lang}
+                searchQuery={searchQuery}
+                onOpenMCQ={onOpenMCQ}
+                onOpenReader={onOpenReader}
+                onShowPaywall={onShowPaywall}
+              />
+            ) : (
               <SubjectBrowser
-                lectures={currentLectures}
+                lectures={lectures}
                 lang={lang}
                 user={user}
                 searchQuery={searchQuery}
@@ -280,36 +310,11 @@ export default function HomeScreen({
                 onOpenMCQ={onOpenMCQ}
                 onOpenReader={onOpenReader}
                 onShowPaywall={onShowPaywall}
+                showCourseTabs={false}
               />
-              
-              {tahmeelLectures.length > 0 && (
-                <div className="border-t border-slate-200 dark:border-zinc-800 pt-8">
-                  <div className="flex items-center gap-3 mb-6 px-2 sm:px-0">
-                    <div className="w-10 h-10 rounded-xl bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
-                      <BookOpen className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
-                    </div>
-                    <h2 className="text-2xl font-black text-slate-900 dark:text-stone-100">
-                      {isRtl ? 'مواد التحميل' : 'Carry-over Subjects'}
-                    </h2>
-                  </div>
-                  <SubjectBrowser
-                    lectures={tahmeelLectures}
-                    lang={lang}
-                    user={user}
-                    searchQuery={searchQuery}
-                    isLoading={isLoading}
-                    lectureLoadState={lectureLoadState}
-                    onRetryLectures={onRetryLectures}
-                    onEdit={onEdit}
-                    onOpenMCQ={onOpenMCQ}
-                    onOpenReader={onOpenReader}
-                    onShowPaywall={onShowPaywall}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })()}
+            )}
+          </div>
+        )}
         {activeTab === 'downloads' && (
           <PersonalSpaceTab
             user={user}

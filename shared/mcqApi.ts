@@ -35,10 +35,21 @@ export interface McqDeps {
   paidApiKey?: string;
   ai?: any;
   paidAi?: any;
+  storageBucket?: string;
 }
 
 export function createMcqHandlers(deps: McqDeps) {
   const { admin } = deps;
+  const resolvedBucketName =
+    deps.storageBucket ||
+    process.env.FIREBASE_STORAGE_BUCKET ||
+    admin.app?.()?.options?.storageBucket ||
+    'mylectures-app.firebasestorage.app';
+
+  function getStorageBucket() {
+    return admin.storage().bucket(resolvedBucketName);
+  }
+
   const apiKey = deps.apiKey || process.env.GEMINI_FREE_TIER_API_KEY;
   const paidApiKey = deps.paidApiKey || process.env.GEMINI_API_KEY;
   const ai = deps.ai !== undefined ? deps.ai : (apiKey ? new GoogleGenAI({ apiKey }) : null);
@@ -493,16 +504,8 @@ export function createMcqHandlers(deps: McqDeps) {
       }
     }
 
-    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'mylectures-app.firebasestorage.app';
-    let bucket: any;
     try {
-      bucket = admin.storage().bucket(bucketName);
-    } catch {
-      bucket = admin.storage().bucket();
-    }
-
-    try {
-      const file = bucket.file(storagePath);
+      const file = getStorageBucket().file(storagePath);
       const [exists] = await file.exists();
       if (!exists) return res.status(404).json({ error: 'file_not_found' });
 

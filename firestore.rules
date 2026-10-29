@@ -238,14 +238,15 @@ service cloud.firestore {
         'email' in request.auth.token && request.auth.token.email != null &&
         data.userEmail.lower() == request.auth.token.email.lower() &&
         data.userName is string && data.userName.size() > 0 && data.userName.size() <= 200 &&
-        data.plan in ['monthly', 'seasonal', 'semi_annual'] &&
+        data.plan in ['monthly', 'seasonal', 'semi_annual', 'annual'] &&
         data.status == 'pending' &&
         data.startDate == null && data.endDate == null &&
         data.paymentMethod == 'superkey' &&
         data.amount is int &&
         ((data.plan == 'monthly' && data.amount == 2000) ||
          (data.plan == 'seasonal' && data.amount == 5000) ||
-         (data.plan == 'semi_annual' && data.amount == 9000)) &&
+         (data.plan == 'semi_annual' && data.amount == 9000) ||
+         (data.plan == 'annual' && data.amount == 12000)) &&
         data.createdAt is timestamp && data.createdAt == request.time &&
         (!('transactionId' in data) ||
           (data.transactionId is string && data.transactionId.size() > 0 && data.transactionId.size() <= 100)) &&
@@ -424,6 +425,8 @@ service cloud.firestore {
              (!('pendingProgressionYear' in data) || data.pendingProgressionYear == null ||
                (data.pendingProgressionYear is string && data.pendingProgressionYear.size() <= 32)) &&
              (!('pendingProgressionSetAt' in data) || data.pendingProgressionSetAt == null || data.pendingProgressionSetAt is timestamp) &&
+             (!('tahmeelSubjects' in data) || data.tahmeelSubjects is list) &&
+             (!('tahmeelStageId' in data) || data.tahmeelStageId is string) &&
              (!('subscriptionBannerTheme' in data) || data.subscriptionBannerTheme in ['gold', 'pink', 'black', 'white']);
     }
 
@@ -465,12 +468,20 @@ service cloud.firestore {
       return hasCurrentPendingProgression(user);
     }
 
+    function hasLiveSubscription(user) {
+      return user.get('isSubscribed', false) == true &&
+             (user.get('subscriptionEnd', null) == null ||
+              user.get('subscriptionEnd', null) > request.time);
+    }
+
     function hasStageAccess(stageId, subjectId) {
       let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
       let user = userDoc != null ? userDoc.data : {};
       return user.get('stageId', '') == stageId ||
              (hasCurrentPendingProgression(user) && user.get('pendingStageId', '') == stageId) ||
-             (subjectId != '' && subjectId in user.get('tahmeelSubjects', []));
+             (hasLiveSubscription(user) &&
+              stageId == user.get('tahmeelStageId', '') &&
+              subjectId != '' && subjectId in user.get('tahmeelSubjects', []));
     }
 
     // ===============================================================

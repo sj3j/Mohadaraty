@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, Settings, KeyRound, Copy, RotateCcw, ArrowRightLeft, Image as ImageIcon } from 'lucide-react';
+import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, BookMarked, Settings, KeyRound, Copy, RotateCcw, ArrowRightLeft, Image as ImageIcon } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
 import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
-import { Language, TRANSLATIONS, Student, UserProfile } from '../types';
+import { Language, TRANSLATIONS, Student, UserProfile, Subject } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { hashPassword } from '../lib/hash';
 import { logAdminAction } from '../services/adminLogService';
@@ -99,6 +99,11 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
   const [panel, setPanel] = useState<'roster' | 'add' | 'import' | 'requests' | 'attachments' | 'codes'>('roster');
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
   const [isFetchingProfile, setIsFetchingProfile] = useState(false);
+  const [tahmeelOptions, setTahmeelOptions] = useState<Subject[]>([]);
+  const [tahmeelDraft, setTahmeelDraft] = useState<string[]>([]);
+  const [isLoadingTahmeel, setIsLoadingTahmeel] = useState(false);
+  const [isSavingTahmeel, setIsSavingTahmeel] = useState(false);
+  const [tahmeelMessage, setTahmeelMessage] = useState<string | null>(null);
 
   // --- Individual Student Stage Transfer State ---
   const [transferStudent, setTransferStudent] = useState<Student | null>(null);
@@ -341,12 +346,39 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
 
 
 
+  const loadTahmeelOptions = async (profile: UserProfile) => {
+    setTahmeelDraft(profile.tahmeelSubjects || []);
+    setTahmeelOptions([]);
+    setTahmeelMessage(null);
+    if (!hasGlobalScope || !profile.stageId) return;
+    const current = stages.find(stage => stage.id === profile.stageId);
+    const previous = current
+      ? stages.filter(stage => stage.order < current.order).sort((a, b) => b.order - a.order)[0]
+      : undefined;
+    if (!previous) return;
+    setIsLoadingTahmeel(true);
+    try {
+      const snapshot = await getDocs(query(collection(db, 'subjects'), where('stageId', '==', previous.id)));
+      setTahmeelOptions(snapshot.docs
+        .map(doc => doc.data() as Subject)
+        .filter(subject => subject.isActive !== false)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
+    } catch (err) {
+      console.error('Could not load previous-stage subjects:', err);
+      setTahmeelMessage(isRtl ? 'تعذّر تحميل مواد المرحلة السابقة' : 'Could not load previous-stage subjects');
+    } finally {
+      setIsLoadingTahmeel(false);
+    }
+  };
+
   const handleViewProfile = async (userUid: string) => {
     setIsFetchingProfile(true);
     try {
       const userSnap = await getDoc(doc(db, 'users', userUid));
       if (userSnap.exists()) {
-        setViewingProfile(userSnap.data() as UserProfile);
+        const profile = { uid: userSnap.id, ...userSnap.data() } as UserProfile;
+        setViewingProfile(profile);
+        await loadTahmeelOptions(profile);
       } else {
         setError(isRtl ? 'لم يتم العثور على ملف تعريف الطالب' : 'Student profile not found');
       }
@@ -355,6 +387,50 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       setError('Error fetching profile');
     } finally {
       setIsFetchingProfile(false);
+    }
+  };
+
+  const handleOpenRosterTahmeel = async (student: Student) => {
+    const email = student.baseStudentId || student.email || student.id;
+    const profile = {
+      uid: student.userUid || '',
+      name: student.name,
+      email,
+      role: 'student',
+      stageId: student.stageId,
+      tahmeelSubjects: student.tahmeelSubjects || [],
+      tahmeelStageId: student.tahmeelStageId,
+    } as UserProfile;
+    setViewingProfile(profile);
+    await loadTahmeelOptions(profile);
+  };
+
+  const handleSaveTahmeel = async () => {
+    if (!viewingProfile?.email || !hasGlobalScope) return;
+    setIsSavingTahmeel(true);
+    setTahmeelMessage(null);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('Authentication required');
+      const response = await fetch(apiUrl(`/api/admin/students/${encodeURIComponent(viewingProfile.email)}/tahmeel`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ tahmeelSubjects: tahmeelDraft }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Could not update carried subjects');
+      setViewingProfile(profile => profile ? {
+        ...profile,
+        tahmeelSubjects: data.tahmeelSubjects,
+        tahmeelStageId: data.tahmeelStageId || undefined,
+      } : profile);
+      setTahmeelMessage(isRtl ? 'تم تحديث مواد التحميل' : 'Carry-over subjects updated');
+      await logAdminAction('UPDATE_STUDENT_TAHMEEL', `Updated carried subjects for ${viewingProfile.email}`);
+    } catch (err: any) {
+      console.error('Could not update carried subjects:', err);
+      setTahmeelMessage(err.message || (isRtl ? 'تعذّر تحديث مواد التحميل' : 'Could not update carried subjects'));
+    } finally {
+      setIsSavingTahmeel(false);
     }
   };
 
@@ -386,6 +462,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
           hasCompletedProgression: false,
           graduated: false,
           tahmeelSubjects: [],
+          tahmeelStageId: undefined,
         });
       }
       await logAdminAction('RESET_STUDENT_PROGRESSION', `Reset progression for student ${email || uid}`);
@@ -426,6 +503,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
             createdAt: userData.createdAt || null,
             role: userData.role || 'student',
             stageId: userData.stageId || effectiveStageId || undefined,
+            tahmeelSubjects: userData.tahmeelSubjects || [],
+            tahmeelStageId: userData.tahmeelStageId,
           });
         }
       });
@@ -514,6 +593,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
             freezeTokens: 0,
             isAuthAccountOnly: false,
             stageId: data.stageId || effectiveStageId || undefined,
+            tahmeelSubjects: data.tahmeelSubjects || [],
+            tahmeelStageId: data.tahmeelStageId,
           });
         } else {
           userProfiles.forEach((profile: any, index: number) => {
@@ -538,6 +619,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
               hasMultiple: userProfiles.length > 1,
               role: profile.role,
               stageId: data.stageId || profile.stageId || effectiveStageId || undefined,
+              tahmeelSubjects: profile.tahmeelSubjects || data.tahmeelSubjects || [],
+              tahmeelStageId: profile.tahmeelStageId || data.tahmeelStageId,
             });
           });
         }
@@ -705,6 +788,15 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                           title={isRtl ? 'عرض الملف الشخصي' : 'View Profile'}
                         >
                           <User className="w-4 h-4" />
+                        </button>
+                      )}
+                      {hasGlobalScope && !student.userUid && !student.isAuthAccountOnly && (
+                        <button
+                          onClick={() => handleOpenRosterTahmeel(student)}
+                          className="p-2 text-amber-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors"
+                          title={isRtl ? 'تعديل مواد التحميل' : 'Edit carry-over subjects'}
+                        >
+                          <BookMarked className="w-4 h-4" />
                         </button>
                       )}
                       {student.hasMultiple && (
@@ -2195,11 +2287,63 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
                       </span>
                     </div>
                     {viewingProfile.tahmeelSubjects && viewingProfile.tahmeelSubjects.length > 0 && (
-                      <div className="flex justify-between items-center text-sm">
+                      <div className="flex justify-between items-start gap-3 text-sm">
                         <span className="text-slate-500 dark:text-slate-400">{isRtl ? 'المواد المحمّلة' : 'Carried Subjects'}</span>
-                        <span className="font-mono text-xs font-bold text-sky-600 dark:text-sky-400">
-                          {viewingProfile.tahmeelSubjects.join(', ')}
-                        </span>
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          {viewingProfile.tahmeelSubjects.map(subjectId => {
+                            const subject = tahmeelOptions.find(option => option.id === subjectId);
+                            return (
+                              <span key={subjectId} className="px-2 py-1 rounded-lg text-xs font-bold bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+                                {subject ? (isRtl ? subject.nameAr : subject.nameEn) : subjectId}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {hasGlobalScope && (
+                      <div className="mt-2 p-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900/60">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-xs font-black text-slate-700 dark:text-slate-200">
+                            {isRtl ? 'تعديل مواد التحميل من المرحلة السابقة' : 'Edit previous-stage carry-over subjects'}
+                          </span>
+                          {isLoadingTahmeel && <Loader2 className="w-4 h-4 animate-spin text-sky-500" />}
+                        </div>
+                        {!isLoadingTahmeel && tahmeelOptions.length === 0 ? (
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {isRtl ? 'لا توجد مرحلة سابقة أو مواد متاحة.' : 'No previous stage or available subjects.'}
+                          </p>
+                        ) : (
+                          <div className="max-h-36 overflow-y-auto space-y-1.5">
+                            {tahmeelOptions.map(subject => (
+                              <label key={subject.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={tahmeelDraft.includes(subject.id)}
+                                  onChange={() => setTahmeelDraft(current => current.includes(subject.id)
+                                    ? current.filter(id => id !== subject.id)
+                                    : [...current, subject.id])}
+                                  className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500"
+                                />
+                                <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                                  {isRtl ? subject.nameAr : subject.nameEn}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        {tahmeelMessage && (
+                          <p className="mt-2 text-xs font-bold text-center text-sky-600 dark:text-sky-400">{tahmeelMessage}</p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleSaveTahmeel}
+                          disabled={isSavingTahmeel || isLoadingTahmeel}
+                          className="mt-3 w-full py-2 px-3 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"
+                        >
+                          {isSavingTahmeel && <Loader2 className="w-4 h-4 animate-spin" />}
+                          {isRtl ? 'حفظ مواد التحميل' : 'Save carry-over subjects'}
+                        </button>
                       </div>
                     )}
                     {progressionResetMessage && (

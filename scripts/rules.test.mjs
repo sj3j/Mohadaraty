@@ -214,6 +214,28 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'lectures/lec1'), { title: 'L1', stageId: 'stage_3', category: 'biochemistry' });
   await setDoc(doc(db, 'lectures/lec_s4'), { title: 'Lec 4', stageId: 'stage_4' });
   await setDoc(doc(db, 'lectures/lec_s5'), { title: 'Lec 5', stageId: 'stage_5' });
+  await setDoc(doc(db, 'lectures/lec_tahmeel'), {
+    title: 'Carried Biochemistry', stageId: 'stage_3', subjectId: 'biochemistry_ii', createdAt: new Date(),
+  });
+  await setDoc(doc(db, 'lectures/lec_reused_subject'), {
+    title: 'Reused slug in wrong stage', stageId: 'stage_2', subjectId: 'biochemistry_ii', createdAt: new Date(),
+  });
+  const futureSubscription = new Date('2099-01-01T00:00:00Z');
+  const expiredSubscription = new Date('2020-01-01T00:00:00Z');
+  await setDoc(doc(db, 'users/tah_paid_uid'), {
+    role: 'student', email: 'tahpaid@x.com', stageId: 'stage_4',
+    tahmeelStageId: 'stage_3', tahmeelSubjects: ['biochemistry_ii'],
+    isSubscribed: true, subscriptionEnd: futureSubscription,
+  });
+  await setDoc(doc(db, 'users/tah_free_uid'), {
+    role: 'student', email: 'tahfree@x.com', stageId: 'stage_4',
+    tahmeelStageId: 'stage_3', tahmeelSubjects: ['biochemistry_ii'], isSubscribed: false,
+  });
+  await setDoc(doc(db, 'users/tah_expired_uid'), {
+    role: 'student', email: 'tahexpired@x.com', stageId: 'stage_4',
+    tahmeelStageId: 'stage_3', tahmeelSubjects: ['biochemistry_ii'],
+    isSubscribed: true, subscriptionEnd: expiredSubscription,
+  });
 
   // Student in provisional access mode (awaiting confirmation)
   await setDoc(doc(db, 'users/stu_pending_uid'), {
@@ -382,6 +404,25 @@ const supportLegacy = ctxFor('suplegacy_uid', 'suplegacy@x.com');
 const supportDisabled = ctxFor('supdisabled_uid', 'supdisabled@x.com');
 const repDisabled = ctxFor('rep_disabled_uid', 'repdisabled@x.com');
 const liveRole = ctxFor('live_role_uid', 'liverole@x.com');
+const tahmeelPaid = ctxFor('tah_paid_uid', 'tahpaid@x.com');
+const tahmeelFree = ctxFor('tah_free_uid', 'tahfree@x.com');
+const tahmeelExpired = ctxFor('tah_expired_uid', 'tahexpired@x.com');
+
+console.log('\nCarry-over lecture access is stage-bound and subscription-only');
+await check('subscribed student CAN read a selected previous-stage lecture',
+  assertSucceeds(getDoc(doc(tahmeelPaid, 'lectures/lec_tahmeel'))));
+await check('unsubscribed student CANNOT read a selected previous-stage lecture',
+  assertFails(getDoc(doc(tahmeelFree, 'lectures/lec_tahmeel'))));
+await check('expired student CANNOT read a selected previous-stage lecture',
+  assertFails(getDoc(doc(tahmeelExpired, 'lectures/lec_tahmeel'))));
+await check('matching subject id in the wrong source stage grants no access',
+  assertFails(getDoc(doc(tahmeelPaid, 'lectures/lec_reused_subject'))));
+await check('subscribed student CAN query only selected source-stage lectures',
+  assertSucceeds(getDocs(query(
+    collection(tahmeelPaid, 'lectures'),
+    where('stageId', '==', 'stage_3'),
+    where('subjectId', 'in', ['biochemistry_ii']),
+  ))));
 
 console.log('\nStage history is immutable and owner-readable');
 await check('student CAN read their own archived stage stats',
@@ -1377,12 +1418,19 @@ await check('a student CANNOT file a request in somebody else\'s name',
     paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
     transactionId: 'QI-12347',
   })));
-await check('a student CANNOT file an annual paid request',
-  assertFails(setDoc(doc(student, 'subscriptions/annual_paid'), {
+await check('a student CAN file an annual paid request with amount 12000',
+  assertSucceeds(setDoc(doc(student, 'subscriptions/annual_paid'), {
     userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
     plan: 'annual', status: 'pending', startDate: null, endDate: null,
     paymentMethod: 'superkey', amount: 12000, createdAt: serverTimestamp(),
     transactionId: 'QI-12348',
+  })));
+await check('a student CANNOT file an annual request with wrong amount',
+  assertFails(setDoc(doc(student, 'subscriptions/annual_wrong_amount'), {
+    userId: 'stu_uid', userEmail: 'stu@x.com', userName: 'Student',
+    plan: 'annual', status: 'pending', startDate: null, endDate: null,
+    paymentMethod: 'superkey', amount: 2000, createdAt: serverTimestamp(),
+    transactionId: 'QI-12348b',
   })));
 await check('a student CANNOT omit payment proof',
   assertFails(setDoc(doc(student, 'subscriptions/no_proof'), {

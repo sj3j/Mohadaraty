@@ -399,8 +399,8 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
                     {isRtl 
-                      ? 'تتضمن العضوية ترجمة المحاضرات الفورية، بنك الأسئلة الشامل، ملحقات المحاضرات، المساعد الذكي سيموسان، وخصومات حصرية.'
-                      : 'Includes instant lecture translation, comprehensive MCQ bank, lecture attachments, Simosan AI tutor, and special membership discounts.'}
+                      ? 'تتضمن العضوية مواد التحميل من المرحلة السابقة، ترجمة المحاضرات الفورية، بنك الأسئلة الشامل، ملحقات المحاضرات، والمساعد الذكي سيموسان.'
+                      : 'Includes previous-stage carry-over subjects, instant lecture translation, the MCQ bank, lecture attachments, and Simosan AI tutor.'}
                   </p>
                 </div>
                 <button

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   X, Crown, Sparkles, FileText, Target, Bot,
   Palette, Zap, CheckCircle2, Star, ShieldCheck,
-  Languages, BadgePercent
+  Languages, BadgePercent, BookMarked
 } from 'lucide-react';
 import { Language } from '../../types';
 
@@ -28,6 +28,19 @@ export interface PerkItem {
 }
 
 export const PERKS: PerkItem[] = [
+  {
+    id: 'tahmeel_subjects',
+    icon: BookMarked,
+    badgeAr: 'وصول للمرحلة السابقة',
+    badgeEn: 'Previous-stage access',
+    titleAr: 'الوصول إلى مواد التحميل',
+    titleEn: 'Carry-over Subject Access',
+    descAr: 'افتح المواد التي حملتها من المرحلة السابقة ومحاضراتها خلال مرحلتك الحالية، وفق اختيارك في الترفيع الأكاديمي.',
+    descEn: 'Open the subjects and lectures you carried from the previous stage during your current stage.',
+    gradient: 'from-amber-500/10 via-orange-500/5 to-transparent',
+    borderGlow: 'border-amber-500/30 dark:border-amber-400/20',
+    iconColor: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+  },
   {
     id: 'attachments',
     icon: FileText,

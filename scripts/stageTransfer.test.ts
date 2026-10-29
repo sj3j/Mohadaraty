@@ -17,7 +17,7 @@
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import 'dotenv/config';
-import { transferStudentStage } from '../shared/studentAdmin';
+import { transferStudentStage, updateStudentTahmeel } from '../shared/studentAdmin';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   console.error('Refusing to run: FIRESTORE_EMULATOR_HOST is not set.');
@@ -202,6 +202,7 @@ async function runTests() {
   check('user doc (password) stageId is stage_2', u1PassDoc.data()?.stageId === 'stage_2');
   check('user doc (password) group is B2', u1PassDoc.data()?.group === 'B2');
   check('user doc (password) tahmeelSubjects cleared', Array.isArray(u1PassDoc.data()?.tahmeelSubjects) && u1PassDoc.data()?.tahmeelSubjects.length === 0);
+  check('user doc tahmeelStageId cleared on the next move', !u1PassDoc.data()?.tahmeelStageId);
   check('user progression is completed and stale pending access is cleared',
     u1PassDoc.data()?.progressionYear === '2026-2027'
       && u1PassDoc.data()?.progressionState === 'completed'
@@ -393,6 +394,36 @@ async function runTests() {
   const tahUserDoc = await db.collection('users').doc(tahEmail).get();
   const tahSubjects = tahUserDoc.data()?.tahmeelSubjects;
   check('tahmeelSubjects preserved when requested', Array.isArray(tahSubjects) && tahSubjects.includes('pathology_2') && tahSubjects.includes('biochem_1'));
+  check('preserved subjects retain the source stage', tahUserDoc.data()?.tahmeelStageId === 'stage_1');
+  check('roster copy retains the source stage',
+    (await db.collection('students').doc(tahEmail).get()).data()?.tahmeelStageId === 'stage_1');
+
+  console.log('\n[Test 6b] Support Tahmeel Correction:');
+  const corrected = await updateStudentTahmeel(
+    db, FieldValue as any, tahEmail, ['biochem_1'], masterStaff,
+  );
+  check('support correction returns the immediately previous stage',
+    corrected.tahmeelStageId === 'stage_1');
+  check('support correction replaces the user selection',
+    JSON.stringify((await db.collection('users').doc(tahEmail).get()).data()?.tahmeelSubjects) === JSON.stringify(['biochem_1']));
+  check('support correction replaces the roster selection',
+    JSON.stringify((await db.collection('students').doc(tahEmail).get()).data()?.tahmeelSubjects) === JSON.stringify(['biochem_1']));
+
+  let invalidTahmeelCode = '';
+  try {
+    await updateStudentTahmeel(db, FieldValue as any, tahEmail, ['stage_2_subject'], masterStaff);
+  } catch (error: any) { invalidTahmeelCode = error.code; }
+  check('support cannot select a subject outside the previous stage',
+    invalidTahmeelCode === 'INVALID_TAHMEEL_SUBJECTS', invalidTahmeelCode);
+
+  let representativeTahmeelCode = '';
+  try {
+    await updateStudentTahmeel(db, FieldValue as any, tahEmail, [], {
+      isMasterAdmin: false, role: 'admin', managedStageId: 'stage_2', permissions: { manageStudents: true },
+    });
+  } catch (error: any) { representativeTahmeelCode = error.code; }
+  check('representative cannot edit carried subjects',
+    representativeTahmeelCode === 'GLOBAL_SCOPE_REQUIRED', representativeTahmeelCode);
 
   // -------------------------------------------------------------------------
   // TEST 7: Authorization and input validation

@@ -23,6 +23,7 @@ import { nameKeyFor } from "./shared/rosterIdentity.js";
 import { reconcileStudentProfile } from "./shared/studentProfile.js";
 import {
   resetStudentPassword,
+  updateStudentTahmeel,
   transferStudentStage,
   assertStageAuthority,
   assertStudentManagement,
@@ -87,7 +88,9 @@ import {
 
 dotenv.config();
 
-// Initialize Firebase Admin for FCM
+// Initialize Firebase Admin for FCM & Storage
+const DEFAULT_STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || 'mylectures-app.firebasestorage.app';
+
 if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PROJECT_ID) {
   try {
     admin.initializeApp({
@@ -96,9 +99,9 @@ if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL && pro
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
         privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       }),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'mylectures-app.firebasestorage.app',
+      storageBucket: DEFAULT_STORAGE_BUCKET,
     });
-    console.log("Firebase Admin initialized for Push Notifications.");
+    console.log("Firebase Admin initialized for Push Notifications & Storage.");
   } catch (error) {
     console.error("Firebase Admin initialization error:", error);
   }
@@ -1247,6 +1250,25 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     }
   });
 
+  app.put("/api/admin/students/:email/tahmeel", verifyAuth, verifyAdmin, async (req, res) => {
+    try {
+      const result = await updateStudentTahmeel(
+        admin.firestore(),
+        admin.firestore.FieldValue as any,
+        decodeURIComponent(req.params.email),
+        req.body?.tahmeelSubjects,
+        callerStage(req),
+      );
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      if (error instanceof StudentAdminError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      console.error("Update carried subjects error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // Concurrency-safe, transactional individual student stage transfer.
   app.post("/api/admin/students/:email/transfer-stage", verifyAuth, verifyAdmin, async (req, res) => {
     if (!admin.apps.length) {
@@ -2277,7 +2299,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
   /* MCQ generation. Staff-only, on the free-tier key - see
    * shared/mcqGeneration.ts for why it is a second key. Mirrored in api/index.ts. */
-  const mcq = createMcqHandlers({ admin });
+  const mcq = createMcqHandlers({ admin, storageBucket: DEFAULT_STORAGE_BUCKET });
   app.post("/api/mcq/generate", verifyAuth, verifyAdmin, mcq.generate);
   app.post("/api/mcq/request", verifyAuth, mcq.request);
   app.post("/api/mcq/extract", verifyAuth, verifyAdmin, mcq.extract);

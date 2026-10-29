@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Crown, KeyRound, Loader2, RotateCcw, ExternalLink, AlertCircle } from 'lucide-react';
+import { Crown, KeyRound, Loader2, RotateCcw, ExternalLink, AlertCircle, BookMarked } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import type { PurchasesPackage } from '@revenuecat/purchases-capacitor';
 import { Language, SubscriptionPlan, TRANSLATIONS, UserProfile } from '../types';
@@ -165,6 +165,18 @@ export default function SubscriptionScreen({ user, lang }: { user: UserProfile |
             {t.payUntil} {until}
           </p>
         )}
+      </div>
+
+      <div className="flex items-center gap-3 rounded-2xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+        <BookMarked className="w-5 h-5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <div>
+          <p className="text-sm font-black text-slate-800 dark:text-stone-100">
+            {isRtl ? 'الوصول إلى مواد التحميل' : 'Carry-over subject access'}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {isRtl ? 'افتح موادك المحمّلة من المرحلة السابقة خلال مرحلتك الحالية.' : 'Open subjects carried from your previous stage during your current stage.'}
+          </p>
+        </div>
       </div>
 
       {notice && (

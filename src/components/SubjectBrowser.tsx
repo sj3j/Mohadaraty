@@ -30,6 +30,7 @@ interface SubjectBrowserProps {
   onShowPaywall?: () => void;
   lectureLoadState?: 'loading' | 'ready' | 'error' | 'waiting-auth' | 'missing-stage';
   onRetryLectures?: () => void;
+  showCourseTabs?: boolean;
 }
 
 function LectureLoadFailure({ isRtl, onRetry }: { isRtl: boolean; onRetry?: () => void }) {
@@ -53,7 +54,7 @@ function LectureLoadFailure({ isRtl, onRetry }: { isRtl: boolean; onRetry?: () =
   );
 }
 
-export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload, onShowPaywall, lectureLoadState = 'ready', onRetryLectures }: SubjectBrowserProps) {
+export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ, onOpenReader, searchQuery = '', isLoading = false, onRemoveDownload, onShowPaywall, lectureLoadState = 'ready', onRetryLectures, showCourseTabs = true }: SubjectBrowserProps) {
   const t = TRANSLATIONS[lang];
   const isRtl = lang === 'ar';
   
@@ -373,7 +374,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     
     return (
       <div className="flex flex-col gap-4">
-        {!isSubjectsLoading && subjects.length > 0 && (
+        {showCourseTabs && !isSubjectsLoading && subjects.length > 0 && (
           <CourseTabs lang={lang} counts={courseCounts} />
         )}
         {isSubjectsLoading ? (

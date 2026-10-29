@@ -125,7 +125,7 @@ export const getSubscriptionPreview = (
 export const manualActivateSubscription = (input: {
   requestId: string;
   studentEmail: string;
-  plan: Exclude<SubscriptionPlan, 'annual'>;
+  plan: SubscriptionPlan;
   paymentMethod: ManualPaymentMethod;
   note?: string;
   previewStateToken: string;

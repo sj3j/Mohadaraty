@@ -78,6 +78,91 @@ export interface ResetResult {
   loginCode: string;
 }
 
+export interface TahmeelUpdateResult {
+  studentEmail: string;
+  stageId: string;
+  tahmeelStageId: string | null;
+  tahmeelSubjects: string[];
+  usersUpdated: number;
+}
+
+/** Replaces the carried-subject selection for one student. */
+export async function updateStudentTahmeel(
+  db: FirebaseFirestore.Firestore,
+  FieldValue: { delete(): any; serverTimestamp(): any },
+  studentEmail: string,
+  requestedSubjects: unknown,
+  staff: CallerStage,
+): Promise<TahmeelUpdateResult> {
+  if (!hasGlobalStudentScope(staff)) {
+    throw new StudentAdminError('Only Support or a master administrator may edit carried subjects.', 403, 'GLOBAL_SCOPE_REQUIRED');
+  }
+
+  const email = String(studentEmail || '').toLowerCase().trim();
+  if (!email) throw new StudentAdminError('Student email is required.', 400, 'MISSING_ID');
+  if (!Array.isArray(requestedSubjects)) {
+    throw new StudentAdminError('tahmeelSubjects must be an array.', 400, 'INVALID_TAHMEEL_SUBJECTS');
+  }
+  const subjects = Array.from(new Set(requestedSubjects.map(value => String(value).trim()).filter(Boolean)));
+  if (subjects.length > 20 || subjects.some(value => value.length > 100)) {
+    throw new StudentAdminError('Invalid carried subjects.', 400, 'INVALID_TAHMEEL_SUBJECTS');
+  }
+
+  const studentRef = db.collection('students').doc(email);
+  const studentSnap = await studentRef.get();
+  if (!studentSnap.exists) throw new StudentAdminError('Student not found.', 404, 'NOT_FOUND');
+  const stageId = String(studentSnap.data()?.stageId || '');
+  if (!stageId) throw new StudentAdminError('Student has no current stage.', 409, 'MISSING_STAGE');
+
+  const stagesSnap = await db.collection('stages').orderBy('order', 'asc').get();
+  const stages = stagesSnap.docs.map(doc => ({ id: String(doc.data().id || doc.id), order: Number(doc.data().order) }));
+  const current = stages.find(stage => stage.id === stageId);
+  if (!current || !Number.isFinite(current.order)) {
+    throw new StudentAdminError('Student stage is not recognised.', 409, 'INVALID_STAGE');
+  }
+  const previous = stages
+    .filter(stage => Number.isFinite(stage.order) && stage.order < current.order)
+    .sort((a, b) => b.order - a.order)[0];
+  if (subjects.length > 0 && !previous) {
+    throw new StudentAdminError('The first stage has no previous-stage subjects.', 400, 'NO_PREVIOUS_STAGE');
+  }
+
+  if (subjects.length > 0) {
+    const validSnap = await db.collection('subjects').where('stageId', '==', previous!.id).get();
+    const valid = new Set(validSnap.docs
+      .filter(doc => doc.data()?.isActive !== false)
+      .map(doc => String(doc.data()?.id || doc.id.replace(`${previous!.id}__`, ''))));
+    const unknown = subjects.filter(subject => !valid.has(subject));
+    if (unknown.length) {
+      throw new StudentAdminError(`Invalid carried subjects: ${unknown.join(', ')}`, 400, 'INVALID_TAHMEEL_SUBJECTS');
+    }
+  }
+
+  const userMap = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+  const directUser = await db.collection('users').doc(email).get();
+  if (directUser.exists) userMap.set(directUser.id, directUser);
+  const usersByEmail = await db.collection('users').where('email', '==', email).get();
+  usersByEmail.docs.forEach(doc => userMap.set(doc.id, doc));
+
+  const patch = {
+    tahmeelSubjects: subjects,
+    tahmeelStageId: subjects.length > 0 ? previous!.id : FieldValue.delete(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  const batch = db.batch();
+  batch.set(studentRef, patch, { merge: true });
+  userMap.forEach(doc => batch.set(doc.ref, patch, { merge: true }));
+  await batch.commit();
+
+  return {
+    studentEmail: email,
+    stageId,
+    tahmeelStageId: subjects.length > 0 ? previous!.id : null,
+    tahmeelSubjects: subjects,
+    usersUpdated: userMap.size,
+  };
+}
+
 /**
  * Issues a replacement password for one student.
  *
@@ -439,6 +524,7 @@ export async function transferStudentStage(
       stageId: destinationId,
       subgroup: resolvedSubgroup || FieldValue.delete(),
       tahmeelSubjects: finalTahmeel,
+      tahmeelStageId: finalTahmeel.length > 0 ? previousStageId : FieldValue.delete(),
       pendingStageId: FieldValue.delete(),
       pendingProgressionYear: FieldValue.delete(),
       pendingProgressionSetAt: FieldValue.delete(),
@@ -456,6 +542,7 @@ export async function transferStudentStage(
         stageId: destinationId,
         group: resolvedSubgroup || FieldValue.delete(),
         tahmeelSubjects: finalTahmeel,
+        tahmeelStageId: finalTahmeel.length > 0 ? previousStageId : FieldValue.delete(),
         pendingStageId: FieldValue.delete(),
         pendingProgressionYear: FieldValue.delete(),
         pendingProgressionSetAt: FieldValue.delete(),

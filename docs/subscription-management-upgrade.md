@@ -40,7 +40,7 @@ All management writes require a client request ID. The server hashes a canonical
 ## Transactional invariants
 
 - Student time stacks from a future active cached expiry and otherwise starts at authoritative server time. The user document is read inside the transaction, so concurrent grants retry and stack.
-- Paid activation accepts monthly, seasonal, and semi-annual only. Annual is accepted only by a Master grant, which records amount zero and no payment method.
+- Paid activation accepts monthly, seasonal, semi-annual, and annual. Ten-days is complimentary grant only.
 - A current preview state token is mandatory for manual confirmation. A changed cache returns `409 PREVIEW_STALE`.
 - Support credit is the full server-side plan price. Master activations/grants never credit a Support balance.
 - Receipt/reset/payout checks `expectedOutstanding` in the transaction. Reset only handles positive balances and is not received money. Payout handles the entire absolute negative balance and reaches exactly zero.

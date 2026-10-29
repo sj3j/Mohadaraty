@@ -267,6 +267,12 @@ const tahmeelUser = (await db.doc('users/u_tahmeel').get()).data();
 check('stores the carried subject as a SLUG, matching lectures.subjectId',
   JSON.stringify(tahmeelUser?.tahmeelSubjects) === JSON.stringify(['biochemistry_ii']),
   JSON.stringify(tahmeelUser?.tahmeelSubjects));
+check('stores the exact source stage on the user profile',
+  tahmeelUser?.tahmeelStageId === 'stage_3', String(tahmeelUser?.tahmeelStageId));
+const tahmeelRoster = (await db.doc('students/tahmeel@x.com').get()).data();
+check('stores carried subjects and source stage on the roster copy',
+  tahmeelRoster?.tahmeelStageId === 'stage_3'
+    && JSON.stringify(tahmeelRoster?.tahmeelSubjects) === JSON.stringify(['biochemistry_ii']));
 
 let bogusRejected = false;
 try {

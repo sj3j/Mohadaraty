@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Crown, Sparkles, Shield, Clock, Languages, FileText, BadgePercent } from 'lucide-react';
+import { X, Crown, Sparkles, Shield, Clock, Languages, FileText, BadgePercent, BookMarked } from 'lucide-react';
 import { Language, TRANSLATIONS, PLAN_CONFIG, planAnchorPrice, SubscriptionPlan } from '../types';
 import { IS_STORE_BUILD } from '../lib/platform';
 
@@ -127,6 +127,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
             {/* Features in 2 Columns */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
               {[
+                { icon: BookMarked, text: isRtl ? 'الوصول إلى مواد التحميل من المرحلة السابقة' : 'Access carry-over subjects from the previous stage' },
                 { icon: Sparkles, text: isRtl ? 'وصول كامل لجميع أسئلة MCQ' : 'Full access to all MCQ questions' },
                 { icon: Languages, text: isRtl ? 'دعم ترجمة المحاضرات وقارئ PDF' : 'Lecture & PDF translation support' },
                 { icon: FileText, text: isRtl ? 'فتح ملحقات ومخططات المحاضرات' : 'All lecture attachments & diagrams' },

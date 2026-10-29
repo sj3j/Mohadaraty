@@ -1,12 +1,17 @@
 import React from 'react';
 import { Language, CourseId, COURSE_IDS, COURSE_LABELS } from '../types';
 import { useStageContext } from '../contexts/StageContext';
+import { BookMarked } from 'lucide-react';
 
 interface CourseTabsProps {
   lang: Language;
   /** Optional per-course counts rendered under each label. */
   counts?: Partial<Record<CourseId, number>>;
   className?: string;
+  showTahmeel?: boolean;
+  tahmeelActive?: boolean;
+  tahmeelCount?: number;
+  onTahmeelActiveChange?: (active: boolean) => void;
 }
 
 /**
@@ -16,7 +21,10 @@ interface CourseTabsProps {
  * always agree - a control in only one of them would strand the other course's
  * content with no way to reach it.
  */
-export default function CourseTabs({ lang, counts, className = '' }: CourseTabsProps) {
+export default function CourseTabs({
+  lang, counts, className = '', showTahmeel = false, tahmeelActive = false,
+  tahmeelCount, onTahmeelActiveChange,
+}: CourseTabsProps) {
   const isRtl = lang === 'ar';
   const { activeCourseId, setActiveCourseId } = useStageContext();
 
@@ -28,14 +36,17 @@ export default function CourseTabs({ lang, counts, className = '' }: CourseTabsP
       dir={isRtl ? 'rtl' : 'ltr'}
     >
       {COURSE_IDS.map(id => {
-        const isActive = activeCourseId === id;
+        const isActive = !tahmeelActive && activeCourseId === id;
         const count = counts?.[id];
         return (
           <button
             key={id}
             role="tab"
             aria-selected={isActive}
-            onClick={() => setActiveCourseId(id)}
+            onClick={() => {
+              setActiveCourseId(id);
+              onTahmeelActiveChange?.(false);
+            }}
             className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${
               isActive
                 ? 'bg-white dark:bg-zinc-900 text-sky-600 dark:text-sky-400 shadow-sm'
@@ -60,6 +71,26 @@ export default function CourseTabs({ lang, counts, className = '' }: CourseTabsP
           </button>
         );
       })}
+      {showTahmeel && (
+        <button
+          role="tab"
+          aria-selected={tahmeelActive}
+          onClick={() => onTahmeelActiveChange?.(true)}
+          className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${
+            tahmeelActive
+              ? 'bg-white dark:bg-zinc-900 text-amber-600 dark:text-amber-400 shadow-sm'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+          }`}
+        >
+          <BookMarked className="w-4 h-4 shrink-0" />
+          <span>{isRtl ? 'مواد التحميل' : 'Carry-over'}</span>
+          {typeof tahmeelCount === 'number' && (
+            <span dir="ltr" className="min-w-[1.25rem] px-1.5 py-0.5 rounded-full text-[11px] font-black bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+              {tahmeelCount}
+            </span>
+          )}
+        </button>
+      )}
     </div>
   );
 }
