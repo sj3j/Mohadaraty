@@ -43,26 +43,38 @@ const previousStage = (currentId: string) => {
 
 const studentsById = new Map(studentsSnap.docs.map(doc => [doc.id.toLowerCase(), doc]));
 const patches = new Map<string, { ref: FirebaseFirestore.DocumentReference; data: Record<string, unknown> }>();
-const inspect = (ref: FirebaseFirestore.DocumentReference, data: FirebaseFirestore.DocumentData, mirror?: FirebaseFirestore.DocumentReference) => {
+const inspect = (
+  ref: FirebaseFirestore.DocumentReference,
+  data: FirebaseFirestore.DocumentData,
+  mirror?: FirebaseFirestore.QueryDocumentSnapshot,
+) => {
   if (!Array.isArray(data.tahmeelSubjects) || data.tahmeelSubjects.length === 0) return;
   const source = previousStage(String(data.stageId || ''));
   if (!source) {
     console.warn(`Cannot resolve previous stage for ${ref.path} (current=${data.stageId || 'missing'})`);
     return;
   }
-  if (!data.tahmeelStageId) patches.set(ref.path, { ref, data: { tahmeelStageId: source } });
+  if (!data.tahmeelStageId && !patches.has(ref.path)) {
+    patches.set(ref.path, { ref, data: { tahmeelStageId: source } });
+  }
   if (mirror) {
-    patches.set(mirror.path, {
-      ref: mirror,
-      data: { tahmeelSubjects: data.tahmeelSubjects, tahmeelStageId: source },
-    });
+    const mirrorData = mirror.data();
+    const mirrorSubjects = Array.isArray(mirrorData.tahmeelSubjects) ? mirrorData.tahmeelSubjects : [];
+    const sameSubjects = mirrorSubjects.length === data.tahmeelSubjects.length
+      && data.tahmeelSubjects.every((subjectId: string) => mirrorSubjects.includes(subjectId));
+    if (!sameSubjects || mirrorData.tahmeelStageId !== source) {
+      patches.set(mirror.ref.path, {
+        ref: mirror.ref,
+        data: { tahmeelSubjects: data.tahmeelSubjects, tahmeelStageId: source },
+      });
+    }
   }
 };
 
 usersSnap.docs.forEach(doc => {
   const data = doc.data();
   const email = String(data.email || (doc.id.includes('@') ? doc.id : '')).toLowerCase();
-  inspect(doc.ref, data, studentsById.get(email)?.ref);
+  inspect(doc.ref, data, studentsById.get(email));
 });
 studentsSnap.docs.forEach(doc => inspect(doc.ref, doc.data()));
 
