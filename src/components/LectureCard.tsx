@@ -465,7 +465,7 @@ export default React.memo(function LectureCard({
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-white dark:bg-zinc-800 rounded-3xl shadow-2xl overflow-hidden p-6 border border-slate-200 dark:border-zinc-700"
+              className="relative w-full max-w-md bg-white dark:bg-zinc-800 rounded-2xl sm:rounded-3xl shadow-2xl p-4 sm:p-6 border border-slate-200 dark:border-zinc-700 student-modal-panel"
               dir={isRtl ? 'rtl' : 'ltr'}
             >
               <h3 className="text-xl font-bold text-slate-900 dark:text-stone-100 mb-2">{t.deleteLecture}</h3>
@@ -511,7 +511,7 @@ export default React.memo(function LectureCard({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: '100%' }}
               transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-              className="relative w-full max-w-xl max-h-[90vh] bg-white dark:bg-zinc-900 rounded-t-[32px] sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200/80 dark:border-zinc-800 z-10"
+              className="relative w-full max-w-xl bg-white dark:bg-zinc-900 rounded-t-[24px] sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200/80 dark:border-zinc-800 z-10 student-modal-panel"
               dir={isRtl ? 'rtl' : 'ltr'}
               onClick={(e) => e.stopPropagation()}
             >
@@ -610,7 +610,7 @@ export default React.memo(function LectureCard({
                 )}
 
                 {/* Primary Hero Action Card: Download-First Flow */}
-                <div className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100/70 dark:from-zinc-800/70 dark:to-zinc-800/30 border border-slate-200/80 dark:border-zinc-700/60 shadow-sm flex flex-col items-center text-center">
+                <div className="p-3.5 sm:p-6 rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100/70 dark:from-zinc-800/70 dark:to-zinc-800/30 border border-slate-200/80 dark:border-zinc-700/60 shadow-sm flex flex-col items-center text-center">
                   
                   {isDownloading ? (
 

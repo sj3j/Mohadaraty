@@ -185,13 +185,13 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
     : subjectTabs.find(s => s.slug === selectedCategory)?.label || selectedCategory;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8" dir={isRtl ? 'rtl' : 'ltr'}>
-      <div className="flex items-center justify-between mb-6">
+    <div className="max-w-7xl w-full min-w-0 mx-auto px-3 sm:px-6 lg:px-8 pt-4 sm:pt-8" dir={isRtl ? 'rtl' : 'ltr'}>
+      <div className="flex items-center justify-between mb-4 sm:mb-6">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-sky-100 dark:bg-sky-900/30 rounded-2xl text-sky-600 dark:text-sky-400">
             <Mic className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-stone-100">{t.navRecords}</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-stone-100">{t.navRecords}</h1>
         </div>
         {isAdmin && (
           <button
@@ -254,10 +254,10 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
 
         {/* Filters */}
         {currentCatTypes.includes('practical') && (
-          <div className="flex bg-white dark:bg-zinc-800 p-1.5 rounded-2xl border border-slate-200 dark:border-zinc-700 h-fit self-center min-w-max">
+          <div className="flex max-w-full w-full sm:w-auto overflow-x-auto hide-scrollbar bg-white dark:bg-zinc-800 p-1.5 rounded-2xl border border-slate-200 dark:border-zinc-700 h-fit self-stretch sm:self-center">
             <button
               onClick={() => setSelectedType('all')}
-              className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${
+              className={`flex-1 min-w-fit px-4 sm:px-6 py-2 rounded-xl text-sm font-bold transition-all ${
                 selectedType === 'all'
                   ? 'bg-slate-100 dark:bg-zinc-700 text-slate-900 dark:text-stone-100 shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
@@ -267,7 +267,7 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
             </button>
             <button
               onClick={() => setSelectedType('theoretical')}
-              className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${
+              className={`flex-1 min-w-fit px-4 sm:px-6 py-2 rounded-xl text-sm font-bold transition-all ${
                 selectedType === 'theoretical'
                   ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
@@ -277,7 +277,7 @@ export default function RecordsScreen({ user, lang, searchQuery }: RecordsScreen
             </button>
             <button
               onClick={() => setSelectedType('practical')}
-              className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${
+              className={`flex-1 min-w-fit px-4 sm:px-6 py-2 rounded-xl text-sm font-bold transition-all ${
                 selectedType === 'practical'
                   ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'

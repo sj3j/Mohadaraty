@@ -97,6 +97,28 @@
      for the moment before the woff2 lands. */
   html {
     font-family: 'Tajawal', ui-sans-serif, system-ui, 'Segoe UI', Tahoma, sans-serif;
+    width: 100%;
+    min-width: 0;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    --bottom-nav-height: clamp(4rem, 18vw, 4.5rem);
+    --bottom-nav-gap: clamp(0.625rem, 3vw, 1rem);
+    --bottom-nav-clearance: calc(var(--bottom-nav-height) + var(--bottom-nav-gap) + 0.75rem + env(safe-area-inset-bottom));
+  }
+
+  body,
+  #root {
+    width: 100%;
+    min-width: 0;
+    min-height: 100%;
+    overflow-x: clip;
+  }
+
+  /* The shell and floating navigation share one responsive footprint. Keeping
+     this value in CSS prevents the last card from being covered when the nav
+     becomes more compact on narrow phones. */
+  .app-shell-with-bottom-nav {
+    padding-bottom: var(--bottom-nav-clearance);
   }
 
   /* True black, for OLED phones. Applied ALONGSIDE .dark, never instead of it,
@@ -122,6 +144,16 @@
 }
 
 @layer utilities {
+  .student-page-gutter {
+    padding-inline: clamp(0.75rem, 3.5vw, 2rem);
+  }
+
+  .student-modal-panel {
+    max-height: calc(100dvh - max(env(safe-area-inset-top), 0.5rem) - max(env(safe-area-inset-bottom), 0.5rem) - 1rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   .notranslate {
     /* Prevents translation plugins from modifying these elements */
   }

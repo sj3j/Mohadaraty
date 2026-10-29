@@ -126,7 +126,7 @@ export default function SignupScreen({ lang, onBackToLogin, prefill, onClaimExis
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-zinc-950 p-4" dir={isRtl ? 'rtl' : 'ltr'}>
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
-          className="bg-white dark:bg-zinc-900 rounded-3xl p-8 w-full max-w-md text-center shadow-2xl border border-slate-200 dark:border-zinc-800"
+          className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-5 sm:p-8 w-full max-w-md text-center shadow-2xl border border-slate-200 dark:border-zinc-800 student-modal-panel"
         >
           <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center mx-auto mb-5">
             <CheckCircle2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
@@ -154,10 +154,10 @@ export default function SignupScreen({ lang, onBackToLogin, prefill, onClaimExis
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 p-4 py-8" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="min-h-screen min-h-[100dvh] bg-slate-50 dark:bg-zinc-950 px-3 py-4 sm:p-8 overflow-y-auto" dir={isRtl ? 'rtl' : 'ltr'}>
       <motion.div
         initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-        className="bg-white dark:bg-zinc-900 rounded-3xl p-6 md:p-8 w-full max-w-md mx-auto shadow-2xl border border-slate-200 dark:border-zinc-800"
+        className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 md:p-8 w-full max-w-md mx-auto shadow-2xl border border-slate-200 dark:border-zinc-800"
       >
         <button onClick={onBackToLogin} className="flex items-center gap-2 text-sm font-bold text-slate-500 dark:text-slate-400 mb-6">
           <Back className="w-4 h-4" />
@@ -192,7 +192,7 @@ export default function SignupScreen({ lang, onBackToLogin, prefill, onClaimExis
         <div className="space-y-4">
           <div>
             <label className={label}>{isRtl ? 'الاسم الثلاثي' : 'Full name (three parts)'}</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 min-[390px]:grid-cols-3 gap-2">
               <input value={firstName} onChange={e => setFirstName(e.target.value)}
                 placeholder={isRtl ? 'الاسم' : 'First'} className={field} />
               <input value={fatherName} onChange={e => setFatherName(e.target.value)}

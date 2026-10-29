@@ -1235,9 +1235,10 @@ export default function App() {
     // pt-[env(safe-area-inset-top)]; with the header gone the root carries it,
     // or every screen's first row sits under the system clock on a notched phone.
     //
-    // The bottom padding is the floating nav's real footprint - a 72px bar over
-    // BottomNav's own 16px inset, plus 16px of air, which is the 104px. The
-    // safe-area term rides along because BottomNav pads by the same inset: from
+    // The bottom padding is the floating nav's responsive footprint. The shared
+    // CSS variables also drive BottomNav, so compact phones and larger screens
+    // reserve exactly the space the navigation occupies. The safe-area term
+    // rides along because BottomNav pads by the same inset: from
     // targetSdk 35 the WebView also paints beneath the gesture bar, so without it
     // the nav floats up and the last card slides underneath by exactly that much.
     //
@@ -1246,7 +1247,7 @@ export default function App() {
     // half-screen under the last card. A screen that needs more room now says so
     // by its own content, not by re-padding.
     <div
-      className={`min-h-screen ${isReaderOpen ? 'bg-transparent' : 'bg-stone-50 dark:bg-zinc-900'} text-slate-900 dark:text-stone-100 ${composingAnnouncements || isReaderOpen ? '' : 'pb-[calc(104px+env(safe-area-inset-bottom))]'} font-sans transition-colors duration-300`}
+      className={`min-h-screen min-w-0 ${isReaderOpen ? 'bg-transparent' : 'bg-stone-50 dark:bg-zinc-900'} text-slate-900 dark:text-stone-100 ${composingAnnouncements || isReaderOpen ? '' : 'app-shell-with-bottom-nav'} font-sans transition-colors duration-300`}
       style={isReaderOpen ? { paddingTop: 0 } : { paddingTop: 'env(safe-area-inset-top)' }}
       dir={isRtl ? 'rtl' : 'ltr'}
     >

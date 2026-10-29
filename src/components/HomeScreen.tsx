@@ -107,7 +107,7 @@ export default function HomeScreen({
   ];
 
   return (
-    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+    <main className="max-w-7xl w-full min-w-0 mx-auto px-3 sm:px-6 lg:px-8 pt-4 sm:pt-8">
       {/* Provisional Mode Banner & Stage Switcher */}
       {isPendingProgression && provisionalStages && (
         <div className="mb-6 space-y-3">
@@ -177,12 +177,12 @@ export default function HomeScreen({
       )}
 
       {/* Personalized Greeting Header */}
-      <div className={`mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isRtl ? 'sm:text-right' : 'sm:text-left'}`}>
+      <div className={`mb-5 sm:mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 ${isRtl ? 'sm:text-right' : 'sm:text-left'}`}>
         <div>
-          <h1 className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-stone-100 tracking-tight mb-1">
+          <h1 className="text-2xl sm:text-4xl font-black text-slate-900 dark:text-stone-100 tracking-tight mb-1 break-words">
             {getGreeting()}, {user?.name?.split(' ')[0] || (isRtl ? 'طالب' : 'Student')}
           </h1>
-          <p className="text-slate-500 dark:text-slate-400 font-medium text-lg">
+          <p className="text-slate-500 dark:text-slate-400 font-medium text-base sm:text-lg">
             {isRtl ? 'المنصة الطلابية الجامعية' : 'University Student Platform'}
           </p>
         </div>
@@ -212,14 +212,14 @@ export default function HomeScreen({
       </div>
 
       {/* Horizontal Scrollable Filter Chips */}
-      <div className="flex overflow-x-auto hide-scrollbar gap-2 mb-8 pb-2" dir={isRtl ? 'rtl' : 'ltr'}>
+      <div className="flex max-w-full overflow-x-auto overscroll-x-contain hide-scrollbar gap-2 mb-5 sm:mb-8 pb-2" dir={isRtl ? 'rtl' : 'ltr'}>
         {tabs.map(tab => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`whitespace-nowrap px-5 py-2.5 rounded-2xl font-bold text-sm transition-colors border-2 ${
+              className={`shrink-0 whitespace-nowrap px-3.5 sm:px-5 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-colors border-2 ${
                 isActive
                   ? 'bg-sky-500 border-sky-500 text-white shadow-sm'
                   : 'bg-white dark:bg-zinc-800 border-slate-100 dark:border-zinc-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-zinc-700/60 shadow-sm'

@@ -176,7 +176,7 @@ export default function SimosanSoonScreen({ lang, onSelectService }: SimosanSoon
 
   return (
     <div
-      className="max-w-xl w-full mx-auto px-4 pt-4 pb-8 flex flex-col items-center justify-start text-center relative"
+      className="max-w-xl w-full min-w-0 mx-auto px-3 sm:px-4 pt-4 flex flex-col items-center justify-start text-center relative"
       dir={isRtl ? 'rtl' : 'ltr'}
     >
       {/* Gentle Floating In-App Toast */}
@@ -224,13 +224,13 @@ export default function SimosanSoonScreen({ lang, onSelectService }: SimosanSoon
       </div>
 
       {/* 2x2 Responsive Services Grid - Matching Profile StatCard Theme & Centered Alignment */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 w-full">
+      <div className="grid grid-cols-1 min-[360px]:grid-cols-2 gap-3 sm:gap-4 w-full">
         {services.map((service) => (
           <button
             key={service.id}
             type="button"
             onClick={() => handleCardClick(service)}
-            className="group relative flex flex-col items-center justify-center p-4 sm:p-5 rounded-2xl bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700/60 active:translate-y-px active:scale-[0.98] transition-all text-center cursor-pointer select-none min-h-[160px] sm:min-h-[175px]"
+            className="group relative flex flex-col items-center justify-center p-3.5 sm:p-5 rounded-2xl bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700/60 active:translate-y-px active:scale-[0.98] transition-all text-center cursor-pointer select-none min-h-[140px] min-[360px]:min-h-[160px] sm:min-h-[175px]"
           >
             {/* Centered Icon tile */}
             <div

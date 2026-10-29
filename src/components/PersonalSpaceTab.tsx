@@ -380,7 +380,7 @@ export default function PersonalSpaceTab({
   const currentFolderName = folderHistory.length > 0 ? folderHistory[folderHistory.length - 1].name : (isRtl ? 'مساحتك الرئيسية' : 'Main Space');
 
   return (
-    <div className="space-y-5 pb-28 sm:pb-32" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="min-w-0 space-y-5" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* Hidden File Input */}
       <input
         type="file"
@@ -932,7 +932,7 @@ export default function PersonalSpaceTab({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-3xl p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4"
+              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4 student-modal-panel"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -1025,7 +1025,7 @@ export default function PersonalSpaceTab({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-3xl p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4"
+              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4 student-modal-panel"
             >
               <div className="flex items-center justify-between">
                 <h3 className="font-black text-base text-slate-900 dark:text-zinc-100">
@@ -1085,7 +1085,7 @@ export default function PersonalSpaceTab({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-3xl p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4"
+              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4 student-modal-panel"
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -1175,7 +1175,7 @@ export default function PersonalSpaceTab({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-3xl p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4"
+              className="w-full max-w-md bg-white dark:bg-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 dark:border-zinc-700 space-y-4 student-modal-panel"
             >
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-2xl bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">

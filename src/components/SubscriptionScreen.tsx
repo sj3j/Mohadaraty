@@ -253,7 +253,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
   const proofReady = isProofSufficient(superkeyRef, !!receipt);
 
   return (
-    <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-16" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="max-w-6xl w-full min-w-0 mx-auto px-3 sm:px-6 lg:px-8 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* Top Header Bar */}
       <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100 dark:border-zinc-800">
         <div className="flex items-center gap-2.5">
@@ -500,7 +500,7 @@ export default function SubscriptionScreen({ user, lang }: SubscriptionScreenPro
                 {viewState === 'plans' && (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto">
                     <h3 className="font-bold text-slate-900 dark:text-white mb-3 text-center sm:text-start">{t.choosePayment}</h3>
-                    <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="grid grid-cols-1 min-[360px]:grid-cols-2 gap-3 mb-4">
                       {(['zaincash', 'superkey'] as PaymentMethod[]).map(method => (
                         <button
                           key={method}

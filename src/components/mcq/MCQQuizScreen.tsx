@@ -436,7 +436,7 @@ ${questionText}`;
           </button>
         </div>
         
-        <div className="flex items-center justify-between text-xs font-bold">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
            {!isSubscribed ? (
               <span className="px-2.5 py-1 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 rounded-lg flex items-center gap-1">🎁 تجربة مجانية</span>
            ) : isRetake === null ? (
@@ -446,7 +446,7 @@ ${questionText}`;
            ) : (
               <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center gap-1">🏆 أول محاولة</span>
            )}
-           <div className="flex items-center gap-2">
+           <div className="flex flex-wrap items-center justify-end gap-2">
              <span className="text-slate-500 dark:text-slate-400">
                {!isSubscribed 
                  ? `أجبت على ${Math.min(state.answeredCount, 2)} من 2 تجريبية` 
@@ -731,7 +731,7 @@ ${questionText}`;
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="absolute bottom-0 w-full bg-white dark:bg-zinc-800 rounded-t-3xl p-6 pb-[calc(3rem+env(safe-area-inset-bottom))] z-50 max-h-[80vh] overflow-y-auto"
+              className="absolute bottom-0 w-full bg-white dark:bg-zinc-800 rounded-t-3xl p-4 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] z-50 max-h-[85dvh] overflow-y-auto overscroll-contain"
             >
               <div className="flex items-center justify-between mb-6">
                 <h3 className="font-bold text-lg dark:text-white">نظرة عامة على الأسئلة</h3>
@@ -740,7 +740,7 @@ ${questionText}`;
                 </button>
               </div>
 
-              <div className="grid grid-cols-5 sm:grid-cols-10 gap-3" dir="ltr">
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(2.5rem,1fr))] gap-2 sm:gap-3" dir="ltr">
                 {questions.map((q, idx) => {
                    const isLockedQ = !isSubscribed && idx >= 2;
                    const ans = state.answers[q.id];
@@ -762,7 +762,7 @@ ${questionText}`;
                            jumpTo(idx);
                          }
                        }}
-                       className={`w-12 h-12 rounded-xl font-bold flex flex-col items-center justify-center transition-all ${circleClass}`}
+                       className={`w-full max-w-12 aspect-square rounded-xl font-bold flex flex-col items-center justify-center transition-all ${circleClass}`}
                      >
                        <span className="text-xs">{idx + 1}</span>
                        {isLockedQ && <Lock className="w-2.5 h-2.5 text-amber-500" />}
@@ -826,7 +826,7 @@ ${questionText}`;
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-zinc-900 rounded-3xl p-6 w-full max-w-md shadow-xl border border-slate-100 dark:border-zinc-800"
+              className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 w-full max-w-md shadow-xl border border-slate-100 dark:border-zinc-800 student-modal-panel"
             >
               <div className="flex items-center gap-3 mb-4 text-red-600 dark:text-red-500">
                 <AlertTriangle className="w-8 h-8" />
@@ -875,7 +875,7 @@ ${questionText}`;
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-zinc-900 rounded-3xl p-6 w-full max-w-md shadow-xl border border-slate-100 dark:border-zinc-800"
+              className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 w-full max-w-md shadow-xl border border-slate-100 dark:border-zinc-800 student-modal-panel"
             >
               <div className="flex items-center gap-3 mb-4 text-sky-600 dark:text-sky-500">
                 <MessageSquare className="w-8 h-8" />
@@ -972,7 +972,7 @@ ${questionText}`;
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            className="bg-white dark:bg-zinc-900 rounded-3xl p-6 w-full max-w-sm shadow-2xl border border-slate-100 dark:border-zinc-800 space-y-4"
+            className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 w-full max-w-sm shadow-2xl border border-slate-100 dark:border-zinc-800 space-y-4 student-modal-panel"
           >
             <h3 className="font-bold text-lg text-slate-900 dark:text-white">إنهاء الاختبار؟</h3>
             <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">

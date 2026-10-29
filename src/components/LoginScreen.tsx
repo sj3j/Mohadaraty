@@ -393,18 +393,18 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
   }
 
   return (
-    <div data-macos-smoke="login-ready" className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-zinc-950 p-4" dir={isRtl ? 'rtl' : 'ltr'}>
-      <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-3xl p-8 shadow-xl border border-slate-200 dark:border-zinc-800 text-center">
-        <div className="w-20 h-20 bg-sky-100 dark:bg-sky-900/30 rounded-full flex items-center justify-center mx-auto mb-6">
+    <div data-macos-smoke="login-ready" className="min-h-screen min-h-[100dvh] flex flex-col items-center justify-start sm:justify-center bg-slate-50 dark:bg-zinc-950 px-3 py-4 sm:p-4 overflow-y-auto" dir={isRtl ? 'rtl' : 'ltr'}>
+      <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl p-5 sm:p-8 shadow-xl border border-slate-200 dark:border-zinc-800 text-center my-auto">
+        <div className="w-16 h-16 sm:w-20 sm:h-20 bg-sky-100 dark:bg-sky-900/30 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-6">
           {/* The real brand mark. This was a lucide GraduationCap standing in
               for a logo the app did not have a local copy of. */}
           <img src="/icons/logo-mark.png" alt={t.appName} className="w-12 h-12 object-contain" />
         </div>
         
-        <h1 className="text-3xl font-black text-slate-900 dark:text-stone-100 mb-2">
+        <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-stone-100 mb-2">
           {t.appName}
         </h1>
-        <p className="text-slate-500 dark:text-slate-400 mb-8">
+        <p className="text-sm sm:text-base text-slate-500 dark:text-slate-400 mb-5 sm:mb-8">
           {t.university} - {t.department}
         </p>
 

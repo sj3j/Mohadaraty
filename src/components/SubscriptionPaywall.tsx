@@ -27,7 +27,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+        className="fixed inset-0 z-[9999] flex items-center justify-center p-2 sm:p-4"
         onClick={onClose}
       >
         {/* Backdrop */}
@@ -40,7 +40,7 @@ export default function SubscriptionPaywall({ lang, onClose, onSubscribe }: Subs
           exit={{ opacity: 0, scale: 0.9, y: 20 }}
           transition={{ type: 'spring', stiffness: 400, damping: 30 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative w-full max-w-lg sm:max-w-2xl md:max-w-3xl lg:max-w-4xl max-h-[90vh] flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
+          className="relative w-full max-w-lg sm:max-w-2xl md:max-w-3xl lg:max-w-4xl flex flex-col bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden student-modal-panel"
           dir={isRtl ? 'rtl' : 'ltr'}
         >
           {/* Gradient Header */}

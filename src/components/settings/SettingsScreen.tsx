@@ -155,7 +155,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
   ];
 
   return (
-    <div className="max-w-2xl w-full mx-auto px-4 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="max-w-2xl w-full min-w-0 mx-auto px-3 sm:px-4 pt-4" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* header */}
       <div className="flex items-center gap-3 mb-6">
         <button

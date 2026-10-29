@@ -506,7 +506,7 @@ export default function OnboardingSlides({ onComplete, lang = 'ar' }: Onboarding
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-[100] bg-slate-50 dark:bg-zinc-950 flex flex-col justify-between overflow-hidden select-none"
+      className="fixed inset-0 h-[100dvh] z-[100] bg-slate-50 dark:bg-zinc-950 flex flex-col justify-between overflow-hidden select-none"
       dir={isRtl ? 'rtl' : 'ltr'}
       style={{ paddingTop: 'max(env(safe-area-inset-top), 0.5rem)' }}
     >

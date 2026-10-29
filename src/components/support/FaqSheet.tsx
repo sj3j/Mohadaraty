@@ -43,7 +43,7 @@ export default function FaqSheet({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 24, scale: 0.98 }}
             transition={{ duration: 0.22, ease: 'easeOut' }}
-            className="relative w-full sm:max-w-md max-h-[88vh] flex flex-col bg-slate-50 dark:bg-zinc-950 rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden"
+            className="relative w-full sm:max-w-md max-h-[88dvh] flex flex-col bg-slate-50 dark:bg-zinc-950 rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden"
           >
             <div className="flex items-center gap-3 px-5 py-4 bg-white dark:bg-zinc-900 border-b-2 border-slate-100 dark:border-zinc-800">
               <div className="flex-1 min-w-0">

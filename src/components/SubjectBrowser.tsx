@@ -322,10 +322,10 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             </div>
           </div>
         </div>
-        <div className={`grid gap-2 sm:gap-4 md:gap-6 px-2 sm:px-0 ${
+        <div className={`grid gap-2 sm:gap-4 md:gap-6 px-0 sm:px-0 ${
           gridColumns === 1 ? 'grid-cols-1' : 
-          gridColumns === 2 ? 'grid-cols-2' : 
-          'grid-cols-3'
+          gridColumns === 2 ? 'grid-cols-1 min-[360px]:grid-cols-2' : 
+          'grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-3'
         }`}>
           {lectures.map(lecture => (
             <LectureCard
@@ -415,7 +415,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
                 setSelectedCategory(catId as any);
                 setSelectedType('theoretical');
               }}
-              className={`flex flex-col p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} border-${colors.progress.replace('bg-', '')}`}
+              className={`flex flex-col p-3.5 sm:p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} border-${colors.progress.replace('bg-', '')}`}
             >
               <div className="flex items-center justify-between w-full mb-6">
                 <div className="flex items-center gap-4">
@@ -461,7 +461,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
                   setSelectedCategory(cat.value);
                   setSelectedType('theoretical');
                 }}
-                className={`flex flex-col p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} ${categoryColors[cat.value] ? 'border-' + categoryColors[cat.value].progress.replace('bg-', '') : 'border-[#2196F3]'}`}
+                className={`flex flex-col p-3.5 sm:p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} ${categoryColors[cat.value] ? 'border-' + categoryColors[cat.value].progress.replace('bg-', '') : 'border-[#2196F3]'}`}
               >
                 <div className="flex items-center justify-between w-full mb-6">
                   <div className="flex items-center gap-4">
@@ -647,10 +647,10 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
             </div>
           </div>
         </div>
-        <div className={`grid gap-2 sm:gap-4 md:gap-6 px-2 sm:px-0 ${
+        <div className={`grid gap-2 sm:gap-4 md:gap-6 px-0 sm:px-0 ${
           gridColumns === 1 ? 'grid-cols-1' : 
-          gridColumns === 2 ? 'grid-cols-2' : 
-          'grid-cols-3'
+          gridColumns === 2 ? 'grid-cols-1 min-[360px]:grid-cols-2' : 
+          'grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-3'
         }`}>
           <AnimatePresence mode="popLayout">
             {filteredLectures.map((lecture) => (

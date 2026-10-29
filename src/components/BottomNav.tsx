@@ -28,9 +28,12 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
   ];
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 pointer-events-none pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-[calc(1.5rem+env(safe-area-inset-bottom))] px-4 z-50 flex justify-center">
+    <nav
+      aria-label={isRtl ? 'التنقل الرئيسي' : 'Primary navigation'}
+      className="fixed bottom-0 left-0 right-0 pointer-events-none pb-[calc(var(--bottom-nav-gap)+env(safe-area-inset-bottom))] px-[clamp(0.5rem,3vw,1rem)] z-50 flex justify-center"
+    >
       <div 
-        className="flex justify-around items-center h-[72px] w-full max-w-md bg-white dark:bg-zinc-900 rounded-[36px] px-2 shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.5)] pointer-events-auto border border-slate-100 dark:border-zinc-800" 
+        className="flex items-center h-[var(--bottom-nav-height)] w-full max-w-md bg-white dark:bg-zinc-900 rounded-[calc(var(--bottom-nav-height)/2)] px-[clamp(0.125rem,1vw,0.5rem)] shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.5)] pointer-events-auto border border-slate-100 dark:border-zinc-800" 
         dir={isRtl ? 'rtl' : 'ltr'}
       >
         {tabs.map((tab) => {
@@ -39,12 +42,13 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
           
           if (tab.isFab) {
              return (
-               <div key={tab.id} className="relative -top-6">
+               <div key={tab.id} className="relative -top-[clamp(1rem,5vw,1.5rem)] flex flex-1 min-w-0 justify-center">
                  <button
                    onClick={() => setCurrentTab(tab.id)}
-                   className="w-[60px] h-[60px] bg-[#2196F3] rounded-full flex items-center justify-center shadow-lg shadow-blue-500/30 border-4 border-white dark:border-zinc-900 text-white hover:scale-105 active:scale-95 transition-all"
+                   aria-label={tab.label}
+                   className="size-[clamp(3.25rem,16vw,3.75rem)] bg-[#2196F3] rounded-full flex items-center justify-center shadow-lg shadow-blue-500/30 border-[clamp(3px,1vw,4px)] border-white dark:border-zinc-900 text-white hover:scale-105 active:scale-95 transition-all"
                  >
-                   <Icon className="w-7 h-7" />
+                   <Icon className="size-[clamp(1.5rem,7vw,1.75rem)]" />
                  </button>
                </div>
              );
@@ -54,7 +58,7 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
             <button
               key={tab.id}
               onClick={() => setCurrentTab(tab.id)}
-              className={`flex flex-col items-center justify-center w-14 h-full relative transition-all group ${
+              className={`flex flex-1 min-w-0 flex-col items-center justify-center h-full px-0.5 relative transition-all group ${
                 isActive ? 'text-[#2196F3]' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
               }`}
             >
@@ -67,7 +71,7 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
                   <span className="absolute -top-1 -right-0.5 w-2.5 h-2.5 bg-red-500 border-2 border-white dark:border-[#1A1A2E] rounded-full"></span>
                 )}
               </div>
-              <span className={`text-[10px] font-medium transition-all ${isActive ? 'font-bold opacity-100' : 'opacity-70'}`}>
+              <span className={`max-w-full truncate text-[clamp(8px,2.6vw,10px)] leading-tight font-medium transition-all ${isActive ? 'font-bold opacity-100' : 'opacity-70'}`}>
                 {tab.label}
               </span>
               {isActive && (
@@ -80,6 +84,6 @@ export default function BottomNav({ currentTab, setCurrentTab, lang, hasUnreadAn
           );
         })}
       </div>
-    </div>
+    </nav>
   );
 }

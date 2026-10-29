@@ -293,7 +293,7 @@ export default function ProfileScreen({
   };
 
   return (
-    <div className="max-w-2xl mx-auto" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="max-w-2xl w-full min-w-0 mx-auto" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* ---- banner ----------------------------------------------------
           Two nested elements on purpose: the gradient needs `overflow-hidden`
           so its rounded corners clip the watermark, but the avatar hangs below
@@ -478,7 +478,7 @@ export default function ProfileScreen({
         <h2 className="text-xl font-black mb-3 text-slate-900 dark:text-stone-100">
           {isRtl ? 'الإحصائيات' : 'Statistics'}
         </h2>
-        <div className="grid grid-cols-2 gap-3 mb-8 items-stretch">
+        <div className="grid grid-cols-1 min-[340px]:grid-cols-2 gap-3 mb-8 items-stretch">
           <StatCard
             icon={STAT_ICONS.streak}
             label={isRtl ? 'الستريك الحالي' : 'Current streak'}
@@ -606,7 +606,7 @@ export default function ProfileScreen({
           three getDocs, so none of that runs until the tile is tapped. */}
       {showStreakStatus && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
-          <div className="bg-orange-50 dark:bg-zinc-900 w-full sm:max-w-lg sm:rounded-3xl rounded-t-3xl overflow-y-auto max-h-[92vh] shadow-2xl relative p-5 pb-[max(env(safe-area-inset-bottom),1.25rem)]">
+          <div className="bg-orange-50 dark:bg-zinc-900 w-full sm:max-w-lg sm:rounded-3xl rounded-t-3xl shadow-2xl relative p-4 sm:p-5 pb-[max(env(safe-area-inset-bottom),1.25rem)] student-modal-panel">
             <div className="flex items-center justify-between mb-4 gap-2">
               <h3 className="text-base font-black text-orange-800 dark:text-orange-300 flex items-center gap-2 min-w-0">
                 <Flame className="w-5 h-5 text-orange-500 shrink-0" />
@@ -689,7 +689,7 @@ export default function ProfileScreen({
 
       {showStreakInfo && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-md overflow-y-auto max-h-[90vh] shadow-2xl relative p-6">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl w-full max-w-md shadow-2xl relative p-4 sm:p-6 student-modal-panel">
             <button onClick={() => setShowStreakInfo(false)} className="absolute top-4 end-4 p-2 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-full transition-colors z-10">
               <X className="w-5 h-5 text-slate-600 dark:text-slate-400" />
             </button>

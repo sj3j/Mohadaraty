@@ -595,7 +595,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
   return (
     <div className="w-full space-y-6" dir={isRtl ? 'rtl' : 'ltr'}>
       {scanError && <p role="alert" className="rounded-2xl bg-rose-50 p-4 text-rose-800">{scanError}</p>}
-      <div className="flex items-center justify-between rounded-2xl bg-slate-100 p-3 text-xs dark:bg-zinc-800" aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-100 p-3 text-xs dark:bg-zinc-800" aria-live="polite">
         <span>{attendance.loading ? (isRtl ? 'تحميل السجل المحفوظ…' : 'Loading saved records…') : attendance.error || attendance.mine?.offline ? (isRtl ? 'عرض البيانات المحفوظة — الاتصال غير متاح' : 'Showing saved evidence — connection unavailable') : (isRtl ? 'سجل الحضور' : 'Attendance records')}</span>
         <button onClick={() => void attendance.retry().catch(() => setScanError(isRtl ? 'تعذرت المزامنة؛ الإيصالات محفوظة.' : 'Sync unavailable; saved receipts are retained.'))} className="flex items-center gap-1 font-bold"><RefreshCw className="h-4 w-4" />{isRtl ? 'مزامنة' : 'Sync'}</button>
       </div>
@@ -614,7 +614,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           <button
             onClick={() => void runLocationGate()}
             disabled={scanGateBusy}
-            className="w-full sm:w-auto min-w-[280px] sm:min-w-[340px] px-8 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-base sm:text-lg shadow-xl shadow-teal-700/20 flex items-center justify-center gap-3.5 active:scale-[0.98] transition-all border border-emerald-400/30 group cursor-pointer"
+            className="w-full sm:w-auto sm:min-w-[340px] px-4 sm:px-8 py-3.5 sm:py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-sm sm:text-lg shadow-xl shadow-teal-700/20 flex items-center justify-center gap-2.5 sm:gap-3.5 active:scale-[0.98] transition-all border border-emerald-400/30 group cursor-pointer"
           >
             <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
               <Camera className="w-6 h-6 text-white" strokeWidth={2.5} />
@@ -633,7 +633,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           ------------------------------------------------------------- */}
       {!selectedMode && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
             <h2 className="text-sm font-black text-slate-800 dark:text-stone-200">
               {isRtl ? 'المواد الدراسية (اضغط لعرض السجل الأسبوعي)' : 'Academic Subjects'}
             </h2>
@@ -702,7 +702,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           ------------------------------------------------------------- */}
       {showModeModal && activeSubject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 space-y-5 animate-in zoom-in-95 duration-150">
+          <div className="w-full max-w-sm rounded-2xl sm:rounded-3xl bg-white p-4 sm:p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 space-y-5 animate-in zoom-in-95 duration-150 student-modal-panel">
             {/* Modal Header */}
             <div className="text-center space-y-1">
               <h3 className="text-lg font-black text-slate-900 dark:text-stone-100">
@@ -974,7 +974,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
 
       {scanGateFailure && !scannerOpen && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" dir={isRtl ? 'rtl' : 'ltr'}>
-          <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
+          <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-2xl sm:rounded-3xl border border-slate-200 bg-white p-4 sm:p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 student-modal-panel">
             <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
               <AlertCircle className="h-6 w-6" />
             </div>
@@ -1018,7 +1018,7 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           ------------------------------------------------------------- */}
       {scanSuccessSheet?.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 text-center space-y-4 animate-in zoom-in-95">
+          <div className="w-full max-w-sm rounded-2xl sm:rounded-3xl bg-white p-4 sm:p-6 shadow-2xl dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 text-center space-y-4 animate-in zoom-in-95 student-modal-panel">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
               <CheckCircle2 className="h-9 w-9" />
             </div>

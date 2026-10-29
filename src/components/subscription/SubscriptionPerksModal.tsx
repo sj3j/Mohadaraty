@@ -169,7 +169,7 @@ export default function SubscriptionPerksModal({ isOpen, onClose, lang }: Subscr
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="relative w-full max-w-xl max-h-[90vh] flex flex-col bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-amber-300/40 dark:border-amber-500/30 overflow-hidden my-auto"
+            className="relative w-full max-w-xl flex flex-col bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl rounded-2xl sm:rounded-3xl shadow-2xl border border-amber-300/40 dark:border-amber-500/30 overflow-hidden my-auto student-modal-panel"
             dir={isRtl ? 'rtl' : 'ltr'}
           >
             {/* Header Ambient Glow */}
@@ -208,7 +208,7 @@ export default function SubscriptionPerksModal({ isOpen, onClose, lang }: Subscr
             </div>
 
             {/* Perks Content Scrollable List */}
-            <div className="relative z-10 flex-1 overflow-y-auto px-5 py-4 space-y-3 max-h-[calc(90vh-140px)]">
+            <div className="relative z-10 flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 py-4 space-y-3">
               {PERKS.map((perk, index) => {
                 const IconComponent = perk.icon;
                 return (
