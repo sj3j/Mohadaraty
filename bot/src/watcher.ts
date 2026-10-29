@@ -2,7 +2,8 @@ import { db, Timestamp } from './firebase.ts';
 import { env } from './env.ts';
 import { log, errFields } from './log.ts';
 import { TelegramApiError } from './telegram/types.ts';
-import { outboundChannelFor, onConfigChange, getConfig } from './config.ts';
+import { outboundChannelFor, lectureChannelFor, onConfigChange, getConfig } from './config.ts';
+import { sendLectureToTelegram, type LectureDoc } from './sync/lectures.ts';
 import { queueFor } from './queue.ts';
 import { MIRROR_STAGE_IDS } from '../../shared/telegramMirror.ts';
 import {
@@ -135,6 +136,136 @@ async function handleUpsert(id: string, data: Record<string, unknown>, stageId: 
       scheduleRetry(id, stageId);
     }
   });
+}
+
+
+const lectureWatchers = new Map<string, () => void>();
+const knownLectures = new Map<string, Set<string>>();
+
+async function handleLectureUpsert(id: string, data: Record<string, unknown>, stageId: string): Promise<void> {
+  if ((data.telegramPost as any)?.messageId) return;
+
+  const age = Date.now() - createdAtMs(data);
+  if (age > env.mirrorMaxAgeMs) {
+    log.debug('tg.lecture.skipped', { reason: 'too_old', lectureId: id, ageMs: age });
+    return;
+  }
+
+  const chatId = lectureChannelFor(stageId);
+  if (!chatId) {
+    log.debug('tg.lecture.skipped', { reason: 'stage_unmapped', lectureId: id, stageId });
+    return;
+  }
+
+  const lecture: LectureDoc = {
+    id,
+    title: String(data.title || ''),
+    subjectName: data.subjectName ? String(data.subjectName) : undefined,
+    subjectId: data.subjectId ? String(data.subjectId) : undefined,
+    stageId,
+    type: data.type as any,
+    number: typeof data.number === 'number' ? data.number : null,
+    pdfUrl: data.pdfUrl ? String(data.pdfUrl) : undefined,
+    youtubeUrl: data.youtubeUrl ? String(data.youtubeUrl) : undefined,
+    telegramPost: data.telegramPost as any,
+  };
+
+  await queueFor(chatId).push(`lec:${id}`, async () => {
+    try {
+      await sendLectureToTelegram(lecture, chatId);
+      noteOutbound(stageId);
+      markChannel(stageId, { state: 'ok', lastError: null });
+    } catch (error) {
+      if (error instanceof TelegramApiError && error.isAccessProblem) {
+        markChannel(stageId, { state: 'parked', lastError: error.description });
+        log.error('tg.lecture.access_problem', { stageId, chatId, description: error.description });
+        return;
+      }
+      markChannel(stageId, { state: 'degraded', lastError: String(error) });
+      log.error('tg.lecture.failed', { stageId, lectureId: id, ...errFields(error) });
+    }
+  });
+}
+
+function attachLecture(stageId: string): void {
+  detachLecture(stageId);
+  const cutoff = Timestamp.fromMillis(Date.now() - env.mirrorMaxAgeMs);
+
+  const query = db.collection('lectures')
+    .where('stageId', '==', stageId)
+    .where('createdAt', '>=', cutoff);
+
+  const known = new Set<string>();
+  knownLectures.set(stageId, known);
+  let stopped = false;
+  let pollRunning = false;
+
+  const applyUpsert = async (id: string, data: Record<string, unknown>) => {
+    if (known.has(id)) return;
+    known.add(id);
+    try {
+      await handleLectureUpsert(id, data, stageId);
+    } catch (error) {
+      known.delete(id);
+      throw error;
+    }
+  };
+
+  const poll = async () => {
+    if (stopped || pollRunning) return;
+    pollRunning = true;
+    try {
+      const snapshot = await query.get();
+      for (const doc of snapshot.docs) {
+        await applyUpsert(doc.id, doc.data());
+      }
+    } catch (error) {
+      log.error('watcher.lecture_poll_failed', { stageId, ...errFields(error) });
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
+    ? query.onSnapshot(
+        snapshot => {
+          void (async () => {
+            for (const change of snapshot.docChanges()) {
+              if (change.type !== 'removed') {
+                await applyUpsert(change.doc.id, change.doc.data());
+              }
+            }
+          })().catch(error => {
+            log.error('watcher.lecture_snapshot_failed', { stageId, ...errFields(error) });
+          });
+        },
+        error => {
+          log.error('listener.lecture_error', { stageId, ...errFields(error) });
+          void poll();
+        },
+      )
+    : () => {};
+
+  void poll();
+  const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);
+  pollTimer.unref();
+
+  lectureWatchers.set(stageId, () => {
+    stopped = true;
+    clearInterval(pollTimer);
+    unsubscribe();
+    knownLectures.delete(stageId);
+  });
+  log.info('watcher.lecture_attached', { stageId });
+}
+
+function detachLecture(stageId: string): void {
+  const unsubscribe = lectureWatchers.get(stageId);
+  if (unsubscribe) {
+    unsubscribe();
+    lectureWatchers.delete(stageId);
+    log.info('watcher.lecture_detached', { stageId });
+  }
 }
 
 function attach(stageId: string): void {
@@ -296,6 +427,11 @@ export function startWatchers(): () => void {
       const attached = watchers.has(stageId);
       if (wanted && !attached) attach(stageId);
       if (!wanted && attached) detach(stageId);
+
+      const wantedLecture = !!lectureChannelFor(stageId);
+      const attachedLecture = lectureWatchers.has(stageId);
+      if (wantedLecture && !attachedLecture) attachLecture(stageId);
+      if (!wantedLecture && attachedLecture) detachLecture(stageId);
     }
   };
 
@@ -305,6 +441,7 @@ export function startWatchers(): () => void {
   return () => {
     off();
     for (const stageId of [...watchers.keys()]) detach(stageId);
+    for (const stageId of [...lectureWatchers.keys()]) detachLecture(stageId);
     for (const announcementId of [...retryTimers.keys()]) clearRetry(announcementId);
   };
 }

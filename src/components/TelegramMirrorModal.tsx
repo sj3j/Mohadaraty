@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X, Send, Loader2, Check, AlertCircle, AlertTriangle, ArrowDownToLine,
-  ArrowUpFromLine, Radio, RadioTower,
+  ArrowUpFromLine, Radio, RadioTower, BookOpen,
 } from 'lucide-react';
 import { Language, UserProfile } from '../types';
 import { useStageContext } from '../contexts/StageContext';
@@ -42,6 +42,10 @@ function explain(code: TelegramConfigProblem, isRtl: boolean): string {
       return isRtl
         ? 'المزامنة مفعّلة لكن لا توجد أي قناة مفعّلة.'
         : 'The mirror is enabled but no channel is turned on.';
+    case 'bad_lecture_chat_id':
+      return isRtl
+        ? 'معرّف قناة المحاضرات يجب أن يكون رقماً سالباً مثل -1002345678901.'
+        : 'A lecture channel id must be a negative number, e.g. -1002345678901.';
     case 'bad_chat_id':
       return isRtl
         ? 'معرّف القناة يجب أن يكون رقماً سالباً مثل -1002345678901.'
@@ -104,6 +108,7 @@ export default function TelegramMirrorModal({ isOpen, onClose, lang, user }: Pro
   const [draft, setDraft] = useState<TelegramConfig>(config);
   // Kept as raw strings so a half-typed id does not get coerced to 0 mid-keystroke.
   const [rawIds, setRawIds] = useState<Record<string, string>>({});
+  const [rawLectureIds, setRawLectureIds] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -113,6 +118,9 @@ export default function TelegramMirrorModal({ isOpen, onClose, lang, user }: Pro
     setDraft(config);
     setRawIds(Object.fromEntries(
       MIRROR_STAGE_IDS.map(id => [id, config.channels[id]?.chatId ? String(config.channels[id]!.chatId) : '']),
+    ));
+    setRawLectureIds(Object.fromEntries(
+      MIRROR_STAGE_IDS.map(id => [id, config.channels[id]?.lectureChatId ? String(config.channels[id]!.lectureChatId) : '']),
     ));
     setError(null);
     setSuccess(false);
@@ -144,6 +152,16 @@ export default function TelegramMirrorModal({ isOpen, onClose, lang, user }: Pro
       return;
     }
     patchChannel(stageId, { chatId: parsed ?? 0 });
+  };
+
+  const onLectureIdChange = (stageId: MirrorStageId, raw: string) => {
+    setRawLectureIds(prev => ({ ...prev, [stageId]: raw }));
+    const parsed = parseChatId(raw);
+    if (parsed === null && !raw.trim()) {
+      patchChannel(stageId, { lectureChatId: null });
+      return;
+    }
+    patchChannel(stageId, { lectureChatId: parsed ?? 0 });
   };
 
   const handleSave = async () => {
@@ -305,14 +323,33 @@ export default function TelegramMirrorModal({ isOpen, onClose, lang, user }: Pro
                           <span className="text-[10px] font-bold text-slate-400 shrink-0" dir="ltr">{stage.id}</span>
                         </div>
 
-                        <input
-                          value={rawIds[stageId] ?? ''}
-                          onChange={e => onIdChange(stageId, e.target.value)}
-                          dir="ltr"
-                          inputMode="text"
-                          placeholder="-1002345678901"
-                          className="w-full px-3 py-2 text-sm text-left font-mono bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl outline-none focus:border-sky-500 text-slate-900 dark:text-stone-100"
-                        />
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1 block">
+                            {isRtl ? 'قناة الإعلانات' : 'Announcements Channel ID'}
+                          </label>
+                          <input
+                            value={rawIds[stageId] ?? ''}
+                            onChange={e => onIdChange(stageId, e.target.value)}
+                            dir="ltr"
+                            inputMode="text"
+                            placeholder="-1002345678901"
+                            className="w-full px-3 py-2 text-sm text-left font-mono bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl outline-none focus:border-sky-500 text-slate-900 dark:text-stone-100"
+                          />
+                        </div>
+
+                        <div className="mt-2">
+                          <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1 block">
+                            {isRtl ? 'قناة / مجموعة المحاضرات' : 'Lecture Channel / Group ID'}
+                          </label>
+                          <input
+                            value={rawLectureIds[stageId] ?? ''}
+                            onChange={e => onLectureIdChange(stageId, e.target.value)}
+                            dir="ltr"
+                            inputMode="text"
+                            placeholder="-1002345678901"
+                            className="w-full px-3 py-2 text-sm text-left font-mono bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl outline-none focus:border-sky-500 text-slate-900 dark:text-stone-100"
+                          />
+                        </div>
 
                         {channel && (
                           <>
@@ -349,6 +386,15 @@ export default function TelegramMirrorModal({ isOpen, onClose, lang, user }: Pro
                               >
                                 <ArrowUpFromLine className="w-3 h-3" />
                                 {isRtl ? 'صادر' : 'Out'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => patchChannel(stageId, { mirrorLectures: !channel.mirrorLectures })}
+                                className={toggleClass(channel.mirrorLectures ?? false)}
+                                title={isRtl ? 'نشر المحاضرات تلقائياً على تيليجرام' : 'Auto-post lectures to Telegram'}
+                              >
+                                <BookOpen className="w-3 h-3" />
+                                {isRtl ? 'المحاضرات' : 'Lectures'}
                               </button>
                             </div>
                           </>

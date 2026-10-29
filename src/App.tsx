@@ -279,6 +279,39 @@ export default function App() {
     }
   }, []);
 
+  // Deep linking: automatically opens lecture if ?lecture=... is present in URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const targetLectureId = params.get('lecture') || params.get('lectureId');
+    if (!targetLectureId) return;
+
+    let active = true;
+    const found = lectures.find(l => l.id === targetLectureId);
+    if (found) {
+      setReaderLecture(found);
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete('lecture');
+      nextUrl.searchParams.delete('lectureId');
+      window.history.replaceState({}, '', nextUrl.toString());
+      return;
+    }
+
+    // Direct read for fast deep-link resolution across stages or before snapshot fires
+    getDoc(doc(db, 'lectures', targetLectureId))
+      .then(snap => {
+        if (!active || !snap.exists()) return;
+        const lec = { id: snap.id, ...snap.data() } as Lecture;
+        setReaderLecture(lec);
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.delete('lecture');
+        nextUrl.searchParams.delete('lectureId');
+        window.history.replaceState({}, '', nextUrl.toString());
+      })
+      .catch(err => console.warn('[DeepLink] Failed to load target lecture', err));
+
+    return () => { active = false; };
+  }, [lectures]);
+
   useEffect(() => {
     const handleOpenAntiCheat = () => { if (canManageAntiCheat(user)) setShowAntiCheat(true); };
     const handleOpenBank = () => { if (canManageMcqSystem(user)) setShowAdminBank(true); };

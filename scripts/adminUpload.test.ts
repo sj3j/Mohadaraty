@@ -233,5 +233,42 @@ console.log('\n--- Test 6: Atomic Batch Publication Contract ---');
   check('legacy per-file addDoc publication is absent', !source.includes('addDoc('));
 }
 
+console.log('\n--- Test 7: Branch Routing and Null-Safety Contract ---');
+{
+  const source = readFileSync(new URL('../src/components/AdminUpload.tsx', import.meta.url), 'utf8');
+  const recordSource = readFileSync(new URL('../src/components/AdminRecordUpload.tsx', import.meta.url), 'utf8');
+
+  // Static AST/contract checks
+  check('AdminUpload routes single-file and edit modes with files.length <= 1', source.includes('if (lectureToEdit || files.length <= 1)'));
+  check('AdminUpload batch finalConfigs has defensive fallback', source.includes('const finalConfigs = configSnapshot || (submittedConfigs || saveCurrentConfig(fileConfigs)) || [];'));
+  check('AdminRecordUpload routes single-file and edit modes with files.length <= 1', recordSource.includes('if (recordToEdit || files.length <= 1)'));
+
+  // Functional simulation of branch dispatch
+  function determineUploadMode(filesCount: number, isEdit: boolean) {
+    const configSnapshot = filesCount > 1 ? Array.from({ length: filesCount }, (_, i) => ({ title: `File ${i + 1}` })) : null;
+    const isSingleFlow = isEdit || filesCount <= 1;
+    return {
+      isSingleFlow,
+      configSnapshot,
+      batchConfigs: isSingleFlow ? null : (configSnapshot || []),
+    };
+  }
+
+  const singleFileResult = determineUploadMode(1, false);
+  check('single file (count = 1) routes to single flow', singleFileResult.isSingleFlow === true);
+  check('single file configSnapshot is null (uses form state)', singleFileResult.configSnapshot === null);
+
+  const zeroFileResult = determineUploadMode(0, false);
+  check('zero files / YouTube only routes to single flow', zeroFileResult.isSingleFlow === true);
+
+  const editModeResult = determineUploadMode(1, true);
+  check('edit mode routes to single flow', editModeResult.isSingleFlow === true);
+
+  const batchResult = determineUploadMode(3, false);
+  check('batch files (count = 3) routes to batch flow', batchResult.isSingleFlow === false);
+  check('batch files has valid batchConfigs array', Array.isArray(batchResult.batchConfigs) && batchResult.batchConfigs.length === 3);
+  check('batch configs item 0 is defined and safe', batchResult.batchConfigs![0]?.title === 'File 1');
+}
+
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

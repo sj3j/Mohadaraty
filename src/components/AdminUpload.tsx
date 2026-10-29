@@ -339,7 +339,7 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
     let activePublishTarget: string | null = null;
 
     try {
-      if (lectureToEdit || files.length === 0) {
+      if (lectureToEdit || files.length <= 1) {
         // Edit mode OR Youtube only creation mode
         let downloadUrl = lectureToEdit?.pdfUrl || '';
         const currentFile = files.length > 0 ? files[0] : null;
@@ -416,13 +416,24 @@ export default function AdminUpload({ isOpen, onClose, lang, lectureToEdit, user
         }
       } else {
         // Multiple files creation mode
-        const finalConfigs = configSnapshot!;
+        const finalConfigs = configSnapshot || (submittedConfigs || saveCurrentConfig(fileConfigs)) || [];
         const publication = writeBatch(db);
         const published: Array<{ ref: ReturnType<typeof doc>; data: any }> = [];
 
         for (let i = 0; i < files.length; i++) {
           const currentFile = files[i];
-          const config = finalConfigs[i];
+          const config = finalConfigs[i] || {
+            title: currentFile.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim(),
+            category,
+            subjectId,
+            type,
+            description: description || '',
+            youtubeUrl: youtubeUrl || '',
+            version: version || 'original',
+            translationOf: translationOf || '',
+            isWeekly: isWeekly || false,
+            lectureNumber: lectureNumber || '',
+          };
           activePublishTarget = currentFile.name;
           if (!config?.title?.trim()) throw new Error(`File ${i + 1} has no lecture title.`);
           if (hasCurriculum && !subjects.some(subject => subject.id === config.subjectId && subject.stageId === effectiveStageId)) {

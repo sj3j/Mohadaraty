@@ -193,7 +193,7 @@ export default function AdminRecordUpload({ isOpen, onClose, lang, recordToEdit,
     setUploadProgress(0);
 
     try {
-      if (recordToEdit || files.length === 0) {
+      if (recordToEdit || files.length <= 1) {
         let downloadUrl = recordToEdit?.audioUrl;
         let duration = recordToEdit?.duration || 0;
         let size = recordToEdit?.size || 0;
@@ -264,11 +264,18 @@ export default function AdminRecordUpload({ isOpen, onClose, lang, recordToEdit,
         }
       } else {
         // Multiple files creation mode
-        const finalConfigs = saveCurrentConfig(fileConfigs);
+        const finalConfigs = saveCurrentConfig(fileConfigs) || [];
 
         for (let i = 0; i < files.length; i++) {
           const currentFile = files[i];
-          const config = finalConfigs[i];
+          const config = finalConfigs[i] || {
+            title: currentFile.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim(),
+            recordNumber: recordNumber || '',
+            category,
+            subjectId,
+            type,
+            description: description || '',
+          };
           
           const duration = await getAudioDuration(currentFile);
           const size = parseFloat((currentFile.size / (1024 * 1024)).toFixed(2));

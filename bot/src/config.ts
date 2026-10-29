@@ -70,6 +70,13 @@ export function outboundChannelFor(stageId: string): TelegramChannel | null {
   return channel?.enabled && channel.mirrorOut ? channel : null;
 }
 
+export function lectureChannelFor(stageId: string): number | null {
+  if (!current.enabled) return null;
+  const channel = current.channels[stageId as MirrorStageId];
+  if (!channel?.enabled || !channel.mirrorLectures) return null;
+  return channel.lectureChatId || channel.chatId || null;
+}
+
 /** Stages the mirror is live for, in either direction. */
 export function activeStageIds(): string[] {
   if (!current.enabled) return [];

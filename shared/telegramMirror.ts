@@ -25,6 +25,10 @@ export interface TelegramChannel {
    * as a number because that is what the Bot API returns and expects.
    */
   chatId: number;
+  /** Dedicated channel or group ID for posting lectures of this stage. */
+  lectureChatId?: number | null;
+  /** Automatically post newly uploaded lectures to Telegram. */
+  mirrorLectures?: boolean;
   /** Shown as the announcement's author in the app. Falls back to the channel title. */
   displayName?: string;
   /** Master switch for this stage. Off means neither direction runs. */
@@ -66,6 +70,7 @@ export const TELEGRAM_STATE_DOC = 'admin_config/telegram_state';
 export type TelegramConfigProblem =
   | 'no_channels'
   | 'bad_chat_id'
+  | 'bad_lecture_chat_id'
   | 'duplicate_chat_id'
   | 'unknown_stage';
 
@@ -125,6 +130,9 @@ export function validateTelegramConfig(config: TelegramConfig): TelegramConfigPr
     if (!channel) continue;
     if (!(MIRROR_STAGE_IDS as readonly string[]).includes(stageId)) problems.add('unknown_stage');
     if (!isChannelChatId(channel.chatId)) problems.add('bad_chat_id');
+    if (channel.lectureChatId != null && channel.lectureChatId !== 0) {
+      if (!isChannelChatId(channel.lectureChatId)) problems.add('bad_lecture_chat_id');
+    }
 
     // One channel may not feed two stages: an inbound post would have no
     // single correct stageId, and stage isolation is the one thing the
@@ -154,6 +162,15 @@ export function resolveChannelForStage(config: TelegramConfig, stageId: string):
   return channel?.enabled && channel.mirrorOut ? channel : null;
 }
 
+/** Forward lookup for lecture posting: returns the target chat id for this stage, or null if disabled. */
+export function resolveLectureChannelForStage(config: TelegramConfig, stageId: string): number | null {
+  if (!config.enabled) return null;
+  const channel = config.channels[stageId as MirrorStageId];
+  if (!channel?.enabled || !channel.mirrorLectures) return null;
+  const targetId = channel.lectureChatId || channel.chatId;
+  return targetId && isChannelChatId(targetId) ? targetId : null;
+}
+
 /** Normalises whatever Firestore returns into a complete config. */
 export function coerceTelegramConfig(data: unknown): TelegramConfig {
   const raw = (data ?? {}) as Partial<TelegramConfig>;
@@ -164,6 +181,8 @@ export function coerceTelegramConfig(data: unknown): TelegramConfig {
     if (!channel || typeof channel.chatId !== 'number') continue;
     channels[stageId] = {
       chatId: channel.chatId,
+      lectureChatId: typeof channel.lectureChatId === 'number' ? channel.lectureChatId : null,
+      mirrorLectures: channel.mirrorLectures === true,
       displayName: channel.displayName || undefined,
       enabled: channel.enabled !== false,
       mirrorIn: channel.mirrorIn !== false,

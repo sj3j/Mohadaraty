@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { FileText, Download, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check } from 'lucide-react';
+import { FileText, Download, Send, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
-import { doc, deleteDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { doc, deleteDoc, setDoc, updateDoc, serverTimestamp, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
 import { useOfflinePDF } from '../hooks/useOfflinePDF';
@@ -51,6 +51,8 @@ export default React.memo(function LectureCard({
   const [isSharing, setIsSharing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
+  const [isPostingTelegram, setIsPostingTelegram] = useState(false);
+  const [telegramSuccess, setTelegramSuccess] = useState(false);
 
   const { thumbnail, aspectRatio: thumbRatio, isLoading: isThumbLoading, error: thumbError } = usePdfThumbnail(
     lecture.id,
@@ -61,6 +63,26 @@ export default React.memo(function LectureCard({
   /**
    * Export the lecture's PDF directly to device files / downloads.
    */
+  const handlePostToTelegram = async () => {
+    if (isPostingTelegram) return;
+    setIsPostingTelegram(true);
+    try {
+      // Clearing telegramPost and updating createdAt triggers the bot's watcher immediately
+      await updateDoc(doc(db, 'lectures', lecture.id), {
+        telegramPost: null,
+        createdAt: serverTimestamp(),
+      });
+      setTelegramSuccess(true);
+      setShareToast(isRtl ? 'تم إرسال طلب النشر إلى تيليجرام' : 'Sent to Telegram channel');
+      setTimeout(() => setTelegramSuccess(false), 3000);
+    } catch (err) {
+      console.error('Failed to post lecture to Telegram:', err);
+      setShareToast(isRtl ? 'تعذّر النشر على تيليجرام' : 'Failed to post to Telegram');
+    } finally {
+      setIsPostingTelegram(false);
+    }
+  };
+
   const handleLocalExport = async () => {
     if (isExporting) return;
     setIsExporting(true);
@@ -828,6 +850,26 @@ export default React.memo(function LectureCard({
                         <Download className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
                       )}
                       <span className="text-[10px] font-bold">{isRtl ? 'تحميل' : 'Download'}</span>
+                    </button>
+                  )}
+
+                  {/* Admin Post to Telegram */}
+                  {canManage(user, 'manageLectures') && (
+                    <button
+                      type="button"
+                      onClick={handlePostToTelegram}
+                      disabled={isPostingTelegram}
+                      className="flex-1 flex flex-col items-center justify-center py-2 px-1 rounded-xl text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 transition-all disabled:opacity-50 cursor-pointer"
+                      title={isRtl ? 'نشر المحاضرة على قناة تيليجرام' : 'Post lecture to Telegram'}
+                    >
+                      {isPostingTelegram ? (
+                        <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1 animate-spin text-cyan-500" />
+                      ) : (
+                        <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
+                      )}
+                      <span className="text-[10px] font-bold">
+                        {telegramSuccess ? (isRtl ? 'تم النشر' : 'Posted') : (isRtl ? 'تيليجرام' : 'Telegram')}
+                      </span>
                     </button>
                   )}
 
