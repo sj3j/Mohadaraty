@@ -87,6 +87,24 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'users/stu_uid/stageHistory/2026-2027_stage_3'), {
     yearLabel: '2026-2027', stageId: 'stage_3', mcqLeaderboardScore: 120,
   });
+  await setDoc(doc(db, 'accountSessionState/stu_uid'), {
+    uid: 'stu_uid', generation: 1, preservedSessionId: null,
+  });
+  await setDoc(doc(db, 'accountSessions/session_active'), {
+    uid: 'stu_uid', generation: 1, status: 'active',
+  });
+  await setDoc(doc(db, 'accountSessions/session_revoked'), {
+    uid: 'stu_uid', generation: 1, status: 'revoked',
+  });
+  await setDoc(doc(db, 'accountSessionState/rep_uid'), {
+    uid: 'rep_uid', generation: 1, preservedSessionId: null,
+  });
+  await setDoc(doc(db, 'accountSessions/session_admin_active'), {
+    uid: 'rep_uid', generation: 1, status: 'active',
+  });
+  await setDoc(doc(db, 'accountSessions/session_admin_revoked'), {
+    uid: 'rep_uid', generation: 1, status: 'revoked',
+  });
 
   // A student on ANOTHER stage. The stage_3 representative must not be able to
   // see or touch this one - before the students rules were scoped they could
@@ -387,6 +405,18 @@ const mod = ctxFor('mod_uid', 'mod@x.com');
 const legacy = ctxFor('legacy_uid', 'legacy@x.com');
 const student = ctxFor('stu_uid', 'stu@x.com');
 const student2 = ctxFor('stu2_uid', 'stu2@x.com');
+const activeSessionStudent = ctxFor('stu_uid', 'stu@x.com', {
+  app_session: true, app_session_id: 'session_active', app_session_generation: 1,
+});
+const revokedSessionStudent = ctxFor('stu_uid', 'stu@x.com', {
+  app_session: true, app_session_id: 'session_revoked', app_session_generation: 1,
+});
+const activeSessionAdmin = ctxFor('rep_uid', 'rep@x.com', {
+  app_session: true, app_session_id: 'session_admin_active', app_session_generation: 1,
+});
+const revokedSessionAdmin = ctxFor('rep_uid', 'rep@x.com', {
+  app_session: true, app_session_id: 'session_admin_revoked', app_session_generation: 1,
+});
 // Both hardcoded master addresses, so a rules change that widens or narrows the
 // list is caught here and not in production. Kept in step with
 // shared/masterAdmins.ts by `npm run test:masters`.
@@ -407,6 +437,20 @@ const liveRole = ctxFor('live_role_uid', 'liverole@x.com');
 const tahmeelPaid = ctxFor('tah_paid_uid', 'tahpaid@x.com');
 const tahmeelFree = ctxFor('tah_free_uid', 'tahfree@x.com');
 const tahmeelExpired = ctxFor('tah_expired_uid', 'tahexpired@x.com');
+
+console.log('\nAccount login sessions are enforced across students and staff');
+await check('active registered student session CAN read',
+  assertSucceeds(getDoc(doc(activeSessionStudent, 'settings/misc'))));
+await check('revoked student session CANNOT read',
+  assertFails(getDoc(doc(revokedSessionStudent, 'settings/misc'))));
+await check('active registered admin session CAN read',
+  assertSucceeds(getDoc(doc(activeSessionAdmin, 'settings/misc'))));
+await check('revoked admin session CANNOT read',
+  assertFails(getDoc(doc(revokedSessionAdmin, 'settings/misc'))));
+await check('student CANNOT read the server-owned session registry',
+  assertFails(getDoc(doc(activeSessionStudent, 'accountSessions/session_active'))));
+await check('staff CANNOT read the server-owned session registry',
+  assertFails(getDoc(doc(activeSessionAdmin, 'accountSessions/session_admin_active'))));
 
 console.log('\nCarry-over lecture access is stage-bound and subscription-only');
 await check('subscribed student CAN read a selected previous-stage lecture',

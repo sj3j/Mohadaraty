@@ -5,7 +5,6 @@ import { canManage } from '../lib/permissions';
 import { useStageContext } from '../contexts/StageContext';
 import SubjectBrowser from './SubjectBrowser';
 import WeeklyListScreen from './WeeklyListScreen';
-import RecordsScreen from './RecordsScreen';
 import LeaderboardTab from './LeaderboardTab';
 import LectureCard from './LectureCard';
 import { motion, AnimatePresence } from 'motion/react';
@@ -15,7 +14,7 @@ import CourseTabs from './CourseTabs';
 import TahmeelSubjectsView from './TahmeelSubjectsView';
 import { useStageSubjects } from '../hooks/useStageSubjects';
 
-type InnerTab = 'lectures' | 'weekly' | 'records' | 'leaderboard' | 'downloads';
+type InnerTab = 'lectures' | 'weekly' | 'leaderboard' | 'downloads';
 
 interface HomeScreenProps {
   user: UserProfile | null;
@@ -74,10 +73,16 @@ export default function HomeScreen({
     return counts;
   }, {} as Record<(typeof COURSE_IDS)[number], number>);
   
-  const [activeTab, setActiveTab] = useState<InnerTab>(initialTab);
+  const [activeTab, setActiveTab] = useState<InnerTab>(
+    (initialTab as any) === 'records' ? 'lectures' : initialTab
+  );
 
   useEffect(() => {
-    setActiveTab(initialTab);
+    if ((initialTab as any) === 'records') {
+      setActiveTab('lectures');
+    } else if (initialTab) {
+      setActiveTab(initialTab);
+    }
   }, [initialTab]);
 
   useEffect(() => {
@@ -92,15 +97,12 @@ export default function HomeScreen({
     return isRtl ? 'مساء الخير' : 'Good evening';
   };
 
-  // Only the two tabs that actually read searchQuery offer the field. Weekly,
-  // downloads and the leaderboard ignore it, and a search box that silently does
-  // nothing is worse than no search box.
-  const searchable = activeTab === 'lectures' || activeTab === 'records';
+  // Only the lectures tab reads searchQuery; weekly, downloads and the leaderboard ignore it.
+  const searchable = activeTab === 'lectures';
   const canUpload = canManage(user, 'manageLectures') && activeTab === 'lectures';
 
   const tabs: { id: InnerTab; label: string }[] = [
     { id: 'weekly', label: isRtl ? 'واجبات الأسبوع' : 'Weekly Tasks' },
-    { id: 'records', label: isRtl ? 'التسجيلات' : 'Records' },
     { id: 'lectures', label: isRtl ? 'المحاضرات' : 'Lectures' },
     { id: 'downloads', label: isRtl ? 'مساحتك' : 'Your Space' },
     { id: 'leaderboard', label: isRtl ? '🏆 لوحة الصدارة' : '🏆 Leaderboard' }
@@ -246,7 +248,7 @@ export default function HomeScreen({
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder={activeTab === 'records' ? t.searchPlaceholderRecords : t.searchPlaceholder}
+                placeholder={t.searchPlaceholder}
                 className={`w-full ${isRtl ? 'pr-11 pl-10' : 'pl-11 pr-10'} py-3 bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 rounded-2xl text-sm font-bold text-slate-800 dark:text-stone-100 placeholder:font-medium placeholder-slate-400 dark:placeholder-slate-500 shadow-sm outline-none focus:border-sky-500 dark:focus:border-sky-500 transition-colors`}
               />
               {searchQuery && (
@@ -328,9 +330,6 @@ export default function HomeScreen({
         )}
         {activeTab === 'weekly' && (
           <WeeklyListScreen user={user} lang={lang} />
-        )}
-        {activeTab === 'records' && (
-          <RecordsScreen user={user} lang={lang} searchQuery={searchQuery} />
         )}
         {activeTab === 'leaderboard' && (
           <LeaderboardTab user={user} lang={lang} />

@@ -31,22 +31,22 @@ import { serverCache } from './serverCache.js';
  * the Google invoice from ever diverging: every weight below is a real price
  * ratio, not a product guess.
  *
- * gemini-3.1-flash-lite: $0.25/1M input, $1.50/1M output.
- *   uncached input token = 1     ($0.25/1M)
- *   cached input token   = 0.25  (Gemini's implicit-cache discount)
- *   output token         = 6     ($1.50 / $0.25)
+ * gemini-3.5-flash: $1.50/1M uncached input, $0.15/1M cached input, $9.00/1M output.
+ *   uncached input token = 1     ($1.50/1M)
+ *   cached input token   = 0.1   ($0.15 / $1.50 = 0.10)
+ *   output token         = 6     ($9.00 / $1.50 = 6)
  *
  * If the model changes, these MUST change with it, or the ceiling stops
  * meaning dollars. Keep USD_PER_UNIT in step with the input price.
  */
 export const UNIT_WEIGHT_UNCACHED_INPUT = 1;
-export const UNIT_WEIGHT_CACHED_INPUT = 0.25;
+export const UNIT_WEIGHT_CACHED_INPUT = 0.1;
 export const UNIT_WEIGHT_OUTPUT = 6;
 
-/** One unit == one uncached input token == $0.25 per million. */
-export const USD_PER_UNIT = 0.25 / 1_000_000;
+/** One unit == one uncached input token == $1.50 per million. */
+export const USD_PER_UNIT = 1.50 / 1_000_000;
 
-export const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
+export const DEFAULT_MODEL = 'gemini-3.5-flash';
 
 /**
  * Tokens billed per PDF page. Natively embedded text is not charged on Gemini 3
@@ -71,18 +71,25 @@ export const MAX_PDF_PAGES = 1000;
 
 /** Student questions per chat thread. The assistant's replies do not count, so
  *  a full thread is up to 50 messages. Its job is bounding how large a single
- *  request can grow, not limiting usage — daily energy does that. */
+ *  request can grow, not limiting usage — weekly energy does that. */
 export const MAX_QUESTIONS_PER_CHAT = 25;
 
 /**
- * Sized against a REAL lecture, not a hypothetical one. 55,000 assumed a
- * 30-page deck at 258 tokens/page; lectures here run to 66 pages at 303, so a
- * fresh question costs ~22,700 units and 55,000 bought about 2.4 questions a
- * day rather than the ~6 that was intended. Follow-ups in the same chat cost
- * roughly half, because the PDF prefix hits Gemini's implicit cache.
+ * Weekly energy allowance per subscriber:
+ * 5 cycles per month, $1.00 USD / 5 = $0.20 USD per weekly cycle.
+ * Energy units per week = $0.20 USD / USD_PER_UNIT = 133,333 units.
  */
-export const DEFAULT_DAILY_UNIT_BUDGET = 140_000;
+export const DEFAULT_WEEKLY_UNIT_BUDGET = Math.round(0.20 / USD_PER_UNIT); // 133,333
+export const DEFAULT_DAILY_UNIT_BUDGET = DEFAULT_WEEKLY_UNIT_BUDGET;
 export const DEFAULT_MONTHLY_CEILING_USD = 50;
+
+/**
+ * 2-hour cooldown when a student uses too many tokens in a short period.
+ * Threshold: 60,000 units within a 10-minute window (~45% of weekly budget).
+ */
+export const COOLDOWN_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+export const COOLDOWN_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+export const COOLDOWN_UNIT_THRESHOLD = 60_000; // units
 
 /** Fractions of the monthly ceiling that raise an admin alert. 1.0 also trips
  *  the kill switch. */
@@ -110,6 +117,8 @@ export const MAX_FREE_OFF_TOPIC_PER_DAY = 5;
 export interface SimosanSettings {
   enabled: boolean;
   model: string;
+  weeklyUnitBudget: number;
+  /** Kept as an alias for backwards compatibility */
   dailyUnitBudget: number;
   monthlyCeilingUsd: number;
   month: string;
@@ -144,6 +153,7 @@ export type DenyReason =
   | 'disabled'
   | 'ceiling_reached'
   | 'insufficient_energy'
+  | 'cooldown_active'
   | 'chat_full';
 
 /* ------------------------------------------------------------------ *
@@ -204,6 +214,30 @@ export function msUntilBaghdadWeeklyReset(now: Date = new Date()): number {
     shifted.getUTCDate() + daysUntilNextSat,
   );
   return nextSatMidnight - shifted.getTime();
+}
+
+export function extractCooldownMs(val: any): number {
+  if (!val) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof val.toMillis === 'function') return val.toMillis();
+  if (val instanceof Date) return val.getTime();
+  if (typeof val === 'string') {
+    const parsed = Date.parse(val);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+export function isSaturdayRolloverWindow(week: string, now: Date = new Date()): boolean {
+  const nowMs = now.getTime();
+  const satMidnightMs = Date.parse(`${week}T00:00:00+03:00`);
+  return !isNaN(satMidnightMs) && nowMs >= satMidnightMs && nowMs - satMidnightMs < COOLDOWN_DURATION_MS;
+}
+
+export function previousBaghdadWeekKey(week: string): string {
+  const satMidnightMs = Date.parse(`${week}T00:00:00+03:00`);
+  const prevDate = new Date(satMidnightMs - 7 * 24 * 60 * 60 * 1000);
+  return baghdadWeekKey(prevDate);
 }
 
 export function usageDocId(uid: string, day: string): string {
@@ -306,12 +340,14 @@ export function normaliseSettings(raw: any, now: Date = new Date()): SimosanSett
   // A new month zeroes the accumulator and clears the alert log. Doing it on
   // read means no cron is required to roll the budget over.
   const rolled = storedMonth !== month;
+  const budget = Number(raw?.weeklyUnitBudget) > 0
+    ? Number(raw.weeklyUnitBudget)
+    : (Number(raw?.dailyUnitBudget) > 0 ? Number(raw.dailyUnitBudget) : DEFAULT_WEEKLY_UNIT_BUDGET);
   return {
     enabled: raw?.enabled !== false,
     model: raw?.model || DEFAULT_MODEL,
-    dailyUnitBudget: Number(raw?.dailyUnitBudget) > 0
-      ? Number(raw.dailyUnitBudget)
-      : DEFAULT_DAILY_UNIT_BUDGET,
+    weeklyUnitBudget: budget,
+    dailyUnitBudget: budget,
     monthlyCeilingUsd: Number(raw?.monthlyCeilingUsd) > 0
       ? Number(raw.monthlyCeilingUsd)
       : DEFAULT_MONTHLY_CEILING_USD,
@@ -346,8 +382,11 @@ export interface ReserveResult {
   /** Units actually held. Pass this back to reconcile or release. */
   reserved: number;
   remaining: number;
+  weeklyBudget: number;
   dailyBudget: number;
   resetsInMs: number;
+  cooldownUntil?: number;
+  week: string;
 }
 
 /**
@@ -355,7 +394,7 @@ export interface ReserveResult {
  *
  * This runs in a transaction and it is the only thing standing between the
  * budget and a student firing ten requests at once — without it, all ten read
- * a full bar, all ten pass, and the daily allowance is meaningless.
+ * a full bar, all ten pass, and the weekly allowance is meaningless.
  */
 export async function reserveEnergy(
   ctx: SimosanCtx,
@@ -363,8 +402,8 @@ export async function reserveEnergy(
   now: Date = new Date(),
 ): Promise<ReserveResult> {
   const { db, FieldValue } = ctx;
-  const day = baghdadDayKey(now);
-  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, day));
+  const week = baghdadWeekKey(now);
+  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
 
   return db.runTransaction(async (t) => {
@@ -373,41 +412,119 @@ export async function reserveEnergy(
       t.get(usageRef),
     ]);
     const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
-    const resetsInMs = msUntilBaghdadReset(now);
+    const resetsInMs = msUntilBaghdadWeeklyReset(now);
+    const budget = settings.weeklyUnitBudget;
 
-    const deny = (reason: DenyReason, spent = 0): ReserveResult => ({
+    const deny = (
+      reason: DenyReason,
+      spent = 0,
+      customResetsInMs = resetsInMs,
+      cooldownUntil?: number,
+    ): ReserveResult => ({
       ok: false,
       reason,
       reserved: 0,
-      remaining: Math.max(0, settings.dailyUnitBudget - spent),
-      dailyBudget: settings.dailyUnitBudget,
-      resetsInMs,
+      remaining: Math.max(0, budget - spent),
+      weeklyBudget: budget,
+      dailyBudget: budget,
+      resetsInMs: customResetsInMs,
+      cooldownUntil,
+      week,
     });
 
     if (!settings.enabled) return deny('disabled');
     if (settings.monthUsd >= settings.monthlyCeilingUsd) return deny('ceiling_reached');
 
     const data = usageSnap.exists ? usageSnap.data() : null;
-    const sameDay = !data || data.day === day;
-    const used = sameDay ? Number(data?.unitsUsed) || 0 : 0;
-    const held = sameDay ? Number(data?.unitsReserved) || 0 : 0;
+    const sameWeek = !data || (data.week ? data.week === week : data.day === week);
+    const used = sameWeek ? Number(data?.unitsUsed) || 0 : 0;
+    const held = sameWeek ? Number(data?.unitsReserved) || 0 : 0;
     const spent = used + held;
 
-    if (spent + input.estimatedUnits > settings.dailyUnitBudget) {
+    const nowMs = now.getTime();
+    let cooldownUntilMs = sameWeek ? extractCooldownMs(data?.cooldownUntil) : 0;
+
+    // Check previous week rollover if within 2 hours of Saturday midnight
+    let prevData: any = null;
+    if (isSaturdayRolloverWindow(week, now)) {
+      const prevWeek = previousBaghdadWeekKey(week);
+      const prevUsageRef = db.collection('aiUsage').doc(usageDocId(input.uid, prevWeek));
+      const prevSnap = await t.get(prevUsageRef);
+      if (prevSnap.exists) {
+        prevData = prevSnap.data();
+        const prevCdMs = extractCooldownMs(prevData?.cooldownUntil);
+        if (prevCdMs > nowMs && cooldownUntilMs <= nowMs) {
+          cooldownUntilMs = prevCdMs;
+        }
+      }
+    }
+
+    if (cooldownUntilMs > nowMs) {
+      return deny('cooldown_active', spent, cooldownUntilMs - nowMs, cooldownUntilMs);
+    }
+
+    let windowStartMs = sameWeek && Number(data?.windowStart) > 0 ? Number(data.windowStart) : nowMs;
+    let windowUnits = sameWeek ? Number(data?.windowUnits) || 0 : 0;
+    if (nowMs - windowStartMs > COOLDOWN_WINDOW_MS) {
+      windowStartMs = nowMs;
+      windowUnits = 0;
+    }
+
+    // Carry over sliding burst window from previous week if within COOLDOWN_WINDOW_MS of rollover
+    if (windowUnits === 0 && prevData && Number(prevData.windowStart) > 0) {
+      const prevWinStart = Number(prevData.windowStart);
+      if (nowMs - prevWinStart <= COOLDOWN_WINDOW_MS) {
+        windowStartMs = prevWinStart;
+        windowUnits = Number(prevData.windowUnits) || 0;
+      }
+    }
+
+    if (spent + input.estimatedUnits > budget) {
       return deny('insufficient_energy', spent);
+    }
+
+    // Check if adding this reservation pushes short-term burst usage past threshold.
+    // If windowUnits > 0 (subsequent request in window) or windowUnits already at threshold,
+    // trigger cooldown and deny. An initial single request within budget is allowed through
+    // and will enter cooldown on reconcile if actual usage reaches threshold.
+    const wouldExceedBurst =
+      windowUnits >= COOLDOWN_UNIT_THRESHOLD ||
+      (windowUnits > 0 && windowUnits + input.estimatedUnits >= COOLDOWN_UNIT_THRESHOLD);
+
+    if (wouldExceedBurst) {
+      const triggerCooldownUntil = nowMs + COOLDOWN_DURATION_MS;
+      t.set(
+        usageRef,
+        {
+          uid: input.uid,
+          stageId: input.stageId,
+          week,
+          day: week,
+          unitsUsed: used,
+          unitsReserved: held,
+          cooldownUntil: triggerCooldownUntil,
+          windowStart: windowStartMs,
+          windowUnits,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      return deny('cooldown_active', spent, COOLDOWN_DURATION_MS, triggerCooldownUntil);
     }
 
     t.set(
       usageRef,
       {
         uid: input.uid,
-        // Stamped from the caller's user document, never from the request body
-        // — the rule userMCQStats was forced into after the leaderboard leak.
         stageId: input.stageId,
-        day,
+        week,
+        day: week,
         unitsUsed: used,
         unitsReserved: held + input.estimatedUnits,
-        requestCount: sameDay ? Number(data?.requestCount) || 0 : 0,
+        windowStart: windowStartMs,
+        windowUnits: windowUnits + input.estimatedUnits,
+        cooldownUntil: null,
+        requestCount: sameWeek ? Number(data?.requestCount) || 0 : 0,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -416,9 +533,11 @@ export async function reserveEnergy(
     return {
       ok: true,
       reserved: input.estimatedUnits,
-      remaining: Math.max(0, settings.dailyUnitBudget - spent - input.estimatedUnits),
-      dailyBudget: settings.dailyUnitBudget,
+      remaining: Math.max(0, budget - spent - input.estimatedUnits),
+      weeklyBudget: budget,
+      dailyBudget: budget,
       resetsInMs,
+      week,
     };
   });
 }
@@ -429,13 +548,13 @@ export async function reserveEnergy(
  */
 export async function reconcileEnergy(
   ctx: SimosanCtx,
-  input: { uid: string; reservedUnits: number; actualUnits: number },
+  input: { uid: string; reservedUnits: number; actualUnits: number; week?: string },
   now: Date = new Date(),
-): Promise<{ remaining: number; dailyBudget: number; monthUsd: number; ceilingUsd: number }> {
+): Promise<{ remaining: number; weeklyBudget: number; dailyBudget: number; monthUsd: number; ceilingUsd: number }> {
   const { db, FieldValue } = ctx;
-  const day = baghdadDayKey(now);
+  const week = input.week || baghdadWeekKey(now);
   const month = baghdadMonthKey(now);
-  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, day));
+  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
   const spendUsd = unitsToUsd(input.actualUnits);
 
@@ -454,13 +573,39 @@ export async function reconcileEnergy(
     // held total negative and hand the student free budget.
     const nextHeld = Math.max(0, held - input.reservedUnits);
 
+    const nowMs = now.getTime();
+    let windowStartMs = Number(data?.windowStart) > 0 ? Number(data.windowStart) : nowMs;
+    let windowUnits = Number(data?.windowUnits) || 0;
+    if (nowMs - windowStartMs > COOLDOWN_WINDOW_MS) {
+      windowStartMs = nowMs;
+      windowUnits = input.actualUnits;
+    } else {
+      windowUnits = Math.max(0, windowUnits - input.reservedUnits + input.actualUnits);
+    }
+
+    let existingCdMs = 0;
+    if (data?.cooldownUntil) {
+      if (typeof data.cooldownUntil === 'number') existingCdMs = data.cooldownUntil;
+      else if (typeof data.cooldownUntil.toMillis === 'function') existingCdMs = data.cooldownUntil.toMillis();
+      else if (data.cooldownUntil instanceof Date) existingCdMs = data.cooldownUntil.getTime();
+    }
+
+    const triggerCooldown = windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownUntil = triggerCooldown
+      ? nowMs + COOLDOWN_DURATION_MS
+      : (existingCdMs > nowMs ? existingCdMs : null);
+
     t.set(
       usageRef,
       {
         uid: input.uid,
-        day,
+        week,
+        day: week,
         unitsUsed: nextUsed,
         unitsReserved: nextHeld,
+        windowStart: windowStartMs,
+        windowUnits,
+        cooldownUntil,
         requestCount: (Number(data?.requestCount) || 0) + 1,
         updatedAt: FieldValue.serverTimestamp(),
       },
@@ -477,6 +622,7 @@ export async function reconcileEnergy(
         // admin editing the doc sees real values rather than an empty object.
         enabled: nextMonthUsd >= settings.monthlyCeilingUsd ? false : settings.enabled,
         model: settings.model,
+        weeklyUnitBudget: settings.weeklyUnitBudget,
         dailyUnitBudget: settings.dailyUnitBudget,
         monthlyCeilingUsd: settings.monthlyCeilingUsd,
         alertsSent: settings.alertsSent,
@@ -486,8 +632,9 @@ export async function reconcileEnergy(
     );
 
     return {
-      remaining: Math.max(0, settings.dailyUnitBudget - nextUsed - nextHeld),
-      dailyBudget: settings.dailyUnitBudget,
+      remaining: Math.max(0, settings.weeklyUnitBudget - nextUsed - nextHeld),
+      weeklyBudget: settings.weeklyUnitBudget,
+      dailyBudget: settings.weeklyUnitBudget,
       monthUsd: nextMonthUsd,
       ceilingUsd: settings.monthlyCeilingUsd,
       alertsSent: settings.alertsSent,
@@ -508,21 +655,23 @@ export async function reconcileEnergy(
  */
 export async function releaseEnergy(
   ctx: SimosanCtx,
-  input: { uid: string; reservedUnits: number },
+  input: { uid: string; reservedUnits: number; week?: string },
   now: Date = new Date(),
 ): Promise<void> {
   const { db, FieldValue } = ctx;
-  const day = baghdadDayKey(now);
-  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, day));
+  const week = input.week || baghdadWeekKey(now);
+  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
 
   await db.runTransaction(async (t) => {
     const snap = await t.get(usageRef);
     if (!snap.exists) return;
     const held = Number(snap.data()?.unitsReserved) || 0;
+    const windowUnits = Number(snap.data()?.windowUnits) || 0;
     t.set(
       usageRef,
       {
         unitsReserved: Math.max(0, held - input.reservedUnits),
+        windowUnits: Math.max(0, windowUnits - input.reservedUnits),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -542,13 +691,13 @@ export async function releaseEnergy(
  */
 export async function settleOffTopic(
   ctx: SimosanCtx,
-  input: { uid: string; reservedUnits: number; actualUnits: number },
+  input: { uid: string; reservedUnits: number; actualUnits: number; week?: string },
   now: Date = new Date(),
-): Promise<{ refunded: boolean; remaining: number; dailyBudget: number }> {
+): Promise<{ refunded: boolean; remaining: number; weeklyBudget: number; dailyBudget: number }> {
   const { db, FieldValue } = ctx;
-  const day = baghdadDayKey(now);
+  const week = input.week || baghdadWeekKey(now);
   const month = baghdadMonthKey(now);
-  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, day));
+  const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
   const spendUsd = unitsToUsd(input.actualUnits);
 
@@ -568,13 +717,33 @@ export async function settleOffTopic(
     const nextUsed = refunded ? used : used + input.actualUnits;
     const nextHeld = Math.max(0, held - input.reservedUnits);
 
+    const nowMs = now.getTime();
+    let windowStartMs = Number(data?.windowStart) > 0 ? Number(data.windowStart) : nowMs;
+    let windowUnits = Number(data?.windowUnits) || 0;
+    if (nowMs - windowStartMs > COOLDOWN_WINDOW_MS) {
+      windowStartMs = nowMs;
+      windowUnits = refunded ? 0 : input.actualUnits;
+    } else {
+      windowUnits = Math.max(0, windowUnits - input.reservedUnits + (refunded ? 0 : input.actualUnits));
+    }
+
+    const existingCdMs = extractCooldownMs(data?.cooldownUntil);
+    const triggerCooldown = !refunded && windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownUntil = triggerCooldown
+      ? nowMs + COOLDOWN_DURATION_MS
+      : (existingCdMs > nowMs ? existingCdMs : null);
+
     t.set(
       usageRef,
       {
         uid: input.uid,
-        day,
+        week,
+        day: week,
         unitsUsed: nextUsed,
         unitsReserved: nextHeld,
+        windowStart: windowStartMs,
+        windowUnits,
+        cooldownUntil,
         offTopicCount: offTopic + 1,
         requestCount: (Number(data?.requestCount) || 0) + 1,
         updatedAt: FieldValue.serverTimestamp(),
@@ -590,6 +759,7 @@ export async function settleOffTopic(
         month,
         monthUsd: nextMonthUsd,
         enabled: nextMonthUsd >= settings.monthlyCeilingUsd ? false : settings.enabled,
+        alertsSent: settings.alertsSent,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -597,8 +767,9 @@ export async function settleOffTopic(
 
     return {
       refunded,
-      remaining: Math.max(0, settings.dailyUnitBudget - nextUsed - nextHeld),
-      dailyBudget: settings.dailyUnitBudget,
+      remaining: Math.max(0, settings.weeklyUnitBudget - nextUsed - nextHeld),
+      weeklyBudget: settings.weeklyUnitBudget,
+      dailyBudget: settings.weeklyUnitBudget,
       monthUsd: nextMonthUsd,
       ceilingUsd: settings.monthlyCeilingUsd,
       alertsSent: settings.alertsSent,
@@ -610,6 +781,7 @@ export async function settleOffTopic(
   return {
     refunded: result.refunded,
     remaining: result.remaining,
+    weeklyBudget: result.weeklyBudget,
     dailyBudget: result.dailyBudget,
   };
 }
@@ -646,6 +818,57 @@ async function maybeAlert(
   );
 }
 
+/**
+ * Record real API usage spend against monthly ceiling and trigger alerts / kill switch.
+ * Used for Supabase path to ensure monthly ceiling, month rollover, and alerts
+ * stay 100% in parity with the Firestore path.
+ */
+export async function recordSpendAndCheckCeiling(
+  ctx: SimosanCtx,
+  actualUnits: number,
+  now: Date = new Date(),
+): Promise<{ monthUsd: number; ceilingUsd: number; enabled: boolean; month: string }> {
+  const { db, FieldValue } = ctx;
+  const month = baghdadMonthKey(now);
+  const settingsRef = db.collection('app_settings').doc('simosan');
+  const spendUsd = unitsToUsd(actualUnits);
+
+  const result = await db.runTransaction(async (t) => {
+    const snap = await t.get(settingsRef);
+    const settings = normaliseSettings(snap.exists ? snap.data() : null, now);
+    const nextMonthUsd = settings.monthUsd + spendUsd;
+    const isOverCeiling = nextMonthUsd >= settings.monthlyCeilingUsd;
+
+    t.set(
+      settingsRef,
+      {
+        month,
+        monthUsd: nextMonthUsd,
+        enabled: isOverCeiling ? false : settings.enabled,
+        model: settings.model,
+        weeklyUnitBudget: settings.weeklyUnitBudget,
+        dailyUnitBudget: settings.dailyUnitBudget,
+        monthlyCeilingUsd: settings.monthlyCeilingUsd,
+        alertsSent: settings.alertsSent,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return {
+      monthUsd: nextMonthUsd,
+      ceilingUsd: settings.monthlyCeilingUsd,
+      alertsSent: settings.alertsSent,
+      month,
+      enabled: isOverCeiling ? false : settings.enabled,
+    };
+  });
+
+  serverCache.delete('simosan:settings');
+  await maybeAlert(ctx, result);
+  return result;
+}
+
 /* ------------------------------------------------------------------ *
  * Free Tier Weekly Allowance
  * ------------------------------------------------------------------ */
@@ -654,6 +877,7 @@ export interface ReserveFreeResult {
   ok: boolean;
   reason?: 'disabled' | 'free_weekly_limit_reached' | 'ceiling_reached';
   resetsInMs: number;
+  week: string;
 }
 
 /**
@@ -678,15 +902,15 @@ export async function reserveFreeQuestion(
     const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
     const resetsInMs = msUntilBaghdadWeeklyReset(now);
 
-    if (!settings.enabled) return { ok: false, reason: 'disabled', resetsInMs };
-    if (settings.monthUsd >= settings.monthlyCeilingUsd) return { ok: false, reason: 'ceiling_reached', resetsInMs };
+    if (!settings.enabled) return { ok: false, reason: 'disabled', resetsInMs, week };
+    if (settings.monthUsd >= settings.monthlyCeilingUsd) return { ok: false, reason: 'ceiling_reached', resetsInMs, week };
 
     const data = usageSnap.exists ? usageSnap.data() : null;
     const used = Number(data?.usedCount) || 0;
     const held = Number(data?.reservedCount) || 0;
 
     if (used + held >= 1) {
-      return { ok: false, reason: 'free_weekly_limit_reached', resetsInMs };
+      return { ok: false, reason: 'free_weekly_limit_reached', resetsInMs, week };
     }
 
     t.set(
@@ -702,7 +926,7 @@ export async function reserveFreeQuestion(
       { merge: true },
     );
 
-    return { ok: true, resetsInMs };
+    return { ok: true, resetsInMs, week };
   });
 }
 
@@ -711,11 +935,11 @@ export async function reserveFreeQuestion(
  */
 export async function reconcileFreeQuestion(
   ctx: SimosanCtx,
-  input: { uid: string; actualUnits: number },
+  input: { uid: string; actualUnits: number; week?: string },
   now: Date = new Date(),
 ): Promise<void> {
   const { db, FieldValue } = ctx;
-  const week = baghdadWeekKey(now);
+  const week = input.week || baghdadWeekKey(now);
   const month = baghdadMonthKey(now);
   const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
@@ -772,11 +996,11 @@ export async function reconcileFreeQuestion(
  */
 export async function releaseFreeQuestion(
   ctx: SimosanCtx,
-  input: { uid: string },
+  input: { uid: string; week?: string },
   now: Date = new Date(),
 ): Promise<void> {
   const { db, FieldValue } = ctx;
-  const week = baghdadWeekKey(now);
+  const week = input.week || baghdadWeekKey(now);
   const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
 
   await db.runTransaction(async (t) => {

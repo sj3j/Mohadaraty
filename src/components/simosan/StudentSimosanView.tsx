@@ -15,8 +15,9 @@ import type { Language, UserProfile } from '../../types';
 import { captureAttendanceQr } from '../../services/attendanceService';
 import QrScannerModal from './QrScannerModal';
 import { useStudentAttendance } from './useStudentAttendance';
-import type { StudentAttendanceRow } from '../../../shared/attendanceSchedule';
+import { lectureTimingStatus, type StudentAttendanceRow } from '../../../shared/attendanceSchedule';
 import { attendanceWeekStart } from '../../../shared/attendance';
+import { baghdadToday } from '../../../shared/academicCalendar';
 import type { AttendanceScanLocationEvidence } from '../../../shared/attendanceSecurity';
 import {
   AttendanceLocationGateError,
@@ -40,6 +41,7 @@ export interface WeekAttendanceItem {
   topic: string;
   date?: string;
   time?: string;
+  endTime?: string;
   attendedGroup?: string; // e.g. "D3" (native) or "B2" (substituted)
   teacher?: string;
   location?: string;
@@ -356,6 +358,7 @@ export function buildCanonicalSubjects(
       topic: occurrence.title,
       date: occurrence.lectureDate,
       time: occurrence.startTime,
+      endTime: occurrence.endTime,
       teacher: doctor || undefined,
       location: occurrence.location || undefined,
       status: row.state === 'confirmed' ? 'attended' : row.state === 'absent' ? 'absent' : row.state === 'none' ? 'upcoming' : 'pending',
@@ -433,6 +436,20 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
   const userGroup = user.group || '—';
   const attendance = useStudentAttendance(user.uid, user.group);
   const [scanError, setScanError] = useState('');
+  const attendanceTimezone = attendance.mine?.timezone || 'Asia/Baghdad';
+  const [today, setToday] = useState(() => baghdadToday(attendanceTimezone));
+
+  useEffect(() => {
+    const updateToday = () => setToday(baghdadToday(attendanceTimezone));
+    updateToday();
+    const onVisible = () => { if (!document.hidden) updateToday(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const interval = window.setInterval(updateToday, 60_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.clearInterval(interval);
+    };
+  }, [attendanceTimezone]);
 
   // Scanner state
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -591,14 +608,31 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
   const missedWeeks = currentWeeksList.filter((w) => w.status === 'absent').length;
   const totalHeldWeeks = completedWeeks + missedWeeks;
   const attendancePercentage = totalHeldWeeks > 0 ? Math.round((completedWeeks / totalHeldWeeks) * 100) : 0;
+  const attendanceAvailabilityLabel = (() => {
+    if (attendance.loading) return isRtl ? 'تحميل السجل المحفوظ…' : 'Loading saved records…';
+    const reason = attendance.mine?.unavailableReason || attendance.error;
+    if (reason === 'attendance_not_configured') return isRtl ? 'خدمة الحضور غير مهيأة على الخادم — الإيصالات المحلية محفوظة' : 'Attendance service is not configured — local receipts are retained';
+    if (reason === 'attendance_schema_missing') return isRtl ? 'إعداد قاعدة بيانات الحضور غير مكتمل — الإيصالات المحلية محفوظة' : 'Attendance database setup is incomplete — local receipts are retained';
+    if (reason === 'login_required') return isRtl ? 'سجّل الدخول لمزامنة الإيصالات المحفوظة' : 'Sign in to sync saved receipts';
+    if (reason === 'attendance_temporarily_unavailable') return isRtl ? 'خدمة الحضور غير متاحة مؤقتاً — ستتم إعادة المحاولة' : 'Attendance service is temporarily unavailable — retry is automatic';
+    if (attendance.mine?.offline || reason) return isRtl ? 'عرض البيانات المحفوظة — تعذر الوصول إلى الخادم' : 'Showing saved evidence — server unavailable';
+    return isRtl ? 'سجل الحضور' : 'Attendance records';
+  })();
 
   return (
     <div className="w-full space-y-6" dir={isRtl ? 'rtl' : 'ltr'}>
       {scanError && <p role="alert" className="rounded-2xl bg-rose-50 p-4 text-rose-800">{scanError}</p>}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-100 p-3 text-xs dark:bg-zinc-800" aria-live="polite">
-        <span>{attendance.loading ? (isRtl ? 'تحميل السجل المحفوظ…' : 'Loading saved records…') : attendance.error || attendance.mine?.offline ? (isRtl ? 'عرض البيانات المحفوظة — الاتصال غير متاح' : 'Showing saved evidence — connection unavailable') : (isRtl ? 'سجل الحضور' : 'Attendance records')}</span>
+        <span>{attendanceAvailabilityLabel}{attendance.pendingCount > 0 ? ` · ${attendance.pendingCount} ${isRtl ? 'بانتظار المعالجة' : 'pending'}` : ''}{attendance.lastSuccessfulSync ? ` · ${isRtl ? 'آخر مزامنة' : 'Last sync'} ${new Date(attendance.lastSuccessfulSync).toLocaleTimeString(isRtl ? 'ar-IQ' : 'en-GB')}` : ''}</span>
         <button onClick={() => void attendance.retry().catch(() => setScanError(isRtl ? 'تعذرت المزامنة؛ الإيصالات محفوظة.' : 'Sync unavailable; saved receipts are retained.'))} className="flex items-center gap-1 font-bold"><RefreshCw className="h-4 w-4" />{isRtl ? 'مزامنة' : 'Sync'}</button>
       </div>
+      {(attendance.mine?.cancelledSessions || []).map(session => (
+        <div key={session.id} className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-200" role="status">
+          <strong>{session.occurrence.title} — {session.occurrence.lectureDate}</strong>
+          <p>{isRtl ? 'ألغى التدريسي جلسة الحضور هذه، ولا تدخل نتيجتها في إجمالياتك.' : 'The lecturer cancelled this attendance attempt. It is excluded from your totals.'}</p>
+          {session.cancellationReason && <p>{isRtl ? 'السبب' : 'Reason'}: {session.cancellationReason}</p>}
+        </div>
+      ))}
       {!attendance.loading && subjects.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm dark:bg-zinc-800">{isRtl ? 'لا توجد محاضرات محملة بعد. يمكنك مسح رمز الأستاذ أو طلب المساعدة.' : 'No lectures are loaded yet. You can scan the lecturer’s QR or ask for help.'}</p>}
       {attendance.rows.filter(row => row.receipt && !['confirmed', 'none'].includes(row.state)).map(row => (
         <div key={row.occurrence.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" aria-live="polite">
@@ -888,6 +922,21 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
           {/* Weeks Cards Grid / List */}
           <div className="space-y-3">
             {currentWeeksList.map((week) => {
+              const timing = week.date ? lectureTimingStatus(week.date, today) : null;
+              const timingBadge = timing === 'past' ? (
+                <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-xs font-black text-slate-600 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                  {isRtl ? 'فائتة' : 'Past'}
+                </span>
+              ) : timing === 'today' ? (
+                <span className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                  {isRtl ? 'اليوم' : 'Today'}
+                </span>
+              ) : timing === 'upcoming' ? (
+                <span className="inline-flex items-center rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-xs font-black text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+                  {isRtl ? 'قادمة' : 'Upcoming'}
+                </span>
+              ) : null;
+
               // Status Badge Resolution
               let statusBadge = null;
               if (week.status === 'attended') {
@@ -912,13 +961,6 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                 );
               } else if (week.status === 'pending') {
                 statusBadge = <span className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{stateLabel(week.state)}<span className="block break-all font-mono">{week.receiptId}</span></span>;
-              } else {
-                statusBadge = (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-500 dark:bg-zinc-700/60 dark:text-zinc-400">
-                    <Clock className="w-3 h-3" />
-                    <span>{isRtl ? 'قادمة ⏱' : 'Upcoming ⏱'}</span>
-                  </span>
-                );
               }
 
               return (
@@ -946,11 +988,12 @@ export default function StudentSimosanView({ user, lang }: StudentSimosanViewPro
                       <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-700/30 px-2.5 py-1 rounded-xl">
                         <Calendar className="w-3.5 h-3.5 text-slate-400" />
                         <span>{week.date}</span>
-                        {week.time && <span>• {week.time}</span>}
+                        {week.time && <span dir="ltr">• {week.time}{week.endTime ? ` – ${week.endTime}` : ''}</span>}
                         {week.location && <span>• {week.location}</span>}
                       </div>
                     )}
 
+                    {timingBadge}
                     {/* Status Badge */}
                     {statusBadge}
                   </div>

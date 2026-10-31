@@ -42,6 +42,7 @@ test('password whitespace is preserved while the identifier is normalized', asyn
   await signInStudent({
     identifier: '  student-1  ',
     password: ' secret-with-spaces ',
+    device: { name: 'Test phone', platform: 'android' },
     signInWithToken,
     fetchImpl: async (_input, init) => {
       request = JSON.parse(String(init?.body));
@@ -51,6 +52,7 @@ test('password whitespace is preserved while the identifier is normalized', asyn
 
   assert.equal(request.identifier, 'student-1');
   assert.equal(request.password, ' secret-with-spaces ');
+  assert.deepEqual(request.device, { name: 'Test phone', platform: 'android' });
 });
 
 test('malformed server success response is distinguishable', async () => {

@@ -46,6 +46,13 @@ import { planYearWipe, runYearWipe, exportYear, YearWipeError } from "../shared/
 import { summariseYear } from "../shared/yearSummary.js";
 import { deleteWipedFiles } from "../shared/yearWipeFiles.js";
 import { handleAnnouncementReact } from "../shared/announcementReact.js";
+import {
+  createAccountSession,
+  createAccountSessionHandlers,
+  createAccountSessionRegistrationHandler,
+  enforceAccountSession,
+  sessionClaimsFromToken,
+} from "../shared/accountSessions.js";
 import { OAuth2Client } from "google-auth-library";
 import { activeDaysBetween, addDays, isLiveDay, finalTermOf } from "../shared/academicCalendar.js";
 import {
@@ -156,7 +163,7 @@ if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_ACCESS_KEY && pr
 }
 
 // --- Middleware ---
-const verifyAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+const verifyFirebaseAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
@@ -169,6 +176,28 @@ const verifyAuth = async (req: express.Request, res: express.Response, next: exp
     next();
   } catch (error) {
     console.error('Token verification failed:', error);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+};
+
+const verifyAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+  }
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+    await enforceAccountSession({
+      db: admin.firestore(), FieldValue: admin.firestore.FieldValue,
+      token: decodedToken as any, headers: req.headers as any, fallbackIp: req.ip || req.socket?.remoteAddress,
+    });
+    (req as any).user = decodedToken;
+    next();
+  } catch (error) {
+    console.error('Token verification failed:', error);
+    if ((error as any)?.code === 'app_session_revoked' || (error as any)?.code === 'app_session_required') {
+      return res.status(401).json({ error: (error as any).code });
+    }
     return res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 };
@@ -611,7 +640,11 @@ app.post("/api/login", async (req, res) => {
       db, student, (u, source) => reconcileLoginProfile(db, u, source),
     );
 
-    const customToken = await admin.auth().createCustomToken(uid, { email: emailClaim });
+    const session = await createAccountSession({
+      db, FieldValue: admin.firestore.FieldValue, uid, role: 'student', sessionId: req.body?.sessionNonce, device: req.body?.device,
+      headers: req.headers as any, userAgent: req.headers['user-agent'], fallbackIp: req.ip || req.socket?.remoteAddress, clientLocation: req.body?.location || req.body?.device?.location,
+    });
+    const customToken = await admin.auth().createCustomToken(uid, { email: emailClaim, ...session.claims });
 
     res.json({ token: customToken, studentId: student.id });
   } catch (error: any) {
@@ -724,6 +757,9 @@ app.post("/api/google-login", async (req, res) => {
       // Only used when no users doc carries this email yet.
       fallbackUid: identity.email,
       syncUserStage: (uid, source) => reconcileLoginProfile(db, uid, source),
+      createSessionClaims: async (uid, role) => (await createAccountSession({
+        db, FieldValue: admin.firestore.FieldValue, uid, role, sessionId: req.body?.sessionNonce, device: req.body?.device,
+        headers: req.headers as any, userAgent: req.headers['user-agent'], fallbackIp: req.ip || req.socket?.remoteAddress, clientLocation: req.body?.location || req.body?.device?.location, })).claims,
     });
 
     // studentId is the students/ document id the server resolved to - which
@@ -768,6 +804,9 @@ app.post("/api/google-claim", async (req, res) => {
         masterAdminEmails: [...MASTER_ADMIN_EMAILS],
         syncUserStage: (uid, source) => reconcileLoginProfile(db, uid, source),
         FieldValue: admin.firestore.FieldValue as any,
+        createSessionClaims: async (uid, role) => (await createAccountSession({
+          db, FieldValue: admin.firestore.FieldValue, uid, role, sessionId: req.body?.sessionNonce, device: req.body?.device,
+          headers: req.headers as any, userAgent: req.headers['user-agent'], fallbackIp: req.ip || req.socket?.remoteAddress, clientLocation: req.body?.location || req.body?.device?.location, })).claims,
       });
 
     await discardPopupIdentity(db, admin.auth(), identity, result.uid);
@@ -971,6 +1010,7 @@ app.post("/api/me/link-google", verifyAuth, async (req, res) => {
     // this rather than discovering it has been logged out by linking.
     const token = await admin.auth().createCustomToken((req as any).user.uid, {
       email: result.studentId,
+      ...(sessionClaimsFromToken((req as any).user) || {}),
     });
 
     res.json({
@@ -994,6 +1034,12 @@ app.delete("/api/me/link-google", verifyAuth, async (req, res) => {
     sendSelfServiceError(res, error, "Unlink Google");
   }
 });
+
+const accountSessions = createAccountSessionHandlers({ admin });
+app.post('/api/auth/register-session', verifyFirebaseAuth, createAccountSessionRegistrationHandler({ admin }));
+app.get('/api/me/sessions', verifyAuth, accountSessions.list);
+app.delete('/api/me/sessions/:sessionId', verifyAuth, accountSessions.terminate);
+app.post('/api/me/sessions/terminate-others', verifyAuth, accountSessions.terminateOthers);
 
 app.post("/api/me/banner-theme", verifyAuth, async (req, res) => {
   try {
@@ -2185,6 +2231,7 @@ app.post('/api/attendance/sessions', verifyAuth, attendance.createSession);
 app.get('/api/attendance/sessions/:sessionId', verifyAuth, attendance.sessionSnapshot);
 app.get('/api/attendance/sessions/:sessionId/qr', verifyAuth, attendance.sessionQr);
 app.patch('/api/attendance/sessions/:sessionId', verifyAuth, attendance.updateSession);
+app.post('/api/attendance/sessions/:sessionId/cancel', verifyAuth, attendance.cancelSession);
 app.post('/api/attendance/sessions/:sessionId/manual', verifyAuth, attendance.manualRecord);
 app.post('/api/attendance/records/:recordId/void', verifyAuth, attendance.voidRecord);
 app.post('/api/attendance/records/:recordId/restore', verifyAuth, attendance.restoreRecord);
@@ -2221,7 +2268,10 @@ app.post('/api/auth/session-bridge', verifyAuth, async (req: express.Request, re
     }
 
     // Mint only for the verified caller's UID
-    const customToken = await admin.auth().createCustomToken(verified.uid);
+    const customToken = await admin.auth().createCustomToken(verified.uid, {
+      ...(verified.email ? { email: verified.email } : {}),
+      ...(sessionClaimsFromToken(verified as any) || {}),
+    });
     res.json({ ok: true, customToken });
   } catch (error: any) {
     if (error?.code === 'auth/id-token-revoked' || error?.code === 'auth/user-disabled') {

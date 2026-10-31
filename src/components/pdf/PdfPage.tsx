@@ -246,25 +246,53 @@ export default React.memo(function PdfPage({
 
       const dpr = window.devicePixelRatio || 1;
       const q = safeCanvasScale(viewport.width, viewport.height, dpr);
-      canvas.width = Math.floor(viewport.width * q);
-      canvas.height = Math.floor(viewport.height * q);
-      // No canvas.style.width/height here on purpose. The CSS box is sized from
-      // boxW/boxH - the LAYOUT scale - so this bitmap stretches to fill it while
-      // rasterScale is still catching up.
+      const targetWidth = Math.floor(viewport.width * q);
+      const targetHeight = Math.floor(viewport.height * q);
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.setTransform(q, 0, 0, q, 0, 0);
+      // Render to an offscreen canvas first to prevent destructive visible canvas blanking
+      // while awaiting renderTask resolution.
+      const offscreen = document.createElement('canvas');
+      offscreen.width = targetWidth;
+      offscreen.height = targetHeight;
+      const offCtx = offscreen.getContext('2d');
+      if (!offCtx) return;
+      offCtx.setTransform(q, 0, 0, q, 0, 0);
 
-      renderTask = page.render({ canvasContext: ctx, viewport, canvas: null });
+      renderTask = page.render({ canvasContext: offCtx, viewport, canvas: null });
       try {
         await renderTask.promise;
       } catch (e: any) {
         // Cancelling a render on scroll/zoom is normal, not an error.
         if (e?.name !== 'RenderingCancelledException') console.error('page render failed', e);
+        offscreen.width = 0;
+        offscreen.height = 0;
         return;
       }
-      if (cancelled) return;
+      if (cancelled) {
+        offscreen.width = 0;
+        offscreen.height = 0;
+        return;
+      }
+
+      // Ensure visible canvas dimensions match and atomically copy pixels without flashing
+      const currentCanvas = canvasRef.current;
+      if (!currentCanvas) {
+        offscreen.width = 0;
+        offscreen.height = 0;
+        return;
+      }
+
+      if (currentCanvas.width !== targetWidth || currentCanvas.height !== targetHeight) {
+        currentCanvas.width = targetWidth;
+        currentCanvas.height = targetHeight;
+      }
+      const visibleCtx = currentCanvas.getContext('2d');
+      if (visibleCtx) {
+        visibleCtx.drawImage(offscreen, 0, 0);
+      }
+      // Release offscreen buffer resources
+      offscreen.width = 0;
+      offscreen.height = 0;
 
       // Text layer.
       //

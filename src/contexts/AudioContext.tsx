@@ -21,6 +21,8 @@ interface AudioContextType {
   setPlaybackRate: (rate: number) => void;
   isPlayerHidden: boolean;
   setIsPlayerHidden: (hidden: boolean) => void;
+  isMuted: boolean;
+  toggleMute: () => void;
 }
 
 const AudioContext = createContext<AudioContextType | null>(null);
@@ -39,8 +41,19 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackRate, setPlaybackRateState] = useState(1);
   const [isPlayerHidden, setIsPlayerHidden] = useState(false);
+  const [isMuted, setIsMutedState] = useState(false);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const toggleMute = () => {
+    setIsMutedState((prev) => {
+      const next = !prev;
+      if (audioRef.current) {
+        audioRef.current.muted = next;
+      }
+      return next;
+    });
+  };
 
   const setPlaybackRate = (rate: number) => {
     setPlaybackRateState(rate);
@@ -54,6 +67,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audioRef.current = new Audio();
     }
     const audio = audioRef.current;
+    audio.muted = isMuted;
 
     const updateProgress = () => {
       setCurrentTime(audio.currentTime);
@@ -70,14 +84,20 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setCurrentTime(0);
     };
 
+    const handleVolumeChange = () => {
+      setIsMutedState(audio.muted);
+    };
+
     audio.addEventListener('timeupdate', updateProgress);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('volumechange', handleVolumeChange);
 
     return () => {
       audio.removeEventListener('timeupdate', updateProgress);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('volumechange', handleVolumeChange);
     };
   }, []);
 
@@ -91,7 +111,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
        if (playPromise !== undefined) {
          playPromise.then(() => {
            setIsPlaying(true);
-           if (audioRef.current) audioRef.current.playbackRate = playbackRate;
+           if (audioRef.current) {
+             audioRef.current.playbackRate = playbackRate;
+             audioRef.current.muted = isMuted;
+           }
          }).catch(console.warn);
        }
        return;
@@ -99,12 +122,16 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setCurrentTrack(track);
     audioRef.current.src = track.src;
+    audioRef.current.muted = isMuted;
     audioRef.current.load(); // Safari compatibility
     const playPromise = audioRef.current.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
         setIsPlaying(true);
-        if (audioRef.current) audioRef.current.playbackRate = playbackRate;
+        if (audioRef.current) {
+          audioRef.current.playbackRate = playbackRate;
+          audioRef.current.muted = isMuted;
+        }
       }).catch((error) => {
         console.warn('Playback failed', error);
       });
@@ -123,7 +150,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (playPromise !== undefined) {
       playPromise.then(() => {
         setIsPlaying(true);
-        if (audioRef.current) audioRef.current.playbackRate = playbackRate;
+        if (audioRef.current) {
+          audioRef.current.playbackRate = playbackRate;
+          audioRef.current.muted = isMuted;
+        }
       }).catch(console.warn);
     }
   };
@@ -139,15 +169,34 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const seek = (percentage: number) => {
-    if (!audioRef.current || !duration) return;
-    const newTime = (percentage / 100) * duration;
+    if (!audioRef.current || !duration || !isFinite(duration) || duration <= 0) return;
+    if (isNaN(percentage) || !isFinite(percentage)) return;
+    const clampedPercentage = Math.max(0, Math.min(100, percentage));
+    const newTime = (clampedPercentage / 100) * duration;
     audioRef.current.currentTime = newTime;
     setCurrentTime(newTime);
-    setProgress(percentage);
+    setProgress(clampedPercentage);
   };
 
   return (
-    <AudioContext.Provider value={{ currentTrack, isPlaying, progress, duration, currentTime, playTrack, pauseTrack, resumeTrack, closePlayer, seek, playbackRate, setPlaybackRate, isPlayerHidden, setIsPlayerHidden }}>
+    <AudioContext.Provider value={{
+      currentTrack,
+      isPlaying,
+      progress,
+      duration,
+      currentTime,
+      playTrack,
+      pauseTrack,
+      resumeTrack,
+      closePlayer,
+      seek,
+      playbackRate,
+      setPlaybackRate,
+      isPlayerHidden,
+      setIsPlayerHidden,
+      isMuted,
+      toggleMute
+    }}>
       {children}
     </AudioContext.Provider>
   );

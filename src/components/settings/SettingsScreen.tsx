@@ -15,6 +15,7 @@ import StageSettings from './StageSettings';
 import DoctorAccountProvisionModal from '../doctor/DoctorAccountProvisionModal';
 import AlternativeAiKeysModal from './AlternativeAiKeysModal';
 import MobileReleaseSettings from './MobileReleaseSettings';
+import DevicesSettings from './DevicesSettings';
 import FaqList from '../support/FaqList';
 import { useStageContext } from '../../contexts/StageContext';
 import { ThemeChoice } from '../../hooks/useTheme';
@@ -28,7 +29,7 @@ import {
   canManageCalendar, isMasterAdmin, isCrossStage,
 } from '../../lib/permissions';
 
-type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'stage' | 'faq' | 'appUpdates';
+type Page = 'root' | 'appearance' | 'blocked' | 'security' | 'devices' | 'stage' | 'faq' | 'appUpdates';
 
 export interface SettingsScreenProps {
   /** Returns to the profile. This is a real page now, not an overlay. */
@@ -112,6 +113,7 @@ export default function SettingsScreen(props: SettingsScreenProps) {
     appearance: { ar: 'المظهر', en: 'Appearance' },
     blocked: { ar: 'المستخدمون المحظورون', en: 'Blocked users' },
     security: { ar: 'الحساب وكلمة المرور', en: 'Account & password' },
+    devices: { ar: 'الأجهزة', en: 'Devices' },
     stage: { ar: 'المرحلة المعروضة', en: 'Viewing stage' },
     faq: { ar: 'الأسئلة الشائعة', en: 'FAQ' },
     appUpdates: { ar: 'تحديثات التطبيق', en: 'App updates' },
@@ -181,6 +183,10 @@ export default function SettingsScreen(props: SettingsScreenProps) {
 
         {page === 'security' && (
           <AccountSecuritySettings lang={lang} />
+        )}
+
+        {page === 'devices' && (
+          <DevicesSettings lang={lang} onLogout={onLogout} />
         )}
 
         {page === 'stage' && (
@@ -370,6 +376,14 @@ export default function SettingsScreen(props: SettingsScreenProps) {
             </SettingsGroup>
 
             <SettingsGroup title={isRtl ? 'الخصوصية' : 'Privacy'}>
+              {user && (
+                <SettingsRow
+                  isRtl={isRtl} icon={SETTINGS_ICONS.devices}
+                  label={isRtl ? 'الأجهزة' : 'Devices'}
+                  sublabel={isRtl ? 'مراجعة جلسات الدخول المصرّح لها' : 'Review authorized sign-in sessions'}
+                  onClick={() => setPage('devices')}
+                />
+              )}
               {user && (
                 <>
                   <SettingsRow

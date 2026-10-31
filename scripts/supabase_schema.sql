@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS public.ai_usage (
     units_reserved NUMERIC DEFAULT 0,
     used_count INTEGER DEFAULT 0,
     reserved_count INTEGER DEFAULT 0,
+    off_topic_count INTEGER DEFAULT 0,
+    cooldown_until TIMESTAMPTZ,
+    window_start TIMESTAMPTZ,
+    window_units NUMERIC DEFAULT 0,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -53,8 +57,11 @@ ALTER TABLE public.ai_threads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_usage ENABLE ROW LEVEL SECURITY;
 
--- Ensure off_topic_count column exists if created previously
+-- Ensure off_topic_count and cooldown tracking columns exist if created previously
 ALTER TABLE public.ai_usage ADD COLUMN IF NOT EXISTS off_topic_count INTEGER DEFAULT 0;
+ALTER TABLE public.ai_usage ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
+ALTER TABLE public.ai_usage ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ;
+ALTER TABLE public.ai_usage ADD COLUMN IF NOT EXISTS window_units NUMERIC DEFAULT 0;
 
 -- 5. MCQs Table (Stores AI-generated and admin-curated questions)
 CREATE TABLE IF NOT EXISTS public.mcqs (

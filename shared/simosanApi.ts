@@ -14,13 +14,17 @@ import {
   baghdadMonthKey,
   baghdadWeekKey,
   estimateUnits,
+  extractCooldownMs,
   freeUsageDocId,
   hasAiAccess,
+  isSaturdayRolloverWindow,
   msUntilBaghdadReset,
   msUntilBaghdadWeeklyReset,
+  previousBaghdadWeekKey,
   readSettings,
   reconcileEnergy,
   reconcileFreeQuestion,
+  recordSpendAndCheckCeiling,
   releaseEnergy,
   releaseFreeQuestion,
   reserveEnergy,
@@ -144,25 +148,60 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       const isFreeTier = !hasAccess;
 
       let remaining = 0;
-      let dailyBudget = settings.dailyUnitBudget;
-      let resetsInMs = msUntilBaghdadReset();
+      const weeklyBudget = settings.weeklyUnitBudget || settings.dailyUnitBudget;
+      const dailyBudget = weeklyBudget;
+      let resetsInMs = msUntilBaghdadWeeklyReset();
       let freeWeeklyRemaining = 0;
       const freeWeeklyResetsInMs = msUntilBaghdadWeeklyReset();
+      let cooldownUntil: number | null = null;
+      let cooldownRemainingMs = 0;
 
       const supabase = getSupabaseAdmin();
 
       if (hasAccess) {
-        const day = baghdadDayKey();
+        const week = baghdadWeekKey();
         let spent = 0;
+        let uCooldown: any = null;
         if (supabase) {
-          const supaUsage = await getSupaUsage(supabase, `${uid}_${day}`);
+          const supaUsage = await getSupaUsage(supabase, `${uid}_${week}`);
           spent = (Number(supaUsage?.units_used) || 0) + (Number(supaUsage?.units_reserved) || 0);
+          uCooldown = supaUsage?.cooldown_until;
+
+          if (isSaturdayRolloverWindow(week)) {
+            const cdMs = extractCooldownMs(uCooldown);
+            if (cdMs <= Date.now()) {
+              const prevWeekKey = previousBaghdadWeekKey(week);
+              const prevUsage = await getSupaUsage(supabase, `${uid}_${prevWeekKey}`);
+              if (prevUsage?.cooldown_until) {
+                uCooldown = prevUsage.cooldown_until;
+              }
+            }
+          }
         } else {
-          const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, day)).get();
+          const usageSnap = await db.collection('aiUsage').doc(usageDocId(uid, week)).get();
           const u = usageSnap.exists ? usageSnap.data() : null;
           spent = (Number(u?.unitsUsed) || 0) + (Number(u?.unitsReserved) || 0);
+          uCooldown = u?.cooldownUntil;
+
+          if (isSaturdayRolloverWindow(week)) {
+            const cdMs = extractCooldownMs(uCooldown);
+            if (cdMs <= Date.now()) {
+              const prevWeekKey = previousBaghdadWeekKey(week);
+              const prevUsageSnap = await db.collection('aiUsage').doc(usageDocId(uid, prevWeekKey)).get();
+              if (prevUsageSnap.exists && prevUsageSnap.data()?.cooldownUntil) {
+                uCooldown = prevUsageSnap.data()?.cooldownUntil;
+              }
+            }
+          }
         }
-        remaining = Math.max(0, settings.dailyUnitBudget - spent);
+        remaining = Math.max(0, weeklyBudget - spent);
+        if (uCooldown) {
+          const cdMs = extractCooldownMs(uCooldown);
+          if (cdMs > Date.now()) {
+            cooldownUntil = cdMs;
+            cooldownRemainingMs = cdMs - Date.now();
+          }
+        }
       } else {
         const week = baghdadWeekKey();
         let freeSpent = 0;
@@ -176,7 +215,6 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         }
         freeWeeklyRemaining = Math.max(0, 1 - freeSpent);
         remaining = freeWeeklyRemaining;
-        dailyBudget = 1;
         resetsInMs = freeWeeklyResetsInMs;
       }
 
@@ -189,8 +227,11 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         freeWeeklyRemaining,
         freeWeeklyResetsInMs,
         remaining,
+        weeklyBudget,
         dailyBudget,
         resetsInMs,
+        cooldownUntil,
+        cooldownRemainingMs,
         maxQuestionsPerChat: hasAccess ? MAX_QUESTIONS_PER_CHAT : 1,
       });
     } catch (e: any) {
@@ -216,6 +257,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     }
 
     let reserved = 0;
+    let reservedWeek = '';
     let isFreeReserved = false;
     let streaming = false;
     let isSupabaseActive = false;
@@ -324,16 +366,19 @@ export function createSimosanHandlers(deps: SimosanDeps) {
 
       isFreeReserved = false;
       let holdRemaining = 0;
-      let holdBudget = settings.dailyUnitBudget;
+      const weeklyBudget = settings.weeklyUnitBudget || settings.dailyUnitBudget;
+      let holdBudget = weeklyBudget;
+      const currentWeek = baghdadWeekKey();
 
       if (isFreeTier) {
         let freeHold: any;
         if (isSupabaseActive && supabase) {
-          const res = await reserveSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+          const res = await reserveSupaFreeQuestion(supabase, { uid, weekKey: currentWeek });
           freeHold = {
             ok: res.ok,
             reason: res.reason,
             resetsInMs: msUntilBaghdadWeeklyReset(),
+            week: res.week || currentWeek,
           };
         } else {
           freeHold = await reserveFreeQuestion(ctx(), { uid, stageId: caller.stageId });
@@ -347,6 +392,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           });
         }
         isFreeReserved = true;
+        reservedWeek = freeHold.week || currentWeek;
         holdRemaining = 0;
         holdBudget = 1;
       } else {
@@ -354,17 +400,21 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         if (isSupabaseActive && supabase) {
           const res = await reserveSupaEnergy(supabase, {
             uid,
-            dayKey: baghdadDayKey(),
+            weekKey: currentWeek,
             estimatedUnits: estimated,
-            dailyBudget: settings.dailyUnitBudget,
+            weeklyBudget,
+            dailyBudget: weeklyBudget,
           });
           hold = {
             ok: res.ok,
             reason: res.reason,
             reserved: res.reserved,
             remaining: res.remaining,
-            dailyBudget: settings.dailyUnitBudget,
-            resetsInMs: msUntilBaghdadReset(),
+            weeklyBudget,
+            dailyBudget: weeklyBudget,
+            resetsInMs: res.resetsInMs ?? msUntilBaghdadWeeklyReset(),
+            cooldownUntil: res.cooldownUntil,
+            week: res.week || currentWeek,
           };
         } else {
           hold = await reserveEnergy(
@@ -376,13 +426,16 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         if (!hold.ok) {
           return fail(429, hold.reason as string, {
             remaining: hold.remaining,
+            weeklyBudget: hold.weeklyBudget || hold.dailyBudget,
             dailyBudget: hold.dailyBudget,
             resetsInMs: hold.resetsInMs,
+            cooldownUntil: hold.cooldownUntil,
           });
         }
         reserved = hold.reserved;
+        reservedWeek = hold.week || currentWeek;
         holdRemaining = hold.remaining;
-        holdBudget = hold.dailyBudget;
+        holdBudget = hold.weeklyBudget || hold.dailyBudget;
       }
 
       // --- stream ------------------------------------------------------------
@@ -402,6 +455,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           questionNumber: questionCount + 1,
           maxQuestions: maxChatQuestions,
           remaining: holdRemaining,
+          weeklyBudget: holdBudget,
           dailyBudget: holdBudget,
           isFreeTier,
         })}\n\n`,
@@ -482,19 +536,18 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       if (isFreeTier) {
         if (offTopic) {
           if (isSupabaseActive && supabase) {
-            await releaseSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+            await releaseSupaFreeQuestion(supabase, { uid, weekKey: reservedWeek });
           } else {
-            await releaseFreeQuestion(ctx(), { uid });
+            await releaseFreeQuestion(ctx(), { uid, week: reservedWeek });
           }
           remaining = 1;
           refunded = true;
         } else {
           if (isSupabaseActive && supabase) {
-            await reconcileSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey(), actualUnits: actual });
-            const spendUsd = unitsToUsd(actual);
-            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+            await reconcileSupaFreeQuestion(supabase, { uid, weekKey: reservedWeek, actualUnits: actual });
+            await recordSpendAndCheckCeiling(ctx(), actual);
           } else {
-            await reconcileFreeQuestion(ctx(), { uid, actualUnits: actual });
+            await reconcileFreeQuestion(ctx(), { uid, actualUnits: actual, week: reservedWeek });
           }
           remaining = 0;
           refunded = false;
@@ -505,21 +558,22 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           if (isSupabaseActive && supabase) {
             const settled = await settleSupaOffTopic(supabase, {
               uid,
-              dayKey: baghdadDayKey(),
+              weekKey: reservedWeek,
               reservedUnits: reserved,
               actualUnits: actual,
               maxFreeOffTopic: MAX_FREE_OFF_TOPIC_PER_DAY,
-              dailyBudget: settings.dailyUnitBudget,
+              weeklyBudget,
+              dailyBudget: weeklyBudget,
             });
             remaining = settled.remaining;
             refunded = settled.refunded;
-            const spendUsd = unitsToUsd(actual);
-            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+            await recordSpendAndCheckCeiling(ctx(), actual);
           } else {
             const settled = await settleOffTopic(ctx(), {
               uid,
               reservedUnits: reserved,
               actualUnits: actual,
+              week: reservedWeek,
             });
             remaining = settled.remaining;
             refunded = settled.refunded;
@@ -528,19 +582,20 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           if (isSupabaseActive && supabase) {
             const settled = await reconcileSupaEnergy(supabase, {
               uid,
-              dayKey: baghdadDayKey(),
+              weekKey: reservedWeek,
               reservedUnits: reserved,
               actualUnits: actual,
-              dailyBudget: settings.dailyUnitBudget,
+              weeklyBudget,
+              dailyBudget: weeklyBudget,
             });
             remaining = settled.remaining;
-            const spendUsd = unitsToUsd(actual);
-            await db.collection('app_settings').doc('simosan').set({ monthUsd: admin.firestore.FieldValue.increment(spendUsd) }, { merge: true });
+            await recordSpendAndCheckCeiling(ctx(), actual);
           } else {
             const settled = await reconcileEnergy(ctx(), {
               uid,
               reservedUnits: reserved,
               actualUnits: actual,
+              week: reservedWeek,
             });
             remaining = settled.remaining;
           }
@@ -624,9 +679,9 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       if (reserved > 0) {
         try {
           if (isSupabaseActive && supabase) {
-            await releaseSupaEnergy(supabase, { uid, dayKey: baghdadDayKey(), reservedUnits: reserved });
+            await releaseSupaEnergy(supabase, { uid, weekKey: reservedWeek, reservedUnits: reserved });
           } else {
-            await releaseEnergy(ctx(), { uid, reservedUnits: reserved });
+            await releaseEnergy(ctx(), { uid, reservedUnits: reserved, week: reservedWeek });
           }
         } catch (releaseErr) {
           console.error('[simosan] release failed', releaseErr);
@@ -635,9 +690,9 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       if (isFreeReserved) {
         try {
           if (isSupabaseActive && supabase) {
-            await releaseSupaFreeQuestion(supabase, { uid, weekKey: baghdadWeekKey() });
+            await releaseSupaFreeQuestion(supabase, { uid, weekKey: reservedWeek });
           } else {
-            await releaseFreeQuestion(ctx(), { uid });
+            await releaseFreeQuestion(ctx(), { uid, week: reservedWeek });
           }
         } catch (releaseErr) {
           console.error('[simosan] release free question failed', releaseErr);
@@ -684,27 +739,53 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     try {
       const db = admin.firestore();
       const settings = await readSettings(ctx());
-      const day = baghdadDayKey();
+      const week = baghdadWeekKey();
 
-      const todaySnap = await db
-        .collection('aiUsage')
-        .where('day', '==', day)
-        .orderBy('unitsUsed', 'desc')
-        .limit(20)
-        .get();
+      let top: Array<{ uid: string; stageId: string; unitsUsed: number; requestCount: number; usd: number }> = [];
+      const supabase = getSupabaseAdmin();
+      if (supabase) {
+        try {
+          const { data: supaRows, error: supaErr } = await supabase
+            .from('ai_usage')
+            .select('user_id, units_used, used_count')
+            .eq('period_key', week)
+            .order('units_used', { ascending: false })
+            .limit(20);
+          if (!supaErr && supaRows && supaRows.length > 0) {
+            top = supaRows.map((r: any) => ({
+              uid: r.user_id,
+              stageId: '',
+              unitsUsed: Number(r.units_used) || 0,
+              requestCount: Number(r.used_count) || 0,
+              usd: unitsToUsd(Number(r.units_used) || 0),
+            }));
+          }
+        } catch (err) {
+          console.warn('[simosan] adminStats supabase query failed', err);
+        }
+      }
 
-      const top = todaySnap.docs.map((d: any) => {
-        const u = d.data();
-        return {
-          uid: u.uid,
-          stageId: u.stageId || '',
-          unitsUsed: Number(u.unitsUsed) || 0,
-          requestCount: Number(u.requestCount) || 0,
-          usd: unitsToUsd(Number(u.unitsUsed) || 0),
-        };
-      });
+      if (top.length === 0) {
+        const thisWeekSnap = await db
+          .collection('aiUsage')
+          .where('day', '==', week)
+          .orderBy('unitsUsed', 'desc')
+          .limit(20)
+          .get();
 
-      const todayUnits = top.reduce((n, r) => n + r.unitsUsed, 0);
+        top = thisWeekSnap.docs.map((d: any) => {
+          const u = d.data();
+          return {
+            uid: u.uid,
+            stageId: u.stageId || '',
+            unitsUsed: Number(u.unitsUsed) || 0,
+            requestCount: Number(u.requestCount) || 0,
+            usd: unitsToUsd(Number(u.unitsUsed) || 0),
+          };
+        });
+      }
+
+      const weekUnits = top.reduce((n, r) => n + r.unitsUsed, 0);
 
       res.json({
         month: baghdadMonthKey(),
@@ -712,10 +793,14 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         ceilingUsd: settings.monthlyCeilingUsd,
         enabled: settings.enabled,
         model: settings.model,
+        weeklyUnitBudget: settings.weeklyUnitBudget,
         dailyUnitBudget: settings.dailyUnitBudget,
-        todayUnits,
-        todayUsd: unitsToUsd(todayUnits),
+        todayUnits: weekUnits,
+        todayUsd: unitsToUsd(weekUnits),
+        weekUnits,
+        weekUsd: unitsToUsd(weekUnits),
         activeUsersToday: top.length,
+        activeUsersThisWeek: top.length,
         top,
       });
     } catch (e: any) {
@@ -730,7 +815,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   async function adminSettings(req: any, res: any) {
     try {
       const db = admin.firestore();
-      const { enabled, dailyUnitBudget, monthlyCeilingUsd, model } = req.body || {};
+      const { enabled, weeklyUnitBudget, dailyUnitBudget, monthlyCeilingUsd, model } = req.body || {};
       const patch: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
 
       if (typeof enabled === 'boolean') {
@@ -739,7 +824,11 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         // the next reconcile, which re-evaluates the same threshold.
         if (enabled) patch.alertsSent = [];
       }
-      if (Number(dailyUnitBudget) > 0) patch.dailyUnitBudget = Number(dailyUnitBudget);
+      const newBudget = Number(weeklyUnitBudget) > 0 ? Number(weeklyUnitBudget) : Number(dailyUnitBudget);
+      if (newBudget > 0) {
+        patch.weeklyUnitBudget = newBudget;
+        patch.dailyUnitBudget = newBudget;
+      }
       if (Number(monthlyCeilingUsd) > 0) patch.monthlyCeilingUsd = Number(monthlyCeilingUsd);
       if (typeof model === 'string' && model.trim()) patch.model = model.trim();
 
@@ -748,7 +837,6 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       res.json({ ok: true, settings: await readSettings(ctx(), new Date(), true) });
     } catch (e: any) {
       console.error('[simosan] adminSettings failed', e);
-      res.status(500).json({ error: 'Failed to update settings' });
     }
   }
 

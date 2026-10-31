@@ -4,7 +4,7 @@ import { parseUnverifiedAttendanceQr } from '../../../shared/attendance';
 import {
   getDoctorAttendanceWorkspace, getAttendanceSessionSnapshot, getAttendanceSessionQr,
   ensureOfflineAttendancePrepared, createAttendanceSession, createOfflineAttendanceSession,
-  updateAttendanceSession, markAttendanceManually, setAttendanceRecordStatus,
+  updateAttendanceSession, cancelAttendanceSession, markAttendanceManually, setAttendanceRecordStatus,
   listDoctorAttendanceCommands, subscribeAttendanceChanges, resolveAttendanceReview,
   type DoctorAttendanceCommand,
 } from '../../services/attendanceService';
@@ -52,6 +52,14 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
         ? 'تعذر إتمام طلب الحضور. يرجى المحاولة مرة أخرى.'
         : 'The attendance request failed. Please try again.';
     }
+    if (code === 'attendance_temporarily_unavailable') {
+      return isRtl
+        ? 'خدمة الحضور غير متاحة مؤقتاً. البيانات المحفوظة متاحة وستتم إعادة المحاولة.'
+        : 'The attendance service is temporarily unavailable. Saved data remains available and will retry.';
+    }
+    if (code === 'login_required') {
+      return isRtl ? 'انتهت جلسة تسجيل الدخول. سجّل الدخول لمزامنة الحضور.' : 'Your sign-in session expired. Sign in to sync attendance.';
+    }
     if (code === 'offline_setup_required') {
       return isRtl
         ? 'هذه المحاضرة غير مجهزة على الجهاز أو انتهى تصريح الأوفلاين. اتصل بالإنترنت أو احفظ مسودة حضور يدوية للطوارئ.'
@@ -66,7 +74,6 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
   };
   const refresh = useCallback(async () => {
     const result = await getDoctorAttendanceWorkspace(ownerUid, stageId);
-    const pack = await ensureOfflineAttendancePrepared(result.stageId, ownerUid);
     const savedCommands = await listDoctorAttendanceCommands(ownerUid);
     const savedSessions = await Promise.all(savedCommands.filter(command => command.kind === 'import').map(command =>
       getAttendanceSessionSnapshot(command.sessionId, ownerUid).then(data => data.session).catch(() => null)));
@@ -75,9 +82,11 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     if (!active.current) return;
     setWorkspace({ ...result, sessions });
     setCommands(savedCommands);
+    setError('');
+    const pack = await ensureOfflineAttendancePrepared(result.stageId, ownerUid).catch(() => undefined);
+    if (!active.current) return;
     setOfflineReady(!!pack);
     setOfflineOccurrenceIds(pack?.bootstrap.occurrences.map(item => item.id) || []);
-    setError('');
   }, [ownerUid, stageId]);
   useEffect(() => {
     active.current = true;
@@ -92,8 +101,12 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     window.addEventListener('online', online);
     return () => window.removeEventListener('online', online);
   }, [refresh]);
-  const selectedSession = workspace?.sessions.find(session => session.occurrenceId === occurrenceId);
-  const importedSessionId = commands.find(command => command.kind === 'import' && parseUnverifiedAttendanceQr(String(command.input.qrToken || ''))?.occurrenceId === occurrenceId)?.sessionId;
+  const selectedSession = workspace?.sessions
+    .filter(session => session.occurrenceId === occurrenceId && session.status !== 'cancelled')
+    .sort((a, b) => (b.attemptGeneration || 1) - (a.attemptGeneration || 1))[0];
+  const importedSessionId = commands.find(command => command.kind === 'import'
+    && command.status !== 'synced'
+    && parseUnverifiedAttendanceQr(String(command.input.qrToken || ''))?.occurrenceId === occurrenceId)?.sessionId;
   const sessionId = selectedSession?.id || importedSessionId;
   useEffect(() => {
     let live = true;
@@ -128,13 +141,26 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     catch (failure) { setError(errorMessage(failure)); }
     finally { setBusy(false); actionRunning.current = false; }
   };
+  const createSessionForOccurrence = async (targetOccurrenceId: string, physicalHeadcount: number | null) => {
+    if (!workspace) throw new Error('attendance_workspace_unavailable');
+    const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, physicalHeadcount };
+    const offlineAvailable = offlineReady && offlineOccurrenceIds.includes(targetOccurrenceId);
+    if (workspace.offline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+      return createOfflineAttendanceSession(input, ownerUid);
+    }
+    try {
+      return await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
+    } catch (failure: any) {
+      const retryable = Number(failure?.status) >= 500
+        || /fetch|network|timeout|temporarily_unavailable/i.test(String(failure?.message || ''));
+      if (!offlineAvailable || !retryable) throw failure;
+      return createOfflineAttendanceSession(input, ownerUid);
+    }
+  };
   const start = (physicalHeadcount: number | null = null) => run(async () => {
     if (!workspace || !occurrenceId) throw new Error('select_lecture');
     if (physicalHeadcount != null && (!Number.isInteger(physicalHeadcount) || physicalHeadcount < 0 || physicalHeadcount > 10000)) throw new Error('invalid_headcount');
-    const input = { stageId: workspace.stageId, occurrenceId, physicalHeadcount };
-    const result = workspace.offline || (offlineReady && offlineOccurrenceIds.includes(occurrenceId))
-      ? await createOfflineAttendanceSession(input, ownerUid)
-      : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
+    const result = await createSessionForOccurrence(occurrenceId, physicalHeadcount);
     const data = await getAttendanceSessionSnapshot(result.sessionId, ownerUid);
     if (data.session.status !== 'active') throw new Error('session_not_editable');
     setWorkspace(current => current ? { ...current, sessions: [...current.sessions.filter(session => session.id !== data.session.id), data.session] } : current);
@@ -150,13 +176,24 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     setWorkspace(current => current ? { ...current, sessions: current.sessions.map(session => session.id === updated.session.id ? updated.session : session) } : current);
     if (patch.status === 'ended') setQrToken('');
   });
+  const cancelSession = (reason: string) => run(async () => {
+    if (!snapshot) throw new Error('select_active_session');
+    await cancelAttendanceSession(snapshot.session.id, {
+      requestId: secureRequestId(), expectedRevision: snapshot.session.revision, reason,
+    }, ownerUid);
+    setQrToken('');
+    setSnapshot(null);
+    if (workspace?.stageId) await ensureOfflineAttendancePrepared(workspace.stageId, ownerUid, true).catch(() => undefined);
+    await refresh();
+  });
   const refreshQr = () => run(async () => {
     if (!sessionId) throw new Error('select_active_session');
     const token = await getAttendanceSessionQr(sessionId, ownerUid);
     setQrToken(token);
   });
   const records = [...(workspace?.records || []).filter(record => record.sessionId !== snapshot?.session.id), ...(snapshot?.records || [])];
-  const sessions = [...(workspace?.sessions || []).filter(session => session.id !== snapshot?.session.id), ...(snapshot ? [snapshot.session] : [])];
+  const sessions = [...(workspace?.sessions || []).filter(session => session.id !== snapshot?.session.id), ...(snapshot ? [snapshot.session] : [])]
+    .filter(session => session.status !== 'cancelled');
   const students: StudentAttendanceRow[] = (workspace?.roster || []).map(student => {
     const attendance: StudentAttendanceRow['attendance'] = {};
     const studentRecords: Record<string, AttendanceRecordView> = {};
@@ -177,13 +214,10 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
       ? (isRtl ? 'تسجيل يدوي بواسطة التدريسي' : 'Manual check-in by lecturer')
       : (isRtl ? 'إلغاء يدوي بواسطة التدريسي' : 'Manual void by lecturer');
     const reason = (customReason || defaultReason).trim();
-    let session = sessions.find(item => item.occurrenceId === targetOccurrenceId);
+    let session = sessions.find(item => item.occurrenceId === targetOccurrenceId && item.status !== 'cancelled');
     if (!session) {
       if (!workspace) throw new Error('attendance_workspace_unavailable');
-      const input = { stageId: workspace.stageId, occurrenceId: targetOccurrenceId, physicalHeadcount: null };
-      const created = workspace.offline || (offlineReady && offlineOccurrenceIds.includes(targetOccurrenceId))
-        ? await createOfflineAttendanceSession(input, ownerUid)
-        : await createAttendanceSession({ ...input, notes: '', requestId: secureRequestId() });
+      const created = await createSessionForOccurrence(targetOccurrenceId, null);
       const data = await getAttendanceSessionSnapshot(created.sessionId, ownerUid);
       session = data.session;
       setWorkspace(current => current ? { ...current, sessions: [...current.sessions, data.session] } : current);
@@ -203,5 +237,5 @@ export function useDoctorAttendance(ownerUid: string, isRtl: boolean, stageId?: 
     await resolveAttendanceReview(requestId, { decision, reason, enrollDevice, allowLateConfirmation: allowLateConfirmation === true, expectedRevision: targetReceipt?.reviewRevision || 1, requestId: secureRequestId() });
     setSnapshot(await getAttendanceSessionSnapshot(snapshot.session.id, ownerUid));
   });
-  return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, start, saveSession, refreshQr, students, updateCell, review, refresh: () => run(refresh) };
+  return { workspace, snapshot, commands, occurrenceId, selectOccurrence, qrToken, offlineReady, error, busy, start, saveSession, cancelSession, refreshQr, students, updateCell, review, refresh: () => run(refresh) };
 }

@@ -9,6 +9,7 @@ interface NativeFilesPlugin {
     location?: string;
     bytes?: number;
   }>;
+  openPdf?(options: { uri: string }): Promise<{ opened: boolean }>;
   addListener(
     eventName: 'downloadProgress',
     listener: (event: { transferId: string; bytes: number; contentLength: number }) => void,
@@ -126,4 +127,18 @@ export async function downloadNativeFile(options: NativeDownloadOptions): Promis
 export async function saveNativePdf(sourceUri: string, filename: string) {
   const plugin = (globalThis as any).__mockNativeFiles || NativeFiles;
   return plugin.savePdf({ sourceUri, filename, mimeType: 'application/pdf' });
+}
+
+export async function openNativePdf(uri: string): Promise<boolean> {
+  const plugin = (globalThis as any).__mockNativeFiles || NativeFiles;
+  if (typeof plugin.openPdf === 'function') {
+    try {
+      const res = await plugin.openPdf({ uri });
+      return !!res?.opened;
+    } catch (err) {
+      console.warn('[NativeFiles] openPdf failed:', err);
+      return false;
+    }
+  }
+  return false;
 }

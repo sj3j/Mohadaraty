@@ -23,7 +23,7 @@ import { ensureAttendanceInitialized } from './attendanceMigration';
 import { matchEmergencyOccurrence, matchEmergencyStudent, type EmergencyAttendanceInput } from '../../shared/attendanceEmergency';
 
 const ATTENDANCE_EVENT = 'simosan-attendance-changed';
-const activeSync = new Map<string, Promise<void>>();
+const activeSync = new Map<string, Promise<boolean>>();
 const capturedMonotonic = new Map<string, number>();
 const channel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(ATTENDANCE_EVENT) : null;
 if (channel) channel.onmessage = () => window.dispatchEvent(new Event(ATTENDANCE_EVENT));
@@ -68,7 +68,10 @@ export async function attendanceApiRequest<T>(path: string, init: RequestInit = 
       },
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(data?.error || `attendance_http_${response.status}`), { status: response.status });
+    if (!response.ok) {
+      const error = response.status === 401 ? 'login_required' : data?.error || `attendance_http_${response.status}`;
+      throw Object.assign(new Error(error), { status: response.status });
+    }
     return data as T;
   } finally {
     clearTimeout(timeout);
@@ -180,18 +183,18 @@ async function markBatch(receipts: LocalAttendanceReceipt[], patch: Partial<Loca
   for (const receipt of receipts) await updateReceipt(receipt.requestId, patch);
 }
 
-async function runSync(ownerUid?: string): Promise<void> {
+async function runSync(ownerUid?: string): Promise<boolean> {
   await ensureAttendanceInitialized();
   const current = auth.currentUser;
   const uid = ownerUid || current?.uid;
-  if (!uid) return;
-  await syncDoctorAttendanceCommands(uid);
-  if (!current || current.uid !== uid) return;
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (!uid) return false;
+  const doctorSyncSucceeded = await syncDoctorAttendanceCommands(uid);
+  if (!current || current.uid !== uid) return false;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
 
   const repo = getAttendanceRepository();
   const { leaseId, receipts: batch } = await repo.acquireUploadLease(uid, 25, 60000);
-  if (!batch.length) return;
+  if (!batch.length) return doctorSyncSucceeded;
 
   const payload = batch.map(receipt => ({
     requestId: receipt.requestId,
@@ -228,7 +231,7 @@ async function runSync(ownerUid?: string): Promise<void> {
           reason: retryError?.status === 401 ? 'login_required' : 'retry_later',
         });
         await repo.releaseUploadLease(leaseId);
-        return;
+        return false;
       }
     } else {
       const authFailure = typeof error?.code === 'string' && error.code.startsWith('auth/')
@@ -238,7 +241,7 @@ async function runSync(ownerUid?: string): Promise<void> {
         reason: authFailure ? 'login_required' : 'retry_later',
       });
       await repo.releaseUploadLease(leaseId);
-      return;
+      return false;
     }
   }
 
@@ -266,11 +269,12 @@ async function runSync(ownerUid?: string): Promise<void> {
   } else {
     await repo.releaseUploadLease(leaseId);
   }
+  return doctorSyncSucceeded && acks.length > 0;
 }
 
-export function syncAttendanceReceipts(ownerUid?: string): Promise<void> {
+export function syncAttendanceReceipts(ownerUid?: string): Promise<boolean> {
   const uid = ownerUid || auth.currentUser?.uid;
-  if (!uid) return Promise.resolve();
+  if (!uid) return Promise.resolve(false);
   if (!activeSync.has(uid)) activeSync.set(uid, runSync(uid).finally(() => { activeSync.delete(uid); }));
   return activeSync.get(uid)!;
 }
@@ -284,9 +288,13 @@ export function startAttendanceSync(ownerUid: string): () => void {
     if (stopped || running) return;
     running = true;
     clearTimeout(timer);
-    void syncAttendanceReceipts(ownerUid).catch(() => undefined).finally(() => {
+    void syncAttendanceReceipts(ownerUid).then(success => {
+      delay = success ? 5000 : Math.min(delay * 2, 60000);
+    }).catch(() => {
+      delay = Math.min(delay * 2, 60000);
+    }).finally(() => {
       running = false;
-      if (!stopped) { timer = setTimeout(sync, delay + Math.random() * 1000); delay = Math.min(delay * 2, 60000); }
+      if (!stopped) timer = setTimeout(sync, delay + Math.random() * 1000);
     });
   };
   const visible = () => { if (document.visibilityState === 'visible') sync(); };
@@ -423,6 +431,7 @@ export async function createOfflineAttendanceSession(input: { stageId: string; o
       v: 2, typ: 'simosan-attendance', sessionId, challengeId: attendanceRequestId(), occurrenceId: occurrence.id,
       stageId: occurrence.stageId, lectureDate: occurrence.lectureDate, title: occurrence.title, startTime: occurrence.startTime,
       endTime: occurrence.endTime,
+      attemptGeneration: pack.attemptGenerations?.[occurrence.id],
     },
   });
   const snapshot: AttendanceSessionSnapshot = {
@@ -453,7 +462,11 @@ export async function getMyAttendance(ownerUid: string): Promise<AttendanceMine>
     return data;
   } catch (error) {
     const cached = await getAttendanceState<CachedAttendanceState>(ownerUid);
-    if (cached?.data) return { ...cached.data, offline: true };
+    if (cached?.data) return {
+      ...cached.data,
+      offline: true,
+      unavailableReason: error instanceof Error ? error.message : 'attendance_unavailable',
+    };
     throw error;
   }
 }
@@ -469,6 +482,38 @@ export async function createAttendanceSession(input: {
   const result = await apiRequest<{ sessionId: string; qrToken: string; revision: number; status: string; existing: boolean; rosterCount: number }>('/api/attendance/sessions', { method: 'POST', body: JSON.stringify(input) });
   const repo = getAttendanceRepository();
   await repo.setMetadata(`attendance-doctor-qr:${auth.currentUser?.uid}:${result.sessionId}`, result.qrToken, auth.currentUser?.uid);
+  return result;
+}
+
+export async function cancelAttendanceSession(
+  sessionId: string,
+  input: { requestId: string; expectedRevision: number; reason: string },
+  ownerUid = auth.currentUser?.uid,
+): Promise<{ session: { revision: number; cancelled_at?: string; cancellation_reason?: string }; existing?: boolean }> {
+  await ensureAttendanceInitialized();
+  if (!ownerUid || (auth.currentUser && auth.currentUser.uid !== ownerUid)) throw new Error('login_required');
+  const result = await apiRequest<{ session: { revision: number; cancelled_at?: string; cancellation_reason?: string }; existing?: boolean }>(`/api/attendance/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+    method: 'POST', body: JSON.stringify(input),
+  }, false, ownerUid);
+  const repo = getAttendanceRepository();
+  const key = `attendance-doctor:${ownerUid}:${sessionId}`;
+  const cached = await repo.getMetadata<AttendanceSessionSnapshot>(key, ownerUid);
+  if (cached && result?.session) {
+    await repo.setMetadata(key, {
+      ...cached,
+      session: {
+        ...cached.session,
+        status: 'cancelled',
+        revision: Number(result.session.revision),
+        cancelledAt: result.session.cancelled_at || new Date().toISOString(),
+        cancellationReason: result.session.cancellation_reason || input.reason,
+      },
+      records: cached.records.map(record => ({ ...record, status: 'voided' as const })),
+      reviewReceipts: [],
+      counts: { ...cached.counts, confirmed: 0, review: 0 },
+    }, ownerUid);
+  }
+  emitAttendanceChange();
   return result;
 }
 
@@ -599,16 +644,17 @@ export const listDoctorAttendanceCommands = async (ownerUid: string): Promise<Do
   return (await repo.listDoctorCommands(ownerUid)) as unknown as DoctorAttendanceCommand[];
 };
 
-export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<void> {
+export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<boolean> {
   await ensureAttendanceInitialized();
-  if (auth.currentUser?.uid !== ownerUid || navigator.onLine === false) return;
+  if (auth.currentUser?.uid !== ownerUid || navigator.onLine === false) return false;
   const repo = getAttendanceRepository();
   const commands = await listDoctorAttendanceCommands(ownerUid);
   const pending = commands.filter(item => item.status === 'pending').sort((first, second) => Number(second.kind === 'import') - Number(first.kind === 'import') || (first.localOrder || 0) - (second.localOrder || 0));
   const blockedSessions = new Set<string>();
+  let successful = true;
   for (const command of commands) if (command.kind === 'import' && command.status === 'needs_help') blockedSessions.add(command.sessionId);
   for (const command of pending) {
-    if (auth.currentUser?.uid !== ownerUid) return;
+    if (auth.currentUser?.uid !== ownerUid) return false;
     if (blockedSessions.has(command.sessionId)) continue;
     try {
       if (command.kind === 'emergency_draft') {
@@ -670,9 +716,10 @@ export async function syncDoctorAttendanceCommands(ownerUid: string): Promise<vo
       if ([400, 403, 409].includes(error.status)) {
         await repo.updateDoctorCommand({ ...command, status: 'needs_help', reason: error.message });
         emitAttendanceChange();
-      }
+      } else successful = false;
     }
   }
+  return successful;
 }
 
 export async function setAttendanceRecordStatus(

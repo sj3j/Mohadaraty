@@ -36,8 +36,11 @@ export interface SimosanState {
   freeWeeklyRemaining?: number;
   freeWeeklyResetsInMs?: number;
   remaining: number;
+  weeklyBudget: number;
   dailyBudget: number;
   resetsInMs: number;
+  cooldownUntil?: number | null;
+  cooldownRemainingMs?: number;
   maxQuestionsPerChat: number;
 }
 
@@ -52,6 +55,7 @@ export interface SimosanThread {
 export type AskErrorCode =
   | 'insufficient_energy'
   | 'free_weekly_limit_reached'
+  | 'cooldown_active'
   | 'not_subscribed'
   | 'disabled'
   | 'ceiling_reached'
@@ -65,7 +69,7 @@ export type AskErrorCode =
 export class AskError extends Error {
   constructor(
     public code: AskErrorCode,
-    public detail: { remaining?: number; dailyBudget?: number; resetsInMs?: number } = {},
+    public detail: { remaining?: number; weeklyBudget?: number; dailyBudget?: number; resetsInMs?: number; cooldownUntil?: number } = {},
   ) {
     super(code);
   }
@@ -286,13 +290,25 @@ export function parseCitations(text: string): Array<{ text: string } | { page: n
   return out;
 }
 
-/** "3 س 20 د" — a countdown the student can act on, not a timestamp. */
+/** "3 س 20 د" or "6 أيام و 4 ساعات" — a countdown the student can act on, not a timestamp. */
 export function formatReset(ms: number, isRtl: boolean): string {
   const totalMinutes = Math.max(0, Math.round(ms / 60000));
-  const h = Math.floor(totalMinutes / 60);
+  const totalHours = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
-  if (isRtl) return h > 0 ? `${h} ساعة و ${m} دقيقة` : `${m} دقيقة`;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+
+  if (totalHours >= 24) {
+    const d = Math.floor(totalHours / 24);
+    const remH = totalHours % 24;
+    if (isRtl) {
+      const dayStr = d === 1 ? 'يوم' : d === 2 ? 'يومان' : `${d} أيام`;
+      const hourStr = remH === 1 ? 'ساعة' : remH === 2 ? 'ساعتان' : (remH >= 3 && remH <= 10) ? `${remH} ساعات` : `${remH} ساعة`;
+      return remH > 0 ? `${dayStr} و ${hourStr}` : dayStr;
+    }
+    return remH > 0 ? `${d}d ${remH}h` : `${d}d`;
+  }
+
+  if (isRtl) return totalHours > 0 ? `${totalHours} ساعة و ${m} دقيقة` : `${m} دقيقة`;
+  return totalHours > 0 ? `${totalHours}h ${m}m` : `${m}m`;
 }
 
 /**

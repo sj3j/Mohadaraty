@@ -165,6 +165,7 @@ export interface Lecture {
    *  stage the reader has been promoted out of. */
   subjectNameAr?: string;
   courseId?: CourseId;
+  date?: string;
 }
 
 export interface Post {
@@ -198,7 +199,7 @@ export interface RecordItem {
   duration?: number; // Duration in seconds
   size?: number; // File size in MB
   createdAt: any;
-  uploadedBy: string;
+  uploadedBy?: string;
   uploaderName?: string;
   number?: number;
   stageId?: string;
@@ -207,6 +208,7 @@ export interface RecordItem {
   /** See Lecture.subjectNameAr. */
   subjectNameAr?: string;
   courseId?: CourseId;
+  lectureId?: string;
 }
 
 export interface UserProfile {

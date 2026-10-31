@@ -106,6 +106,9 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 - Storage rules using dynamic regex `fileName.matches(request.auth.uid + ".*")` break on emails, dots, and metacharacters in custom token UIDs → allow authenticated creates with content/size guards under scoped lecture prefixes, and restrict updates/deletions with `isStaff()`.
 
 ## Data model & consistency
+
+- A unique attendance session per scheduled occurrence prevents audited cancellation followed by a clean retest. Model immutable attempts with a monotonic generation, allow only one non-cancelled attempt through a partial unique index, and revoke old QR challenges/offline grants when cancelling.
+- Voiding a cancelled attempt's record is not enough: the generic receipt-result helper can reinterpret the void as `needs_review` on retry. Make cancellation authoritative in the result RPC (`invalid_evidence/session_cancelled`) and make cancelled session rows immutable.
 - Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.
 - Free AI tutor allowance must not be checked via daily energy units or blocked by subscription gates → partition weekly free turns in `aiUsage/{uid}_free_{week}` by Baghdad academic week (starts Saturday) with atomic reservation and immediate upgrade CTA upon exhaustion.
 - AI chat history reads in Firestore burn 20+ document reads per question and trigger client listener read loops → offload chat threads and messages to Supabase Postgres (relational index scans) with server in-memory caching for lectures and settings, preserving Firestore security rules while eliminating 99% of read quota exhaustion.
@@ -494,3 +497,4 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   rather than "rank unavailable".
 - A native PDF view inserted behind Capacitor's WebView is occluded if background screens (HomeScreen) or root containers remain rendered and opaque; unmount background screens and apply transparent body/#root styling when the native overlay opens, with automatic restoration on close or fallback.
 - `@capacitor/file-transfer` on Android 10 and older checks legacy public-storage permission even for app-private destinations; use the app-private native stream there, and reserve storage permission or MediaStore for a user-visible Downloads export.
+- Simosan energy quotas migrating between Firestore and Supabase must synchronize monthly spend, month-rollover zeroing, and monthly ceiling alerts via `recordSpendAndCheckCeiling`; raw `FieldValue.increment` without month normalization bypasses kill switches and corrupts cross-month billing.

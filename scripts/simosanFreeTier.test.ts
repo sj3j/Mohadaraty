@@ -3,11 +3,19 @@ import {
   baghdadWeekKey,
   msUntilBaghdadWeeklyReset,
   freeUsageDocId,
+  recordSpendAndCheckCeiling,
   reserveFreeQuestion,
   reconcileFreeQuestion,
   releaseFreeQuestion,
   type SimosanCtx,
 } from '../shared/simosan.js';
+import { formatReset } from '../src/services/simosanService.js';
+import {
+  reserveSupaEnergy,
+  reconcileSupaEnergy,
+  releaseSupaEnergy,
+  settleSupaOffTopic,
+} from '../shared/simosanSupabase.js';
 
 async function runTests() {
   console.log('====================================================');
@@ -204,10 +212,142 @@ async function runTests() {
   assert.equal(res4.ok, false, 'Cannot ask again after question is reconciled');
   assert.equal(res4.reason, 'free_weekly_limit_reached');
 
+  // 7. Cross-Saturday midnight rollover test for free tier:
+  // Reserve at Friday 23:59:50, reconcile at Saturday 00:00:10 with week: res.week.
+  // Friday's turn is consumed, and Saturday's new week quota remains available!
+  const friTime = new Date('2026-10-02T20:59:50Z'); // Friday 23:59:50 Baghdad
+  const satTime = new Date('2026-10-02T21:00:10Z'); // Saturday 00:00:10 Baghdad
+  const friWeekKey = baghdadWeekKey(friTime);
+  const satWeekKey = baghdadWeekKey(satTime);
+  assert.notEqual(friWeekKey, satWeekKey, 'Friday and Saturday are different weeks');
+
+  const crossFreeRes = await reserveFreeQuestion(testCtx, { uid: 'u_cross_free', stageId: 's4' }, friTime);
+  assert.equal(crossFreeRes.ok, true);
+  assert.equal(crossFreeRes.week, friWeekKey);
+
+  // Turn completes on Saturday: reconcile using crossFreeRes.week
+  await reconcileFreeQuestion(testCtx, { uid: 'u_cross_free', actualUnits: 50, week: crossFreeRes.week }, satTime);
+
+  // Student should still be able to use their NEW week's question on Saturday!
+  const satNewRes = await reserveFreeQuestion(testCtx, { uid: 'u_cross_free', stageId: 's4' }, satTime);
+  assert.equal(satNewRes.ok, true, 'Student can use free question for new week starting on Saturday');
+
   console.log('  PASS  Atomic reserve, release, reconcile, and lock lifecycle verified.');
 
+  // Test Set 5: formatReset Multi-Day & Cooldown Formatting
+  console.log('\n[5/6] Testing formatReset Countdown Formatting...');
+  assert.equal(formatReset(45 * 60 * 1000, false), '45m');
+  assert.equal(formatReset(45 * 60 * 1000, true), '45 دقيقة');
+  assert.equal(formatReset(2 * 60 * 60 * 1000, false), '2h 0m');
+  assert.equal(formatReset(2 * 60 * 60 * 1000, true), '2 ساعة و 0 دقيقة');
+  assert.equal(formatReset((6 * 24 + 4) * 60 * 60 * 1000, false), '6d 4h');
+  assert.equal(formatReset((6 * 24 + 4) * 60 * 60 * 1000, true), '6 أيام و 4 ساعات');
+  assert.equal(formatReset(24 * 60 * 60 * 1000, false), '1d');
+  assert.equal(formatReset(24 * 60 * 60 * 1000, true), 'يوم');
+  console.log('  PASS  formatReset accurately presents sub-hour, multi-hour, and multi-day countdowns.');
+
+  // Test Set 6: Supabase Burst Cooldown & Window Tracking Parity
+  console.log('\n[6/7] Testing Supabase Cooldown Parity & Rollover Window...');
+  const supaStore = new Map<string, any>();
+  const mockSupaClient: any = {
+    from: (table: string) => ({
+      select: () => ({
+        eq: (col: string, val: any) => ({
+          maybeSingle: async () => ({ data: supaStore.get(val) || null, error: null }),
+        }),
+      }),
+      upsert: async (row: any) => {
+        supaStore.set(row.id, { ...(supaStore.get(row.id) || {}), ...row });
+        return { data: row, error: null };
+      },
+      update: (patch: any) => ({
+        eq: async (col: string, val: any) => {
+          const current = supaStore.get(val) || {};
+          supaStore.set(val, { ...current, ...patch });
+          return { error: null };
+        },
+      }),
+    }),
+  };
+
+  const sUid = 'supa_student';
+  const sWeek = '2026-10-31';
+  // 1. Initial reservation: 35,000 units succeeds
+  const sRes1 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 35_000 });
+  assert.equal(sRes1.ok, true, 'Supabase initial reserve succeeds');
+  await reconcileSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, reservedUnits: 35_000, actualUnits: 35_000 });
+
+  // 2. Second burst request: 30,000 units pushes window past 60k threshold -> triggers cooldown
+  const sRes2 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 30_000 });
+  assert.equal(sRes2.ok, false, 'Supabase burst request triggers cooldown');
+  assert.equal(sRes2.reason, 'cooldown_active');
+
+  // 3. Subsequent request during cooldown is rejected
+  const sRes3 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 500 });
+  assert.equal(sRes3.ok, false, 'Supabase rejects requests while cooldown is active');
+  assert.equal(sRes3.reason, 'cooldown_active');
+
+  // 4. Test settleSupaOffTopic window tracking and refund logic
+  const otUid = 'supa_offtopic';
+  const otRes = await reserveSupaEnergy(mockSupaClient, { uid: otUid, weekKey: sWeek, estimatedUnits: 10_000 });
+  assert.equal(otRes.ok, true);
+  const otSettle = await settleSupaOffTopic(mockSupaClient, {
+    uid: otUid,
+    weekKey: sWeek,
+    reservedUnits: 10_000,
+    actualUnits: 8_000,
+    maxFreeOffTopic: 5,
+  });
+  assert.equal(otSettle.refunded, true, 'Off-topic within cap is refunded');
+  assert.equal(supaStore.get(`${otUid}_${sWeek}`).units_used, 0, 'Refunded units not charged against student budget');
+
+  // 5. Test Supabase rollover burst window carryover across Saturday midnight
+  const rollUid = 'supa_rollover_student';
+  const prevWeekKey = '2026-10-24';
+  const nextWeekKey = '2026-10-31';
+  // Friday 23:56 Baghdad time (4 minutes before Saturday 00:00 midnight)
+  const fridayWindowStart = new Date(Date.parse(`${nextWeekKey}T00:00:00+03:00`) - 4 * 60 * 1000).toISOString();
+  supaStore.set(`${rollUid}_${prevWeekKey}`, {
+    id: `${rollUid}_${prevWeekKey}`,
+    user_id: rollUid,
+    period_key: prevWeekKey,
+    units_used: 50_000,
+    units_reserved: 0,
+    window_start: fridayWindowStart,
+    window_units: 50_000,
+    cooldown_until: null,
+  });
+  // Now at Saturday 00:02 Baghdad time, user tries to burst another 20,000 units
+  const satRollNow = new Date(Date.parse(`${nextWeekKey}T00:02:00+03:00`));
+  const rollRes = await reserveSupaEnergy(mockSupaClient, {
+    uid: rollUid,
+    weekKey: nextWeekKey,
+    estimatedUnits: 20_000,
+    now: satRollNow,
+  });
+  assert.equal(rollRes.ok, false, 'Rapid burst across Saturday midnight triggers burst cooldown');
+  assert.equal(rollRes.reason, 'cooldown_active');
+  console.log('  PASS  Supabase burst tracking, rollover carryover, and 2-hour cooldown parity verified.');
+
+  // Test Set 7: recordSpendAndCheckCeiling Month Rollover & Ceiling Enforcement
+  console.log('\n[7/7] Testing recordSpendAndCheckCeiling Monthly Ceiling & Rollover...');
+  const ceilingCtx = createCtxWithStore();
+  // 1. Spend under ceiling
+  const sResult1 = await recordSpendAndCheckCeiling(ceilingCtx, 10_000, new Date('2026-09-15T12:00:00Z'));
+  assert.equal(sResult1.enabled, true, 'Simosan remains enabled below ceiling');
+
+  // 2. Spend pushing past $100 ceiling disables Simosan
+  const sResult2 = await recordSpendAndCheckCeiling(ceilingCtx, 70_000_000, new Date('2026-09-15T12:00:00Z'));
+  assert.equal(sResult2.enabled, false, 'Simosan is disabled when ceiling is crossed');
+
+  // 3. New month resets monthUsd to 0 and re-evaluates
+  const sResult3 = await recordSpendAndCheckCeiling(ceilingCtx, 1_000, new Date('2026-10-01T12:00:00Z'));
+  assert.equal(sResult3.month, '2026-10', 'Month rolled over to new month');
+  assert.ok(sResult3.monthUsd < 1, 'monthUsd reset to new month initial spend');
+  console.log('  PASS  recordSpendAndCheckCeiling handles month rollover and ceiling kill switch.');
+
   console.log('\n====================================================');
-  console.log('  ALL SIMOSAN FREE TIER TESTS PASSED (4/4)!         ');
+  console.log('  ALL SIMOSAN TEST SETS PASSED (7/7)!               ');
   console.log('====================================================');
 }
 

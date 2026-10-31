@@ -8,7 +8,7 @@
 import React, { useState } from 'react';
 import { 
   QrCode, FileSpreadsheet, BarChart3, LogOut, BookOpen, CalendarDays,
-  ChevronDown, GraduationCap, Layers, ArrowRight, ArrowLeft, RefreshCw
+  ChevronDown, GraduationCap, Layers, ArrowRight, ArrowLeft, RefreshCw, MonitorSmartphone, X
 } from 'lucide-react';
 import type { Language, UserProfile } from '../../types';
 import { DoctorSubject, DoctorPortalTab, LectureMode, LectureColumn, StudentAttendanceRow, AttendanceCellStatus } from './types';
@@ -19,6 +19,7 @@ import DoctorLiveSessionView from './DoctorLiveSessionView';
 import DoctorExcelTimetableView from './DoctorExcelTimetableView';
 import DoctorTimetableView from './DoctorTimetableView';
 import EmergencyAttendanceDrafts from './EmergencyAttendanceDrafts';
+import DevicesSettings from '../settings/DevicesSettings';
 
 
 interface DoctorPortalProps {
@@ -49,6 +50,7 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, stageId }: 
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DoctorPortalTab>('timetable');
   const [selectedOccurrenceId, setSelectedOccurrenceId] = useState('');
+  const [isDevicesOpen, setIsDevicesOpen] = useState(false);
 
   // Scoped occurrences strictly for Excel attendance & Live session (subject & mode split)
   const assignedSlots = new Set(attendance.workspace?.subjects.find(subject => subject.id === selectedSubject?.id)?.timetableSessionIds || []);
@@ -246,6 +248,14 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, stageId }: 
             {/* Right/End: Actions */}
             <div className="flex items-center gap-2 ms-auto md:ms-0">
               <button onClick={() => void attendance.refresh()} disabled={attendance.busy} className="rounded-xl border border-teal-200 p-2 text-teal-700 disabled:opacity-40" title={isRtl ? 'تحديث سجل الحضور' : 'Refresh attendance ledger'}><RefreshCw className="h-4 w-4" /></button>
+              <button
+                onClick={() => setIsDevicesOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-black text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+                title={isRtl ? 'الأجهزة والجلسات' : 'Devices & Sessions'}
+              >
+                <MonitorSmartphone className="h-4 w-4 text-teal-600 dark:text-teal-400" />
+                <span className="hidden sm:inline">{isRtl ? 'الأجهزة' : 'Devices'}</span>
+              </button>
               {onBack ? (
                 <button
                   onClick={onBack}
@@ -387,6 +397,27 @@ export default function DoctorPortal({ user, lang, onLogout, onBack, stageId }: 
 
 
       </main>
+
+      {isDevicesOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+            <div className="flex items-center justify-between pb-4 mb-4 border-b border-slate-100 dark:border-zinc-800">
+              <h2 className="text-lg font-black text-slate-900 dark:text-zinc-100 flex items-center gap-2">
+                <MonitorSmartphone className="h-5 w-5 text-teal-600" />
+                {isRtl ? 'الأجهزة والجلسات' : 'Devices & Sessions'}
+              </h2>
+              <button
+                onClick={() => setIsDevicesOpen(false)}
+                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+                aria-label={isRtl ? 'إغلاق' : 'Close'}
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <DevicesSettings lang={lang} onLogout={onLogout} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

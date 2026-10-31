@@ -13,7 +13,7 @@ import {
   AttendanceConfigError,
   type AttendanceReadinessResult,
 } from '../shared/attendanceConfig.js';
-import { attendanceErrorResponse } from '../shared/attendanceApi.js';
+import { attendanceDiagnosticCause, attendanceErrorResponse } from '../shared/attendanceApi.js';
 import { isMasterAdminEmail } from '../shared/masterAdmins.js';
 
 let failed = 0;
@@ -303,6 +303,23 @@ async function runTests() {
   });
 
   console.log('\n--- 8.3 Logging Tests ---');
+
+  await check('Diagnostic causes distinguish configuration, credentials, schema, and connectivity', () => {
+    assert.equal(attendanceDiagnosticCause(new AttendanceConfigError('attendance_supabase_not_configured')), 'supabase_missing');
+    assert.equal(attendanceDiagnosticCause({ code: 'PGRST205', message: 'schema cache lookup failed' }), 'schema_missing');
+    assert.equal(attendanceDiagnosticCause({ code: 'PGRST202', message: 'Could not find the function attendance_cancel_session' }), 'schema_missing');
+    assert.deepEqual(attendanceErrorResponse({ code: 'PGRST202', message: 'Could not find the function attendance_cancel_session' }), {
+      status: 503, error: 'attendance_schema_missing',
+    });
+    assert.deepEqual(attendanceErrorResponse({ code: 'PGRST301', message: 'Invalid JWT' }), {
+      status: 503, error: 'attendance_not_configured',
+    });
+    assert.deepEqual(attendanceErrorResponse(new Error('fetch failed')), {
+      status: 503, error: 'attendance_temporarily_unavailable',
+    });
+    assert.equal(attendanceDiagnosticCause({ status: 401, message: 'Invalid API key' }), 'credential_invalid');
+    assert.equal(attendanceDiagnosticCause(new Error('fetch failed')), 'backend_unreachable');
+  });
 
   await check('Error logging maps internal codes to safe public categories and excludes secrets', () => {
     const interceptedLogs: any[] = [];

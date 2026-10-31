@@ -1,19 +1,12 @@
 import { apiUrl } from '../lib/apiBase';
 import { recordNativeDiagnostic } from '../lib/nativeDiagnostics';
 
-export type StudentLoginFailureCode =
-  | 'AMBIGUOUS_IDENTIFIER'
-  | 'auth/invalid-credential'
-  | 'auth/user-disabled'
-  | 'auth/too-many-requests'
-  | 'auth/network-request-failed'
-  | 'auth/timeout'
-  | 'auth/server-error'
-  | 'auth/server-response-invalid'
-  | 'auth/token-exchange-failed';
-
 export class StudentLoginError extends Error {
-  constructor(public readonly code: StudentLoginFailureCode, message: string) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status?: number,
+  ) {
     super(message);
     this.name = 'StudentLoginError';
   }
@@ -32,6 +25,8 @@ export interface StudentLoginOptions<TCredential> {
   endpoint?: string;
   timeoutMs?: number;
   retryDelayMs?: number;
+  device?: unknown;
+  sessionNonce?: string;
 }
 
 const IOS_TRANSPORT_MESSAGES = /failed to fetch|network-request-failed|\bload failed\b|internet connection.*offline|network connection.*lost/i;
@@ -77,6 +72,7 @@ export async function signInStudent<TCredential>(
   const typed = options.identifier.trim();
   const timeoutMs = options.timeoutMs ?? 20_000;
   const retryDelayMs = options.retryDelayMs ?? 1_500;
+  const sessionNonce = options.sessionNonce || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController();
@@ -89,7 +85,7 @@ export async function signInStudent<TCredential>(
         // Identifiers are whitespace-insensitive, but passwords are not.
         // Trimming here made valid passwords containing a leading/trailing
         // space impossible to sign in with.
-        body: JSON.stringify({ identifier: typed, email: typed, password: options.password }),
+        body: JSON.stringify({ identifier: typed, email: typed, password: options.password, device: options.device, sessionNonce }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -112,20 +108,23 @@ export async function signInStudent<TCredential>(
         return { credential, studentId: (typeof body.studentId === 'string' && body.studentId || typed).toLowerCase() };
       } catch (error) {
         const code = (error as { code?: string } | null)?.code;
-        throw new StudentLoginError(
-          code === 'auth/network-request-failed' ? 'auth/network-request-failed' : 'auth/token-exchange-failed',
-          error instanceof Error ? error.message : 'Unable to establish the Firebase session.',
-        );
+        recordNativeDiagnostic({ phase: 'login', outcome: 'exchange-fail', code: code || 'token-exchange-failed' });
+        throw new StudentLoginError('auth/token-exchange-failed', 'Firebase session initialization failed.');
       }
     } catch (error) {
       clearTimeout(timeout);
-      const loginError = asLoginError(error);
-      recordNativeDiagnostic({ phase: 'login', outcome: 'failure', code: loginError.code });
-      if (attempt === 0 && loginError.code === 'auth/network-request-failed') {
+      const classified = asLoginError(error);
+      const isRetryable = classified.code === 'auth/network-request-failed' || classified.code === 'auth/timeout';
+      recordNativeDiagnostic({
+        phase: 'login',
+        outcome: attempt === 0 && isRetryable ? 'retry' : 'fail',
+        code: classified.code,
+      });
+      if (attempt === 0 && isRetryable) {
         await delay(retryDelayMs);
         continue;
       }
-      throw loginError;
+      throw classified;
     }
   }
 

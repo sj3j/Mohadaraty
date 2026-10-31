@@ -140,7 +140,7 @@ export default function DoctorLiveSessionView({
 
     // Auto-create/start session if not already running for this occurrence
     if (attendance.workspace && !attendance.busy) {
-      const existingSession = attendance.workspace.sessions.find(s => s.occurrenceId === occId);
+      const existingSession = attendance.workspace.sessions.find(s => s.occurrenceId === occId && s.status !== 'cancelled');
       const isEnded = existingSession?.status === 'ended' || existingSession?.status === 'finalized';
       if (!isEnded && !existingSession && autoStartedSessionRef.current !== occId) {
         autoStartedSessionRef.current = occId;
@@ -240,6 +240,9 @@ export default function DoctorLiveSessionView({
   const sessionCards = (attendance.workspace?.sessions || [])
     .filter(session => session.status === 'active' || session.status === 'ended')
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const cancelledSessionCards = (attendance.workspace?.sessions || [])
+    .filter(session => session.status === 'cancelled')
+    .sort((a, b) => (b.cancelledAt || b.createdAt).localeCompare(a.cancelledAt || a.createdAt));
 
   const allConfirmedRecords = (activeSession?.records || []).filter(record => record.status === 'confirmed');
   const filteredConfirmedRecords = allConfirmedRecords.filter(record => {
@@ -318,6 +321,23 @@ export default function DoctorLiveSessionView({
                 {finalizationQueued ? (isRtl ? 'بانتظار المزامنة' : 'Pending sync') : (isRtl ? 'اعتماد السجل النهائي' : 'Finalize ledger')}
               </button>
             )}
+            {activeSession && (
+              <button
+                disabled={attendance.busy}
+                onClick={() => {
+                  const reason = window.prompt(isRtl ? 'اكتب سبب إلغاء جلسة الحضور:' : 'Reason for cancelling this attendance session:')?.trim();
+                  if (!reason) return;
+                  const confirmed = window.confirm(isRtl
+                    ? 'سيتم إلغاء الجلسة وإبطال الرمز واستبعاد سجلاتها من الإجماليات. هل تريد المتابعة؟'
+                    : 'This cancels the session, revokes its QR, and excludes its records from totals. Continue?');
+                  if (confirmed) void attendance.cancelSession(reason);
+                }}
+                className="rounded-2xl border border-rose-300 px-3 py-2.5 text-xs font-bold text-rose-700 disabled:opacity-50 dark:border-rose-800 dark:text-rose-300 cursor-pointer"
+              >
+                <Trash2 className="me-1 inline h-4 w-4" />
+                {isRtl ? 'إلغاء الجلسة' : 'Cancel session'}
+              </button>
+            )}
             <button
               onClick={() => window.print()}
               className="p-2.5 rounded-2xl border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
@@ -337,6 +357,22 @@ export default function DoctorLiveSessionView({
               </button>
             ))}
           </div>
+        )}
+        {cancelledSessionCards.length > 0 && (
+          <details className="border-t border-slate-100 pt-3 text-xs dark:border-zinc-800">
+            <summary className="cursor-pointer font-bold text-slate-600 dark:text-zinc-300">
+              {isRtl ? `الجلسات الملغاة (${cancelledSessionCards.length})` : `Cancelled attempts (${cancelledSessionCards.length})`}
+            </summary>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {cancelledSessionCards.map(session => (
+                <div key={session.id} className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-900 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-200">
+                  <strong className="block truncate">{session.occurrence.title}</strong>
+                  <span>{session.occurrence.lectureDate} · {isRtl ? 'محاولة' : 'Attempt'} {session.attemptGeneration || 1}</span>
+                  {session.cancellationReason && <p className="mt-1">{session.cancellationReason}</p>}
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         {/* Timetable Session Selectors: Week & Group */}

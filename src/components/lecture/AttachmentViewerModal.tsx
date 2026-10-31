@@ -460,16 +460,24 @@ export default function AttachmentViewerModal({
               <RotateCw className="w-4 h-4" />
             </button>
 
-            <a
-              href={current.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              download={current.title || 'lecture_attachment.jpg'}
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.preventDefault();
+                const { shareFile } = await import('../../lib/shareFile');
+                await shareFile({
+                  url: current.url,
+                  name: current.title || 'lecture_attachment',
+                  extension: current.fileType === 'pdf' ? 'pdf' : 'jpg',
+                  mimeType: current.fileType === 'pdf' ? 'application/pdf' : 'image/jpeg',
+                  title: current.title,
+                });
+              }}
               className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer flex items-center justify-center"
-              title={isRtl ? 'تنزيل الصورة' : 'Download'}
+              title={isRtl ? 'تنزيل أو مشاركة' : 'Download or share'}
             >
               <Download className="w-4 h-4" />
-            </a>
+            </button>
 
             {canDeleteCurrent && (
               <button

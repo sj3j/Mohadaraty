@@ -64,12 +64,41 @@ service cloud.firestore {
     // Helper Functions
     // ===============================================================
 
-    function isAuthenticated() {
+    function rawAuthenticated() {
       return request.auth != null;
+    }
+
+    function hasValidAccountSession() {
+      let sessionId = request.auth.token.get('app_session_id', '');
+      let generation = request.auth.token.get('app_session_generation', 0);
+      let sessionPath = /databases/$(database)/documents/accountSessions/$(sessionId);
+      return sessionId != '' && generation >= 1 && exists(sessionPath) &&
+        get(sessionPath).data.get('uid', '') == request.auth.uid &&
+        get(sessionPath).data.get('status', '') == 'active' &&
+        get(sessionPath).data.get('generation', 0) == generation;
+    }
+
+    function isAuthenticated() {
+      // Tokens without app_session are admitted during rollout grace.
+      // Once marked with app_session, every request is checked against
+      // the server-owned registry row for instant revocation.
+      return rawAuthenticated() && (
+        request.auth.token.get('app_session', false) != true ||
+        hasValidAccountSession()
+      );
     }
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Server-owned login-session registry. Students use authenticated API
+    // endpoints to inspect and revoke sessions; clients never write these rows.
+    match /accountSessions/{sessionId} {
+      allow read, write: if false;
+    }
+    match /accountSessionState/{uid} {
+      allow read, write: if false;
     }
 
     // KEEP IN SYNC WITH shared/masterAdmins.ts. Rules cannot import, so the

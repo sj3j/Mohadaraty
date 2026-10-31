@@ -8,6 +8,7 @@ export function useStudentAttendance(ownerUid: string, subgroup?: string) {
   const [receipts, setReceipts] = useState<LocalAttendanceReceipt[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [lastSuccessfulSync, setLastSuccessfulSync] = useState<string | null>(null);
   const generation = useRef(0);
   const refresh = useCallback(async () => {
     const current = ++generation.current;
@@ -20,7 +21,8 @@ export function useStudentAttendance(ownerUid: string, subgroup?: string) {
       if (current !== generation.current) return;
       setMine(data);
       setReceipts(updated);
-      setError('');
+      setError(data.unavailableReason || '');
+      if (!data.offline) setLastSuccessfulSync(new Date().toISOString());
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : 'attendance_unavailable');
     } finally {
@@ -48,5 +50,6 @@ export function useStudentAttendance(ownerUid: string, subgroup?: string) {
     };
   }, [ownerUid, refresh]);
   const retry = async () => { await syncAttendanceReceipts(ownerUid); await refresh(); };
-  return { mine, receipts, rows: studentAttendanceRows(mine, receipts, subgroup), loading, error, refresh, retry };
+  const pendingCount = receipts.filter(receipt => ['pending', 'syncing', 'waiting_for_login', 'review'].includes(receipt.status)).length;
+  return { mine, receipts, rows: studentAttendanceRows(mine, receipts, subgroup), loading, error, pendingCount, lastSuccessfulSync, refresh, retry };
 }

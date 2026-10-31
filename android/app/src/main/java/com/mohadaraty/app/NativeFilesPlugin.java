@@ -14,6 +14,7 @@ import android.provider.MediaStore;
 
 import androidx.activity.result.ActivityResult;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -161,6 +162,49 @@ public class NativeFilesPlugin extends Plugin {
         requestPermissionForAlias("legacyStorage", call, "legacyStoragePermissionResult");
     }
 
+    @PluginMethod
+    public void openPdf(PluginCall call) {
+        String uriString = call.getString("uri");
+        if (uriString == null || uriString.trim().isEmpty()) {
+            reject(call, "INVALID_URI", "uri is required", null);
+            return;
+        }
+
+        try {
+            Uri uri = Uri.parse(uriString);
+            Uri contentUri;
+            if ("content".equalsIgnoreCase(uri.getScheme())) {
+                contentUri = uri;
+            } else if ("file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+                File file = new File(uri.getPath());
+                contentUri = FileProvider.getUriForFile(
+                    getContext(),
+                    getContext().getPackageName() + ".fileprovider",
+                    file
+                );
+            } else {
+                contentUri = uri;
+            }
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(contentUri, MIME_PDF);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            Activity activity = getActivity();
+            if (activity != null) {
+                activity.startActivity(Intent.createChooser(intent, "Open PDF"));
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                call.resolve(ret);
+            } else {
+                reject(call, "ACTIVITY_UNAVAILABLE", "Activity is not available", null);
+            }
+        } catch (Exception error) {
+            reject(call, "OPEN_FAILED", error.getLocalizedMessage(), null);
+        }
+    }
+
     @PermissionCallback
     private void legacyStoragePermissionResult(PluginCall call) {
         if (getPermissionState("legacyStorage") == PermissionState.GRANTED) {
@@ -180,9 +224,15 @@ public class NativeFilesPlugin extends Plugin {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
                 values.put(MediaStore.MediaColumns.MIME_TYPE, MIME_PDF);
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Mohadaraty");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
                 values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-                inserted = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                try {
+                    inserted = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                } catch (Exception insertError) {
+                    String uniqueName = System.currentTimeMillis() + "_" + filename;
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName);
+                    inserted = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                }
                 if (inserted == null) throw new IOException("Could not create Downloads entry");
 
                 long bytes;
@@ -190,13 +240,24 @@ public class NativeFilesPlugin extends Plugin {
                      OutputStream output = new BufferedOutputStream(requireOutput(resolver, inserted))) {
                     bytes = copy(input, output, null);
                 }
-                long storedSize = contentSize(resolver, inserted);
-                if (bytes <= 0 || storedSize == 0) throw new IOException("Saved PDF is empty");
+                if (bytes <= 0) throw new IOException("Saved PDF is empty");
 
                 ContentValues publish = new ContentValues();
                 publish.put(MediaStore.MediaColumns.IS_PENDING, 0);
                 resolver.update(inserted, publish, null, null);
-                resolveSaved(call, inserted.toString(), "Downloads/Mohadaraty", bytes);
+
+                try {
+                    File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (downloadDir != null) {
+                        File publicFile = new File(downloadDir, filename);
+                        if (publicFile.exists()) {
+                            MediaScannerConnection.scanFile(getContext(), new String[] { publicFile.getAbsolutePath() }, new String[] { MIME_PDF }, null);
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+
+                resolveSaved(call, inserted.toString(), "Downloads", bytes);
             } catch (Exception error) {
                 if (inserted != null) getContext().getContentResolver().delete(inserted, null, null);
                 reject(call, "FILE_SAVE_FAILED", error.getLocalizedMessage(), null);
@@ -209,8 +270,8 @@ public class NativeFilesPlugin extends Plugin {
             File destination = null;
             try {
                 File source = validatedPdf(call.getString("sourceUri"));
-                File folder = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Mohadaraty");
-                if (!folder.exists() && !folder.mkdirs()) throw new IOException("Could not create Downloads folder");
+                File folder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!folder.exists() && !folder.mkdirs()) throw new IOException("Could not access Downloads folder");
                 destination = uniqueFile(folder, requiredFilename(call));
                 long bytes;
                 try (InputStream input = new BufferedInputStream(new FileInputStream(source));
@@ -222,7 +283,7 @@ public class NativeFilesPlugin extends Plugin {
                     throw new IOException("Saved PDF is empty");
                 }
                 MediaScannerConnection.scanFile(getContext(), new String[] { destination.getAbsolutePath() }, new String[] { MIME_PDF }, null);
-                resolveSaved(call, Uri.fromFile(destination).toString(), "Downloads/Mohadaraty", bytes);
+                resolveSaved(call, Uri.fromFile(destination).toString(), "Downloads", bytes);
             } catch (Exception error) {
                 if (destination != null && destination.exists()) destination.delete();
                 reject(call, "FILE_SAVE_FAILED", error.getLocalizedMessage(), null);

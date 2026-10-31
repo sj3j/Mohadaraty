@@ -24,6 +24,7 @@ interface Stats {
   ceilingUsd: number;
   enabled: boolean;
   model: string;
+  weeklyUnitBudget?: number;
   dailyUnitBudget: number;
   todayUnits: number;
   todayUsd: number;
@@ -147,7 +148,7 @@ export default function SimosanAdminScreen({
             <div className="grid grid-cols-3 gap-3">
               <Tile label={isRtl ? 'اليوم' : 'Today'} value={`$${stats.todayUsd.toFixed(3)}`} />
               <Tile label={isRtl ? 'طلاب اليوم' : 'Users today'} value={String(stats.activeUsersToday)} />
-              <Tile label={isRtl ? 'حصة يومية' : 'Daily quota'} value={stats.dailyUnitBudget.toLocaleString()} />
+              <Tile label={isRtl ? 'حصة أسبوعية' : 'Weekly quota'} value={(stats.weeklyUnitBudget || stats.dailyUnitBudget).toLocaleString()} />
             </div>
 
             <section className="rounded-3xl bg-white dark:bg-zinc-900 border-2 border-slate-100 dark:border-zinc-800 p-5 space-y-3">
@@ -175,9 +176,9 @@ export default function SimosanAdminScreen({
                 disabled={saving}
               />
               <NumberRow
-                label={isRtl ? 'الحصة اليومية للطالب' : 'Daily quota per student'}
-                value={stats.dailyUnitBudget}
-                onSave={(v) => patch({ dailyUnitBudget: v })}
+                label={isRtl ? 'الحصة الأسبوعية للطالب' : 'Weekly quota per student'}
+                value={stats.weeklyUnitBudget || stats.dailyUnitBudget}
+                onSave={(v) => patch({ weeklyUnitBudget: v, dailyUnitBudget: v })}
                 disabled={saving}
               />
               <p className="text-[11px] font-bold text-slate-400 leading-relaxed">

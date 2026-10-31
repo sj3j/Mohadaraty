@@ -152,6 +152,7 @@ export async function resolveGoogleLogin(
     masterAdminEmails: string[];
     fallbackUid: string;
     syncUserStage: (uid: string, source: StudentProfileSource | { managedStageId?: string | null }) => Promise<void>;
+    createSessionClaims?: (uid: string, role: string) => Promise<object>;
   },
 ): Promise<GoogleLoginResult> {
   const emailLower = identity.email;
@@ -169,10 +170,12 @@ export async function resolveGoogleLogin(
   // isWhitelisted(). Handing out the real Gmail there would fail every read
   // that student is entitled to.
   let identityKey = emailLower;
+  let accountRole = opts.masterAdminEmails.includes(emailLower) ? 'master_admin' : '';
 
   if (!opts.masterAdminEmails.includes(emailLower)) {
     const adminDoc = await db.collection('allowed_admins').doc(emailLower).get();
     if (adminDoc.exists) {
+      accountRole = adminDoc.data()?.role || 'admin';
       stageSource = { managedStageId: adminDoc.data()?.managedStageId };
     } else {
       let studentId: string | null = null;
@@ -209,6 +212,7 @@ export async function resolveGoogleLogin(
         // they never set.
         throw new GoogleLoginError('No account for this email.', 404, 'NO_ACCOUNT');
       }
+      accountRole = 'student';
       if (studentData?.isActive === false) {
         throw new GoogleLoginError('الحساب معطل', 401, 'DISABLED');
       }
@@ -229,7 +233,9 @@ export async function resolveGoogleLogin(
   // no email. targetUid already falls back to that canonical document ID.
   await opts.syncUserStage(targetUid, stageSource);
 
-  const customToken = await adminAuth.createCustomToken(targetUid, { email: identityKey });
+  const sessionClaims = accountRole && opts.createSessionClaims
+    ? await opts.createSessionClaims(targetUid, accountRole) : {};
+  const customToken = await adminAuth.createCustomToken(targetUid, { email: identityKey, ...sessionClaims });
   return { customToken, uid: targetUid, email: identityKey };
 }
 
@@ -270,6 +276,7 @@ export async function claimAccountWithGoogle(
     masterAdminEmails: string[];
     syncUserStage: (uid: string, source: StudentProfileSource | { managedStageId?: string | null }) => Promise<void>;
     FieldValue: FieldValueLike;
+    createSessionClaims?: (uid: string, role: string) => Promise<object>;
   },
 ): Promise<GoogleLoginResult & { alreadyOwned: boolean }> {
   const identifier = (input.identifier || '').trim();
@@ -296,7 +303,8 @@ export async function claimAccountWithGoogle(
   const { uid, emailClaim } = await resolveSessionUid(
     db, student, (u, source) => opts.syncUserStage(u, source));
 
-  const customToken = await adminAuth.createCustomToken(uid, { email: emailClaim });
+  const sessionClaims = opts.createSessionClaims ? await opts.createSessionClaims(uid, 'student') : {};
+  const customToken = await adminAuth.createCustomToken(uid, { email: emailClaim, ...sessionClaims });
   return { customToken, uid, email: emailClaim, alreadyOwned: link.alreadyOwned };
 }
 

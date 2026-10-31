@@ -3,8 +3,28 @@ service firebase.storage {
   match /b/{bucket}/o {
 
     // Helper functions
-    function isAuthenticated() {
+    function rawAuthenticated() {
       return request.auth != null;
+    }
+
+    function hasValidAccountSession() {
+      let sessionId = request.auth.token.get('app_session_id', '');
+      let generation = request.auth.token.get('app_session_generation', 0);
+      let sessionPath = /databases/(default)/documents/accountSessions/$(sessionId);
+      return sessionId != '' && generation >= 1 && firestore.exists(sessionPath) &&
+        firestore.get(sessionPath).data.get('uid', '') == request.auth.uid &&
+        firestore.get(sessionPath).data.get('status', '') == 'active' &&
+        firestore.get(sessionPath).data.get('generation', 0) == generation;
+    }
+
+    function isAuthenticated() {
+      // Tokens without app_session are admitted during rollout grace.
+      // Once marked with app_session, every request is checked against
+      // the server-owned registry row for instant revocation.
+      return rawAuthenticated() && (
+        request.auth.token.get('app_session', false) != true ||
+        hasValidAccountSession()
+      );
     }
 
     function userDoc() {

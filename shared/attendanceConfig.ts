@@ -280,6 +280,7 @@ export const REQUIRED_RPCS = [
   'attendance_claim_command',
   'attendance_create_session',
   'attendance_create_session_v2',
+  'attendance_cancel_session',
   'attendance_import_offline_session',
   'attendance_manual_record',
   'attendance_receipt_result',

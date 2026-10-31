@@ -112,10 +112,28 @@ export default function SimosanDrawer({
     }
   }, [lectureId]);
 
+  const stateFetchedAtRef = useRef(Date.now());
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  const refreshState = useCallback(async () => {
+    const s = await fetchSimosanState();
+    if (s) {
+      stateFetchedAtRef.current = Date.now();
+      setState(s);
+    }
+  }, []);
+
   useEffect(() => {
-    fetchSimosanState().then(setState);
+    refreshState();
     loadHistory();
-  }, [lectureId, loadHistory]);
+  }, [lectureId, loadHistory, refreshState]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const isNearBottomRef = useRef(true);
 
@@ -147,9 +165,38 @@ export default function SimosanDrawer({
   const maxQuestions = state?.maxQuestionsPerChat ?? 25;
   const atCap = readOnly || questionCount >= maxQuestions;
 
-  const energyPct = state && state.dailyBudget > 0
-    ? Math.max(0, Math.min(100, Math.round((state.remaining / state.dailyBudget) * 100)))
+  const budget = state?.weeklyBudget || state?.dailyBudget || 1;
+  const energyPct = state && budget > 0
+    ? Math.max(0, Math.min(100, Math.round((state.remaining / budget) * 100)))
     : 100;
+
+  const cdRemaining = useMemo(() => {
+    if (state?.cooldownUntil && state.cooldownUntil > currentTime) {
+      return state.cooldownUntil - currentTime;
+    }
+    if (state?.cooldownRemainingMs && state.cooldownRemainingMs > 0) {
+      const elapsed = currentTime - stateFetchedAtRef.current;
+      return Math.max(0, state.cooldownRemainingMs - elapsed);
+    }
+    return 0;
+  }, [state?.cooldownUntil, state?.cooldownRemainingMs, currentTime]);
+
+  const isCooldownActive = cdRemaining > 0;
+
+  const wasCooldownActiveRef = useRef(false);
+  useEffect(() => {
+    if (wasCooldownActiveRef.current && !isCooldownActive) {
+      // Cooldown expired! Re-fetch server state immediately
+      refreshState();
+    }
+    wasCooldownActiveRef.current = isCooldownActive;
+  }, [isCooldownActive, refreshState]);
+
+  const weeklyResetRemaining = useMemo(() => {
+    const base = state?.resetsInMs ?? 0;
+    const elapsed = currentTime - stateFetchedAtRef.current;
+    return Math.max(0, base - elapsed);
+  }, [state?.resetsInMs, currentTime]);
 
   const send = useCallback(async (
     opts: { newThread?: boolean; walkthrough?: boolean; overrideText?: string } = {},
@@ -221,7 +268,15 @@ export default function SimosanDrawer({
       );
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
-        setError(e instanceof AskError ? e : new AskError('internal'));
+        const askErr = e instanceof AskError ? e : new AskError('internal');
+        setError(askErr);
+        if (askErr.code === 'cooldown_active') {
+          if (askErr.detail.cooldownUntil) {
+            setState((s) => (s ? { ...s, cooldownUntil: askErr.detail.cooldownUntil } : s));
+          } else if (askErr.detail.resetsInMs) {
+            setState((s) => (s ? { ...s, cooldownUntil: Date.now() + askErr.detail.resetsInMs! } : s));
+          }
+        }
         setDraft(text);
         setSelection(usedSelection);
       }
@@ -229,9 +284,9 @@ export default function SimosanDrawer({
     } finally {
       setBusy(false);
       abortRef.current = null;
-      fetchSimosanState().then((s) => s && setState(s));
+      refreshState();
     }
-  }, [draft, busy, lectureId, selection, languageMode, autoQuiz, loadHistory]);
+  }, [draft, busy, lectureId, selection, languageMode, autoQuiz, loadHistory, refreshState]);
 
   const startNewChat = useCallback(() => {
     setReadOnly(false);
@@ -372,24 +427,45 @@ export default function SimosanDrawer({
                 </span>
               </div>
               <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                {isRtl ? 'يتجدد كل سبت' : 'Refills Saturday'}
+                {isRtl ? `يتجدد السبت (${formatReset(weeklyResetRemaining, true)})` : `Refills Sat (${formatReset(weeklyResetRemaining, false)})`}
               </span>
             </div>
           ) : (
             <div className="mt-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                  {isRtl ? 'طاقة اليوم' : "Today's energy"}
+                  {isRtl ? 'طاقة هذا الأسبوع' : "This week's energy"}
                 </span>
-                <span className="text-[11px] font-black text-slate-600 dark:text-slate-300">{energyPct}%</span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-bold ${
+                    isCooldownActive ? 'text-amber-600 dark:text-amber-400 font-black' : 'text-slate-400 dark:text-slate-500'
+                  }`}>
+                    {isCooldownActive
+                      ? (isRtl
+                          ? `استراحة مؤقتة (${formatReset(cdRemaining, true)})`
+                          : `Cooldown (${formatReset(cdRemaining, false)})`)
+                      : (isRtl
+                          ? `تتجدد السبت (${formatReset(weeklyResetRemaining, true)})`
+                          : `Refills Sat (${formatReset(weeklyResetRemaining, false)})`)}
+                  </span>
+                  <span className="text-[11px] font-black text-slate-600 dark:text-slate-300">{energyPct}%</span>
+                </div>
               </div>
               <div className="h-1.5 rounded-full bg-slate-100 dark:bg-zinc-800 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-[width] duration-500 ${
-                    energyPct > 25 ? 'bg-gradient-to-r from-violet-500 to-sky-500' : 'bg-amber-500'
+                    isCooldownActive
+                      ? 'bg-amber-500 animate-pulse'
+                      : energyPct > 25
+                        ? 'bg-gradient-to-r from-violet-500 to-sky-500'
+                        : 'bg-amber-500'
                   }`}
                   style={{ width: `${energyPct}%` }}
                 />
+              </div>
+              <div className="flex items-center justify-between mt-1 text-[10px] font-bold text-slate-400 dark:text-slate-500">
+                <span>{isRtl ? `${(budget - (state?.remaining ?? 0)).toLocaleString()} مستخدمة` : `${(budget - (state?.remaining ?? 0)).toLocaleString()} used`}</span>
+                <span>{isRtl ? `${(state?.remaining ?? budget).toLocaleString()} متبقية من ${budget.toLocaleString()}` : `${(state?.remaining ?? budget).toLocaleString()} left of ${budget.toLocaleString()}`}</span>
               </div>
             </div>
           )}
@@ -547,9 +623,11 @@ export default function SimosanDrawer({
                 dir="auto"
                 maxLength={2000}
                 placeholder={
-                  state?.isFreeTier && state.freeWeeklyRemaining === 0
-                    ? (isRtl ? 'استنفدت سؤالك المجاني لهذا الأسبوع…' : 'Free weekly question used…')
-                    : (isRtl ? 'اسأل عن المحاضرة…' : 'Ask about the lecture…')
+                  isCooldownActive
+                    ? (isRtl ? `فترة استراحة مؤقتة (${formatReset(cdRemaining, true)})…` : `Cooldown active (${formatReset(cdRemaining, false)})…`)
+                    : state?.isFreeTier && state.freeWeeklyRemaining === 0
+                      ? (isRtl ? 'استنفدت سؤالك المجاني لهذا الأسبوع…' : 'Free weekly question used…')
+                      : (isRtl ? 'اسأل عن المحاضرة…' : 'Ask about the lecture…')
                 }
                 className="flex-1 max-h-28 resize-none rounded-2xl bg-slate-100 dark:bg-zinc-800 px-4 py-2.5 text-sm font-bold text-slate-800 dark:text-stone-100 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-violet-400"
               />
@@ -721,8 +799,15 @@ function ErrorNote({
         return {
           Icon: BatteryLow,
           text: isRtl
-            ? `انتهت طاقتك لهذا اليوم. تتجدد بعد ${formatReset(reset, true)}.`
-            : `You're out of energy for today. It refills in ${formatReset(reset, false)}.`,
+            ? `انتهت طاقتك لهذا الأسبوع. تتجدد السبت بعد ${formatReset(reset, true)}.`
+            : `You're out of energy for this week. It refills next Saturday in ${formatReset(reset, false)}.`,
+        };
+      case 'cooldown_active':
+        return {
+          Icon: BatteryLow,
+          text: isRtl
+            ? `استخدمت قدراً كبيراً من الطاقة في وقت قصير. فترة استراحة مؤقتة لمدة ساعتين (تتجدد بعد ${formatReset(reset, true)}).`
+            : `You've used a large amount of energy in a short time. 2-hour cooldown active (resumes in ${formatReset(reset, false)}).`,
         };
       case 'free_weekly_limit_reached':
         return {

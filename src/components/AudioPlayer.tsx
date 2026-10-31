@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Play, Pause, Download, Volume2, VolumeX, FastForward } from 'lucide-react';
+import React from 'react';
+import { Play, Pause, Download, Volume2, VolumeX } from 'lucide-react';
 import { forceDownload } from '../lib/utils';
 import { useAudio } from '../contexts/AudioContext';
 import { motion } from 'motion/react';
@@ -11,8 +11,20 @@ interface AudioPlayerProps {
 }
 
 export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
-  const { currentTrack, isPlaying, progress, duration, currentTime, playTrack, pauseTrack, seek, playbackRate, setPlaybackRate } = useAudio();
-  const [isMuted, setIsMuted] = useState(false); // We can leave mute local if needed or ignore it
+  const {
+    currentTrack,
+    isPlaying,
+    progress,
+    duration,
+    currentTime,
+    playTrack,
+    pauseTrack,
+    seek,
+    playbackRate,
+    setPlaybackRate,
+    isMuted,
+    toggleMute,
+  } = useAudio();
 
   const isThisPlaying = currentTrack?.id === id;
   const isThisActive = currentTrack?.id === id;
@@ -22,7 +34,7 @@ export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
   const currentCurrentTime = isThisActive ? currentTime : 0;
   const currentIsPlaying = isThisActive && isPlaying;
 
-  const togglePlay = (e: React.MouseEvent | React.TouchEvent) => {
+  const togglePlay = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (currentIsPlaying) {
@@ -47,7 +59,7 @@ export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
 
 
   const formatTime = (time: number) => {
-    if (isNaN(time) || time === 0) return "0:00";
+    if (isNaN(time) || time <= 0 || !isFinite(time)) return "0:00";
     const minutes = Math.floor(time / 60);
     const seconds = Math.floor(time % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -58,7 +70,6 @@ export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
       <div className="flex items-center gap-4 mb-3">
         <button
           onClick={togglePlay}
-          onTouchEnd={togglePlay} // Added touch end for mobile responsiveness if onClick fails
           type="button"
           style={{ touchAction: 'manipulation' }}
           className="w-12 h-12 flex items-center justify-center bg-[#2196F3] hover:bg-[#1E88E5] text-white rounded-full transition-colors shrink-0 shadow-[0_2px_8px_rgba(33,150,243,0.3)]"
@@ -70,9 +81,11 @@ export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
           {/* Visual Waveform Placeholder */}
           <div className="flex items-center gap-[2px] h-6 w-full mb-2 cursor-pointer" onClick={(e) => {
              const rect = e.currentTarget.getBoundingClientRect();
+             if (rect.width <= 0) return;
              const isElementRtl = window.getComputedStyle(e.currentTarget).direction === 'rtl';
              const x = e.clientX - rect.left;
-             const percentage = isElementRtl ? ((rect.width - x) / rect.width) * 100 : (x / rect.width) * 100;
+             const rawPercentage = isElementRtl ? ((rect.width - x) / rect.width) * 100 : (x / rect.width) * 100;
+             const percentage = Math.max(0, Math.min(100, isNaN(rawPercentage) ? 0 : rawPercentage));
              handleSeek(percentage);
           }}>
              {Array.from({ length: 40 }).map((_, i) => {
@@ -108,7 +121,8 @@ export default function AudioPlayer({ id, src, title }: AudioPlayerProps) {
       <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-zinc-800">
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setIsMuted(!isMuted)} // Since it's global, just a local visual effect for now, or we can add global mute later
+            onClick={toggleMute}
+            aria-label={isMuted ? 'Unmute' : 'Mute'}
             className="p-2 text-slate-500 hover:text-[#2196F3] dark:hover:text-[#2196F3] transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800"
           >
             {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}

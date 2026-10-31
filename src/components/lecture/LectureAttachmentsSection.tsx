@@ -34,6 +34,7 @@ import { canManageLectures } from '../../lib/permissions';
 import { usePdfThumbnail } from '../../hooks/usePdfThumbnail';
 import AttachmentViewerModal from './AttachmentViewerModal';
 import UploadAttachmentModal from './UploadAttachmentModal';
+import LectureRecordingsSection from './LectureRecordingsSection';
 
 interface LectureAttachmentsSectionProps {
   lecture: Lecture;
@@ -42,6 +43,7 @@ interface LectureAttachmentsSectionProps {
   onAttachmentsCountChanged?: (count: number) => void;
   onShowPaywall?: () => void;
   onOpenReader?: (lecture: Lecture) => void;
+  highlightedRecordId?: string | null;
 }
 
 /**
@@ -294,6 +296,7 @@ export default function LectureAttachmentsSection({
   onAttachmentsCountChanged,
   onShowPaywall,
   onOpenReader,
+  highlightedRecordId,
 }: LectureAttachmentsSectionProps) {
   const isRtl = lang === 'ar';
 
@@ -707,6 +710,14 @@ export default function LectureAttachmentsSection({
           )}
         </div>
       )}
+
+      {/* Dedicated Lecture Audio Recordings Subsection */}
+      <LectureRecordingsSection
+        lecture={lecture}
+        user={user}
+        lang={lang}
+        highlightedRecordId={highlightedRecordId}
+      />
 
       {/* Reject Reason Modal */}
       {rejectingItem && (

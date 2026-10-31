@@ -243,6 +243,26 @@ test('pending evidence creates its exact dated row before history is available',
   assert.equal(studentAttendanceRows({ ...mine, historyComplete: false }, [])[0].state, 'none');
 });
 
+test('cancelled attempt evidence is retained in history but excluded from ordinary weekly rows', () => {
+  const cancelledReceipt = receipt('cancelled-session');
+  const mine = {
+    offline: false,
+    historyComplete: true,
+    occurrences: [],
+    sessions: [],
+    records: [],
+    cancelledSessions: [{
+      id: cancelledReceipt.sessionId,
+      occurrenceId,
+      occurrence: { ...cancelledReceipt.occurrence, audienceGroups: [] },
+      status: 'cancelled',
+      cancellationReason: 'Duplicate lecture attempt',
+    }],
+  } as unknown as AttendanceMine;
+  assert.deepEqual(studentAttendanceRows(mine, [cancelledReceipt]), []);
+  assert.equal(mine.cancelledSessions?.[0].cancellationReason, 'Duplicate lecture attempt');
+});
+
 test('doctor display role never grants access without an authoritative exact timetable assignment', () => {
   const occurrence: any = { stageId: 'stage_3', timetableSessionId: 'theory' };
   const actor: any = { uid: 'doctor', staff: { role: 'doctor', permissions: {}, staffDisabled: false }, student: null };

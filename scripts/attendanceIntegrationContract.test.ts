@@ -224,6 +224,7 @@ before(async () => {
     'supabase/migrations/20261021000000_attendance_review_revisions_key_rotation.sql',
     'supabase/migrations/20261021000001_attendance_review_retry_integrity.sql',
     'supabase/migrations/20261024100000_physical_headcount_offline_permits.sql',
+    'supabase/migrations/20261030120000_attendance_session_attempts_cancellation.sql',
   ]) {
     await database.exec(readFileSync(path, 'utf8'));
   }

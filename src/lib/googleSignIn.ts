@@ -2,6 +2,7 @@ import { signInWithPopup, GoogleAuthProvider, getAuth, signOut } from 'firebase/
 import { initializeApp, deleteApp } from 'firebase/app';
 import { apiUrl } from './apiBase';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { collectAccountSessionDevice, collectAccountSessionDeviceAsync } from './accountSessionDevice';
 
 /**
  * Google sign-in for both web and the installed app.
@@ -172,10 +173,12 @@ async function exchange(
   body: GoogleTokenBody,
   profile?: GoogleProfile,
 ): Promise<{ token: string; studentId: string }> {
+  const sessionNonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
+  const device = await collectAccountSessionDeviceAsync();
   const res = await fetch(apiUrl('/api/google-login'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, device, sessionNonce }),
   });
   const data = await res.json().catch(() => ({}));
 
@@ -213,10 +216,12 @@ export async function claimWithGoogle(
   identifier: string,
   password: string,
 ): Promise<{ token: string; studentId: string }> {
+  const sessionNonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
+  const device = await collectAccountSessionDeviceAsync();
   const res = await fetch(apiUrl('/api/google-claim'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...tokenBody, identifier, password }),
+    body: JSON.stringify({ ...tokenBody, identifier, password, device, sessionNonce }),
   });
   const data = await res.json().catch(() => ({}));
 

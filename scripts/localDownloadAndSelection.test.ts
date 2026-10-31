@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { exportPdfToDevice } from '../src/lib/deviceExport';
 import { safeFileName } from '../src/lib/shareFileName';
-import { downloadNativeFile } from '../src/lib/nativeFileTransfer';
+import { downloadNativeFile, openNativePdf } from '../src/lib/nativeFileTransfer';
 import { shareFile } from '../src/lib/shareFile';
 
 const pdfBytes = new TextEncoder().encode('%PDF-1.7 test');
@@ -305,4 +305,47 @@ test('11. Multi-selection state management handles toggle, select all, and desel
   // Deselect all
   selected = new Set();
   assert.equal(selected.size, 0);
+});
+
+test('12. exportPdfToDevice provides content URI and localized feedback, and openNativePdf launches viewer', async () => {
+  installNativeStagingMocks('android');
+  let openedUri = '';
+  (globalThis as any).__mockNativeFiles = {
+    savePdf: async () => ({
+      status: 'saved',
+      uri: 'content://media/external/downloads/42',
+      location: 'Downloads',
+      bytes: pdfBytes.byteLength,
+    }),
+    openPdf: async (opts: { uri: string }) => {
+      openedUri = opts.uri;
+      return { opened: true };
+    },
+  };
+
+  try {
+    const arResult = await exportPdfToDevice({
+      url: 'https://example.com/lectures/sample.pdf',
+      title: 'Biochemistry 01',
+      lectureId: 'lec-android-open',
+      lang: 'ar',
+    });
+    assert.equal(arResult.success, true);
+    assert.equal(arResult.uri, 'content://media/external/downloads/42');
+    assert.equal(arResult.message, 'تم حفظ المحاضرة في مجلد التنزيلات');
+
+    const enResult = await exportPdfToDevice({
+      url: 'https://example.com/lectures/sample.pdf',
+      title: 'Biochemistry 01',
+      lectureId: 'lec-android-open',
+      lang: 'en',
+    });
+    assert.equal(enResult.message, 'Lecture saved to Downloads folder');
+
+    const opened = await openNativePdf(arResult.uri!);
+    assert.equal(opened, true);
+    assert.equal(openedUri, 'content://media/external/downloads/42');
+  } finally {
+    clearNativeMocks();
+  }
 });

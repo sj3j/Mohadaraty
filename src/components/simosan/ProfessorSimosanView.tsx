@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { AlertTriangle, CheckCircle2, Expand, Loader2, Printer, QrCode, RefreshCw, Search, Square, UserPlus, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Expand, Loader2, Printer, QrCode, RefreshCw, Search, Square, Trash2, UserPlus, XCircle } from 'lucide-react';
 import type { AttendanceBootstrap, AttendanceSessionSnapshot } from '../../../shared/attendance';
 import type { Language } from '../../types';
 import {
@@ -11,6 +11,7 @@ import {
   resolveAttendanceReview,
   setAttendanceRecordStatus,
   updateAttendanceSession,
+  cancelAttendanceSession,
   createOfflineAttendanceSession,
   getOfflineAttendancePack,
   ensureOfflineAttendancePrepared,
@@ -139,10 +140,25 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
       const input = {
         stageId, occurrenceId, physicalHeadcount: headcount, notes, requestId: requestIdRef.current,
       };
-      const created = offlineReady ? await createOfflineAttendanceSession(input, ownerUid) : await createAttendanceSession(input);
+      let created;
+      let createdOffline = false;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        created = await createOfflineAttendanceSession(input, ownerUid);
+        createdOffline = true;
+      } else {
+        try {
+          created = await createAttendanceSession(input);
+        } catch (failure: any) {
+          const retryable = Number(failure?.status) >= 500
+            || /fetch|network|timeout|temporarily_unavailable/i.test(String(failure?.message || ''));
+          if (!offlineReady || !retryable) throw failure;
+          created = await createOfflineAttendanceSession(input, ownerUid);
+          createdOffline = true;
+        }
+      }
       setSessionId(created.sessionId);
       setQrToken(created.qrToken);
-      if (offlineReady && notes) await updateAttendanceSession(created.sessionId, { notes, requestId: newId(), reason: '' }, ownerUid);
+      if (createdOffline && notes) await updateAttendanceSession(created.sessionId, { notes, requestId: newId(), reason: '' }, ownerUid);
     } catch (startError: any) {
       setError(startError?.message === 'attendance_not_configured'
         ? (isRtl ? 'خدمة الحضور غير مهيأة على الخادم.' : 'Attendance backend is not configured.')
@@ -271,6 +287,18 @@ export default function ProfessorSimosanView({ lang, stageId, ownerUid }: Profes
           {snapshot.reviewReceipts.length > 0 && <section className="rounded-3xl border border-amber-300 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-950/20"><h2 className="font-black">{isRtl ? 'إيصالات تحتاج مراجعة' : 'Receipts needing review'}</h2>{snapshot.reviewReceipts.map(receipt => { const student = snapshot.roster.find(item => item.studentId === receipt.rosterStudentId); const locationBadge = attendanceLocationBadge(receipt.advisory, isRtl); return <div key={receipt.requestId} className="mt-3 rounded-xl bg-white p-3 dark:bg-zinc-900"><div className="font-bold">{student?.officialName || receipt.rosterStudentId || (isRtl ? 'هوية غير مطابقة' : 'Unmatched identity')}</div>{locationBadge && <div className={`mt-1 text-xs font-black ${receipt.advisory?.locationStatus === 'off_campus' ? 'text-amber-700 dark:text-amber-300' : 'text-teal-700 dark:text-teal-300'}`}>{locationBadge}</div>}<div className="mt-1 text-xs text-slate-500">{attendanceFlagLabel(receipt.reason, isRtl)} · {new Date(receipt.receivedAt).toLocaleString()}</div><div className="mt-3 flex gap-2"><button disabled={busy || ['device_session_conflict', 'device_unverified'].includes(receipt.reason)} onClick={() => { const enrollDevice = ['device_enrollment_required', 'device_change_required'].includes(receipt.reason); if (enrollDevice && !confirm(isRtl ? 'هل تحققت شخصياً من هوية الطالب وأن هذا جهازه؟' : 'Have you personally checked the student ID and ownership of this device?')) return; const reason = prompt(isRtl ? 'سبب التأكيد والتحقق من الهوية' : 'Confirmation and identity verification reason'); if (reason) void mutate(() => resolveAttendanceReview(receipt.requestId, { requestId: newId(), decision: 'confirm', reason, enrollDevice, expectedRevision: receipt.reviewRevision || 1 })); }} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-black text-white"><CheckCircle2 className="h-4 w-4" />{isRtl ? 'تأكيد' : 'Confirm'}</button><button onClick={() => { const reason = prompt(isRtl ? 'سبب الرفض' : 'Rejection reason'); if (reason) void mutate(() => resolveAttendanceReview(receipt.requestId, { requestId: newId(), decision: 'reject', reason, expectedRevision: receipt.reviewRevision || 1 })); }} className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white"><XCircle className="h-4 w-4" />{isRtl ? 'رفض' : 'Reject'}</button></div></div>; })}</section>}
 
           {snapshot.session.status === 'active' && <button onClick={() => mutate(() => updateAttendanceSession(sessionId, { requestId: newId(), expectedRevision: snapshot.session.revision, status: 'ended', reason: isRtl ? 'أنهى الأستاذ عرض الجلسة' : 'Professor ended collection display' }, ownerUid))} className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-4 py-3 font-black text-slate-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-slate-200"><Square className="h-4 w-4" />{isRtl ? 'إنهاء عرض الجمع' : 'End collection display'}</button>}
+          <button onClick={() => {
+            const reason = window.prompt(isRtl ? 'اكتب سبب إلغاء جلسة الحضور:' : 'Reason for cancelling this attendance session:')?.trim();
+            if (!reason || !window.confirm(isRtl ? 'سيتم إبطال الرمز واستبعاد الجلسة من الإجماليات. متابعة؟' : 'The QR will be revoked and this attempt excluded from totals. Continue?')) return;
+            void cancelAttendanceSession(sessionId, { requestId: newId(), expectedRevision: snapshot.session.revision, reason }, ownerUid)
+              .then(async () => {
+                setSessionId(''); setQrToken(''); setSnapshot(null); setError('');
+                const pack = await ensureOfflineAttendancePrepared(stageId, ownerUid, true).catch(() => undefined);
+                setOfflineReady(!!pack);
+                requestIdRef.current = newId();
+              })
+              .catch(() => setError(isRtl ? 'تعذر إلغاء الجلسة.' : 'Could not cancel the session.'));
+          }} className="flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-300 bg-white px-4 py-3 font-black text-rose-700 dark:border-rose-800 dark:bg-zinc-800 dark:text-rose-300"><Trash2 className="h-4 w-4" />{isRtl ? 'إلغاء الجلسة' : 'Cancel session'}</button>
         </>}
       </>}
     </div>

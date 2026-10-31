@@ -29,8 +29,7 @@ export default function GlobalAudioPlayer({ isRtl }: { isRtl: boolean }) {
   }
 
   const formatTime = (time: number) => {
-    if (isNaN(time)) return "0:00";
-    const Math = window.Math;
+    if (isNaN(time) || time <= 0 || !isFinite(time)) return "0:00";
     const minutes = Math.floor(time / 60);
     const seconds = Math.floor(time % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -94,9 +93,11 @@ export default function GlobalAudioPlayer({ isRtl }: { isRtl: boolean }) {
           <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
             <div className="flex items-center gap-[2px] h-4 w-full cursor-pointer" onClick={(e) => {
                const rect = e.currentTarget.getBoundingClientRect();
+               if (rect.width <= 0) return;
                const isElementRtl = window.getComputedStyle(e.currentTarget).direction === 'rtl';
                const x = e.clientX - rect.left;
-               const percentage = isElementRtl ? ((rect.width - x) / rect.width) * 100 : (x / rect.width) * 100;
+               const rawPercentage = isElementRtl ? ((rect.width - x) / rect.width) * 100 : (x / rect.width) * 100;
+               const percentage = Math.max(0, Math.min(100, isNaN(rawPercentage) ? 0 : rawPercentage));
                seek(percentage);
             }}>
                {Array.from({ length: 30 }).map((_, i) => {

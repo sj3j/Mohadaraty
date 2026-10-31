@@ -10,7 +10,8 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "NativeFiles"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "getRuntimeInfo", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "savePdf", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "savePdf", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openPdf", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func getRuntimeInfo(_ call: CAPPluginCall) {
@@ -58,6 +59,17 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin {
                     try? FileManager.default.removeItem(at: destination)
                     throw NSError(domain: "NativeFiles", code: 4, userInfo: [NSLocalizedDescriptionKey: "Saved PDF is empty"])
                 }
+                DispatchQueue.main.async {
+                    let activityVC = UIActivityViewController(activityItems: [destination], applicationActivities: nil)
+                    if let rootVC = self.bridge?.viewController {
+                        if let popover = activityVC.popoverPresentationController {
+                            popover.sourceView = rootVC.view
+                            popover.sourceRect = CGRect(x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
+                            popover.permittedArrowDirections = []
+                        }
+                        rootVC.present(activityVC, animated: true, completion: nil)
+                    }
+                }
                 call.resolve([
                     "status": "saved",
                     "uri": destination.absoluteString,
@@ -66,6 +78,30 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin {
                 ])
             } catch {
                 call.reject(error.localizedDescription, "FILE_SAVE_FAILED", error)
+            }
+        }
+    }
+
+    @objc func openPdf(_ call: CAPPluginCall) {
+        guard let uriString = call.getString("uri"),
+              let url = URL(string: uriString) else {
+            call.reject("Invalid URI", "INVALID_URI")
+            return
+        }
+
+        DispatchQueue.main.async {
+            let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            if let rootVC = self.bridge?.viewController {
+                if let popover = activityVC.popoverPresentationController {
+                    popover.sourceView = rootVC.view
+                    popover.sourceRect = CGRect(x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                }
+                rootVC.present(activityVC, animated: true) {
+                    call.resolve(["opened": true])
+                }
+            } else {
+                call.reject("ViewController unavailable", "ACTIVITY_UNAVAILABLE")
             }
         }
     }

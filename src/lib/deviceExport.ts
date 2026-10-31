@@ -8,6 +8,7 @@ export interface DeviceExportInput {
   url: string;
   title: string;
   lectureId: string;
+  lang?: 'ar' | 'en';
 }
 
 export interface DeviceExportResult {
@@ -15,17 +16,20 @@ export interface DeviceExportResult {
   cancelled?: boolean;
   message?: string;
   errorCode?: string;
+  uri?: string;
 }
 
 /**
  * Exports a PDF directly to the user's device storage:
- * - Android: Attempts to copy/save to public Documents/Downloads folder via Filesystem,
- *   falling back to opening the system file sheet with the prepared file.
- * - iOS: Opens the system file sheet (Share / Save to Files) with the prepared file.
+ * - Android: Saves directly to the public Downloads folder with MediaScanner indexing,
+ *   returning the content URI so it can be opened immediately.
+ * - iOS: Saves to the visible Documents sandbox and opens the native iOS Action Sheet
+ *   (UIActivityViewController) so the user can choose "Save to Files" or open in their chosen app.
  * - Web/EXE (PC): Triggers direct browser/Electron download using forceDownload.
  */
 export async function exportPdfToDevice(input: DeviceExportInput): Promise<DeviceExportResult> {
   const filename = safeFileName(input.title, 'pdf');
+  const isRtl = input.lang !== 'en';
 
   if (IS_MACOS_BUILD) {
     const result = await macFiles.saveRemoteFile(input.url, filename, 'application/pdf');
@@ -47,7 +51,10 @@ export async function exportPdfToDevice(input: DeviceExportInput): Promise<Devic
   if (!isNative) {
     // Web / PC (EXE) browser download
     await forceDownload(input.url, filename);
-    return { success: true, message: 'جاري تنزيل الملف على جهازك' };
+    return {
+      success: true,
+      message: isRtl ? 'جاري تنزيل الملف على جهازك' : 'Downloading file to your device',
+    };
   }
 
   const { Capacitor } = await import('@capacitor/core');
@@ -63,9 +70,10 @@ export async function exportPdfToDevice(input: DeviceExportInput): Promise<Devic
       if (result.status === 'cancelled') return { success: false, cancelled: true };
       return {
         success: true,
+        uri: result.uri,
         message: platform === 'android'
-          ? 'تم حفظ المحاضرة في مجلد التنزيلات / Mohadaraty'
-          : 'تم حفظ المحاضرة في الملفات / على الـ iPhone / محاضراتي',
+          ? (isRtl ? 'تم حفظ المحاضرة في مجلد التنزيلات' : 'Lecture saved to Downloads folder')
+          : (isRtl ? 'تم حفظ المحاضرة في الملفات / On My iPhone' : 'Lecture saved to Files / On My iPhone'),
       };
     } catch (error) {
       if (isNativeFileCancellation(error)) return { success: false, cancelled: true };
@@ -76,5 +84,8 @@ export async function exportPdfToDevice(input: DeviceExportInput): Promise<Devic
   }
 
   await forceDownload(input.url, filename);
-  return { success: true, message: 'جاري تنزيل الملف' };
+  return {
+    success: true,
+    message: isRtl ? 'جاري تنزيل الملف' : 'Downloading file',
+  };
 }

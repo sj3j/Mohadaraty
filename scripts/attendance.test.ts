@@ -7,13 +7,17 @@ import {
   ATTENDANCE_QR_VERSION,
   attendanceWeekStart,
   buildAttendanceOccurrences,
+  buildAttendanceTermOccurrences,
   canonicalAttendanceState,
+  findAttendanceDisplayTerm,
   parseUnverifiedAttendanceQr,
+  type AttendanceMine,
   type AttendanceQrClaims,
   type LocalAttendanceReceipt,
 } from '../shared/attendance';
+import { lectureTimingStatus, studentAttendanceRows } from '../shared/attendanceSchedule';
 import { signAttendanceQr, verifyAttendanceQr } from '../shared/attendanceApi';
-import { DEFAULT_CALENDAR } from '../shared/academicCalendar';
+import { DEFAULT_CALENDAR, type AcademicCalendar } from '../shared/academicCalendar';
 import type { StageTimetableDoc } from '../shared/timetable';
 
 let failed = 0;
@@ -45,6 +49,68 @@ check('dated occurrence comes from explicit server date', () => {
 check('Saturday week boundary is deterministic', () => {
   assert.equal(attendanceWeekStart('2026-10-14'), '2026-10-10');
   assert.equal(attendanceWeekStart('2026-10-10'), '2026-10-10');
+});
+
+const semesterCalendar: AcademicCalendar = {
+  yearLabel: '2026-2027',
+  timezone: 'Asia/Baghdad',
+  terms: [
+    {
+      id: 'term-1', nameAr: 'الفصل الأول', nameEn: 'First Semester',
+      startDate: '2026-01-04', endDate: '2026-01-17', examsStart: '2026-01-18', examsEnd: '2026-01-24',
+    },
+    {
+      id: 'term-2', nameAr: 'الفصل الثاني', nameEn: 'Second Semester',
+      startDate: '2026-02-01', endDate: '2026-02-14', examsStart: null, examsEnd: null,
+    },
+  ],
+};
+const semesterTimetable: StageTimetableDoc = {
+  stageId: 'stage_3',
+  sessions: [
+    { id: 'theory', day: 0, start: '09:00', end: '10:00', title: 'Physiology', kind: 'theory', groups: [], source: 'human' },
+    { id: 'lab-a1', day: 2, start: '11:00', end: '12:30', title: 'Physiology Lab', kind: 'practical', groups: ['A1'], source: 'human' },
+  ],
+};
+const semesterOccurrences = buildAttendanceTermOccurrences(
+  semesterCalendar, semesterTimetable, 'stage_3', '2026-01-10',
+);
+check('student schedule contains every occurrence inside the teaching semester only', () => {
+  assert.deepEqual(
+    semesterOccurrences.map(item => `${item.lectureDate}:${item.startTime}-${item.endTime}`),
+    ['2026-01-04:09:00-10:00', '2026-01-06:11:00-12:30', '2026-01-11:09:00-10:00', '2026-01-13:11:00-12:30'],
+  );
+  assert.equal(semesterOccurrences.some(item => item.lectureDate >= '2026-01-18'), false);
+});
+check('semester break keeps the most recently completed teaching term visible', () => {
+  assert.equal(findAttendanceDisplayTerm(semesterCalendar, '2026-01-25')?.id, 'term-1');
+  assert.deepEqual(
+    buildAttendanceTermOccurrences(semesterCalendar, semesterTimetable, 'stage_3', '2026-01-25')
+      .map(item => item.id),
+    semesterOccurrences.map(item => item.id),
+  );
+  assert.equal(buildAttendanceTermOccurrences(semesterCalendar, semesterTimetable, 'stage_3', '2026-01-01').length, 0);
+});
+check('student subgroup filtering retains universal lectures and matching practicals', () => {
+  const mine = {
+    serverNow: '', timezone: 'Asia/Baghdad', stageId: 'stage_3', term: null,
+    occurrences: semesterOccurrences, sessions: [], records: [], receipts: [],
+  } as AttendanceMine;
+  const a1 = studentAttendanceRows(mine, [], 'A1');
+  const b1 = studentAttendanceRows(mine, [], 'B1');
+  assert.equal(a1.length, 4);
+  assert.deepEqual(b1.map(row => row.occurrence.timetableSessionId), ['theory', 'theory']);
+  assert.equal(a1.filter(row => row.weekStart === '2026-01-03').length, 2);
+});
+check('date timing labels stay independent from attendance results', () => {
+  assert.equal(lectureTimingStatus('2026-01-09', '2026-01-10'), 'past');
+  assert.equal(lectureTimingStatus('2026-01-10', '2026-01-10'), 'today');
+  assert.equal(lectureTimingStatus('2026-01-11', '2026-01-10'), 'upcoming');
+  const mine = {
+    serverNow: '', timezone: 'Asia/Baghdad', stageId: 'stage_3', term: null,
+    occurrences: semesterOccurrences, sessions: [], records: [], receipts: [],
+  } as AttendanceMine;
+  assert.equal(studentAttendanceRows(mine, [], 'A1')[0].state, 'none');
 });
 
 const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -109,6 +175,8 @@ check('durable pending evidence outranks absence rendering', () => {
 const root = path.resolve(import.meta.dirname, '..');
 const localDb = fs.readFileSync(path.join(root, 'src/lib/localDb.ts'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'src/services/attendanceService.ts'), 'utf8');
+const doctorAttendanceHook = fs.readFileSync(path.join(root, 'src/components/doctor/useDoctorAttendance.ts'), 'utf8');
+const professorAttendanceView = fs.readFileSync(path.join(root, 'src/components/simosan/ProfessorSimosanView.tsx'), 'utf8');
 const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20261014083458_simosan_attendance_reliability.sql'), 'utf8');
 const server = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
 const production = fs.readFileSync(path.join(root, 'api/index.ts'), 'utf8');
@@ -123,6 +191,13 @@ check('retryable backend failures return receipts to pending', () => {
   assert.match(service, /authFailure \? 'waiting_for_login' : 'pending'/);
   assert.match(service, /missing_acknowledgement/);
 });
+check('doctors prefer authoritative online creation and use prepared packs only as fallback', () => {
+  assert.match(doctorAttendanceHook, /return await createAttendanceSession/);
+  assert.match(doctorAttendanceHook, /if \(!offlineAvailable \|\| !retryable\) throw failure/);
+  assert.doesNotMatch(doctorAttendanceHook, /workspace\.offline \|\| \(offlineReady/);
+  assert.match(professorAttendanceView, /created = await createAttendanceSession\(input\)/);
+  assert.match(professorAttendanceView, /created = await createOfflineAttendanceSession\(input, ownerUid\)/);
+});
 check('Supabase is gateway-only and uses atomic idempotency constraints', () => {
   assert.match(migration, /enable row level security/g);
   assert.match(migration, /revoke all on table public\.attendance_receipts from public, anon, authenticated/);
@@ -134,8 +209,9 @@ check('Supabase is gateway-only and uses atomic idempotency constraints', () => 
 check('development and production expose identical attendance routes and correct middleware order', () => {
   const routes = (source: string) => [...source.matchAll(/app\.(?:get|post|patch)\('([^']*attendance[^']*)'/g)].map(match => match[1]).sort();
   assert.deepEqual(routes(server), routes(production));
-  assert.equal(routes(server).length, 21);
+  assert.equal(routes(server).length, 22);
   assert.ok(routes(server).includes('/api/attendance/sessions/:sessionId/qr'));
+  assert.ok(routes(server).includes('/api/attendance/sessions/:sessionId/cancel'));
   assert.ok(routes(server).includes('/api/attendance/admin/readiness'));
   assert.ok(routes(server).includes('/api/attendance/key-rotation/challenge'));
   assert.ok(routes(server).includes('/api/attendance/key-rotation/commit'));

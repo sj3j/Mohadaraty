@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileText, Download, Send, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check } from 'lucide-react';
+import { FileText, Download, Send, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check, Mic } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
@@ -9,6 +9,7 @@ import { db, storage } from '../lib/firebase';
 import { useOfflinePDF } from '../hooks/useOfflinePDF';
 import { forceDownload, getYoutubeEmbedUrl } from '../lib/utils';
 import { useMCQStatus } from '../hooks/useMCQStatus';
+import { useLectureHasRecord } from '../hooks/useStageRecords';
 import { shareFile } from '../lib/shareFile';
 import { exportPdfToDevice } from '../lib/deviceExport';
 import LectureAttachmentsSection from './lecture/LectureAttachmentsSection';
@@ -51,6 +52,7 @@ export default React.memo(function LectureCard({
   const [isSharing, setIsSharing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
+  const [downloadedUri, setDownloadedUri] = useState<string | null>(null);
   const [isPostingTelegram, setIsPostingTelegram] = useState(false);
   const [telegramSuccess, setTelegramSuccess] = useState(false);
 
@@ -91,12 +93,16 @@ export default React.memo(function LectureCard({
         url: lecture.pdfUrl,
         title: lecture.title,
         lectureId: lecture.id,
+        lang,
       });
+      if (res.success && res.uri) {
+        setDownloadedUri(res.uri);
+      }
       if (res.message) {
         setShareToast(res.message);
       } else if (!res.success && !res.cancelled) {
         const suffix = res.errorCode ? ` (${res.errorCode})` : '';
-        setShareToast(`${isRtl ? 'تعذّر تحميل الملف' : 'Download failed'}${suffix}`);
+        setShareToast(`${isRtl ? 'تعذّر حفظ الملف' : 'Download failed'}${suffix}`);
       }
     } catch (err) {
       console.error('Local export failed:', err);
@@ -145,10 +151,16 @@ export default React.memo(function LectureCard({
   // Self-clearing, keyed on the message: a second toast restarts the timer
   // instead of being cut short by the first one's pending timeout.
   useEffect(() => {
-    if (!shareToast) return;
-    const t = setTimeout(() => setShareToast(null), 1800);
+    if (!shareToast) {
+      setDownloadedUri(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      setShareToast(null);
+      setDownloadedUri(null);
+    }, downloadedUri ? 3500 : 2000);
     return () => clearTimeout(t);
-  }, [shareToast]);
+  }, [shareToast, downloadedUri]);
 
   const categoryData = CATEGORIES.find(c => c.value === lecture.category);
   // subjectName is denormalised at upload time so the badge reads correctly for
@@ -176,6 +188,7 @@ export default React.memo(function LectureCard({
 
   const isStudied = user?.studied?.includes(lecture.id) || false;
   const mcqStatusItem = useMCQStatus(lecture.id, user);
+  const hasRecord = useLectureHasRecord(lecture);
 
   const handleToggleStudied = async () => {
     if (!user) return;
@@ -267,6 +280,15 @@ export default React.memo(function LectureCard({
             <span className={ `text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider ${lecture.type === 'theoretical' ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300' : 'bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300'}` }>
               {lecture.type === 'theoretical' ? t.theoretical : t.practical}
             </span>
+            {hasRecord && (
+              <span 
+                className="text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider bg-indigo-50/90 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/60 flex items-center gap-1 shadow-sm transition-all"
+                title={isRtl ? 'تحتوي المحاضرة على تسجيل صوتي' : 'Lecture has audio recording'}
+              >
+                <Mic className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                {isRtl ? 'تسجيل' : 'Record'}
+              </span>
+            )}
             {lecture.number && (
               <span className="text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300">
                 {isRtl ? 'محاضرة' : 'Lecture'} {lecture.number}
@@ -277,20 +299,12 @@ export default React.memo(function LectureCard({
                 {t.translated}
               </span>
             )}
-            {isDownloading ? (
+            {isDownloading && (
               <span className="text-[9px] sm:text-xs font-bold px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 flex items-center gap-1">
                 <Loader2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 animate-spin" />
                 <span>{downloadProgress > 0 ? `${downloadProgress}%` : (isRtl ? 'تنزيل...' : 'Downloading...')}</span>
               </span>
-            ) : isDownloaded ? (
-              <span 
-                className="text-[9px] sm:text-xs font-bold px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-full uppercase tracking-wider bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center gap-1"
-                title={isRtl ? 'محفوظة على جهازك' : 'Downloaded'}
-              >
-                <CheckCircle2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                {isRtl ? 'محفوظة' : 'Saved'}
-              </span>
-            ) : null}
+            )}
             {lecture.youtubeUrl && (
               <a 
                 href={lecture.youtubeUrl}
@@ -553,7 +567,16 @@ export default React.memo(function LectureCard({
                         {categoryLabel}
                       </span>
                     )}
-                    {lecture.number && (
+                    {hasRecord && (
+                      <span 
+                        className="text-[10px] sm:text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-indigo-50/90 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/60 flex items-center gap-1 shadow-sm transition-all"
+                        title={isRtl ? 'تحتوي المحاضرة على تسجيل صوتي' : 'Lecture has audio recording'}
+                      >
+                        <Mic className="w-3 h-3" />
+                        {isRtl ? 'تسجيل' : 'Record'}
+                      </span>
+                    )}
+            {lecture.number && (
                       <span className="text-[10px] sm:text-xs font-bold px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
                         {isRtl ? 'محاضرة' : 'Lecture'} {lecture.number}
                       </span>
@@ -586,7 +609,7 @@ export default React.memo(function LectureCard({
                       {isDownloaded ? (
                         <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          {isRtl ? 'محفوظة على جهازك' : 'Downloaded offline'}
+                          {isRtl ? 'محفوظة داخل التطبيق' : 'Downloaded in app'}
                         </span>
                       ) : (
                         <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
@@ -709,8 +732,8 @@ export default React.memo(function LectureCard({
                         </h4>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm">
                           {isRtl
-                            ? 'المحاضرة محفوظة على جهازك ويمكنك قراءتها وتظليلها وإضافة الملاحظات داخل التطبيق حتى بدون اتصال بالإنترنت'
-                            : 'Saved locally. You can read, highlight, and take notes inside the app even offline.'}
+                            ? 'المحاضرة محفوظة داخل التطبيق ويمكنك قراءتها وتظليلها وإضافة الملاحظات حتى بدون إنترنت'
+                            : 'Saved in app. You can read, highlight, and take notes even offline.'}
                         </p>
                       </div>
                       
@@ -923,9 +946,22 @@ export default React.memo(function LectureCard({
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[220] px-4 py-2 rounded-full bg-slate-900/90 dark:bg-stone-100/90 text-white dark:text-zinc-900 text-sm font-bold shadow-lg pointer-events-none"
+            onClick={async () => {
+              if (downloadedUri) {
+                const { openNativePdf } = await import('../lib/nativeFileTransfer');
+                await openNativePdf(downloadedUri);
+              }
+            }}
+            className={`fixed bottom-28 left-1/2 -translate-x-1/2 z-[220] px-4 py-2.5 rounded-full bg-slate-900/95 dark:bg-stone-100/95 text-white dark:text-zinc-900 text-sm font-bold shadow-xl flex items-center gap-2 ${
+              downloadedUri ? 'cursor-pointer active:scale-95 pointer-events-auto' : 'pointer-events-none'
+            }`}
           >
-            {shareToast}
+            <span>{shareToast}</span>
+            {downloadedUri && (
+              <span className="text-xs bg-sky-500 text-white px-2.5 py-0.5 rounded-full font-bold shadow-sm">
+                {isRtl ? 'فتح' : 'Open'}
+              </span>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

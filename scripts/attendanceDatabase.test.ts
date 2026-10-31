@@ -21,6 +21,7 @@ before(async () => {
     'supabase/migrations/20261021000001_attendance_review_retry_integrity.sql',
     'supabase/migrations/20261021173355_attendance_auto_confirm_signed_location.sql',
     'supabase/migrations/20261024100000_physical_headcount_offline_permits.sql',
+    'supabase/migrations/20261030120000_attendance_session_attempts_cancellation.sql',
   ]) {
     try {
       await database.exec(readFileSync(path, 'utf8'));
@@ -73,6 +74,76 @@ test('new session count is nullable, edits are independent, and clearing it is e
   assert.equal(fourth.rows[0].result.session.physical_headcount, 0);
 });
 
+test('cancelled session is audited, excluded, and a fresh attempt can be created', async () => {
+  const occurrenceId = `cancel-${randomUUID()}`;
+  const firstSessionId = randomUUID();
+  const firstRequestId = randomUUID();
+  const firstChallengeId = randomUUID();
+  const cancelStudent = `cancel-student-${randomUUID()}`;
+  const cancelInstallation = createHash('sha256').update(randomUUID()).digest('hex');
+  const cancelDevice = createHash('sha256').update(randomUUID()).digest('hex');
+  const term = { id: 'term', calendarTermId: 'term', yearLabel: '2026', nameAr: 'term', nameEn: 'term', startDate: '2026-01-01', endDate: '2026-12-31' };
+  const occurrence = { id: occurrenceId, termId: 'term', stageId: 'stage_3', timetableSessionId: occurrenceId,
+    lectureDate: '2026-10-25', title: 'Cancellation', startAt: new Date().toISOString(),
+    endAt: new Date(Date.now() + 3600000).toISOString(), audienceGroups: ['A'] };
+  const create = (sessionId: string, requestId: string, challengeId: string) => database.query<{ result: any }>(
+    'select attendance_create_session_v2($1,$2,$3,$4,$5) result', [
+      JSON.stringify(term), JSON.stringify(occurrence), JSON.stringify({ id: sessionId, requestId, professorUid: 'doctor', physicalHeadcount: 1, notes: '', reconciliationDeadline: new Date(Date.now() + 37 * 3600000).toISOString() }),
+      JSON.stringify([{ studentId: cancelStudent, officialName: 'Cancellation Student', rosterIdentifier: 'C-123', subgroup: 'A' }]),
+      JSON.stringify({ id: challengeId, tokenHash: createHash('sha256').update(sessionId).digest('hex'), qrToken: 'signed.qr.token.'.repeat(5), keyId: 'test' }),
+    ]);
+  assert.equal((await create(firstSessionId, firstRequestId, firstChallengeId)).rows[0].result.attemptGeneration, 1);
+  const receiptRequestId = randomUUID();
+  const receipt = await database.query<{ result: any }>(
+    'select attendance_submit_receipt($1,$2,$2,$3,$4,$5,$6,$7,null,$8,false,$9) result',
+    [receiptRequestId, cancelStudent, createHash('sha256').update(receiptRequestId).digest('hex'),
+      firstSessionId, firstChallengeId, createHash('sha256').update(firstSessionId).digest('hex'),
+      cancelInstallation, cancelDevice, JSON.stringify({ flags: [], locationStatus: 'on_campus', signedLocationProofVersion: 2 })],
+  );
+  assert.equal(receipt.rows[0].result.resolution, 'confirmed');
+  const grantId = randomUUID();
+  await database.query(
+    `insert into attendance_offline_grants(
+      id, professor_uid, stage_id, token_hash, term, occurrences, roster, session_ids, attempt_generations, expires_at
+    ) values ($1,'doctor','stage_3',$2,$3,$4,$5,$6,$7,now()+interval '1 day')`,
+    [grantId, createHash('sha256').update(grantId).digest('hex'), JSON.stringify(term),
+      JSON.stringify({ [occurrenceId]: occurrence }),
+      JSON.stringify([{ studentId: cancelStudent, officialName: 'Cancellation Student', rosterIdentifier: 'C-123', subgroup: 'A' }]),
+      JSON.stringify({ [occurrenceId]: firstSessionId }), JSON.stringify({ [occurrenceId]: 1 })],
+  );
+  const finalized = await database.query<{ revision: number }>(
+    "update attendance_sessions set status='finalized', revision=revision+1 where id=$1 returning revision",
+    [firstSessionId],
+  );
+  const cancelled = await database.query<{ result: any }>(
+    "select attendance_cancel_session($1,$2,'doctor',$3,'Test session cleanup') result",
+    [randomUUID(), firstSessionId, finalized.rows[0].revision],
+  );
+  assert.equal(cancelled.rows[0].result.session.status, 'cancelled');
+  const revoked = await database.query<{ revoked_at: string | null }>('select revoked_at from attendance_challenges where id=$1', [firstChallengeId]);
+  assert.ok(revoked.rows[0].revoked_at);
+  const voided = await database.query<{ status: string; review_flags: string[] }>('select status, review_flags from attendance_records where session_id=$1', [firstSessionId]);
+  assert.equal(voided.rows[0].status, 'voided');
+  assert.ok(voided.rows[0].review_flags.includes('session_cancelled'));
+  const cancelledReceipt = await database.query<{ result: any }>('select attendance_receipt_result($1) result', [receiptRequestId]);
+  assert.equal(cancelledReceipt.rows[0].result.resolution, 'invalid_evidence');
+  assert.equal(cancelledReceipt.rows[0].result.reason, 'session_cancelled');
+  const revokedGrant = await database.query<{ revoked_at: string | null }>('select revoked_at from attendance_offline_grants where id=$1', [grantId]);
+  assert.ok(revokedGrant.rows[0].revoked_at);
+  await assert.rejects(
+    database.query("select attendance_update_session_v2($1,$2,'doctor',$3,null,'late edit',null,'',false)",
+      [randomUUID(), firstSessionId, cancelled.rows[0].result.session.revision]),
+    /session_cancelled/,
+  );
+
+  const secondSessionId = randomUUID();
+  const second = await create(secondSessionId, randomUUID(), randomUUID());
+  assert.equal(second.rows[0].result.sessionId, secondSessionId);
+  assert.equal(second.rows[0].result.attemptGeneration, 2);
+  const current = await database.query<{ total: number }>("select count(*)::int total from attendance_sessions where occurrence_id=$1 and status <> 'cancelled'", [occurrenceId]);
+  assert.equal(current.rows[0].total, 1);
+});
+
 test('first receipt arriving after server closure stays reviewable without a confirmed record', async () => {
   const sessionId = randomUUID();
   const challengeId = randomUUID();
@@ -118,7 +189,10 @@ test('first eligible on-campus scan enrolls the device and confirms attendance a
   const enrolled = await database.query<{ device_digest: string }>("select device_digest from attendance_enrolled_devices where roster_student_id='student-a'");
   assert.equal(enrolled.rows[0].device_digest, device);
   for (const sessionIndex of [1, 2]) assert.equal((await submit(input(sessionIndex))).resolution, 'confirmed');
-  const count = await database.query<{ total: number }>("select count(*)::int total from attendance_records where roster_student_id='student-a'");
+  const count = await database.query<{ total: number }>(
+    "select count(*)::int total from attendance_records where roster_student_id='student-a' and session_id in ($1,$2,$3)",
+    [sessions[0].id, sessions[1].id, sessions[2].id],
+  );
   assert.equal(count.rows[0].total, 3);
 });
 

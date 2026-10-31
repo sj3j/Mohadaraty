@@ -10,7 +10,13 @@
  */
 
 import { SupabaseClient } from '@supabase/supabase-js';
-import { MAX_QUESTIONS_PER_CHAT } from './simosan.js';
+import {
+  COOLDOWN_DURATION_MS,
+  COOLDOWN_WINDOW_MS,
+  COOLDOWN_UNIT_THRESHOLD,
+  MAX_QUESTIONS_PER_CHAT,
+  baghdadWeekKey,
+} from './simosan.js';
 import { ChatMessage } from './simosanChat.js';
 
 export interface SupaThread {
@@ -285,6 +291,9 @@ export interface SupaUsageRow {
   used_count: number;
   reserved_count: number;
   off_topic_count?: number;
+  cooldown_until?: string | null;
+  window_start?: string | null;
+  window_units?: number;
   updated_at: string;
 }
 
@@ -314,13 +323,19 @@ export async function reserveSupaEnergy(
   supabase: SupabaseClient,
   params: {
     uid: string;
-    dayKey: string;
+    dayKey?: string;
+    weekKey?: string;
+    periodKey?: string;
     estimatedUnits: number;
-    dailyBudget: number;
+    weeklyBudget?: number;
+    dailyBudget?: number;
+    now?: Date;
   },
-): Promise<{ ok: boolean; reserved: number; remaining: number; reason?: string }> {
-  const { uid, dayKey, estimatedUnits, dailyBudget } = params;
-  const id = `${uid}_${dayKey}`;
+): Promise<{ ok: boolean; reserved: number; remaining: number; reason?: string; resetsInMs?: number; cooldownUntil?: number; week: string }> {
+  const { uid, estimatedUnits } = params;
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const id = `${uid}_${periodKey}`;
+  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
 
   try {
     const current = await getSupaUsage(supabase, id);
@@ -328,12 +343,94 @@ export async function reserveSupaEnergy(
     const held = Number(current?.units_reserved) || 0;
     const spent = used + held;
 
-    if (spent + estimatedUnits > dailyBudget) {
+    const now = params.now ? params.now.getTime() : Date.now();
+    let cdTime = 0;
+    if (current?.cooldown_until) {
+      cdTime = new Date(current.cooldown_until).getTime();
+    }
+
+    // Check previous week rollover if within 2 hours of Saturday midnight
+    const satMidnightMs = Date.parse(`${periodKey}T00:00:00+03:00`);
+    let prevUsage: any = null;
+    if (now >= satMidnightMs && now - satMidnightMs < COOLDOWN_DURATION_MS) {
+      const prevWeekDate = new Date(satMidnightMs - 7 * 24 * 60 * 60 * 1000);
+      const prevWeekKey = baghdadWeekKey(prevWeekDate);
+      prevUsage = await getSupaUsage(supabase, `${uid}_${prevWeekKey}`);
+      if (prevUsage?.cooldown_until) {
+        const prevCdTime = new Date(prevUsage.cooldown_until).getTime();
+        if (prevCdTime > now && cdTime <= now) {
+          cdTime = prevCdTime;
+        }
+      }
+    }
+
+    if (cdTime > now) {
       return {
         ok: false,
         reserved: 0,
-        remaining: Math.max(0, dailyBudget - spent),
+        remaining: Math.max(0, budget - spent),
+        reason: 'cooldown_active',
+        resetsInMs: cdTime - now,
+        cooldownUntil: cdTime,
+        week: periodKey,
+      };
+    }
+
+    let windowStart = current?.window_start ? new Date(current.window_start).getTime() : now;
+    let windowUnits = Number(current?.window_units) || 0;
+    if (now - windowStart > COOLDOWN_WINDOW_MS) {
+      windowStart = now;
+      windowUnits = 0;
+    }
+
+    // Carry over sliding burst window from previous week across Saturday midnight
+    if (windowUnits === 0 && prevUsage?.window_start) {
+      const prevWindowStart = new Date(prevUsage.window_start).getTime();
+      if (now - prevWindowStart <= COOLDOWN_WINDOW_MS) {
+        windowStart = prevWindowStart;
+        windowUnits = Number(prevUsage.window_units) || 0;
+      }
+    }
+
+    if (spent + estimatedUnits > budget) {
+      return {
+        ok: false,
+        reserved: 0,
+        remaining: Math.max(0, budget - spent),
         reason: 'insufficient_energy',
+        week: periodKey,
+      };
+    }
+
+    // Check burst usage
+    const wouldExceedBurst =
+      windowUnits >= COOLDOWN_UNIT_THRESHOLD ||
+      (windowUnits > 0 && windowUnits + estimatedUnits >= COOLDOWN_UNIT_THRESHOLD);
+
+    if (wouldExceedBurst) {
+      const triggerCooldownUntil = now + COOLDOWN_DURATION_MS;
+      await supabase.from('ai_usage').upsert(
+        {
+          id,
+          user_id: uid,
+          period_key: periodKey,
+          units_used: used,
+          units_reserved: held,
+          cooldown_until: new Date(triggerCooldownUntil).toISOString(),
+          window_start: new Date(windowStart).toISOString(),
+          window_units: windowUnits,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' },
+      );
+      return {
+        ok: false,
+        reserved: 0,
+        remaining: Math.max(0, budget - spent),
+        reason: 'cooldown_active',
+        resetsInMs: COOLDOWN_DURATION_MS,
+        cooldownUntil: triggerCooldownUntil,
+        week: periodKey,
       };
     }
 
@@ -342,9 +439,12 @@ export async function reserveSupaEnergy(
       {
         id,
         user_id: uid,
-        period_key: dayKey,
+        period_key: periodKey,
         units_used: used,
         units_reserved: nextHeld,
+        window_start: new Date(windowStart).toISOString(),
+        window_units: windowUnits + estimatedUnits,
+        cooldown_until: null,
         used_count: Number(current?.used_count) || 0,
         reserved_count: Number(current?.reserved_count) || 0,
         updated_at: new Date().toISOString(),
@@ -354,17 +454,18 @@ export async function reserveSupaEnergy(
 
     if (upsertErr) {
       console.warn('[simosanSupabase] reserveSupaEnergy upsert error:', upsertErr.message);
-      return { ok: false, reserved: 0, remaining: Math.max(0, dailyBudget - spent), reason: 'db_error' };
+      return { ok: false, reserved: 0, remaining: Math.max(0, budget - spent), reason: 'db_error', week: periodKey };
     }
 
     return {
       ok: true,
       reserved: estimatedUnits,
-      remaining: Math.max(0, dailyBudget - spent - estimatedUnits),
+      remaining: Math.max(0, budget - spent - estimatedUnits),
+      week: periodKey,
     };
   } catch (err) {
     console.warn('[simosanSupabase] reserveSupaEnergy exception:', err);
-    return { ok: false, reserved: 0, remaining: 0, reason: 'exception' };
+    return { ok: false, reserved: 0, remaining: 0, reason: 'exception', week: periodKey };
   }
 }
 
@@ -372,14 +473,20 @@ export async function reconcileSupaEnergy(
   supabase: SupabaseClient,
   params: {
     uid: string;
-    dayKey: string;
+    dayKey?: string;
+    weekKey?: string;
+    periodKey?: string;
     reservedUnits: number;
     actualUnits: number;
-    dailyBudget: number;
+    weeklyBudget?: number;
+    dailyBudget?: number;
+    now?: Date;
   },
 ): Promise<{ remaining: number }> {
-  const { uid, dayKey, reservedUnits, actualUnits, dailyBudget } = params;
-  const id = `${uid}_${dayKey}`;
+  const { uid, reservedUnits, actualUnits } = params;
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const id = `${uid}_${periodKey}`;
+  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
 
   try {
     const current = await getSupaUsage(supabase, id);
@@ -389,20 +496,42 @@ export async function reconcileSupaEnergy(
     const nextHeld = Math.max(0, held - reservedUnits);
     const nextCount = (Number(current?.used_count) || 0) + 1;
 
+    const now = params.now ? params.now.getTime() : Date.now();
+    let windowStart = current?.window_start ? new Date(current.window_start).getTime() : now;
+    let windowUnits = Number(current?.window_units) || 0;
+    if (now - windowStart > COOLDOWN_WINDOW_MS) {
+      windowStart = now;
+      windowUnits = actualUnits;
+    } else {
+      windowUnits = Math.max(0, windowUnits - reservedUnits + actualUnits);
+    }
+
+    const triggerCooldown = windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    let existingCdMs = 0;
+    if (current?.cooldown_until) {
+      existingCdMs = new Date(current.cooldown_until).getTime();
+    }
+    const cooldownUntil = triggerCooldown
+      ? new Date(now + COOLDOWN_DURATION_MS).toISOString()
+      : (existingCdMs > now ? current!.cooldown_until : null);
+
     await supabase.from('ai_usage').upsert(
       {
         id,
         user_id: uid,
-        period_key: dayKey,
+        period_key: periodKey,
         units_used: nextUsed,
         units_reserved: nextHeld,
+        window_start: new Date(windowStart).toISOString(),
+        window_units: windowUnits,
+        cooldown_until: cooldownUntil,
         used_count: nextCount,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'id' },
     );
 
-    return { remaining: Math.max(0, dailyBudget - nextUsed - nextHeld) };
+    return { remaining: Math.max(0, budget - nextUsed - nextHeld) };
   } catch (err) {
     console.warn('[simosanSupabase] reconcileSupaEnergy exception:', err);
     return { remaining: 0 };
@@ -411,19 +540,28 @@ export async function reconcileSupaEnergy(
 
 export async function releaseSupaEnergy(
   supabase: SupabaseClient,
-  params: { uid: string; dayKey: string; reservedUnits: number },
+  params: {
+    uid: string;
+    dayKey?: string;
+    weekKey?: string;
+    periodKey?: string;
+    reservedUnits: number;
+  },
 ): Promise<void> {
-  const { uid, dayKey, reservedUnits } = params;
-  const id = `${uid}_${dayKey}`;
+  const { uid, reservedUnits } = params;
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const id = `${uid}_${periodKey}`;
 
   try {
     const current = await getSupaUsage(supabase, id);
     if (!current) return;
     const held = Number(current.units_reserved) || 0;
     const nextHeld = Math.max(0, held - reservedUnits);
+    const windowUnits = Math.max(0, (Number(current.window_units) || 0) - reservedUnits);
 
     await supabase.from('ai_usage').update({
       units_reserved: nextHeld,
+      window_units: windowUnits,
       updated_at: new Date().toISOString(),
     }).eq('id', id);
   } catch (err) {
@@ -434,7 +572,7 @@ export async function releaseSupaEnergy(
 export async function reserveSupaFreeQuestion(
   supabase: SupabaseClient,
   params: { uid: string; weekKey: string },
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<{ ok: boolean; reason?: string; week: string }> {
   const { uid, weekKey } = params;
   const id = `${uid}_free_${weekKey}`;
 
@@ -444,7 +582,7 @@ export async function reserveSupaFreeQuestion(
     const held = Number(current?.reserved_count) || 0;
 
     if (used + held >= 1) {
-      return { ok: false, reason: 'free_weekly_limit_reached' };
+      return { ok: false, reason: 'free_weekly_limit_reached', week: weekKey };
     }
 
     const { error } = await supabase.from('ai_usage').upsert(
@@ -461,13 +599,13 @@ export async function reserveSupaFreeQuestion(
 
     if (error) {
       console.warn('[simosanSupabase] reserveSupaFreeQuestion error:', error.message);
-      return { ok: false, reason: 'db_error' };
+      return { ok: false, reason: 'db_error', week: weekKey };
     }
 
-    return { ok: true };
+    return { ok: true, week: weekKey };
   } catch (err) {
     console.warn('[simosanSupabase] reserveSupaFreeQuestion exception:', err);
-    return { ok: false, reason: 'exception' };
+    return { ok: false, reason: 'exception', week: weekKey };
   }
 }
 
@@ -526,15 +664,21 @@ export async function settleSupaOffTopic(
   supabase: SupabaseClient,
   params: {
     uid: string;
-    dayKey: string;
+    dayKey?: string;
+    weekKey?: string;
+    periodKey?: string;
     reservedUnits: number;
     actualUnits: number;
     maxFreeOffTopic: number;
-    dailyBudget: number;
+    weeklyBudget?: number;
+    dailyBudget?: number;
+    now?: Date;
   },
 ): Promise<{ refunded: boolean; remaining: number }> {
-  const { uid, dayKey, reservedUnits, actualUnits, maxFreeOffTopic, dailyBudget } = params;
-  const id = `${uid}_${dayKey}`;
+  const { uid, reservedUnits, actualUnits, maxFreeOffTopic } = params;
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const id = `${uid}_${periodKey}`;
+  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
 
   try {
     const current = await getSupaUsage(supabase, id);
@@ -545,14 +689,35 @@ export async function settleSupaOffTopic(
 
     const nextUsed = refunded ? used : used + actualUnits;
     const nextHeld = Math.max(0, held - reservedUnits);
+    const now = params.now ? params.now.getTime() : Date.now();
+    let windowStart = current?.window_start ? new Date(current.window_start).getTime() : now;
+    let windowUnits = Number(current?.window_units) || 0;
+    if (now - windowStart > COOLDOWN_WINDOW_MS) {
+      windowStart = now;
+      windowUnits = refunded ? 0 : actualUnits;
+    } else {
+      windowUnits = Math.max(0, windowUnits - reservedUnits + (refunded ? 0 : actualUnits));
+    }
+
+    const triggerCooldown = !refunded && windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    let existingCdMs = 0;
+    if (current?.cooldown_until) {
+      existingCdMs = new Date(current.cooldown_until).getTime();
+    }
+    const cooldownUntil = triggerCooldown
+      ? new Date(now + COOLDOWN_DURATION_MS).toISOString()
+      : (existingCdMs > now ? current!.cooldown_until : null);
 
     await supabase.from('ai_usage').upsert(
       {
         id,
         user_id: uid,
-        period_key: dayKey,
+        period_key: periodKey,
         units_used: nextUsed,
         units_reserved: nextHeld,
+        window_start: new Date(windowStart).toISOString(),
+        window_units: windowUnits,
+        cooldown_until: cooldownUntil,
         off_topic_count: offTopic + 1,
         used_count: (Number(current?.used_count) || 0) + 1,
         updated_at: new Date().toISOString(),
@@ -562,11 +727,11 @@ export async function settleSupaOffTopic(
 
     return {
       refunded,
-      remaining: Math.max(0, dailyBudget - nextUsed - nextHeld),
+      remaining: Math.max(0, budget - nextUsed - nextHeld),
     };
   } catch (err) {
     console.warn('[simosanSupabase] settleSupaOffTopic exception:', err);
-    return { refunded: true, remaining: dailyBudget };
+    return { refunded: true, remaining: budget };
   }
 }
 

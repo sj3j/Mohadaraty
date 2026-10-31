@@ -44,6 +44,8 @@ export interface AttendanceQrClaims {
   title: string;
   startTime: string;
   endTime: string;
+  /** Server-assigned attempt number for repeat sessions of one occurrence. */
+  attemptGeneration?: number;
   /** Present only on legacy V1 offline QR codes. */
   expectedHeadcount?: number;
 }
@@ -64,6 +66,8 @@ export interface AttendanceOfflinePack {
   bootstrap: AttendanceBootstrap;
   roster: AttendanceRosterEntry[];
   sessions: Record<string, string>;
+  /** Attempt number paired with each pre-authorized session ID. */
+  attemptGenerations?: Record<string, number>;
   /** Server-issued expiry for the device-bound offline authority. */
   expiresAt: string;
 }
@@ -124,6 +128,9 @@ export interface AttendanceSessionView {
   endedAt?: string | null;
   reconciliationDeadline: string;
   revision: number;
+  attemptGeneration?: number;
+  cancelledAt?: string | null;
+  cancellationReason?: string | null;
   occurrence: AttendanceOccurrenceCandidate;
 }
 
@@ -137,7 +144,7 @@ export interface AttendanceRosterEntry {
 
 export interface AttendanceBootstrap {
   serverNow: string;
-  timezone: typeof ATTENDANCE_TIMEZONE;
+  timezone: string;
   stageId: string;
   term: {
     id: string;
@@ -147,7 +154,7 @@ export interface AttendanceBootstrap {
     nameEn: string;
     startDate: string;
     endDate: string;
-    timezone: typeof ATTENDANCE_TIMEZONE;
+    timezone: string;
   } | null;
   occurrences: AttendanceOccurrenceCandidate[];
   canManage: boolean;
@@ -174,14 +181,17 @@ export interface AttendanceDoctorWorkspace {
 
 export interface AttendanceMine {
   offline?: boolean;
+  unavailableReason?: string;
   historyComplete?: boolean;
   serverNow: string;
-  timezone: typeof ATTENDANCE_TIMEZONE;
+  timezone: string;
   stageId: string;
   subjects?: AttendanceDoctorSubject[];
   term: AttendanceBootstrap['term'];
   occurrences: AttendanceOccurrenceCandidate[];
   sessions: AttendanceSessionView[];
+  /** Audited attempts excluded from attendance totals. */
+  cancelledSessions?: AttendanceSessionView[];
   records: AttendanceRecordView[];
   receipts: Array<{
     requestId: string;
@@ -221,6 +231,20 @@ export function attendanceTermId(calendar: AcademicCalendar, term: AcademicTerm)
 
 export function findAttendanceTerm(calendar: AcademicCalendar, date: string): AcademicTerm | null {
   return (calendar.terms || []).find(term => date >= term.startDate && date <= term.endDate) || null;
+}
+
+/**
+ * The teaching term whose schedule students should see. During exams and the
+ * break between terms, keep the most recently completed teaching term visible.
+ * Before the academic year starts there is no prior schedule to display.
+ */
+export function findAttendanceDisplayTerm(calendar: AcademicCalendar, date: string): AcademicTerm | null {
+  const terms = (calendar.terms || [])
+    .slice()
+    .sort((first, second) => first.startDate.localeCompare(second.startDate));
+  return terms.find(term => date >= term.startDate && date <= term.endDate)
+    || terms.filter(term => term.endDate < date).pop()
+    || null;
 }
 
 function dayIndex(isoDate: string): DayIndex {
@@ -264,6 +288,32 @@ export function buildAttendanceOccurrences(
 
   const firstWeek = addDays(attendanceWeekStart(referenceDate), -7 * Math.max(0, weeksBefore));
   const lastWeek = addDays(attendanceWeekStart(referenceDate), 7 * Math.max(0, weeksAfter));
+  const occurrences: AttendanceOccurrenceCandidate[] = [];
+
+  for (let weekStart = firstWeek; weekStart <= lastWeek; weekStart = addDays(weekStart, 7)) {
+    for (const session of timetable.sessions) {
+      const offset = TEACHING_DAYS.indexOf(session.day);
+      const lectureDate = addDays(weekStart, offset >= 0 ? offset : ((session.day + 1) % 7));
+      if (lectureDate < term.startDate || lectureDate > term.endDate) continue;
+      occurrences.push(toOccurrence(calendar, term, stageId, lectureDate, session));
+    }
+  }
+
+  return occurrences.sort((a, b) => a.startAt.localeCompare(b.startAt) || a.id.localeCompare(b.id));
+}
+
+/** Build every scheduled occurrence in the term students should currently see. */
+export function buildAttendanceTermOccurrences(
+  calendar: AcademicCalendar,
+  timetable: StageTimetableDoc | null | undefined,
+  stageId: string,
+  referenceDate: string,
+): AttendanceOccurrenceCandidate[] {
+  const term = findAttendanceDisplayTerm(calendar, referenceDate);
+  if (!term || !timetable?.sessions?.length || !stageId) return [];
+
+  const firstWeek = attendanceWeekStart(term.startDate);
+  const lastWeek = attendanceWeekStart(term.endDate);
   const occurrences: AttendanceOccurrenceCandidate[] = [];
 
   for (let weekStart = firstWeek; weekStart <= lastWeek; weekStart = addDays(weekStart, 7)) {

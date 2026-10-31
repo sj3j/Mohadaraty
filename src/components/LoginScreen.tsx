@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { auth, db } from '../lib/firebase';
-import { signInWithCustomToken, signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { Language, TRANSLATIONS } from '../types';
 import { Loader2, UserRound, Lock, LogIn } from 'lucide-react';
@@ -15,6 +15,8 @@ import { clearExplicitLogoutMarker } from '../lib/authPersistence';
 import SignupScreen from './SignupScreen';
 import ClaimAccountScreen from './ClaimAccountScreen';
 import FaqSheet, { FaqTrigger } from './support/FaqSheet';
+import { collectAccountSessionDevice, collectAccountSessionDeviceAsync } from '../lib/accountSessionDevice';
+import { registerAccountSession } from '../services/accountSessionService';
 
 interface LoginScreenProps {
   lang: Language;
@@ -35,6 +37,12 @@ const errorMessages: Record<string, string> = {
     'يوجد أكثر من طالب بهذا الاسم. سجّل الدخول برمز الدخول أو تواصل مع الإدارة.',
   'auth/user-disabled':
     'تم تعطيل هذا الحساب، تواصل مع الإدارة',
+  'account_disabled':
+    'تم تعطيل هذا الحساب، تواصل مع الإدارة',
+  'account_not_registered':
+    'هذا الحساب غير مسجل في النظام',
+  'session_registration_failed':
+    'تعذر تسجيل جلسة الدخول. حاول مرة أخرى.',
   'auth/network-request-failed':
     'خطأ في الشبكة — تحقق من الإنترنت وحاول مرة أخرى',
   'auth/timeout':
@@ -326,13 +334,24 @@ export default function LoginScreen({ lang, externalError, onClearError }: Login
     try {
       if (lecturerLogin) {
         await signInWithEmailAndPassword(auth, identifier.trim(), password);
-        safeSetStorageItem('wasSignedIn', 'true');
-        clearExplicitLogoutMarker();
-        return;
+        try {
+          const sessionNonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
+          const { token } = await registerAccountSession({ sessionNonce });
+          await signInWithCustomToken(auth, token);
+          safeSetStorageItem('wasSignedIn', 'true');
+          clearExplicitLogoutMarker();
+          return;
+        } catch (regErr) {
+          await signOut(auth).catch(() => undefined);
+          throw regErr;
+        }
       }
+      const sessionNonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
       const { credential: result, studentId } = await signInStudent({
         identifier,
         password,
+        device: await collectAccountSessionDeviceAsync(),
+        sessionNonce,
         signInWithToken: token => signInWithCustomToken(auth, token),
       });
 

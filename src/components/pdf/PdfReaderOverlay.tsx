@@ -341,6 +341,11 @@ export default function PdfReaderOverlay({
       const handle = pages.current.get(p);
       if (handle?.el) {
         handle.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        const container = scrollRef.current?.querySelector(`[data-page-container="${p}"]`);
+        if (container) {
+          container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }
     }
   }, [isNative, pageCount]);
@@ -969,6 +974,16 @@ export default function PdfReaderOverlay({
     setCurrent(n);
   }, [layout]);
 
+  // Web Fallback 3-Page Active Window Virtualization
+  const activePages = useMemo(() => {
+    const total = layout.length || pageCount || 1;
+    const windowPages = new Set<number>();
+    windowPages.add(Math.max(1, current - 1));
+    windowPages.add(current);
+    windowPages.add(Math.min(total, current + 1));
+    return windowPages;
+  }, [current, layout.length, pageCount]);
+
   // DOM position -> canonical offset within a page
   const canonicalOffset = useCallback((h: PageHandle, node: Node, offset: number): number | null => {
     const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement);
@@ -1193,17 +1208,35 @@ export default function PdfReaderOverlay({
         return;
       }
 
-      const url = URL.createObjectURL(result.exportedBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      const safeName = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
 
-      setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
-      setTimeout(() => setToast(null), 2000);
+      if (isNative) {
+        const buf = await result.exportedBlob.arrayBuffer();
+        const { cacheNativePdfBytes } = await import('../../lib/nativePdfRepository');
+        const cachedUri = await cacheNativePdfBytes(lectureId || 'export', buf);
+        if (cachedUri) {
+          const { saveNativePdf } = await import('../../lib/nativeFileTransfer');
+          const saveRes = await saveNativePdf(cachedUri, safeName);
+          if (saveRes.status === 'saved') {
+            setToast(isRtl ? 'تم تصدير وحفظ ملف PDF بنجاح' : 'PDF exported and saved successfully');
+          } else {
+            setToast(null);
+          }
+        } else {
+          throw new Error('Failed to cache exported PDF');
+        }
+      } else {
+        const url = URL.createObjectURL(result.exportedBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = safeName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
+      }
+      setTimeout(() => setToast(null), 2500);
     } catch (err) {
       console.error('[PdfReaderOverlay] Export PDF failed:', err);
       setToast(isRtl ? 'حدث خطأ أثناء تصدير PDF' : 'Error exporting PDF');
@@ -1311,9 +1344,11 @@ export default function PdfReaderOverlay({
             <div className="flex flex-col items-center gap-4">
               {layout.map((box, i) => {
                 const n = i + 1;
+                const isActive = activePages.has(n);
                 return (
                   <div
                     key={n}
+                    data-page-container={n}
                     className="relative my-3 shadow-lg shadow-black/20 shrink-0"
                     style={{
                       width: box.w,
@@ -1322,47 +1357,56 @@ export default function PdfReaderOverlay({
                       transition: 'filter 0.2s ease-in-out',
                     }}
                   >
-                    <PdfPage
-                      pdfDoc={pdfDoc}
-                      pageNumber={n}
-                      scale={scale}
-                      rasterScale={rasterScale}
-                      rotation={rotation}
-                      boxW={box.w}
-                      boxH={box.h}
-                      annotations={byPage.get(n) ?? NO_ANNOTATIONS}
-                      registerPage={registerPage}
-                      onHighlightTap={setEditing}
-                      onOrphan={markOrphan}
-                      flashId={flashId}
-                      noMargin
-                    />
-                    <PdfDrawingLayer
-                      pageNumber={n}
-                      pageWidth={box.w}
-                      pageHeight={box.h}
-                      scale={scale}
-                      strokes={pageStrokes[n] || []}
-                      activeTool={activeDrawingTool}
-                      activeColor={activeDrawColor}
-                      activeWidth={activeDrawWidth}
-                      isAnnotationMode={isAnnotationMode}
-                      onAddStroke={(s) => handleAddStroke(n, s)}
-                      onEraseStroke={(id) => handleEraseStroke(n, id)}
-                    />
-                    <PdfTextBoxOverlay
-                      pageNumber={n}
-                      pageWidth={box.w}
-                      pageHeight={box.h}
-                      scale={scale}
-                      annotations={annotations}
-                      activeTool={activeDrawingTool}
-                      activeColor={activeDrawColor}
-                      isAnnotationMode={isAnnotationMode}
-                      onSaveText={upsert}
-                      onDeleteText={remove}
-                      isRtl={isRtl}
-                    />
+                    {isActive ? (
+                      <>
+                        <PdfPage
+                          pdfDoc={pdfDoc}
+                          pageNumber={n}
+                          scale={scale}
+                          rasterScale={rasterScale}
+                          rotation={rotation}
+                          boxW={box.w}
+                          boxH={box.h}
+                          annotations={byPage.get(n) ?? NO_ANNOTATIONS}
+                          registerPage={registerPage}
+                          onHighlightTap={setEditing}
+                          onOrphan={markOrphan}
+                          flashId={flashId}
+                          noMargin
+                        />
+                        <PdfDrawingLayer
+                          pageNumber={n}
+                          pageWidth={box.w}
+                          pageHeight={box.h}
+                          scale={scale}
+                          strokes={pageStrokes[n] || []}
+                          activeTool={activeDrawingTool}
+                          activeColor={activeDrawColor}
+                          activeWidth={activeDrawWidth}
+                          isAnnotationMode={isAnnotationMode}
+                          onAddStroke={(s) => handleAddStroke(n, s)}
+                          onEraseStroke={(id) => handleEraseStroke(n, id)}
+                        />
+                        <PdfTextBoxOverlay
+                          pageNumber={n}
+                          pageWidth={box.w}
+                          pageHeight={box.h}
+                          scale={scale}
+                          annotations={annotations}
+                          activeTool={activeDrawingTool}
+                          activeColor={activeDrawColor}
+                          isAnnotationMode={isAnnotationMode}
+                          onSaveText={upsert}
+                          onDeleteText={remove}
+                          isRtl={isRtl}
+                        />
+                      </>
+                    ) : (
+                      <div
+                        className="w-full h-full bg-white/80 dark:bg-zinc-800/80 rounded"
+                        style={{ width: box.w, height: box.h }}
+                      />
+                    )}
                   </div>
                 );
               })}

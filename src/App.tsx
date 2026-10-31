@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspens
 import { auth, db, handleFirestoreError, isTransientNetworkError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, getDocs, where, doc, setDoc, serverTimestamp, getDoc, limit } from 'firebase/firestore';
-import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType } from './types';
+import { Lecture, UserProfile, Category, CATEGORIES, Language, TRANSLATIONS, LectureType, RecordItem } from './types';
 import { useStageContext } from './contexts/StageContext';
 import LectureCard from './components/LectureCard';
 import AdminUpload from './components/AdminUpload';
@@ -16,7 +16,7 @@ import { useAcademicPhase } from './hooks/useAcademicPhase';
 import { useTheme } from './hooks/useTheme';
 import { useNativePush } from './hooks/useNativePush';
 import { useAuthWatchdog, safeSetStorageItem, safeGetStorageItem } from './hooks/useAuthWatchdog';
-import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker, clearExplicitLogoutMarker } from './lib/authPersistence';
+import { saveCachedUserProfile, getCachedUserProfile, clearCachedUserProfile, hasExplicitLogoutMarker, clearExplicitLogoutMarker, setExplicitLogoutMarker } from './lib/authPersistence';
 import { logSessionBootstrap, resolveAuthState, resolveUserDocument, resolveWhitelistVerification } from './lib/sessionRestoration';
 import { logPerfMark } from './lib/perf';
 import { resolveLectureLoadDecision, type LectureLoadState } from './lib/lectureLoadState';
@@ -42,7 +42,9 @@ import { canManage, canManageAntiCheat, canManageMcqSystem, canViewStaffInbox, i
 import AnnouncementsScreen from './components/AnnouncementsScreen';
 import WeeklyListScreen from './components/WeeklyListScreen';
 import ProfileScreen from './components/ProfileScreen';
-import RecordsScreen from './components/RecordsScreen';
+import LectureAttachmentsSection from './components/lecture/LectureAttachmentsSection';
+import { parseRecordsRoute } from './lib/recordsRouteResolution';
+import { subjectSlugOf } from './lib/subjectDisplay';
 import SimosanSoonScreen from './components/SimosanSoonScreen';
 import SimosanPage from './components/simosan/SimosanPage';
 import DoctorPortal from './components/doctor/DoctorPortal';
@@ -73,6 +75,8 @@ import { apiUrl } from './lib/apiBase';
 import { ensureOfflineAttendancePrepared, startAttendanceSync } from './services/attendanceService';
 import { useMobileReleaseGate } from './hooks/useMobileReleaseGate';
 import ForceUpdateScreen from './components/ForceUpdateScreen';
+import { useAccountSessionGuard } from './hooks/useAccountSessionGuard';
+import { endCurrentAccountSessionBestEffort } from './services/accountSessionService';
 
 type SortField = 'title' | 'date' | 'number';
 type SortOrder = 'asc' | 'desc';
@@ -312,6 +316,92 @@ export default function App() {
     return () => { active = false; };
   }, [lectures]);
 
+  // Legacy records routes redirection: intercept /records, /records/:id, ?tab=records, ?recordId=...
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const parsed = parseRecordsRoute(url.pathname, url.search);
+
+    if (parsed.isLegacyRecordRoute) {
+      // 1. Sanitize the browser URL via window.history.replaceState
+      const nextUrl = new URL(window.location.href);
+      nextUrl.pathname = parsed.cleanPath;
+      nextUrl.search = parsed.cleanSearch;
+      window.history.replaceState({}, '', nextUrl.toString());
+
+      // 2. Normalize tab to home
+      setCurrentTab('home');
+
+      // 3. If a record ID is present, resolve the matching lecture and open attachments view
+      if (parsed.recordId) {
+        setHighlightedRecordId(parsed.recordId);
+        let active = true;
+
+        (async () => {
+          try {
+            const recordSnap = await getDoc(doc(db, 'records', parsed.recordId!));
+            if (!active || !recordSnap.exists()) return;
+            const rec = { id: recordSnap.id, ...recordSnap.data() } as RecordItem;
+
+            // Check loaded lectures first
+            let matchedLecture = lectures.find((l) => {
+              if (rec.lectureId) return l.id === rec.lectureId || l.translationOf === rec.lectureId;
+              const stageMatch = !rec.stageId || !l.stageId || rec.stageId === l.stageId;
+              const subjMatch =
+                (rec.subjectId && l.subjectId && rec.subjectId === l.subjectId) ||
+                (rec.category && l.category && rec.category === l.category) ||
+                (subjectSlugOf(rec) === subjectSlugOf(l));
+              const typeMatch = !rec.type || !l.type || rec.type === l.type;
+              const numMatch =
+                rec.number != null && l.number != null && Number(rec.number) === Number(l.number);
+              return stageMatch && subjMatch && typeMatch && numMatch;
+            });
+
+            // If not found in loaded lectures, query by lectureId directly
+            if (!matchedLecture && rec.lectureId) {
+              const lecSnap = await getDoc(doc(db, 'lectures', rec.lectureId));
+              if (active && lecSnap.exists()) {
+                matchedLecture = { id: lecSnap.id, ...lecSnap.data() } as Lecture;
+              }
+            }
+
+            // Query by taxonomy if needed
+            if (!matchedLecture && rec.stageId && rec.type && rec.number != null) {
+              const qLec = query(
+                collection(db, 'lectures'),
+                where('stageId', '==', rec.stageId),
+                where('type', '==', rec.type),
+                where('number', '==', Number(rec.number))
+              );
+              const snap = await getDocs(qLec);
+              const foundDoc = snap.docs.find((d) => {
+                const data = d.data();
+                return (
+                  data.subjectId === rec.subjectId ||
+                  data.category === rec.category ||
+                  subjectSlugOf(data) === subjectSlugOf(rec)
+                );
+              });
+              if (active && foundDoc) {
+                matchedLecture = { id: foundDoc.id, ...foundDoc.data() } as Lecture;
+              }
+            }
+
+            if (active && matchedLecture) {
+              setPreviewLectureForAttachments(matchedLecture);
+            }
+          } catch (err) {
+            console.warn('[RecordsRedirect] Failed to resolve target record lecture', err);
+          }
+        })();
+
+        return () => {
+          active = false;
+        };
+      }
+    }
+  }, [lectures]);
+
   useEffect(() => {
     const handleOpenAntiCheat = () => { if (canManageAntiCheat(user)) setShowAntiCheat(true); };
     const handleOpenBank = () => { if (canManageMcqSystem(user)) setShowAdminBank(true); };
@@ -324,10 +414,35 @@ export default function App() {
   }, [user]);
   const [hasUnreadAnnouncements, setHasUnreadAnnouncements] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const handleLogout = useCallback(() => {
+    console.info('[auth-session] signed-out: explicit-logout');
+    const currentUser = auth.currentUser;
+    const uidToClear = user?.uid || currentUser?.uid;
+
+    if (currentUser) {
+      endCurrentAccountSessionBestEffort(currentUser);
+    }
+
+    setExplicitLogoutMarker();
+    safeSetStorageItem('wasSignedIn', 'false');
+    clearCachedUserProfile(uidToClear);
+    setUser(null);
+    setCurrentTab('profile');
+    void signOut(auth).catch(() => undefined);
+  }, [user?.uid]);
+
+  const onAccountSessionRevoked = useCallback(() => {
+    setCurrentTab('profile');
+    setUser(null);
+    setLoginError(isRtl ? 'تم إنهاء جلسة هذا الجهاز. يرجى تسجيل الدخول مرة أخرى.' : 'This device session was terminated. Please sign in again.');
+  }, [isRtl]);
+  useAccountSessionGuard(!!user && !!authenticatedUid, onAccountSessionRevoked);
   const [mcqLecture, setMcqLecture] = useState<Lecture | null>(null);
   const [readerLecture, setReaderLecture] = useState<Lecture | null>(null);
   const [localReaderFile, setLocalReaderFile] = useState<UserFile | null>(null);
   const [localBlobUrl, setLocalBlobUrl] = useState<string | null>(null);
+  const [previewLectureForAttachments, setPreviewLectureForAttachments] = useState<Lecture | null>(null);
+  const [highlightedRecordId, setHighlightedRecordId] = useState<string | null>(null);
   const { theme, setTheme } = useTheme();
 
   const { permission, requestPermission, isRequesting } = usePushNotifications(user);
@@ -1199,13 +1314,7 @@ export default function App() {
       <DoctorPortal
         user={user}
         lang={lang}
-        onLogout={() => {
-          console.info('[auth-session] doctor signed-out: explicit-logout');
-          setCurrentTab('profile');
-          safeSetStorageItem('wasSignedIn', 'false');
-          clearCachedUserProfile(user?.uid);
-          void signOut(auth);
-        }}
+        onLogout={handleLogout}
       />
     );
   }
@@ -1325,7 +1434,7 @@ export default function App() {
         />
       )}
 
-      {!isReaderOpen && ['home', 'lectures', 'weekly', 'records', 'leaderboard', 'downloads'].includes(currentTab) && (
+      {!isReaderOpen && ['home', 'lectures', 'weekly', 'leaderboard', 'downloads'].includes(currentTab) && (
         <HomeScreen 
           user={user} 
           lang={lang} 
@@ -1343,7 +1452,7 @@ export default function App() {
           setShowStudentManage={setShowStudentManage}
           setShowStreakManage={setShowStreakManage} 
           setShowAdminManage={setShowAdminManage} 
-          initialTab={currentTab === 'home' ? 'lectures' : currentTab as any} 
+          initialTab={currentTab === 'home' || (currentTab as any) === 'records' ? 'lectures' : currentTab as any} 
           onOpenProgression={effectiveProgressionRound ? () => setForceShowProgression(true) : undefined}
           onNavigateToSubscription={() => setCurrentTab('subscription')}
           onShowPaywall={() => setShowPaywall(true)}
@@ -1397,13 +1506,7 @@ export default function App() {
             localStorage.setItem('lastReadInbox', Date.now().toString());
           }}
           onOpenTour={() => setShowOnboarding(true)}
-          onLogout={() => {
-            console.info('[auth-session] signed-out: explicit-logout');
-            setCurrentTab('profile');
-            safeSetStorageItem('wasSignedIn', 'false');
-            clearCachedUserProfile(user?.uid);
-            void signOut(auth);
-          }}
+          onLogout={handleLogout}
           onOpen={(what) => {
             if (what === 'adminManage') setShowAdminManage(true);
             else if (what === 'studentManage') setShowStudentManage(true);
@@ -1540,6 +1643,64 @@ export default function App() {
               setShowOnboarding(false);
             }} 
           />
+        )}
+      </AnimatePresence>
+
+      {/* Direct lecture attachments view modal (e.g. from legacy records redirect) */}
+      <AnimatePresence>
+        {previewLectureForAttachments && (
+          <div
+            className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-xs"
+            dir={isRtl ? 'rtl' : 'ltr'}
+            onClick={() => {
+              setPreviewLectureForAttachments(null);
+              setHighlightedRecordId(null);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="bg-white dark:bg-zinc-900 w-full sm:max-w-2xl max-h-[90vh] sm:rounded-3xl rounded-t-3xl border border-slate-200 dark:border-zinc-800 p-4 sm:p-6 overflow-y-auto shadow-2xl space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-stone-100 truncate">
+                    {previewLectureForAttachments.title}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {isRtl ? 'مرفقات وتسجيلات المحاضرة' : 'Lecture Attachments & Audio Recordings'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewLectureForAttachments(null);
+                    setHighlightedRecordId(null);
+                  }}
+                  className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 transition-colors cursor-pointer"
+                  aria-label="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <LectureAttachmentsSection
+                lecture={previewLectureForAttachments}
+                user={user}
+                lang={lang}
+                highlightedRecordId={highlightedRecordId}
+                onShowPaywall={() => setShowPaywall(true)}
+                onOpenReader={(lec) => {
+                  setReaderLecture(lec);
+                  setPreviewLectureForAttachments(null);
+                  setHighlightedRecordId(null);
+                }}
+              />
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 

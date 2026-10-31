@@ -170,35 +170,253 @@ export function isSpeechSupported(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
 }
 
-/** Speak text using native Web Speech API. Returns a cancellation callback. */
+/**
+ * Module-level persistent Set to retain active SpeechSynthesisUtterance instances.
+ * This defeats Chromium / Android WebView V8 garbage collection mid-speech cutoffs.
+ */
+export const activeUtterances = new Set<SpeechSynthesisUtterance>();
+
+/**
+ * Split text into natural sentence and clause chunks (<= maxLen characters).
+ * Splits on punctuation: '.', '!', '?', '،', '؛', '؟', ':', or line breaks '\n'.
+ * Falls back to word-level splitting if an individual clause exceeds maxLen.
+ */
+export function segmentText(text: string, maxLen = 160): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.length <= maxLen) return [trimmed];
+
+  const rawSentences = trimmed
+    .split(/(?<=[.!?؟،؛:])\s+|\r?\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const chunks: string[] = [];
+  let currentChunk = '';
+
+  for (const s of rawSentences) {
+    if (!currentChunk) {
+      if (s.length <= maxLen) {
+        currentChunk = s;
+      } else {
+        // Sentence itself is longer than maxLen, split by words
+        const words = s.split(/\s+/).filter(Boolean);
+        for (const w of words) {
+          if (!currentChunk) {
+            currentChunk = w;
+          } else if ((currentChunk + ' ' + w).length <= maxLen) {
+            currentChunk = currentChunk + ' ' + w;
+          } else {
+            chunks.push(currentChunk);
+            currentChunk = w;
+          }
+        }
+      }
+    } else {
+      if ((currentChunk + ' ' + s).length <= maxLen) {
+        currentChunk = currentChunk + ' ' + s;
+      } else {
+        chunks.push(currentChunk);
+        if (s.length <= maxLen) {
+          currentChunk = s;
+        } else {
+          const words = s.split(/\s+/).filter(Boolean);
+          currentChunk = '';
+          for (const w of words) {
+            if (!currentChunk) {
+              currentChunk = w;
+            } else if ((currentChunk + ' ' + w).length <= maxLen) {
+              currentChunk = currentChunk + ' ' + w;
+            } else {
+              chunks.push(currentChunk);
+              currentChunk = w;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  // Safety pass: ensure no individual chunk exceeds maxLen (handles oversized unbreakable tokens)
+  const finalChunks: string[] = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxLen) {
+      finalChunks.push(chunk);
+    } else {
+      for (let i = 0; i < chunk.length; i += maxLen) {
+        finalChunks.push(chunk.slice(i, i + maxLen));
+      }
+    }
+  }
+
+  return finalChunks;
+}
+
+/**
+ * Find the most suitable SpeechSynthesisVoice matching the target language.
+ * Checks for dialect match (e.g. ar-SA, en-US) or prefix match (ar, en).
+ */
+export function getMatchingVoice(lang: 'ar' | 'en'): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  try {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    const prefix = lang === 'ar' ? 'ar' : 'en';
+    const targetTag = lang === 'ar' ? 'ar-sa' : 'en-us';
+
+    // 1. Exact dialect match (case/hyphen insensitive)
+    const exact = voices.find((v) => {
+      const code = (v.lang || '').toLowerCase().replace('_', '-');
+      return code === targetTag;
+    });
+    if (exact) return exact;
+
+    // 2. Starts with target language prefix (e.g. 'ar-EG', 'en-GB')
+    const prefixMatch = voices.find((v) => {
+      const code = (v.lang || '').toLowerCase().replace('_', '-');
+      return code.startsWith(prefix);
+    });
+    if (prefixMatch) return prefixMatch;
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Warm voices cache when available in browser
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  try {
+    if (typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
+      window.speechSynthesis.onvoiceschanged = () => {
+        try {
+          window.speechSynthesis.getVoices();
+        } catch {}
+      };
+    }
+  } catch {}
+}
+
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopWatchdog(): void {
+  if (watchdogTimer !== null) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+}
+
+function startWatchdog(onAutoRecover?: () => void): void {
+  stopWatchdog();
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  watchdogTimer = setInterval(() => {
+    try {
+      if (window.speechSynthesis) {
+        if (window.speechSynthesis.speaking) {
+          // Keep-alive heartbeat: pause + resume defeats Chromium 15-second speech freeze
+          window.speechSynthesis.pause();
+          window.speechSynthesis.resume();
+        } else if (!window.speechSynthesis.pending && activeUtterances.size > 0) {
+          // Engine died silently without onend
+          stopWatchdog();
+          activeUtterances.clear();
+          onAutoRecover?.();
+        }
+      }
+    } catch {
+      stopWatchdog();
+    }
+  }, 10000);
+}
+
+/**
+ * Speak text using native Web Speech API with V8 GC keep-alive, sentence segmentation,
+ * pause/resume watchdog, and guaranteed UI state reset. Returns a cancellation callback.
+ */
 export function speakText(
   text: string,
   lang: 'ar' | 'en',
   onStateChange?: (speaking: boolean) => void,
 ): () => void {
-  if (!isSpeechSupported()) {
+  const trimmed = text.trim();
+  if (!trimmed || !isSpeechSupported()) {
     onStateChange?.(false);
     return () => {};
   }
 
   try {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US';
-    utterance.rate = 0.95;
+    // 1. Cancel previous speech engine session
+    stopWatchdog();
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+    activeUtterances.clear();
 
-    utterance.onstart = () => onStateChange?.(true);
-    utterance.onend = () => onStateChange?.(false);
-    utterance.onerror = () => onStateChange?.(false);
+    // 2. Natural sentence & clause segmentation (<= 160 characters)
+    const chunks = segmentText(trimmed, 160);
+    if (chunks.length === 0) {
+      onStateChange?.(false);
+      return () => {};
+    }
 
-    window.speechSynthesis.speak(utterance);
+    let isCleanedUp = false;
+    const cleanup = () => {
+      if (isCleanedUp) return;
+      isCleanedUp = true;
+      stopWatchdog();
+      activeUtterances.clear();
+      onStateChange?.(false);
+    };
+
+    const matchedVoice = getMatchingVoice(lang);
+
+    // 3. Queue utterances sequentially through the speech synthesis queue
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US';
+      utterance.rate = 0.95;
+      if (matchedVoice) {
+        utterance.voice = matchedVoice;
+      }
+
+      // GC retention: store active instance until completion
+      activeUtterances.add(utterance);
+
+      utterance.onend = () => {
+        activeUtterances.delete(utterance);
+        if (activeUtterances.size === 0) {
+          cleanup();
+        }
+      };
+
+      utterance.onerror = () => {
+        activeUtterances.delete(utterance);
+        cleanup();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    }
+
+    // 4. Signal speaking state true and activate 10-second keep-alive watchdog
+    onStateChange?.(true);
+    startWatchdog(cleanup);
 
     return () => {
-      window.speechSynthesis.cancel();
-      onStateChange?.(false);
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+      cleanup();
     };
   } catch (e) {
     console.warn('[translationService] speechSynthesis error:', e);
+    stopWatchdog();
+    activeUtterances.clear();
     onStateChange?.(false);
     return () => {};
   }
