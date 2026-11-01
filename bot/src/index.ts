@@ -77,6 +77,14 @@ async function verifyChannels(): Promise<void> {
     if (!channel?.enabled) continue;
 
     const access = await checkChannelAccess(channel.chatId, botUserId);
+    let lectureAccess: Awaited<ReturnType<typeof checkChannelAccess>> | null = null;
+    if (channel.lectureChatId) {
+      try {
+        lectureAccess = await checkChannelAccess(channel.lectureChatId, botUserId);
+      } catch (err) {
+        log.error('tg.lecture_channel_check_failed', { stageId, lectureChatId: channel.lectureChatId, ...errFields(err) });
+      }
+    }
     markChannel(stageId, {
       chatId: channel.chatId,
       title: access.title,
@@ -84,6 +92,14 @@ async function verifyChannels(): Promise<void> {
       missingRights: access.missingRights,
       state: access.ok ? 'ok' : 'parked',
       lastError: access.error ?? (access.missingRights.length ? `missing: ${access.missingRights.join(', ')}` : null),
+      ...(channel.lectureChatId && lectureAccess ? {
+        lectureChatId: channel.lectureChatId,
+        lectureTitle: lectureAccess.title,
+        lectureAdminOk: lectureAccess.ok,
+        lectureMissingRights: lectureAccess.missingRights,
+        lectureState: lectureAccess.ok ? 'ok' : 'parked',
+        lectureLastError: lectureAccess.error ?? (lectureAccess.missingRights.length ? `missing: ${lectureAccess.missingRights.join(', ')}` : null),
+      } : {}),
     });
 
     if (!access.ok) {

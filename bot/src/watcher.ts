@@ -141,9 +141,12 @@ async function handleUpsert(id: string, data: Record<string, unknown>, stageId: 
 
 const lectureWatchers = new Map<string, () => void>();
 const knownLectures = new Map<string, Set<string>>();
+const inFlightLectures = new Set<string>();
 
 async function handleLectureUpsert(id: string, data: Record<string, unknown>, stageId: string): Promise<void> {
-  if ((data.telegramPost as any)?.messageId || (data.telegramPost as any)?.status === 'pending') return;
+  const tgPost = data.telegramPost as any;
+  if (tgPost?.messageId || tgPost?.status === 'posted' || tgPost?.status === 'sent' || tgPost?.status === 'pending') return;
+  if (inFlightLectures.has(id)) return;
 
   const age = Date.now() - createdAtMs(data);
   if (age > env.mirrorMaxAgeMs) {
@@ -157,39 +160,45 @@ async function handleLectureUpsert(id: string, data: Record<string, unknown>, st
     return;
   }
 
-  const lecture: LectureDoc = {
-    id,
-    title: String(data.title || ''),
-    subjectName: data.subjectName ? String(data.subjectName) : undefined,
-    subjectId: data.subjectId ? String(data.subjectId) : undefined,
-    stageId,
-    type: data.type as any,
-    number: typeof data.number === 'number' ? data.number : null,
-    pdfUrl: data.pdfUrl ? String(data.pdfUrl) : undefined,
-    youtubeUrl: data.youtubeUrl ? String(data.youtubeUrl) : undefined,
-    telegramPost: data.telegramPost as any,
-  };
+  inFlightLectures.add(id);
+  try {
+    const lecture: LectureDoc = {
+      id,
+      title: String(data.title || ''),
+      subjectName: data.subjectName ? String(data.subjectName) : undefined,
+      subjectId: data.subjectId ? String(data.subjectId) : undefined,
+      stageId,
+      type: data.type as any,
+      number: typeof data.number === 'number' ? data.number : null,
+      pdfUrl: data.pdfUrl ? String(data.pdfUrl) : undefined,
+      youtubeUrl: data.youtubeUrl ? String(data.youtubeUrl) : undefined,
+      telegramPost: data.telegramPost as any,
+    };
 
-  await queueFor(chatId).push(`lec:${id}`, async () => {
-    try {
-      await sendLectureToTelegram(lecture, chatId);
-      noteOutbound(stageId);
-      markChannel(stageId, { state: 'ok', lastError: null });
-    } catch (error) {
-      if (error instanceof TelegramApiError && error.isAccessProblem) {
-        markChannel(stageId, { state: 'parked', lastError: error.description });
-        log.error('tg.lecture.access_problem', { stageId, chatId, description: error.description });
-        return;
+    await queueFor(chatId).push(`lec:${id}`, async () => {
+      try {
+        await sendLectureToTelegram(lecture, chatId);
+        noteOutbound(stageId);
+        markChannel(stageId, { state: 'ok', lastError: null });
+      } catch (error) {
+        if (error instanceof TelegramApiError && error.isAccessProblem) {
+          markChannel(stageId, { state: 'parked', lastError: error.description });
+          log.error('tg.lecture.access_problem', { stageId, chatId, description: error.description });
+          return;
+        }
+        markChannel(stageId, { state: 'degraded', lastError: String(error) });
+        log.error('tg.lecture.failed', { stageId, lectureId: id, ...errFields(error) });
       }
-      markChannel(stageId, { state: 'degraded', lastError: String(error) });
-      log.error('tg.lecture.failed', { stageId, lectureId: id, ...errFields(error) });
-    }
-  });
+    });
+  } finally {
+    inFlightLectures.delete(id);
+  }
 }
 
 function attachLecture(stageId: string): void {
   detachLecture(stageId);
   const cutoff = Timestamp.fromMillis(Date.now() - env.mirrorMaxAgeMs);
+  const attachTimeMs = Date.now();
 
   const query = db.collection('lectures')
     .where('stageId', '==', stageId)
@@ -199,6 +208,7 @@ function attachLecture(stageId: string): void {
   knownLectures.set(stageId, known);
   let stopped = false;
   let pollRunning = false;
+  let isInitialSnapshot = true;
 
   const applyUpsert = async (id: string, data: Record<string, unknown>) => {
     if (known.has(id)) return;
@@ -217,7 +227,12 @@ function attachLecture(stageId: string): void {
     try {
       const snapshot = await query.get();
       for (const doc of snapshot.docs) {
-        await applyUpsert(doc.id, doc.data());
+        const data = doc.data();
+        if (createdAtMs(data) >= attachTimeMs - 10_000) {
+          await applyUpsert(doc.id, data);
+        } else {
+          known.add(doc.id);
+        }
       }
     } catch (error) {
       log.error('watcher.lecture_poll_failed', { stageId, ...errFields(error) });
@@ -228,23 +243,30 @@ function attachLecture(stageId: string): void {
 
   const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
     ? query.onSnapshot(
-        snapshot => {
-          void (async () => {
-            for (const change of snapshot.docChanges()) {
-              if (change.type !== 'removed') {
-                await applyUpsert(change.doc.id, change.doc.data());
-              }
+      snapshot => {
+        if (isInitialSnapshot) {
+          isInitialSnapshot = false;
+          for (const doc of snapshot.docs) {
+            known.add(doc.id);
+          }
+          return;
+        }
+        void (async () => {
+          for (const change of snapshot.docChanges()) {
+            if (change.type === 'added') {
+              await applyUpsert(change.doc.id, change.doc.data());
             }
-          })().catch(error => {
-            log.error('watcher.lecture_snapshot_failed', { stageId, ...errFields(error) });
-          });
-        },
-        error => {
-          log.error('listener.lecture_error', { stageId, ...errFields(error) });
-          void poll();
-        },
-      )
-    : () => {};
+          }
+        })().catch(error => {
+          log.error('watcher.lecture_snapshot_failed', { stageId, ...errFields(error) });
+        });
+      },
+      error => {
+        log.error('listener.lecture_error', { stageId, ...errFields(error) });
+        void poll();
+      },
+    )
+    : () => { };
 
   void poll();
   const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);
@@ -279,46 +301,55 @@ async function handleLectureManualShare(id: string, data: Record<string, unknown
   if (!chatId) {
     log.warn('tg.lecture.manual_skipped_unmapped', { lectureId: id, stageId });
     await db.collection('lectures').doc(id).update({
-      'telegramPost.status': 'error',
+      'telegramPost.status': 'failed',
       'telegramPost.error': 'channel_unmapped',
+      'telegramPost.updatedAt': FieldValue.serverTimestamp(),
       telegramShareRequestedAt: FieldValue.delete(),
     }).catch(err => log.error('tg.lecture.status_update_failed', { lectureId: id, ...errFields(err) }));
     return;
   }
 
-  const lecture: LectureDoc = {
-    id,
-    title: String(data.title || ''),
-    subjectName: data.subjectName ? String(data.subjectName) : undefined,
-    subjectId: data.subjectId ? String(data.subjectId) : undefined,
-    stageId,
-    type: data.type as any,
-    number: typeof data.number === 'number' ? data.number : null,
-    pdfUrl: data.pdfUrl ? String(data.pdfUrl) : undefined,
-    youtubeUrl: data.youtubeUrl ? String(data.youtubeUrl) : undefined,
-    telegramPost: data.telegramPost as any,
-  };
+  if (inFlightLectures.has(id)) return;
+  inFlightLectures.add(id);
 
-  await queueFor(chatId).push(`lec:${id}`, async () => {
-    try {
-      await sendLectureToTelegram(lecture, chatId);
-      noteOutbound(stageId);
-      markChannel(stageId, { state: 'ok', lastError: null });
-    } catch (error) {
-      if (error instanceof TelegramApiError && error.isAccessProblem) {
-        markChannel(stageId, { state: 'parked', lastError: error.description });
-        log.error('tg.lecture.access_problem', { stageId, chatId, description: error.description });
-      } else {
-        markChannel(stageId, { state: 'degraded', lastError: String(error) });
-        log.error('tg.lecture.failed', { stageId, lectureId: id, ...errFields(error) });
+  try {
+    const lecture: LectureDoc = {
+      id,
+      title: String(data.title || ''),
+      subjectName: data.subjectName ? String(data.subjectName) : undefined,
+      subjectId: data.subjectId ? String(data.subjectId) : undefined,
+      stageId,
+      type: data.type as any,
+      number: typeof data.number === 'number' ? data.number : null,
+      pdfUrl: data.pdfUrl ? String(data.pdfUrl) : undefined,
+      youtubeUrl: data.youtubeUrl ? String(data.youtubeUrl) : undefined,
+      telegramPost: data.telegramPost as any,
+    };
+
+    await queueFor(chatId).push(`lec:${id}`, async () => {
+      try {
+        await sendLectureToTelegram(lecture, chatId);
+        noteOutbound(stageId);
+        markChannel(stageId, { state: 'ok', lastError: null });
+      } catch (error: any) {
+        if (error instanceof TelegramApiError && error.isAccessProblem) {
+          markChannel(stageId, { state: 'parked', lastError: error.description });
+          log.error('tg.lecture.access_problem', { stageId, chatId, description: error.description });
+        } else {
+          markChannel(stageId, { state: 'degraded', lastError: String(error) });
+          log.error('tg.lecture.failed', { stageId, lectureId: id, ...errFields(error) });
+        }
+        await db.collection('lectures').doc(id).update({
+          'telegramPost.status': 'failed',
+          'telegramPost.error': String(error?.message || error),
+          'telegramPost.updatedAt': FieldValue.serverTimestamp(),
+          telegramShareRequestedAt: FieldValue.delete(),
+        }).catch(err => log.error('tg.lecture.status_update_failed', { lectureId: id, ...errFields(err) }));
       }
-      await db.collection('lectures').doc(id).update({
-        'telegramPost.status': 'error',
-        'telegramPost.error': String(error),
-        telegramShareRequestedAt: FieldValue.delete(),
-      }).catch(err => log.error('tg.lecture.status_update_failed', { lectureId: id, ...errFields(err) }));
-    }
-  });
+    });
+  } finally {
+    inFlightLectures.delete(id);
+  }
 }
 
 function startLectureManualWatcher(): () => void {
@@ -356,23 +387,23 @@ function startLectureManualWatcher(): () => void {
 
   const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
     ? query.onSnapshot(
-        snapshot => {
-          void (async () => {
-            for (const change of snapshot.docChanges()) {
-              if (change.type !== 'removed') {
-                await applyManual(change.doc.id, change.doc.data());
-              }
+      snapshot => {
+        void (async () => {
+          for (const change of snapshot.docChanges()) {
+            if (change.type !== 'removed') {
+              await applyManual(change.doc.id, change.doc.data());
             }
-          })().catch(error => {
-            log.error('watcher.manual_lecture_snapshot_failed', errFields(error));
-          });
-        },
-        error => {
-          log.error('listener.manual_lecture_error', errFields(error));
-          void poll();
-        },
-      )
-    : () => {};
+          }
+        })().catch(error => {
+          log.error('watcher.manual_lecture_snapshot_failed', errFields(error));
+        });
+      },
+      error => {
+        log.error('listener.manual_lecture_error', errFields(error));
+        void poll();
+      },
+    )
+    : () => { };
 
   void poll();
   const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);
@@ -446,36 +477,36 @@ function attach(stageId: string): void {
 
   const unsubscribe = firestoreStreamsEnabled(env.firestoreTransport)
     ? query.onSnapshot(
-        snapshot => {
-          // Apply one snapshot sequentially. This supplies real backpressure
-          // to the bounded per-chat queue during reconnect bursts.
-          void (async () => {
-            for (const change of snapshot.docChanges()) {
-              if (change.type === 'removed') {
-                if (!known.has(change.doc.id)) continue;
-                known.delete(change.doc.id);
-                await handleRemoval(change.doc.id, change.doc.data());
-              } else {
-                await applyUpsert(
-                  change.doc.id,
-                  change.doc.data(),
-                  change.doc.updateTime.toMillis(),
-                  'stream',
-                );
-              }
+      snapshot => {
+        // Apply one snapshot sequentially. This supplies real backpressure
+        // to the bounded per-chat queue during reconnect bursts.
+        void (async () => {
+          for (const change of snapshot.docChanges()) {
+            if (change.type === 'removed') {
+              if (!known.has(change.doc.id)) continue;
+              known.delete(change.doc.id);
+              await handleRemoval(change.doc.id, change.doc.data());
+            } else {
+              await applyUpsert(
+                change.doc.id,
+                change.doc.data(),
+                change.doc.updateTime.toMillis(),
+                'stream',
+              );
             }
-          })().catch(error => {
-            log.error('watcher.snapshot_failed', { stageId, ...errFields(error) });
-            markChannel(stageId, { state: 'degraded', lastError: String(error) });
-          });
-        },
-        error => {
-          log.error('listener.error', { stageId, ...errFields(error) });
+          }
+        })().catch(error => {
+          log.error('watcher.snapshot_failed', { stageId, ...errFields(error) });
           markChannel(stageId, { state: 'degraded', lastError: String(error) });
-          void poll();
-        },
-      )
-    : () => {};
+        });
+      },
+      error => {
+        log.error('listener.error', { stageId, ...errFields(error) });
+        markChannel(stageId, { state: 'degraded', lastError: String(error) });
+        void poll();
+      },
+    )
+    : () => { };
 
   void poll();
   const pollTimer = setInterval(() => { void poll(); }, WATCHER_POLL_MS);

@@ -19,6 +19,13 @@ import { statusWriteAllowed } from './statusOwnership.ts';
  */
 
 interface ChannelStatus {
+  lectureChatId?: number | null;
+  lectureTitle?: string;
+  lectureAdminOk?: boolean;
+  lectureMissingRights?: string[];
+  lectureState?: 'ok' | 'degraded' | 'parked';
+  lectureLastError?: string | null;
+  lectureLastErrorAt?: string | null;
   chatId?: number;
   title?: string;
   adminOk?: boolean;

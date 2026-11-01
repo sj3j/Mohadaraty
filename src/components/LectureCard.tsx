@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileText, Download, Send, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check, Mic } from 'lucide-react';
+import { FileText, Download, Send, RotateCcw, AlertCircle, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check, Mic } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
 import { canManage, isMasterAdmin, isSupport } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
@@ -61,7 +61,16 @@ export default React.memo(function LectureCard({
     || (user?.role === 'admin' && user?.managedStageId === lecture.stageId)
     || canManage(user, 'manageLectures');
   const isAlreadyPostedTelegram = Boolean((lecture as any).telegramPost?.messageId);
-  const isPendingTelegram = (lecture as any).telegramPost?.status === 'pending';
+  const tgPostStatus = (lecture as any).telegramPost?.status;
+  const tgPostError = (lecture as any).telegramPost?.error;
+  const requestedAtMs = (lecture as any).telegramPost?.requestedAt?.toMillis?.() 
+    ?? (typeof (lecture as any).telegramPost?.requestedAt?.seconds === 'number' 
+        ? (lecture as any).telegramPost.requestedAt.seconds * 1000 
+        : null);
+  // 180 seconds fallback timeout
+  const isPendingTimedOut = tgPostStatus === 'pending' && requestedAtMs && (Date.now() - requestedAtMs > 180_000);
+  const isPendingTelegram = tgPostStatus === 'pending' && !isPendingTimedOut;
+  const isFailedTelegram = tgPostStatus === 'failed' || tgPostStatus === 'error' || isPendingTimedOut;
 
   const { thumbnail, aspectRatio: thumbRatio, isLoading: isThumbLoading, error: thumbError } = usePdfThumbnail(
     lecture.id,
@@ -893,23 +902,29 @@ export default React.memo(function LectureCard({
                       disabled={isPostingTelegram || isPendingTelegram}
                       className="flex-1 flex flex-col items-center justify-center py-2 px-1 rounded-xl text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 transition-all disabled:opacity-50 cursor-pointer"
                       title={
-                        isAlreadyPostedTelegram
+                        isPendingTelegram
+                          ? (isRtl ? 'جاري الإرسال إلى تيليجرام...' : 'Sending to Telegram...')
+                          : isFailedTelegram
+                          ? (isRtl ? `تعذّر النشر (${tgPostError || 'انتهت المهلة'}) — اضغط للمحاولة مجدداً` : `Failed (${tgPostError || 'timed out'}) — click to retry`)
+                          : isAlreadyPostedTelegram
                           ? (isRtl ? 'تم النشر مسبقاً — اضغط لإعادة النشر على تيليجرام' : 'Already posted — click to re-share to Telegram')
                           : (isRtl ? 'نشر المحاضرة على قناة تيليجرام' : 'Post lecture to Telegram')
                       }
                     >
                       {isPostingTelegram || isPendingTelegram ? (
                         <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1 animate-spin text-cyan-500" />
+                      ) : isFailedTelegram ? (
+                        <RotateCcw className="w-4 h-4 sm:w-5 sm:h-5 mb-1 text-amber-500" />
+                      ) : isAlreadyPostedTelegram ? (
+                        <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1 text-teal-600 dark:text-teal-400" />
                       ) : (
-                        isAlreadyPostedTelegram ? (
-                          <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1 text-teal-600 dark:text-teal-400" />
-                        ) : (
-                          <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
-                        )
+                        <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
                       )}
                       <span className="text-[10px] font-bold">
                         {isPostingTelegram || isPendingTelegram
                           ? (isRtl ? 'جاري الإرسال' : 'Sending...')
+                          : isFailedTelegram
+                          ? (isRtl ? 'إعادة الإرسال' : 'Retry')
                           : (telegramSuccess || isAlreadyPostedTelegram)
                           ? (isRtl ? 'تم النشر' : 'Posted')
                           : (isRtl ? 'تيليجرام' : 'Telegram')}

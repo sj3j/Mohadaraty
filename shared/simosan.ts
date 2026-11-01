@@ -31,29 +31,95 @@ import { serverCache } from './serverCache.js';
  * is what keeps the student's energy bar and the Google invoice from ever diverging:
  * every weight below is a real price ratio against uncached input.
  *
- * Official Gemini 3.5 Flash-Lite rates:
- *   Uncached Input: $0.30 per 1M tokens ($0.00000030 per token) -> 1.0 credit / token
- *   Context Caching (read): $0.03 per 1M tokens ($0.00000003 per token) -> 0.1 credits / token ($0.03 / $0.30 = 0.10)
- *   Output (incl. thinking): $2.50 per 1M tokens ($0.00000250 per token) -> 25 / 3 credits / token ($2.50 / $0.30 = 8.333...)
- *   Context Cache Storage: $1.00 per hour
+ * Supported Models & Pricing Matrix:
  *
- * One credit == one uncached input token == $0.30 per million ($0.00000030 USD).
- * Weekly Cap: 666,667 credits ($0.20 USD).
- * Monthly Cap (5 Weeks): 3,333,333 credits ($1.00 USD).
- * Deduction Formula:
- *   Credits Used = Uncached Input Tokens + (Cached Input Tokens * 0.1) + ((Candidate Output Tokens + Thinking Tokens) * (25 / 3))
+ * 1. Gemini 3.1 Flash-Lite (Default & Recommended):
+ *    Uncached Input: $0.25 per 1M tokens ($0.00000025 per token) -> 1.0 credit / token
+ *    Context Caching (read): $0.0625 per 1M tokens ($0.0000000625 per token) -> 0.25 credits / token ($0.0625 / $0.25 = 0.25)
+ *    Output (incl. thinking): $1.50 per 1M tokens ($0.00000150 per token) -> 6.0 credits / token ($1.50 / $0.25 = 6.0)
+ *    Weekly Cap ($0.20 USD): 800,000 credits
+ *    Monthly Cap ($1.00 USD / 5 Weeks): 4,000,000 credits
+ *
+ * 2. Gemini 3.5 Flash-Lite (Alternative):
+ *    Uncached Input: $0.30 per 1M tokens ($0.00000030 per token) -> 1.0 credit / token
+ *    Context Caching (read): $0.03 per 1M tokens ($0.00000003 per token) -> 0.10 credits / token ($0.03 / $0.30 = 0.10)
+ *    Output (incl. thinking): $2.50 per 1M tokens ($0.00000250 per token) -> 25 / 3 credits / token ($2.50 / $0.30 = 8.333...)
+ *    Weekly Cap ($0.20 USD): 666,667 credits
+ *    Monthly Cap ($1.00 USD / 5 Weeks): 3,333,333 credits
+ *
+ * Context Cache Storage: $1.00 per hour across all models.
  */
-export const UNIT_WEIGHT_UNCACHED_INPUT = 1;
-export const UNIT_WEIGHT_CACHED_INPUT = 0.1;
-export const UNIT_WEIGHT_OUTPUT = 25 / 3;
 
-/** One unit == one uncached input token == $0.30 per million ($0.00000030 USD). */
-export const USD_PER_UNIT = 0.30 / 1_000_000;
+export interface SimosanModelPricing {
+  id: string;
+  name: string;
+  nameAr: string;
+  uncachedInputUsdPer1M: number;
+  cachedInputUsdPer1M: number;
+  outputUsdPer1M: number;
+  unitWeightUncachedInput: number;
+  unitWeightCachedInput: number;
+  unitWeightOutput: number;
+  usdPerUnit: number;
+  weeklyBudgetUnits: number;
+  monthlyBudgetUnits: number;
+  tagAr: string;
+  tagEn: string;
+}
+
+export const SIMOSAN_MODELS: Record<string, SimosanModelPricing> = {
+  'gemini-3.1-flash-lite': {
+    id: 'gemini-3.1-flash-lite',
+    name: 'Gemini 3.1 Flash-Lite',
+    nameAr: 'جيميني 3.1 فلاش لايت',
+    uncachedInputUsdPer1M: 0.25,
+    cachedInputUsdPer1M: 0.0625,
+    outputUsdPer1M: 1.50,
+    unitWeightUncachedInput: 1,
+    unitWeightCachedInput: 0.25,
+    unitWeightOutput: 6,
+    usdPerUnit: 0.25 / 1_000_000,
+    weeklyBudgetUnits: 800_000,
+    monthlyBudgetUnits: 4_000_000,
+    tagAr: 'النموذج الافتراضي الموصى به — استجابة فائقة السرعة وموفرة',
+    tagEn: 'Recommended Default — Fast, cost-efficient, 6x output ratio',
+  },
+  'gemini-3.5-flash-lite': {
+    id: 'gemini-3.5-flash-lite',
+    name: 'Gemini 3.5 Flash-Lite',
+    nameAr: 'جيميني 3.5 فلاش لايت',
+    uncachedInputUsdPer1M: 0.30,
+    cachedInputUsdPer1M: 0.03,
+    outputUsdPer1M: 2.50,
+    unitWeightUncachedInput: 1,
+    unitWeightCachedInput: 0.10,
+    unitWeightOutput: 25 / 3,
+    usdPerUnit: 0.30 / 1_000_000,
+    weeklyBudgetUnits: 666_667,
+    monthlyBudgetUnits: 3_333_333,
+    tagAr: 'تكلفة كاش منخفضة للمحاضرات الطويلة ذات الأسئلة المتكررة',
+    tagEn: 'Ultra-low cached input rate for long lectures with frequent follow-ups',
+  },
+};
+
+export const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
+
+export function getModelPricing(modelId?: string): SimosanModelPricing {
+  if (modelId && SIMOSAN_MODELS[modelId]) {
+    return SIMOSAN_MODELS[modelId];
+  }
+  return SIMOSAN_MODELS[DEFAULT_MODEL];
+}
+
+export const UNIT_WEIGHT_UNCACHED_INPUT = 1;
+export const UNIT_WEIGHT_CACHED_INPUT = 0.25;
+export const UNIT_WEIGHT_OUTPUT = 6;
+
+/** One unit == one uncached input token == $0.25 per million ($0.00000025 USD). */
+export const USD_PER_UNIT = 0.25 / 1_000_000;
 
 /** Context cache storage rate: $1.00 USD per hour. */
 export const CONTEXT_CACHE_STORAGE_PER_HOUR_USD = 1.00;
-
-export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 /**
  * Tokens billed per PDF page. Natively embedded text is not charged on Gemini 3
@@ -84,11 +150,11 @@ export const MAX_QUESTIONS_PER_CHAT = 25;
 /**
  * Weekly energy allowance per subscriber:
  * 5 cycles per month, $1.00 USD / 5 = $0.20 USD per weekly cycle.
- * Energy credits per week = $0.20 USD / USD_PER_UNIT = 666,667 credits.
- * Monthly allowance across 5 weeks = $1.00 USD / USD_PER_UNIT = 3,333,333 credits.
+ * For gemini-3.1-flash-lite: $0.20 USD / (0.25/1M) = 800,000 credits.
+ * Monthly allowance across 5 weeks = $1.00 USD / (0.25/1M) = 4,000,000 credits.
  */
-export const DEFAULT_WEEKLY_UNIT_BUDGET = Math.round(0.20 / USD_PER_UNIT); // 666,667
-export const DEFAULT_5_WEEK_UNIT_BUDGET = 3_333_333; // 5 weeks * 666,666.67 = $1.00 USD
+export const DEFAULT_WEEKLY_UNIT_BUDGET = SIMOSAN_MODELS[DEFAULT_MODEL].weeklyBudgetUnits;   // 800,000
+export const DEFAULT_5_WEEK_UNIT_BUDGET = SIMOSAN_MODELS[DEFAULT_MODEL].monthlyBudgetUnits;  // 4,000,000
 export const DEFAULT_MONTHLY_UNIT_BUDGET = DEFAULT_5_WEEK_UNIT_BUDGET;
 export const WEEKLY_CAP_CREDITS = DEFAULT_WEEKLY_UNIT_BUDGET;
 export const MONTHLY_CAP_CREDITS = DEFAULT_5_WEEK_UNIT_BUDGET;
@@ -320,13 +386,17 @@ export function extractUsageMetadata(responseOrChunk: any): GeminiUsage | null {
  *
  * `promptTokenCount` INCLUDES cached tokens, so the uncached portion is the
  * difference: uncached = Math.max(0, prompt - cached).
- * Thinking tokens are billed at the output rate (25 / 3 credits/token).
+ * Thinking tokens are billed at the output rate.
  *
- * Credits Used = Uncached + (Cached * 0.1) + ((Candidates + Thoughts) * (25 / 3))
+ * Credits Used = Uncached * weightUncached + (Cached * weightCached) + ((Candidates + Thoughts) * weightOutput)
  * Result is rounded up (Math.ceil) to discrete integer credits to eliminate fractional leakage.
  */
-export function unitsFromUsage(usage: GeminiUsage | undefined | null): number {
+export function unitsFromUsage(
+  usage: GeminiUsage | undefined | null,
+  modelId?: string,
+): number {
   if (!usage) return 0;
+  const pricing = getModelPricing(modelId);
   const prompt = Math.max(0, Number(usage.promptTokenCount) || 0);
   const cached = Math.max(0, Number(usage.cachedContentTokenCount) || 0);
   const candidates = Math.max(0, Number(usage.candidatesTokenCount) || 0);
@@ -336,9 +406,9 @@ export function unitsFromUsage(usage: GeminiUsage | undefined | null): number {
   return Math.max(
     0,
     Math.ceil(
-      uncached * UNIT_WEIGHT_UNCACHED_INPUT +
-        cached * UNIT_WEIGHT_CACHED_INPUT +
-        output * UNIT_WEIGHT_OUTPUT,
+      uncached * pricing.unitWeightUncachedInput +
+        cached * pricing.unitWeightCachedInput +
+        output * pricing.unitWeightOutput,
     ),
   );
 }
@@ -363,20 +433,23 @@ export function estimateUnits(input: {
   pageCount: number;
   historyChars: number;
   questionChars: number;
+  modelId?: string;
 }): number {
+  const pricing = getModelPricing(input.modelId);
   const pdfTokens = Math.max(0, input.pageCount) * TOKENS_PER_PDF_PAGE;
   // ~4 chars/token is the usual English approximation; Arabic runs denser, so
   // dividing by 3 errs high, which is the safe direction for a reservation.
   const textTokens = Math.ceil((input.historyChars + input.questionChars) / 3);
   const systemTokens = 500;
   const raw =
-    (pdfTokens + textTokens + systemTokens) * UNIT_WEIGHT_UNCACHED_INPUT +
-    ASSUMED_OUTPUT_TOKENS * UNIT_WEIGHT_OUTPUT;
+    (pdfTokens + textTokens + systemTokens) * pricing.unitWeightUncachedInput +
+    ASSUMED_OUTPUT_TOKENS * pricing.unitWeightOutput;
   return Math.ceil(raw * RESERVE_SAFETY_FACTOR);
 }
 
-export function unitsToUsd(units: number): number {
-  return Number((units * USD_PER_UNIT).toFixed(8));
+export function unitsToUsd(units: number, modelId?: string): number {
+  const pricing = getModelPricing(modelId);
+  return Number((units * pricing.usdPerUnit).toFixed(8));
 }
 
 /* ------------------------------------------------------------------ *
@@ -411,15 +484,20 @@ export function normaliseSettings(raw: any, now: Date = new Date()): SimosanSett
   // A new month zeroes the accumulator and clears the alert log. Doing it on
   // read means no cron is required to roll the budget over.
   const rolled = storedMonth !== month;
+  const model = raw?.model || DEFAULT_MODEL;
+  const pricing = getModelPricing(model);
+  const defaultWeekly = pricing.weeklyBudgetUnits;
+  const defaultMonthly = pricing.monthlyBudgetUnits;
+
   const budget = Number(raw?.weeklyUnitBudget) > 0
     ? Number(raw.weeklyUnitBudget)
-    : (Number(raw?.dailyUnitBudget) > 0 ? Number(raw.dailyUnitBudget) : DEFAULT_WEEKLY_UNIT_BUDGET);
+    : (Number(raw?.dailyUnitBudget) > 0 ? Number(raw.dailyUnitBudget) : defaultWeekly);
   const monthlyUnitBudget = Number(raw?.monthlyUnitBudget) > 0
     ? Number(raw.monthlyUnitBudget)
-    : (budget === DEFAULT_WEEKLY_UNIT_BUDGET ? DEFAULT_5_WEEK_UNIT_BUDGET : budget * 5);
+    : (budget === defaultWeekly ? defaultMonthly : budget * 5);
   return {
     enabled: raw?.enabled !== false,
-    model: raw?.model || DEFAULT_MODEL,
+    model,
     weeklyUnitBudget: budget,
     monthlyUnitBudget,
     dailyUnitBudget: budget,
@@ -651,14 +729,13 @@ export async function reconcileEnergy(
   const month = baghdadMonthKey(now);
   const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
-  const spendUsd = unitsToUsd(input.actualUnits);
-
   const result = await db.runTransaction(async (t) => {
     const [settingsSnap, usageSnap] = await Promise.all([
       t.get(settingsRef),
       t.get(usageRef),
     ]);
     const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
+    const spendUsd = unitsToUsd(input.actualUnits, settings.model);
     const data = usageSnap.exists ? usageSnap.data() : null;
 
     const used = Number(data?.unitsUsed) || 0;
@@ -795,14 +872,13 @@ export async function settleOffTopic(
   const month = baghdadMonthKey(now);
   const usageRef = db.collection('aiUsage').doc(usageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
-  const spendUsd = unitsToUsd(input.actualUnits);
-
   const result = await db.runTransaction(async (t) => {
     const [settingsSnap, usageSnap] = await Promise.all([
       t.get(settingsRef),
       t.get(usageRef),
     ]);
     const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
+    const spendUsd = unitsToUsd(input.actualUnits, settings.model);
     const data = usageSnap.exists ? usageSnap.data() : null;
 
     const used = Number(data?.unitsUsed) || 0;
@@ -928,11 +1004,10 @@ export async function recordSpendAndCheckCeiling(
   const { db, FieldValue } = ctx;
   const month = baghdadMonthKey(now);
   const settingsRef = db.collection('app_settings').doc('simosan');
-  const spendUsd = unitsToUsd(actualUnits);
-
   const result = await db.runTransaction(async (t) => {
     const snap = await t.get(settingsRef);
     const settings = normaliseSettings(snap.exists ? snap.data() : null, now);
+    const spendUsd = unitsToUsd(actualUnits, settings.model);
     const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
     const isOverCeiling = nextMonthUsd >= settings.monthlyCeilingUsd;
 
@@ -1040,14 +1115,13 @@ export async function reconcileFreeQuestion(
   const month = baghdadMonthKey(now);
   const usageRef = db.collection('aiUsage').doc(freeUsageDocId(input.uid, week));
   const settingsRef = db.collection('app_settings').doc('simosan');
-  const spendUsd = unitsToUsd(input.actualUnits);
-
   const result = await db.runTransaction(async (t) => {
     const [settingsSnap, usageSnap] = await Promise.all([
       t.get(settingsRef),
       t.get(usageRef),
     ]);
     const settings = normaliseSettings(settingsSnap.exists ? settingsSnap.data() : null, now);
+    const spendUsd = unitsToUsd(input.actualUnits, settings.model);
     const data = usageSnap.exists ? usageSnap.data() : null;
     const used = Number(data?.usedCount) || 0;
     const held = Number(data?.reservedCount) || 0;

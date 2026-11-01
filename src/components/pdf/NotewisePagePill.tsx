@@ -7,6 +7,7 @@ interface Props {
   scalePercent: number;
   isNightMode: boolean;
   isAnnotationMode?: boolean;
+  zoomLabelRef?: React.Ref<HTMLSpanElement>;
   onToggleNightMode: () => void;
   onOpenPageJump: () => void;
 }
@@ -17,6 +18,7 @@ export const NotewisePagePill: React.FC<Props> = ({
   scalePercent,
   isNightMode,
   isAnnotationMode,
+  zoomLabelRef,
   onToggleNightMode,
   onOpenPageJump,
 }) => {
@@ -46,7 +48,10 @@ export const NotewisePagePill: React.FC<Props> = ({
         <div className="w-[1px] h-3.5 bg-zinc-200 dark:bg-zinc-800" />
 
         {/* Zoom percentage */}
-        <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-zinc-400 min-w-[30px] sm:min-w-[34px] text-center select-none">
+        <span
+          ref={zoomLabelRef}
+          className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-zinc-400 min-w-[30px] sm:min-w-[34px] text-center select-none"
+        >
           {scalePercent}%
         </span>
 

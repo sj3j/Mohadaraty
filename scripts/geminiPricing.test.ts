@@ -1,7 +1,8 @@
 /**
- * Dedicated test suite for Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite)
- * pricing constants, Option B weighted token credits, usage metadata extraction,
- * streaming resilience against client disconnects, and 5-week rolling quota enforcement.
+ * Dedicated test suite for Gemini 3.1 Flash-Lite (gemini-3.1-flash-lite)
+ * & Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite) pricing constants,
+ * multi-model dynamic calculations, Option B weighted token credits,
+ * usage metadata extraction, streaming resilience, and 5-week rolling quota enforcement.
  *
  * Runnable standalone via:
  *   npx tsx scripts/geminiPricing.test.ts
@@ -14,6 +15,8 @@ import {
   USD_PER_UNIT,
   CONTEXT_CACHE_STORAGE_PER_HOUR_USD,
   DEFAULT_MODEL,
+  SIMOSAN_MODELS,
+  getModelPricing,
   DEFAULT_WEEKLY_UNIT_BUDGET,
   DEFAULT_5_WEEK_UNIT_BUDGET,
   WEEKLY_CAP_CREDITS,
@@ -119,7 +122,7 @@ function createMockFirestoreCtx() {
 
 async function runAllTests() {
   console.log('=====================================================================');
-  console.log('  Gemini 3.5 Flash-Lite Pricing, Billing & Token Verification Suite  ');
+  console.log('  Gemini 3.1 Flash-Lite & 3.5 Flash-Lite Multi-Model Pricing Suite   ');
   console.log('=====================================================================\n');
 
   // -------------------------------------------------------------------------
@@ -127,50 +130,73 @@ async function runAllTests() {
   // -------------------------------------------------------------------------
   console.log('--- 1. Pricing Constants & Option B Credit Weights ---');
 
-  test('Model identifier is gemini-3.5-flash-lite', () => {
-    assert.equal(DEFAULT_MODEL, 'gemini-3.5-flash-lite');
+  test('Model identifier is gemini-3.1-flash-lite', () => {
+    assert.equal(DEFAULT_MODEL, 'gemini-3.1-flash-lite');
   });
 
-  test('Unit weight: Uncached Input = 1.0 credit per token ($0.30 / 1M)', () => {
+  test('Unit weight: Uncached Input = 1.0 credit per token ($0.25 / 1M)', () => {
     assert.equal(UNIT_WEIGHT_UNCACHED_INPUT, 1.0);
   });
 
-  test('Unit weight: Cached Input = 0.10 credits per token ($0.03 / 1M)', () => {
-    assert.equal(UNIT_WEIGHT_CACHED_INPUT, 0.10);
-    // Ratio check: $0.03 / $0.30 === 0.10
-    assert.equal(0.03 / 0.30, 0.1);
+  test('Unit weight: Cached Input = 0.25 credits per token ($0.0625 / 1M)', () => {
+    assert.equal(UNIT_WEIGHT_CACHED_INPUT, 0.25);
+    // Ratio check: $0.0625 / $0.25 === 0.25
+    assert.equal(0.0625 / 0.25, 0.25);
   });
 
-  test('Unit weight: Output (incl. thinking) = 25 / 3 credits per token ($2.50 / 1M)', () => {
-    assert.equal(UNIT_WEIGHT_OUTPUT, 25 / 3);
-    // Ratio check: $2.50 / $0.30 === 25 / 3 === 8.333333333333334
-    assert.equal(2.50 / 0.30, 25 / 3);
+  test('Unit weight: Output (incl. thinking) = 6.0 credits per token ($1.50 / 1M)', () => {
+    assert.equal(UNIT_WEIGHT_OUTPUT, 6.0);
+    // Ratio check: $1.50 / $0.25 === 6.0
+    assert.equal(1.50 / 0.25, 6.0);
   });
 
   test('Context cache storage rate constant is $1.00 USD per hour', () => {
     assert.equal(CONTEXT_CACHE_STORAGE_PER_HOUR_USD, 1.00);
   });
 
-  test('1 credit == 1 uncached input token == $0.00000030 USD', () => {
-    assert.equal(USD_PER_UNIT, 0.30 / 1_000_000);
-    assert.equal(unitsToUsd(1_000_000), 0.30);
-    assert.equal(unitsToUsd(1), 0.00000030);
+  test('1 credit == 1 uncached input token == $0.00000025 USD', () => {
+    assert.equal(USD_PER_UNIT, 0.25 / 1_000_000);
+    assert.equal(unitsToUsd(1_000_000), 0.25);
+    assert.equal(unitsToUsd(1), 0.00000025);
   });
 
-  test('Weekly budget cap is 666,667 credits ($0.20 USD)', () => {
-    assert.equal(DEFAULT_WEEKLY_UNIT_BUDGET, 666_667);
-    assert.equal(WEEKLY_CAP_CREDITS, 666_667);
-    // 666,667 credits * $0.00000030 USD/credit = $0.20000010 USD (~$0.20 USD)
-    const cost = unitsToUsd(666_667);
+  test('Weekly budget cap is 800,000 credits ($0.20 USD)', () => {
+    assert.equal(DEFAULT_WEEKLY_UNIT_BUDGET, 800_000);
+    assert.equal(WEEKLY_CAP_CREDITS, 800_000);
+    // 800,000 credits * $0.00000025 USD/credit = $0.20000000 USD
+    const cost = unitsToUsd(800_000);
     assert.ok(Math.abs(cost - 0.20) < 0.0001, `Expected ~$0.20, got ${cost}`);
   });
 
-  test('5-week monthly budget cap is 3,333,333 credits ($1.00 USD)', () => {
-    assert.equal(DEFAULT_5_WEEK_UNIT_BUDGET, 3_333_333);
-    assert.equal(MONTHLY_CAP_CREDITS, 3_333_333);
-    // 3,333,333 credits * $0.00000030 USD/credit = $0.99999990 USD (~$1.00 USD)
-    const cost = unitsToUsd(3_333_333);
+  test('5-week monthly budget cap is 4,000,000 credits ($1.00 USD)', () => {
+    assert.equal(DEFAULT_5_WEEK_UNIT_BUDGET, 4_000_000);
+    assert.equal(MONTHLY_CAP_CREDITS, 4_000_000);
+    // 4,000,000 credits * $0.00000025 USD/credit = $1.00000000 USD
+    const cost = unitsToUsd(4_000_000);
     assert.ok(Math.abs(cost - 1.00) < 0.0001, `Expected ~$1.00, got ${cost}`);
+  });
+
+  test('Multi-model registry: gemini-3.5-flash-lite rates and dynamic calculation', () => {
+    const p35 = getModelPricing('gemini-3.5-flash-lite');
+    assert.equal(p35.id, 'gemini-3.5-flash-lite');
+    assert.equal(p35.uncachedInputUsdPer1M, 0.30);
+    assert.equal(p35.cachedInputUsdPer1M, 0.03);
+    assert.equal(p35.outputUsdPer1M, 2.50);
+    assert.equal(p35.unitWeightUncachedInput, 1.0);
+    assert.equal(p35.unitWeightCachedInput, 0.10);
+    assert.equal(p35.unitWeightOutput, 25 / 3);
+    assert.equal(p35.weeklyBudgetUnits, 666_667);
+    assert.equal(p35.monthlyBudgetUnits, 3_333_333);
+
+    // Dynamic calculation under 3.5 pricing
+    const usage: GeminiUsage = { promptTokenCount: 1_000, candidatesTokenCount: 300 };
+    // 3.5: 1,000 * 1 + 300 * (25/3) = 1,000 + 2,500 = 3,500 credits
+    const credits35 = unitsFromUsage(usage, 'gemini-3.5-flash-lite');
+    assert.equal(credits35, 3_500);
+
+    // 3.1: 1,000 * 1 + 300 * 6 = 1,000 + 1,800 = 2,800 credits
+    const credits31 = unitsFromUsage(usage, 'gemini-3.1-flash-lite');
+    assert.equal(credits31, 2_800);
   });
 
   // -------------------------------------------------------------------------
@@ -179,105 +205,106 @@ async function runAllTests() {
   console.log('\n--- 2. Reference Benchmarks (7 Profiles) ---');
 
   // Benchmark 1: 100% Uncached Input
-  test('Benchmark 1 (100% Uncached Input): 666,667 weekly / 3,333,333 5-week tokens', () => {
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 666_667, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
+  test('Benchmark 1 (100% Uncached Input): 800,000 weekly / 4,000,000 5-week tokens', () => {
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 800_000, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
-    assert.equal(weeklyCredits, 666_667);
+    assert.equal(weeklyCredits, 800_000);
     assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
 
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 3_333_333, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 4_000_000, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
-    assert.equal(fiveWeekCredits, 3_333_333);
+    assert.equal(fiveWeekCredits, 4_000_000);
     assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
   });
 
   // Benchmark 2: 100% Output (including thinking tokens)
-  test('Benchmark 2 (100% Output): 80,000 weekly / 400,000 5-week tokens', () => {
-    // Weekly: 80,000 output tokens * (25 / 3) = 666,666.666... -> Math.ceil = 666,667 credits
-    const weeklyCandidates: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 80_000 };
+  test('Benchmark 2 (100% Output): 133,334 weekly / 666,667 5-week tokens', () => {
+    // Weekly: 133,334 output tokens * 6 = 800,004 credits
+    const weeklyCandidates: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 133_334 };
     const weeklyCredits = unitsFromUsage(weeklyCandidates);
-    assert.equal(weeklyCredits, 666_667);
+    assert.equal(weeklyCredits, 800_004);
     assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
 
     // Also verify with thinking tokens
-    const weeklyThinking: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 40_000, thoughtsTokenCount: 40_000 };
-    assert.equal(unitsFromUsage(weeklyThinking), 666_667);
+    const weeklyThinking: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 66_667, thoughtsTokenCount: 66_667 };
+    assert.equal(unitsFromUsage(weeklyThinking), 800_004);
 
-    // 5-week: 400,000 output tokens * (25 / 3) = 3,333,333.333... -> Math.ceil = 3,333,334 credits
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 200_000, thoughtsTokenCount: 200_000 };
+    // 5-week: 666,667 output tokens * 6 = 4,000,002 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 333_334, thoughtsTokenCount: 333_333 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
     assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
   });
 
   // Benchmark 3: 100% Cached Input
-  test('Benchmark 3 (100% Cached Input): 6,666,667 weekly / 33,333,333 5-week tokens', () => {
+  test('Benchmark 3 (100% Cached Input): 3,200,000 weekly / 16,000,000 5-week tokens', () => {
     // In Gemini API, promptTokenCount includes cachedContentTokenCount
-    // 6,666,667 cached tokens * 0.1 = 666,666.7 -> Math.ceil = 666,667 credits
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 6_666_667, cachedContentTokenCount: 6_666_667 };
+    // 3,200,000 cached tokens * 0.25 = 800,000 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 3_200_000, cachedContentTokenCount: 3_200_000 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
-    assert.equal(weeklyCredits, 666_667);
+    assert.equal(weeklyCredits, 800_000);
     assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
 
-    // 5-week: 33,333,333 cached tokens * 0.1 = 3,333,333.3 -> Math.ceil = 3,333,334 credits
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 33_333_333, cachedContentTokenCount: 33_333_333 };
+    // 5-week: 16,000,000 cached tokens * 0.25 = 4,000,000 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 16_000_000, cachedContentTokenCount: 16_000_000 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.equal(fiveWeekCredits, 4_000_000);
     assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
   });
 
   // Benchmark 4: 1:1 Split (50% In / 50% Out)
-  test('Benchmark 4 (1:1 Split): 142,857 weekly / 714,286 5-week tokens', () => {
-    // 142,857 total tokens: 71,428 uncached input, 71,429 output
-    // Credits = 71,428 + 71,429 * (25 / 3) = 71,428 + 595,241.67 = 666,669.67 -> 666,670 credits
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 71_428, candidatesTokenCount: 71_429 };
+  test('Benchmark 4 (1:1 Split): 228,572 weekly / 1,142,858 5-week tokens', () => {
+    // 228,572 total tokens: 114,286 uncached input, 114,286 output
+    // Credits = 114,286 * 1 + 114,286 * 6 = 114,286 + 685,716 = 800,002 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 114_286, candidatesTokenCount: 114_286 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
-    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET, `Expected >= 666667, got ${weeklyCredits}`);
+    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET, `Expected >= 800000, got ${weeklyCredits}`);
 
-    // 5-week: 714,286 total tokens: 357,143 input, 357,143 output
-    // Credits = 357,143 + 357,143 * (25 / 3) = 357,143 + 2,976,191.67 = 3,333,334.67 -> 3,333,335 credits
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 357_143, candidatesTokenCount: 357_143 };
+    // 5-week: 1,142,858 total tokens: 571,429 input, 571,429 output
+    // Credits = 571,429 * 1 + 571,429 * 6 = 571,429 + 3,428,574 = 4,000,003 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 571_429, candidatesTokenCount: 571_429 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
-    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET, `Expected >= 3333333, got ${fiveWeekCredits}`);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET, `Expected >= 4000000, got ${fiveWeekCredits}`);
   });
 
   // Benchmark 5: 3:1 Split (75% In / 25% Out)
-  test('Benchmark 5 (3:1 Split): 235,294 weekly / 1,176,471 5-week tokens', () => {
-    // Theoretical combined rate: 0.75 * 1 + 0.25 * (25/3) = 17 / 6
-    // 235,294 tokens * (17 / 6) = 666,666.33 -> 666,667 credits
-    // Token split: 176,471 input, 58,823 output
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 176_471, candidatesTokenCount: 58_823 };
+  test('Benchmark 5 (3:1 Split): 355,556 weekly / 1,777,778 5-week tokens', () => {
+    // Combined rate: 0.75 * 1 + 0.25 * 6 = 2.25 credits/token
+    // 355,556 * 2.25 = 800,001 credits
+    // Token split: 266,667 input, 88,889 output
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 266_667, candidatesTokenCount: 88_889 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
     assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 5);
 
-    // 5-week split: 882,353 input, 294,118 output
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 882_353, candidatesTokenCount: 294_118 };
+    // 5-week split: 1,333,334 input, 444,445 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_333_334, candidatesTokenCount: 444_445 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
     assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
   });
 
   // Benchmark 6: 4:1 Split (80% In / 20% Out)
-  test('Benchmark 6 (4:1 Split): 270,270 weekly / 1,351,351 5-week tokens', () => {
-    // Theoretical combined rate: 0.8 * 1 + 0.2 * (25/3) = 37 / 15
-    // 270,270 * 37 / 15 = 666,666.0 -> 666,666 credits
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 216_216, candidatesTokenCount: 54_054 };
+  test('Benchmark 6 (4:1 Split): 400,000 weekly / 2,000,000 5-week tokens', () => {
+    // Combined rate: 0.8 * 1 + 0.2 * 6 = 2.0 credits/token
+    // 400,000 * 2.0 = 800,000 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 320_000, candidatesTokenCount: 80_000 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
-    assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 2);
+    assert.equal(weeklyCredits, DEFAULT_WEEKLY_UNIT_BUDGET);
 
-    // 5-week split: 1,081,081 input, 270,270 output
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_081_081, candidatesTokenCount: 270_270 };
+    // 5-week split: 1,600,000 input, 400,000 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_600_000, candidatesTokenCount: 400_000 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
-    assert.ok(Math.abs(fiveWeekCredits - DEFAULT_5_WEEK_UNIT_BUDGET) <= 2);
+    assert.equal(fiveWeekCredits, DEFAULT_5_WEEK_UNIT_BUDGET);
   });
 
   // Benchmark 7: 9:1 Split (90% In / 10% Out)
-  test('Benchmark 7 (9:1 Split): 384,615 weekly / 1,923,077 5-week tokens', () => {
-    // Theoretical combined rate: 0.9 * 1 + 0.1 * (25/3) = 26 / 15
-    // 384,615 * 26 / 15 = 666,666.0 -> 666,666 credits
-    const weeklyUsage: GeminiUsage = { promptTokenCount: 346_154, candidatesTokenCount: 38_461 };
+  test('Benchmark 7 (9:1 Split): 533,334 weekly / 2,666,667 5-week tokens', () => {
+    // Combined rate: 0.9 * 1 + 0.1 * 6 = 1.5 credits/token
+    // 533,334 * 1.5 = 800,001 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 480_000, candidatesTokenCount: 53_334 };
     const weeklyCredits = unitsFromUsage(weeklyUsage);
     assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 5);
 
-    // 5-week split: 1,730,769 input, 192,308 output
-    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_730_769, candidatesTokenCount: 192_308 };
+    // 5-week split: 2,400,000 input, 266,667 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 2_400_000, candidatesTokenCount: 266_667 };
     const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
     assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
   });
@@ -303,35 +330,41 @@ async function runAllTests() {
     assert.equal(extracted!.cachedContentTokenCount, 12_000);
     assert.equal(extracted!.thoughtsTokenCount, 250);
 
+    // gemini-3.1-flash-lite rates:
     // Uncached = 15,000 - 12,000 = 3,000
     // Output = 850 + 250 = 1,100
-    // Credits = 3,000 * 1 + 12,000 * 0.1 + 1,100 * (25 / 3) = 3,000 + 1,200 + 9,166.67 = 13,367 credits
+    // Credits = 3,000 * 1 + 12,000 * 0.25 + 1,100 * 6 = 3,000 + 3,000 + 6,600 = 12,600 credits
     const credits = unitsFromUsage(extracted);
-    assert.equal(credits, 13_367);
+    assert.equal(credits, 12_600);
+
+    // gemini-3.5-flash-lite rates:
+    // Credits = 3,000 * 1 + 12,000 * 0.1 + 1,100 * (25 / 3) = 3,000 + 1,200 + 9,166.67 = 13,367 credits
+    const credits35 = unitsFromUsage(extracted, 'gemini-3.5-flash-lite');
+    assert.equal(credits35, 13_367);
   });
 
-  test('Thinking tokens are billed at output rate (25 / 3) without double-counting', () => {
+  test('Thinking tokens are billed at output rate (6.0 on 3.1) without double-counting', () => {
     // 0 prompt, 100 candidate tokens, 50 thinking tokens
-    // Output = 150 tokens * (25 / 3) = 1,250 credits
+    // Output = 150 tokens * 6 = 900 credits
     const usage: GeminiUsage = {
       promptTokenCount: 0,
       candidatesTokenCount: 100,
       thoughtsTokenCount: 50,
     };
     const credits = unitsFromUsage(usage);
-    assert.equal(credits, 1_250);
+    assert.equal(credits, 900);
   });
 
   test('Cached input tokens deduction: prompt includes cached tokens', () => {
     // Prompt = 10,000 with 7,000 cached. Uncached = 3,000.
-    // Credits = 3,000 * 1.0 + 7,000 * 0.1 = 3,000 + 700 = 3,700 credits
+    // Credits = 3,000 * 1.0 + 7,000 * 0.25 = 3,000 + 1,750 = 4,750 credits
     const usage: GeminiUsage = {
       promptTokenCount: 10_000,
       cachedContentTokenCount: 7_000,
       candidatesTokenCount: 0,
       thoughtsTokenCount: 0,
     };
-    assert.equal(unitsFromUsage(usage), 3_700);
+    assert.equal(unitsFromUsage(usage), 4_750);
   });
 
   test('extractUsageMetadata rejects non-token objects and sanitizes negative counts', () => {
@@ -397,8 +430,8 @@ async function runAllTests() {
     assert.equal(result.usage!.candidatesTokenCount, 120);
     assert.equal(result.usage!.thoughtsTokenCount, 60);
 
-    // Uncached: 1,000 + Cached: 400 + Output: 180 * (25/3) = 1,500 = 2,900 credits
-    assert.equal(unitsFromUsage(result.usage), 2_900);
+    // Uncached: 1,000 + Cached: 1,000 (4,000 * 0.25) + Output: 1,080 (180 * 6) = 3,080 credits
+    assert.equal(unitsFromUsage(result.usage), 3_080);
   });
 
   test('Streaming resilience: captures final usage even if client disconnects mid-stream', async () => {
@@ -447,8 +480,8 @@ async function runAllTests() {
     assert.equal(result.usage!.candidatesTokenCount, 300);
     assert.equal(result.usage!.thoughtsTokenCount, 120);
 
-    // Uncached = 2,000, Cached = 1,800, Output = 420 * (25/3) = 3,500. Total = 7,300 credits
-    assert.equal(unitsFromUsage(result.usage), 7_300);
+    // Uncached = 2,000, Cached = 4,500 (18,000 * 0.25), Output = 2,520 (420 * 6). Total = 9,020 credits
+    assert.equal(unitsFromUsage(result.usage), 9_020);
   });
 
   // -------------------------------------------------------------------------
@@ -456,28 +489,28 @@ async function runAllTests() {
   // -------------------------------------------------------------------------
   console.log('\n--- 5. Quota Management & 5-Week Rolling Cycle ---');
 
-  await test('Weekly quota exhaustion: request within 666,667 credits succeeds, request beyond is rejected', async () => {
+  await test('Weekly quota exhaustion: request within 800,000 credits succeeds, request beyond is rejected', async () => {
     const { ctx } = createMockFirestoreCtx();
     const uid = 'student_weekly_test';
     const t0 = new Date('2026-10-31T08:00:00Z');
     const t1 = new Date('2026-10-31T12:00:00Z'); // 4h later (past 2h burst cooldown)
     const t2 = new Date('2026-10-31T16:00:00Z'); // 4h later
 
-    // 1. Initial reservation of 400,000 credits succeeds
-    const res1 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 400_000 }, t0);
+    // 1. Initial reservation of 500,000 credits succeeds
+    const res1 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 500_000 }, t0);
     assert.equal(res1.ok, true);
-    assert.equal(res1.reserved, 400_000);
-    assert.equal(res1.remaining, 266_667);
+    assert.equal(res1.reserved, 500_000);
+    assert.equal(res1.remaining, 300_000);
 
-    // Settle with 400,000 credits
-    await reconcileEnergy(ctx, { uid, reservedUnits: 400_000, actualUnits: 400_000 }, t0);
+    // Settle with 500,000 credits
+    await reconcileEnergy(ctx, { uid, reservedUnits: 500_000, actualUnits: 500_000 }, t0);
 
-    // 2. Second reservation of 266,667 credits reaches exact weekly cap
-    const res2 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 266_667 }, t1);
+    // 2. Second reservation of 300,000 credits reaches exact weekly cap (800,000)
+    const res2 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 300_000 }, t1);
     assert.equal(res2.ok, true);
     assert.equal(res2.remaining, 0);
 
-    await reconcileEnergy(ctx, { uid, reservedUnits: 266_667, actualUnits: 266_667 }, t1);
+    await reconcileEnergy(ctx, { uid, reservedUnits: 300_000, actualUnits: 300_000 }, t1);
 
     // 3. Third reservation attempts 1 credit past the cap -> rejected
     const res3 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 1 }, t2);
@@ -486,7 +519,7 @@ async function runAllTests() {
     assert.equal(res3.remaining, 0);
   });
 
-  await test('5-Week Rolling Cycle: accumulating 3,333,333 credits across 5 weeks rejects new requests', async () => {
+  await test('5-Week Rolling Cycle: accumulating 4,000,000 credits across 5 weeks rejects new requests', async () => {
     const { ctx, store } = createMockFirestoreCtx();
     const uid = 'student_rolling_test';
     const t0 = new Date('2026-10-31T08:00:00Z');
@@ -495,26 +528,25 @@ async function runAllTests() {
     const rollingKeys = getRollingWeekKeys(currentWeek, 5);
     assert.equal(rollingKeys.length, 5);
 
-    // Populate the 4 prior weeks with 666,666 credits each
-    // 4 * 666,666 = 2,666,664 credits already used
+    // Populate the 4 prior weeks with 800,000 credits each
+    // 4 * 800,000 = 3,200,000 credits already used
     for (let i = 1; i < 5; i++) {
       const priorWeekKey = rollingKeys[i];
       store.set(`aiUsage/${uid}_${priorWeekKey}`, {
         uid,
         week: priorWeekKey,
-        unitsUsed: 666_666,
+        unitsUsed: 800_000,
         unitsReserved: 0,
       });
     }
 
-    // In current week, student has remaining 5-week allowance = 3,333,333 - 2,666,664 = 666,669 credits
-    // But weekly cap is 666,667 credits.
-    const res1 = await reserveEnergy(ctx, { uid, stageId: 's', estimatedUnits: 666_667 }, t0);
+    // In current week, student reserves remaining 800,000 credits -> total 4,000,000
+    const res1 = await reserveEnergy(ctx, { uid, stageId: 's', estimatedUnits: 800_000 }, t0);
     assert.equal(res1.ok, true);
-    await reconcileEnergy(ctx, { uid, reservedUnits: 666_667, actualUnits: 666_667 }, t0);
+    await reconcileEnergy(ctx, { uid, reservedUnits: 800_000, actualUnits: 800_000 }, t0);
 
-    // Total 5-week usage is now 2,666,664 + 666,667 = 3,333,331 credits (~3,333,333).
-    // An additional request of 100 units exceeds 3,333,333 cap -> rejected
+    // Total 5-week usage is now 3,200,000 + 800,000 = 4,000,000 credits.
+    // An additional request of 100 units exceeds 4,000,000 cap -> rejected
     const res2 = await reserveEnergy(ctx, { uid, stageId: 's', estimatedUnits: 100 }, t1);
     assert.equal(res2.ok, false);
     assert.equal(res2.reason, 'insufficient_energy');
@@ -552,19 +584,19 @@ async function runAllTests() {
   test('Floating-point clean accumulator: 1,000 micro-transactions do not drift', () => {
     let settings = normaliseSettings({
       monthUsd: 0,
-      weeklyUnitBudget: 666_667,
+      weeklyUnitBudget: 800_000,
     });
 
-    // 1,000 micro calls of 333 units each (each call ~$0.00009990 USD)
+    // 1,000 micro calls of 400 units each (each call ~$0.00010000 USD)
     for (let i = 0; i < 1_000; i++) {
-      const spendUsd = unitsToUsd(333);
+      const spendUsd = unitsToUsd(400);
       const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
       settings.monthUsd = nextMonthUsd;
     }
 
-    // 333 * 1,000 = 333,000 credits
-    // 333,000 * 0.30 / 1,000,000 = 0.099900 USD
-    assert.equal(settings.monthUsd, 0.0999);
+    // 400 * 1,000 = 400,000 credits
+    // 400,000 * 0.25 / 1,000,000 = 0.100000 USD
+    assert.equal(settings.monthUsd, 0.1);
     assert.equal(typeof settings.monthUsd, 'number');
     assert.ok(!isNaN(settings.monthUsd));
   });
@@ -626,7 +658,7 @@ async function runAllTests() {
     },
   });
 
-  await test('Supabase reserveSupaEnergy enforces 666,667 weekly cap via atomic RPC', async () => {
+  await test('Supabase reserveSupaEnergy enforces 800,000 weekly cap via atomic RPC', async () => {
     const supaStore = new Map<string, any>();
     const mockSupa: any = createMockSupa(supaStore, true);
 
@@ -635,12 +667,12 @@ async function runAllTests() {
     const t0 = new Date('2026-10-31T09:00:00Z');
     const t1 = new Date('2026-10-31T13:00:00Z'); // 4 hours later (past cooldown)
 
-    // 1. Reserve 666,667 credits succeeds
-    const sRes1 = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 666_667, now: t0 });
+    // 1. Reserve 800,000 credits succeeds
+    const sRes1 = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 800_000, now: t0 });
     assert.equal(sRes1.ok, true);
     assert.equal(sRes1.remaining, 0);
 
-    await reconcileSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, reservedUnits: 666_667, actualUnits: 666_667, now: t0 });
+    await reconcileSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, reservedUnits: 800_000, actualUnits: 800_000, now: t0 });
 
     // 2. Subsequent reservation denied with insufficient_energy
     const sRes2 = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 1, now: t1 });
@@ -656,17 +688,17 @@ async function runAllTests() {
     const sWeek = '2026-10-31';
     const t0 = new Date('2026-10-31T09:00:00Z');
 
-    // Pre-populate with 600,000 units used
+    // Pre-populate with 750,000 units used
     supaStore.set(`${sUid}_${sWeek}`, {
       id: `${sUid}_${sWeek}`,
       user_id: sUid,
       period_key: sWeek,
-      units_used: 600_000,
+      units_used: 750_000,
       units_reserved: 0,
       window_units: 0,
     });
 
-    // Attempt reservation of 70,000 units (total would be 670,000 > 666,667 cap)
+    // Attempt reservation of 70,000 units (total would be 820,000 > 800,000 cap)
     const res = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 70_000, now: t0 });
     assert.equal(res.ok, false);
     assert.equal(res.reason, 'insufficient_energy');
@@ -685,13 +717,13 @@ async function runAllTests() {
     const t0 = new Date('2026-10-31T09:00:00Z');
     const t1 = new Date('2026-10-31T13:00:00Z');
 
-    const res1 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 500_000, now: t0 });
+    const res1 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 600_000, now: t0 });
     assert.equal(res1.ok, true);
-    assert.equal(res1.reserved, 500_000);
+    assert.equal(res1.reserved, 600_000);
 
-    await reconcileSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, reservedUnits: 500_000, actualUnits: 500_000, now: t0 });
+    await reconcileSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, reservedUnits: 600_000, actualUnits: 600_000, now: t0 });
 
-    const res2 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 200_000, now: t1 });
+    const res2 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 250_000, now: t1 });
     assert.equal(res2.ok, false);
     assert.equal(res2.reason, 'insufficient_energy');
   });

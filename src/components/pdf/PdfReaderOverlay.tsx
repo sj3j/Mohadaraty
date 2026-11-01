@@ -252,6 +252,35 @@ export default function PdfReaderOverlay({
   }, [lectureId, user]);
 
   const fitScaleRef = useRef(1);
+  const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; active: boolean } | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const doubleTapAnimRef = useRef<number | null>(null);
+
+  const gesture = useRef<{
+    idA: number; idB: number;
+    startDist: number; sBase: number;
+    O: { x: number; y: number };
+    p0: { x: number; y: number };
+    F: { x: number; y: number };
+    S0x: number; S0y: number;
+    sw: number; sh: number; w: number; h: number;
+    rectLeft: number; rectTop: number;
+  } | null>(null);
+
+  const live = useRef({ s: 1, tx: 0, ty: 0 });
+  const spring = useRef<number | null>(null);
+  const zoomLayerRef = useRef<HTMLDivElement>(null);
+  const zoomLabelRef = useRef<HTMLSpanElement>(null);
+  const zoomRaf = useRef<number | null>(null);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+
+  const zoomAnchor = useRef<
+    { el: HTMLElement; relX: number; relY: number; wantX: number; wantY: number } | null
+  >(null);
+  const prevScale = useRef(scale);
+  const prevRotation = useRef(rotation);
   const pendingPage = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, PageHandle>());
@@ -971,6 +1000,7 @@ export default function PdfReaderOverlay({
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || layout.length === 0) return;
+    if (gesture.current) return;
     const mid = el.scrollTop + el.clientHeight / 2;
     let n = 1;
     for (let i = 0; i < layout.length; i++) {
@@ -978,6 +1008,439 @@ export default function PdfReaderOverlay({
     }
     setCurrent(n);
   }, [layout]);
+
+  const paintZoom = useCallback(() => {
+    zoomRaf.current = null;
+    const layer = zoomLayerRef.current;
+    const { s, tx, ty } = live.current;
+    const k = s / scaleRef.current;
+
+    if (import.meta.env.DEV && !(Number.isFinite(k) && Number.isFinite(tx) && Number.isFinite(ty))) {
+      console.error('[pdf] non-finite transform', { s, tx, ty, scale: scaleRef.current });
+      return;
+    }
+
+    if (layer) {
+      layer.style.transform = k === 1 && tx === 0 && ty === 0
+        ? ''
+        : `translate3d(${tx}px, ${ty}px, 0) scale(${k})`;
+    }
+    const label = zoomLabelRef.current;
+    if (label) label.textContent = `${Math.round(s * 100)}%`;
+  }, []);
+
+  const scheduleZoomPaint = useCallback(() => {
+    if (zoomRaf.current == null) zoomRaf.current = requestAnimationFrame(paintZoom);
+  }, [paintZoom]);
+
+  const focal = () => {
+    const g = gesture.current!;
+    const a = pointers.current.get(g.idA)!;
+    const b = pointers.current.get(g.idB)!;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
+
+  const dist = () => {
+    const g = gesture.current!;
+    const a = pointers.current.get(g.idA)!;
+    const b = pointers.current.get(g.idB)!;
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  const bounds = (g: NonNullable<typeof gesture.current>, k: number) => {
+    const cMinX = (g.rectLeft - g.S0x) - g.O.x;
+    const cMinY = (g.rectTop - g.S0y) - g.O.y;
+    return {
+      txMax: g.rectLeft - g.O.x - k * cMinX,
+      txMin: g.rectLeft + g.w - g.O.x - k * (cMinX + g.sw),
+      tyMax: g.rectTop - g.O.y - k * cMinY,
+      tyMin: g.rectTop + g.h - g.O.y - k * (cMinY + g.sh),
+    };
+  };
+
+  const pageAt = (x: number, y: number) => {
+    let nearest: { el: HTMLElement; pr: DOMRect; d: number } | null = null;
+    for (const h of pages.current.values()) {
+      const pr = h.el.getBoundingClientRect();
+      if (pr.height <= 0 || pr.width <= 0) continue;
+      if (y >= pr.top && y <= pr.bottom) return { el: h.el, pr };
+      const d = Math.abs((pr.top + pr.bottom) / 2 - y);
+      if (!nearest || d < nearest.d) nearest = { el: h.el, pr, d };
+    }
+    return nearest ? { el: nearest.el, pr: nearest.pr } : null;
+  };
+
+  const anchorAt = useCallback((x: number, y: number) => {
+    const hit = pageAt(x, y);
+    if (!hit) return null;
+    return {
+      el: hit.el,
+      relX: (x - hit.pr.left) / hit.pr.width,
+      relY: (y - hit.pr.top) / hit.pr.height,
+      wantX: x, wantY: y,
+    };
+  }, []);
+
+  const commitGesture = useCallback((g: NonNullable<typeof gesture.current>) => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+
+    const { s, tx, ty } = live.current;
+    const committed = scaleRef.current;
+
+    if (Math.abs(s - committed) < 0.005) {
+      layer.style.transform = '';
+      layer.style.willChange = '';
+      live.current = { s: committed, tx: 0, ty: 0 };
+      el.scrollLeft = clamp(g.S0x - tx, 0, el.scrollWidth - el.clientWidth);
+      el.scrollTop = clamp(g.S0y - ty, 0, el.scrollHeight - el.clientHeight);
+      onScroll();
+      return;
+    }
+
+    zoomAnchor.current = anchorAt(g.F.x, g.F.y);
+    layer.style.transform = '';
+    live.current = { s, tx: 0, ty: 0 };
+
+    flushSync(() => setScale(+clamp(s, MIN_SCALE, MAX_SCALE).toFixed(3)));
+    layer.style.willChange = '';
+  }, [onScroll, anchorAt]);
+
+  const startSpring = useCallback((g: NonNullable<typeof gesture.current>) => {
+    const sEnd = clamp(live.current.s, MIN_SCALE, MAX_SCALE);
+    const t0 = performance.now();
+    let last = t0;
+
+    const step = (now: number) => {
+      const dt = Math.min(64, Math.max(1, now - last));
+      last = now;
+      const f = 1 - Math.pow(1 - SPRING, dt / 16.667);
+
+      live.current.s += (sEnd - live.current.s) * f;
+      const k = live.current.s / scaleRef.current;
+      const b = bounds(g, k);
+      const tEndX = b.txMin > b.txMax
+        ? (b.txMin + b.txMax) / 2
+        : clamp(live.current.tx, b.txMin, b.txMax);
+      const tEndY = b.tyMin > b.tyMax
+        ? (b.tyMin + b.tyMax) / 2
+        : clamp(live.current.ty, b.tyMin, b.tyMax);
+      live.current.tx += (tEndX - live.current.tx) * f;
+      live.current.ty += (tEndY - live.current.ty) * f;
+      paintZoom();
+
+      const settled =
+        Math.abs(live.current.s - sEnd) < 0.002 &&
+        Math.abs(tEndX - live.current.tx) < 0.5 &&
+        Math.abs(tEndY - live.current.ty) < 0.5;
+
+      if (settled || now - t0 > SPRING_TIMEOUT_MS) {
+        live.current.s = sEnd;
+        live.current.tx = tEndX;
+        live.current.ty = tEndY;
+        spring.current = null;
+        commitGesture(g);
+        return;
+      }
+      spring.current = requestAnimationFrame(step);
+    };
+    spring.current = requestAnimationFrame(step);
+  }, [paintZoom, commitGesture]);
+
+  const abortGesture = useCallback(() => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
+    gesture.current = null;
+    pointers.current.clear();
+    panRef.current = null;
+    if (el) el.style.touchAction = '';
+    if (layer) { layer.style.transform = ''; layer.style.willChange = ''; }
+    live.current = { s: scaleRef.current, tx: 0, ty: 0 };
+    const label = zoomLabelRef.current;
+    if (label) label.textContent = `${Math.round(scaleRef.current * 100)}%`;
+  }, []);
+
+  const handleDoubleTapZoom = useCallback((clientX: number, clientY: number) => {
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (zoomRaf.current != null) { cancelAnimationFrame(zoomRaf.current); zoomRaf.current = null; }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
+
+    const curScale = scaleRef.current;
+    const fitScale = fitScaleRef.current;
+    const targetScale = curScale > fitScale + 0.1
+      ? fitScale
+      : +Math.min(MAX_SCALE, Math.max(2.0, fitScale * 1.8)).toFixed(2);
+
+    const lr = layer.getBoundingClientRect();
+    const F0 = { x: clientX, y: clientY };
+    const O = { x: lr.left, y: lr.top };
+    const p0 = { x: F0.x - O.x, y: F0.y - O.y };
+
+    const startScale = curScale;
+    const startTime = performance.now();
+    const duration = 220;
+
+    layer.style.willChange = 'transform';
+
+    const step = (now: number) => {
+      const elapsed = Math.min(duration, now - startTime);
+      const progress = elapsed / duration;
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const s = startScale + (targetScale - startScale) * ease;
+      const k = s / curScale;
+
+      const tx = (1 - k) * p0.x;
+      const ty = (1 - k) * p0.y;
+
+      live.current = { s, tx, ty };
+      layer.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${k.toFixed(4)})`;
+
+      const label = zoomLabelRef.current;
+      if (label) label.textContent = `${Math.round(s * 100)}%`;
+
+      if (progress < 1) {
+        doubleTapAnimRef.current = requestAnimationFrame(step);
+      } else {
+        doubleTapAnimRef.current = null;
+        layer.style.transform = '';
+        layer.style.willChange = '';
+        live.current = { s: targetScale, tx: 0, ty: 0 };
+        zoomAnchor.current = anchorAt(clientX, clientY);
+        flushSync(() => setScale(targetScale));
+      }
+    };
+
+    doubleTapAnimRef.current = requestAnimationFrame(step);
+  }, [anchorAt]);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Single-pointer double-tap detection and pan preparation
+    if (pointers.current.size === 1) {
+      if (!isAnnotationMode) {
+        const now = performance.now();
+        const last = lastTapRef.current;
+        if (last && now - last.time < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 32) {
+          lastTapRef.current = null;
+          panRef.current = null;
+          handleDoubleTapZoom(e.clientX, e.clientY);
+          return;
+        }
+        lastTapRef.current = { time: now, x: e.clientX, y: e.clientY };
+      }
+
+      const el = scrollRef.current;
+      if (el && !isAnnotationMode && scaleRef.current > fitScaleRef.current + 0.05) {
+        panRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          scrollLeft: el.scrollLeft,
+          scrollTop: el.scrollTop,
+          active: false,
+        };
+      } else {
+        panRef.current = null;
+      }
+    } else {
+      lastTapRef.current = null;
+      panRef.current = null;
+    }
+
+    if (pointers.current.size !== 2 || gesture.current) return;
+
+    // Two fingers down: dismiss any active text selection
+    try {
+      window.getSelection()?.removeAllRanges();
+      setSelection(null);
+      setSelectionPos(null);
+    } catch {}
+
+    const el = scrollRef.current;
+    const layer = zoomLayerRef.current;
+    if (!el || !layer) return;
+
+    if (spring.current != null) { cancelAnimationFrame(spring.current); spring.current = null; }
+    if (doubleTapAnimRef.current != null) { cancelAnimationFrame(doubleTapAnimRef.current); doubleTapAnimRef.current = null; }
+
+    const [idA, idB] = [...pointers.current.keys()];
+    const a = pointers.current.get(idA)!;
+    const b = pointers.current.get(idB)!;
+    const F0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+
+    const { tx, ty, s } = live.current;
+    const kPrev = s / scale;
+    const lr = layer.getBoundingClientRect();
+    const O = { x: lr.left - tx, y: lr.top - ty };
+    const R = el.getBoundingClientRect();
+
+    gesture.current = {
+      idA, idB,
+      startDist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      sBase: s,
+      O,
+      p0: { x: (F0.x - O.x - tx) / kPrev, y: (F0.y - O.y - ty) / kPrev },
+      F: F0,
+      S0x: el.scrollLeft, S0y: el.scrollTop,
+      sw: el.scrollWidth, sh: el.scrollHeight,
+      w: el.clientWidth, h: el.clientHeight,
+      rectLeft: R.left, rectTop: R.top,
+    };
+
+    el.style.touchAction = 'none';
+    layer.style.willChange = 'transform';
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!pointers.current.has(e.pointerId)) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    const g = gesture.current;
+    if (g) {
+      if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
+
+      const F = focal();
+      g.F = F;
+      live.current.s = elasticScale(g.sBase * (dist() / g.startDist));
+
+      const k = live.current.s / scaleRef.current;
+      const b = bounds(g, k);
+      live.current.tx = band(F.x - g.O.x - k * g.p0.x, b.txMin, b.txMax, g.w);
+      live.current.ty = band(F.y - g.O.y - k * g.p0.y, b.tyMin, b.tyMax, g.h);
+
+      const el = scrollRef.current;
+      if (el) {
+        if (el.scrollLeft !== g.S0x) el.scrollLeft = g.S0x;
+        if (el.scrollTop !== g.S0y) el.scrollTop = g.S0y;
+      }
+
+      scheduleZoomPaint();
+      return;
+    }
+
+    const pan = panRef.current;
+    if (pan && e.buttons === 1) {
+      const dx = e.clientX - pan.startX;
+      const dy = e.clientY - pan.startY;
+      if (Math.hypot(dx, dy) > 6) {
+        pan.active = true;
+        const el = scrollRef.current;
+        if (el) {
+          el.scrollLeft = clamp(pan.scrollLeft - dx, 0, el.scrollWidth - el.clientWidth);
+          el.scrollTop = clamp(pan.scrollTop - dy, 0, el.scrollHeight - el.clientHeight);
+        }
+      }
+    }
+  };
+
+  const endPointer = (e: React.PointerEvent) => {
+    pointers.current.delete(e.pointerId);
+    if (panRef.current) panRef.current = null;
+    const g = gesture.current;
+    if (!g) return;
+    if (e.pointerId !== g.idA && e.pointerId !== g.idB) return;
+
+    gesture.current = null;
+    const el = scrollRef.current;
+    if (el) {
+      el.style.touchAction = '';
+    }
+    startSpring(g);
+  };
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (prevScale.current === scale && prevRotation.current === rotation) return;
+    prevScale.current = scale;
+    prevRotation.current = rotation;
+
+    if (!gesture.current && spring.current == null) live.current = { s: scale, tx: 0, ty: 0 };
+
+    const a = zoomAnchor.current;
+    zoomAnchor.current = null;
+    if (layout.length === 0) return;
+
+    if (a) {
+      const pr = a.el.getBoundingClientRect();
+      if (pr.height > 0 && pr.width > 0) {
+        el.scrollTop = clamp(
+          el.scrollTop + (pr.top + a.relY * pr.height) - a.wantY,
+          0, el.scrollHeight - el.clientHeight,
+        );
+        el.scrollLeft = clamp(
+          el.scrollLeft + (pr.left + a.relX * pr.width) - a.wantX,
+          0, el.scrollWidth - el.clientWidth,
+        );
+      }
+    }
+
+    onScroll();
+  }, [scale, rotation, layout, onScroll]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+      }
+    };
+
+    const handleGlobalUp = (e: PointerEvent) => {
+      if (pointers.current.has(e.pointerId)) {
+        pointers.current.delete(e.pointerId);
+        if (panRef.current) panRef.current = null;
+        const g = gesture.current;
+        if (g && (e.pointerId === g.idA || e.pointerId === g.idB)) {
+          gesture.current = null;
+          el.style.touchAction = '';
+          startSpring(g);
+        }
+      }
+    };
+
+    const preventNativeGesture = (e: Event) => {
+      e.preventDefault();
+    };
+
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('gesturestart', preventNativeGesture);
+    el.addEventListener('gesturechange', preventNativeGesture);
+    window.addEventListener('pointerup', handleGlobalUp);
+    window.addEventListener('pointercancel', handleGlobalUp);
+
+    return () => {
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('gesturestart', preventNativeGesture);
+      el.removeEventListener('gesturechange', preventNativeGesture);
+      window.removeEventListener('pointerup', handleGlobalUp);
+      window.removeEventListener('pointercancel', handleGlobalUp);
+      if (doubleTapAnimRef.current != null) cancelAnimationFrame(doubleTapAnimRef.current);
+    };
+  }, [startSpring]);
+
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') abortGesture(); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', abortGesture);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', abortGesture);
+      abortGesture();
+    };
+  }, [abortGesture]);
 
   // DOM position -> canonical offset within a page
   const canonicalOffset = useCallback((h: PageHandle, node: Node, offset: number): number | null => {
@@ -1338,12 +1801,16 @@ export default function PdfReaderOverlay({
         <div
           ref={scrollRef}
           onScroll={onScroll}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endPointer}
+          onPointerCancel={endPointer}
           onClick={() => {
-            if (!isAnnotationMode) setChromeVisible((prev) => !prev);
+            if (!isAnnotationMode && !panRef.current?.active) setChromeVisible((prev) => !prev);
           }}
           dir="ltr"
-          className="flex-1 overflow-y-auto bg-slate-100 dark:bg-zinc-950 pt-20 pb-20 px-2"
-          style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}
+          className="flex-1 overflow-y-auto overflow-x-auto bg-slate-100 dark:bg-zinc-950 pt-20 pb-20 px-2"
+          style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', touchAction: 'auto' }}
         >
           {error && (
             <div className="flex flex-col items-center justify-center h-full gap-3 px-8 text-center">
@@ -1359,7 +1826,11 @@ export default function PdfReaderOverlay({
           )}
 
           {pdfDoc && (
-            <div className="flex flex-col items-center gap-4">
+            <div
+              ref={zoomLayerRef}
+              style={{ transformOrigin: '0 0' }}
+              className="flex flex-col items-center gap-4 min-w-fit"
+            >
               {layout.map((box, i) => {
                 const n = i + 1;
                 return (
@@ -1488,6 +1959,7 @@ export default function PdfReaderOverlay({
               currentPage={current}
               pageCount={pageCount}
               scalePercent={Math.round(scale * 100)}
+              zoomLabelRef={zoomLabelRef}
               isNightMode={isNightMode}
               isAnnotationMode={isAnnotationMode}
               onToggleNightMode={handleToggleNightMode}

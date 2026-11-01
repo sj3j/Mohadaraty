@@ -125,7 +125,7 @@ async function main() {
 
   check('one unit is $0.30 per million', Math.abs(unitsToUsd(1_000_000) - 0.30) < 1e-9);
   check('weekly budget equals $0.20 USD divided by unit price', DEFAULT_WEEKLY_UNIT_BUDGET === 666_667);
-  check('default model is gemini-3.5-flash-lite', DEFAULT_MODEL === 'gemini-3.5-flash-lite');
+  check('default model is gemini-3.1-flash-lite', DEFAULT_MODEL === 'gemini-3.1-flash-lite');
 
   // Baghdad is UTC+3, so 22:00 UTC is already tomorrow there.
   check(

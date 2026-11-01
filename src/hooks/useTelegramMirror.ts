@@ -33,6 +33,13 @@ export interface TelegramChannelStatus {
   state?: 'ok' | 'degraded' | 'parked';
   lastError?: string | null;
   lastErrorAt?: string | null;
+  lectureChatId?: number | null;
+  lectureTitle?: string;
+  lectureAdminOk?: boolean;
+  lectureMissingRights?: string[];
+  lectureState?: 'ok' | 'degraded' | 'parked';
+  lectureLastError?: string | null;
+  lectureLastErrorAt?: string | null;
 }
 
 export interface TelegramStatus {

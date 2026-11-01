@@ -8,6 +8,9 @@
  */
 import { GoogleGenAI } from '@google/genai';
 import {
+  DEFAULT_MODEL,
+  SIMOSAN_MODELS,
+  getModelPricing,
   DEFAULT_5_WEEK_UNIT_BUDGET,
   MAX_FREE_OFF_TOPIC_PER_DAY,
   MAX_QUESTIONS_PER_CHAT,
@@ -404,6 +407,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         pageCount: file.pageCount,
         historyChars,
         questionChars: question.length + (selection?.length || 0),
+        modelId: settings.model,
       });
 
       isFreeReserved = false;
@@ -587,7 +591,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       }
 
       // --- settle ------------------------------------------------------------
-      const actual = usage ? unitsFromUsage(usage) : estimated;
+      const actual = usage ? unitsFromUsage(usage, settings.model) : estimated;
       let remaining: number;
       let refunded = false;
 
@@ -842,7 +846,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
             stageId: u.stageId || '',
             unitsUsed: Number(u.unitsUsed) || 0,
             requestCount: Number(u.requestCount) || 0,
-            usd: unitsToUsd(Number(u.unitsUsed) || 0),
+            usd: unitsToUsd(Number(u.unitsUsed) || 0, settings.model),
           };
         });
       }
@@ -855,12 +859,13 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         ceilingUsd: settings.monthlyCeilingUsd,
         enabled: settings.enabled,
         model: settings.model,
+        supportedModels: Object.values(SIMOSAN_MODELS),
         weeklyUnitBudget: settings.weeklyUnitBudget,
         dailyUnitBudget: settings.dailyUnitBudget,
         todayUnits: weekUnits,
-        todayUsd: unitsToUsd(weekUnits),
+        todayUsd: unitsToUsd(weekUnits, settings.model),
         weekUnits,
-        weekUsd: unitsToUsd(weekUnits),
+        weekUsd: unitsToUsd(weekUnits, settings.model),
         activeUsersToday: top.length,
         activeUsersThisWeek: top.length,
         top,
@@ -877,7 +882,15 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   async function adminSettings(req: any, res: any) {
     try {
       const db = admin.firestore();
-      const { enabled, weeklyUnitBudget, dailyUnitBudget, monthlyUnitBudget, monthlyCeilingUsd, model } = req.body || {};
+      const {
+        enabled,
+        weeklyUnitBudget,
+        dailyUnitBudget,
+        monthlyUnitBudget,
+        monthlyCeilingUsd,
+        model,
+        syncBudgetWithModel,
+      } = req.body || {};
       const patch: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
 
       if (typeof enabled === 'boolean') {
@@ -893,7 +906,17 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       }
       if (Number(monthlyUnitBudget) > 0) patch.monthlyUnitBudget = Number(monthlyUnitBudget);
       if (Number(monthlyCeilingUsd) > 0) patch.monthlyCeilingUsd = Number(monthlyCeilingUsd);
-      if (typeof model === 'string' && model.trim()) patch.model = model.trim();
+
+      if (typeof model === 'string' && model.trim()) {
+        const cleanModel = model.trim();
+        patch.model = cleanModel;
+        if (syncBudgetWithModel) {
+          const pricing = getModelPricing(cleanModel);
+          patch.weeklyUnitBudget = pricing.weeklyBudgetUnits;
+          patch.dailyUnitBudget = pricing.weeklyBudgetUnits;
+          patch.monthlyUnitBudget = pricing.monthlyBudgetUnits;
+        }
+      }
 
       await db.collection('app_settings').doc('simosan').set(patch, { merge: true });
       serverCache.delete('simosan:settings');

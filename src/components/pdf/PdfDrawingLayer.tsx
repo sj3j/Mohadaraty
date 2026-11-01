@@ -225,7 +225,11 @@ export const PdfDrawingLayer: React.FC<Props> = ({
   );
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!isInteractive || !e.isPrimary) return;
+    if (!isInteractive) return;
+    if (!e.isPrimary) {
+      if (isDrawing.current) cancelActiveGesture();
+      return;
+    }
     e.preventDefault();
 
     if (isDrawing.current) cancelActiveGesture();
