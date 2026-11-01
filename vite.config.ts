@@ -330,6 +330,7 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: {
         ignored: [
+          '**/public/pdfjs/**',
           '**/android/**',
           '**/ios/**',
           '**/macos/**',

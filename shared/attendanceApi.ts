@@ -114,7 +114,7 @@ export function attendanceErrorResponse(error: any): { status: number; error: st
   if (message.includes('not_configured') || message.includes('Supabase')) {
     return { status: 503, error: 'attendance_not_configured' };
   }
-  if (/fetch|network|timeout|ECONN/i.test(message)) {
+  if (error?.status === 502 || error?.status === 503 || error?.status === 504 || /fetch|network|timeout|ECONN|bad gateway|gateway timeout|connection pool/i.test(message)) {
     return { status: 503, error: 'attendance_temporarily_unavailable' };
   }
   if (/unknown_|invalid_|not_in_|not_editable|not_ready|finalized|cancelled|too_long|idempotency/.test(message)) {
@@ -133,14 +133,27 @@ function safeErrorCode(error: any): string {
   return 'attendance_error';
 }
 
+function sanitizeErrorDetails(error: any): string | undefined {
+  const raw = String(error?.message || error?.details || '');
+  if (!raw) return undefined;
+  return raw
+    .replace(/eyJ[A-Za-z0-9_-]{10,}/g, '<REDACTED>')
+    .replace(/-----BEGIN [A-Z ]+-----[^-]+-----END [A-Z ]+-----/gs, '<REDACTED>')
+    .replace(/(?:key|secret|password|bearer)[=:\s]+[^\s,;&]+/gi, (m) => m.split(/[=:\s]+/)[0] + '=<REDACTED>')
+    .split('\n')[0]
+    .slice(0, 200);
+}
+
 function attendanceError(res: any, error: any, label: string) {
   const response = attendanceErrorResponse(error);
   const code = safeErrorCode(error);
+  const details = sanitizeErrorDetails(error);
   console.error(`[attendance] ${label} failed`, {
     code,
     category: response.error,
     cause: attendanceDiagnosticCause(error),
     status: response.status,
+    ...(details && details !== code ? { details } : {}),
   });
   return res.status(response.status).json({ error: response.error });
 }
@@ -163,7 +176,7 @@ export function attendanceDiagnosticCause(error: any): string {
   const message = String(error?.message || '');
   if (code === 'PGRST202' || code === 'PGRST205' || code === '42P01' || /schema cache|does not exist/i.test(message)) return 'schema_missing';
   if (/jwt|service role|invalid.*key|unauthorized/i.test(message)) return 'credential_invalid';
-  if (/fetch|network|timeout|ECONN/i.test(message)) return 'backend_unreachable';
+  if (error?.status === 502 || error?.status === 503 || error?.status === 504 || /fetch|network|timeout|ECONN|bad gateway|gateway timeout|connection pool/i.test(message)) return 'backend_unreachable';
   return 'request_failed';
 }
 
@@ -458,7 +471,8 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const history = await boundedAttendanceRows(() => supabase.from('attendance_occurrences').select('*').eq('stage_id', stageId).order('id'), 10000);
       if (!history.complete) throw new Error('attendance_history_too_long');
       const authorized = history.rows.map(occurrenceFromRow).filter(item => canManageOccurrence(actor, item));
-      const sessionRows = await attendanceRowsByIds(supabase, 'attendance_sessions', 'occurrence_id', authorized.map(item => item.id));
+      const authorizedIds = authorized.map(item => item.id).filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+      const sessionRows = authorizedIds.length ? await attendanceRowsByIds(supabase, 'attendance_sessions', 'occurrence_id', authorizedIds) : [];
       const byId = new Map(history.rows.map(item => [item.id, item]));
       const records: any[] = [];
       const reviewCounts: Record<string, number> = {};
@@ -495,9 +509,10 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       const occurrences = buildAttendanceOccurrences(ctx.calendar, timetable, stageId, ctx.today, 1, 52).filter(item => canManageOccurrence(actor, item));
       if (!occurrences.length || occurrences.length > 5000) throw new Error('invalid_offline_schedule');
       const supabase = supabaseOrThrow();
-      const existingAttempts = await attendanceRowsByIds(
-        supabase, 'attendance_sessions', 'occurrence_id', occurrences.map(item => item.id),
-      );
+      const offlineOccurrenceIds = occurrences.map(item => item.id).filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+      const existingAttempts = offlineOccurrenceIds.length
+        ? await attendanceRowsByIds(supabase, 'attendance_sessions', 'occurrence_id', offlineOccurrenceIds)
+        : [];
       const attemptsByOccurrence = new Map<string, any[]>();
       for (const row of existingAttempts) {
         const rows = attemptsByOccurrence.get(row.occurrence_id) || [];
@@ -742,12 +757,17 @@ export function createAttendanceHandlers({ admin }: AttendanceDeps) {
       ]);
       const recordRows = recordResult.rows;
       const receiptRows = receiptResult.rows;
-      const sessionIds = [...new Set([...recordRows.map(row => row.session_id), ...receiptRows.map(row => row.session_id), ...expectedResult.rows.map(row => row.session_id)])];
+      const sessionIds = [...new Set([
+        ...recordRows.map(row => row.session_id),
+        ...receiptRows.map(row => row.session_id),
+        ...expectedResult.rows.map(row => row.session_id),
+      ])].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
       let sessionRows: any[] = [];
       let occurrenceRows: any[] = [];
       if (sessionIds.length) {
         sessionRows = await attendanceRowsByIds(supabase, 'attendance_sessions', 'id', sessionIds);
-        const occurrenceIds = [...new Set(sessionRows.map(row => row.occurrence_id))];
+        const occurrenceIds = [...new Set(sessionRows.map(row => row.occurrence_id))]
+          .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
         if (occurrenceIds.length) {
           occurrenceRows = await attendanceRowsByIds(supabase, 'attendance_occurrences', 'id', occurrenceIds);
         }
