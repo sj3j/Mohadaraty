@@ -53,7 +53,8 @@ import {
   DEFAULT_READER_INTERACTION,
   PdfInteractionRevisionCoordinator,
 } from '../../lib/pdfInteractionState';
-import { getNativePdfFilePath, cacheNativePdfBytes } from '../../lib/nativePdfRepository';
+import { getNativePdfFilePath, cacheNativePdfBytes, arrayBufferToBase64 } from '../../lib/nativePdfRepository';
+import { Capacitor } from '@capacitor/core';
 import type { HighlightColor, PdfAnnotation } from '../../types/pdfAnnotation.types';
 import type { Language, UserProfile } from '../../types';
 import '../../styles/pdf-text-layer.css';
@@ -96,6 +97,9 @@ const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_R
 // changes. Set this explicitly to "false" only for an emergency rollback.
 const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 !== 'false';
 
+const isSafeStroke = (s: any): s is PdfStroke =>
+  Boolean(s && typeof s === 'object' && Array.isArray(s.points) && s.points.length > 0 && typeof s.id === 'string');
+
 const RESIST = 0.25;
 const RUBBER = 0.55;
 const SPRING = 0.2;
@@ -136,7 +140,9 @@ export default function PdfReaderOverlay({
   );
 
   // Native vs Web state
-  const [isNative, setIsNative] = useState(() => isNativePdfSupported());
+  // Default to false so students have full text selection, translation, voice reader, and highlights via PDF.js textLayer.
+  const NATIVE_VIEWER_ENABLED = import.meta.env.VITE_PDF_NATIVE_VIEWER === 'true';
+  const [isNative, setIsNative] = useState(() => NATIVE_VIEWER_ENABLED && isNativePdfSupported());
   const [nativeLoading, setNativeLoading] = useState(false);
   const [nativeReady, setNativeReady] = useState(false);
   const [interactionPending, setInteractionPending] = useState(false);
@@ -209,7 +215,7 @@ export default function PdfReaderOverlay({
 
   const [simosanOpen, setSimosanOpen] = useState(false);
   const [simosanSeed, setSimosanSeed] = useState<string | null>(null);
-  const [simosanReady, setSimosanReady] = useState(false);
+  const [simosanReady, setSimosanReady] = useState(true);
 
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachmentsCount, setAttachmentsCount] = useState(0);
@@ -303,14 +309,16 @@ export default function PdfReaderOverlay({
   useBackDismiss(jumpModalOpen, () => setJumpModalOpen(false), 'pdfJump');
 
   useEffect(() => {
-    if (isLocalFile) {
-      setSimosanReady(false);
-      return;
-    }
     let alive = true;
-    fetchSimosanState().then((s) => { if (alive) setSimosanReady(!!s?.available); });
+    fetchSimosanState()
+      .then((s) => {
+        if (alive && s && s.available === false) {
+          setSimosanReady(false);
+        }
+      })
+      .catch(() => {});
     return () => { alive = false; };
-  }, [isLocalFile]);
+  }, [lectureId]);
 
   const openSimosan = useCallback((seed?: string) => {
     setSimosanSeed(seed ?? null);
@@ -350,9 +358,10 @@ export default function PdfReaderOverlay({
     if (!lectureId || !current) return;
     if (pageStrokes[current] !== undefined) {
       if (isNative && nativeReady && NATIVE_INK_V2) {
-        const strokes = pageStrokeCoordinateSpace[current] === 'legacy-viewport'
+        const raw = pageStrokeCoordinateSpace[current] === 'legacy-viewport'
           ? []
           : pageStrokes[current] || [];
+        const strokes = raw.filter(isSafeStroke);
         NativePdf.setPageStrokes({ page: current, strokes }).catch(() => {});
       }
       return;
@@ -376,12 +385,13 @@ export default function PdfReaderOverlay({
           }
           coordinateSpace = 'legacy-viewport';
         }
-        setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
+        const validStrokes = strokes.filter(isSafeStroke);
+        setPageStrokes((prev) => ({ ...prev, [current]: validStrokes }));
         setPageStrokeCoordinateSpace((prev) => ({ ...prev, [current]: coordinateSpace }));
         if (isNative && nativeReady && NATIVE_INK_V2) {
           NativePdf.setPageStrokes({
             page: current,
-            strokes: coordinateSpace === 'pdf-page' ? strokes : [],
+            strokes: coordinateSpace === 'pdf-page' ? validStrokes : [],
           }).catch(() => {});
           if (coordinateSpace === 'legacy-viewport' && strokes.length > 0 && !legacyInkNoticeShownRef.current) {
             legacyInkNoticeShownRef.current = true;
@@ -1193,17 +1203,58 @@ export default function PdfReaderOverlay({
         return;
       }
 
-      const url = URL.createObjectURL(result.exportedBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      const filename = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
 
-      setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
-      setTimeout(() => setToast(null), 2000);
+      if (Capacitor.isNativePlatform()) {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        const buffer = await result.exportedBlob.arrayBuffer();
+        const base64Data = arrayBufferToBase64(buffer);
+        const tempPath = `annotated_${Date.now()}_${filename}`;
+        const saved = await Filesystem.writeFile({
+          path: tempPath,
+          data: base64Data,
+          directory: Directory.Cache,
+        });
+
+        // 1. Try to save directly to public Downloads folder via NativeFilesPlugin
+        let directSaved = false;
+        try {
+          const { saveNativePdf } = await import('../../lib/nativeFileTransfer');
+          const saveRes = await saveNativePdf(saved.uri, filename);
+          if (saveRes.status === 'saved' || saveRes.status === 'success') {
+            directSaved = true;
+            setToast(isRtl ? 'تم حفظ ملف PDF مع الشروحات في مجلد التنزيلات' : 'Saved annotated PDF to Downloads');
+            setTimeout(() => setToast(null), 3500);
+            return;
+          }
+        } catch (saveErr) {
+          console.warn('[PdfReaderOverlay] saveNativePdf fallback to share:', saveErr);
+        }
+
+        // 2. Fallback to native OS Share sheet
+        if (!directSaved) {
+          const { Share } = await import('@capacitor/share');
+          await Share.share({
+            title: filename,
+            files: [saved.uri],
+            dialogTitle: isRtl ? 'حفظ أو مشاركة ملف PDF مع الشروحات' : 'Save or Share Annotated PDF',
+          });
+          setToast(isRtl ? 'تم تجهيز ملف الـ PDF' : 'Annotated PDF ready');
+          setTimeout(() => setToast(null), 3000);
+        }
+      } else {
+        const url = URL.createObjectURL(result.exportedBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+        setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
+        setTimeout(() => setToast(null), 2500);
+      }
     } catch (err) {
       console.error('[PdfReaderOverlay] Export PDF failed:', err);
       setToast(isRtl ? 'حدث خطأ أثناء تصدير PDF' : 'Error exporting PDF');
