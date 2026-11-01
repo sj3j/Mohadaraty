@@ -1,6 +1,7 @@
 import { formatLectureCaption, type LectureDoc } from '../src/sync/lectures.ts';
 import {
   resolveLectureChannelForStage,
+  resolveManualLectureChannelForStage,
   type TelegramConfig,
 } from '../../shared/telegramMirror.ts';
 
@@ -109,6 +110,65 @@ console.log('\nLecture Channel Resolution');
 
   check('returns null when global mirror is disabled',
     resolveLectureChannelForStage(configGlobalOff, 'stage_3') === null
+  );
+}
+
+console.log('\nManual Lecture Channel Resolution (ignores mirrorLectures toggle)');
+{
+  const configDisabledAuto: TelegramConfig = {
+    enabled: true,
+    defaultMirrorOut: true,
+    channels: {
+      stage_3: {
+        chatId: -1001111111111,
+        lectureChatId: -1002222222222,
+        enabled: true,
+        mirrorIn: true,
+        mirrorOut: true,
+        mirrorLectures: false,
+      },
+    },
+  };
+
+  check('resolves dedicated lectureChatId for manual share even when mirrorLectures is false',
+    resolveManualLectureChannelForStage(configDisabledAuto, 'stage_3') === -1002222222222
+  );
+
+  const configFallback: TelegramConfig = {
+    enabled: true,
+    defaultMirrorOut: true,
+    channels: {
+      stage_3: {
+        chatId: -1001111111111,
+        enabled: true,
+        mirrorIn: true,
+        mirrorOut: true,
+        mirrorLectures: false,
+      },
+    },
+  };
+
+  check('falls back to chatId for manual share when lectureChatId is unset and mirrorLectures is false',
+    resolveManualLectureChannelForStage(configFallback, 'stage_3') === -1001111111111
+  );
+
+  const configChannelDisabled: TelegramConfig = {
+    enabled: true,
+    defaultMirrorOut: true,
+    channels: {
+      stage_3: {
+        chatId: -1001111111111,
+        lectureChatId: -1002222222222,
+        enabled: false,
+        mirrorIn: true,
+        mirrorOut: true,
+        mirrorLectures: false,
+      },
+    },
+  };
+
+  check('returns null for manual share when stage channel is disabled',
+    resolveManualLectureChannelForStage(configChannelDisabled, 'stage_3') === null
   );
 }
 

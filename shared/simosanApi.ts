@@ -8,6 +8,7 @@
  */
 import { GoogleGenAI } from '@google/genai';
 import {
+  DEFAULT_5_WEEK_UNIT_BUDGET,
   MAX_FREE_OFF_TOPIC_PER_DAY,
   MAX_QUESTIONS_PER_CHAT,
   baghdadDayKey,
@@ -16,6 +17,7 @@ import {
   estimateUnits,
   extractCooldownMs,
   freeUsageDocId,
+  getRollingWeekKeys,
   hasAiAccess,
   isSaturdayRolloverWindow,
   msUntilBaghdadReset,
@@ -162,6 +164,9 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         const week = baghdadWeekKey();
         let spent = 0;
         let uCooldown: any = null;
+        const priorWeeks = getRollingWeekKeys(week, 5).slice(1);
+        let priorUsed = 0;
+
         if (supabase) {
           const supaUsage = await getSupaUsage(supabase, `${uid}_${week}`);
           spent = (Number(supaUsage?.units_used) || 0) + (Number(supaUsage?.units_reserved) || 0);
@@ -175,6 +180,28 @@ export function createSimosanHandlers(deps: SimosanDeps) {
               if (prevUsage?.cooldown_until) {
                 uCooldown = prevUsage.cooldown_until;
               }
+            }
+          }
+
+          const priorIds = priorWeeks.map((pw) => `${uid}_${pw}`);
+          try {
+            const query = supabase.from('ai_usage').select('units_used');
+            if (typeof (query as any)?.in === 'function') {
+              const { data: priorRows } = await (query as any).in('id', priorIds);
+              priorUsed = (priorRows || []).reduce(
+                (sum: number, r: any) => sum + (Number(r?.units_used) || 0),
+                0,
+              );
+            } else {
+              for (const pw of priorWeeks) {
+                const pUsage = await getSupaUsage(supabase, `${uid}_${pw}`);
+                if (pUsage) priorUsed += Number(pUsage.units_used) || 0;
+              }
+            }
+          } catch {
+            for (const pw of priorWeeks) {
+              const pUsage = await getSupaUsage(supabase, `${uid}_${pw}`);
+              if (pUsage) priorUsed += Number(pUsage.units_used) || 0;
             }
           }
         } else {
@@ -193,8 +220,20 @@ export function createSimosanHandlers(deps: SimosanDeps) {
               }
             }
           }
+
+          const priorSnaps = await Promise.all(
+            priorWeeks.map((pw) => db.collection('aiUsage').doc(usageDocId(uid, pw)).get()),
+          );
+          priorUsed = priorSnaps.reduce(
+            (sum: number, snap: any) => sum + (snap.exists ? (Number(snap.data()?.unitsUsed) || 0) : 0),
+            0,
+          );
         }
-        remaining = Math.max(0, weeklyBudget - spent);
+
+        const monthlyBudget = settings.monthlyUnitBudget || DEFAULT_5_WEEK_UNIT_BUDGET;
+        const rolling5WeekSpent = priorUsed + spent;
+        remaining = Math.max(0, Math.min(weeklyBudget - spent, monthlyBudget - rolling5WeekSpent));
+
         if (uCooldown) {
           const cdMs = extractCooldownMs(uCooldown);
           if (cdMs > Date.now()) {
@@ -218,6 +257,8 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         resetsInMs = freeWeeklyResetsInMs;
       }
 
+      const monthlyBudget = settings.monthlyUnitBudget || DEFAULT_5_WEEK_UNIT_BUDGET;
+
       res.json({
         available: settings.enabled,
         hasAccess,
@@ -229,6 +270,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         remaining,
         weeklyBudget,
         dailyBudget,
+        monthlyBudget,
         resetsInMs,
         cooldownUntil,
         cooldownRemainingMs,
@@ -485,12 +527,18 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         languageMode: (languageMode === 'en' || languageMode === 'bilingual') ? languageMode : 'ar',
         autoQuiz: autoQuiz !== false,
       };
+      let clientClosed = false;
+      const onSocketClose = () => { clientClosed = true; };
+      req.on('close', onSocketClose);
+      res.on('close', onSocketClose);
+
       let answer = '';
       const onDelta = (delta: string) => {
         answer += delta;
-        res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}
-
-`);
+        if (clientClosed || res.writableEnded || res.destroyed || req.destroyed) {
+          throw new Error('client_disconnected');
+        }
+        res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
       };
 
       /*
@@ -510,10 +558,14 @@ export function createSimosanHandlers(deps: SimosanDeps) {
        * the student is already reading an answer, and starting a second one
        * would splice two replies together.
        */
-      let usage: any, offTopic = false;
+      let streamRes: any = null;
+      let usage: any, offTopic = false, clientDisconnected = false;
       try {
         const contents = buildContents(file.fileUri, history, question.trim(), selection, turnCtx);
-        ({ usage, offTopic } = await streamAnswer(ai, settings.model, contents, onDelta));
+        streamRes = await streamAnswer(ai, settings.model, contents, onDelta);
+        usage = streamRes.usage;
+        offTopic = streamRes.offTopic;
+        clientDisconnected = !!streamRes.clientDisconnected;
       } catch (streamErr: any) {
         const raw = String(streamErr?.message || '');
         const expired = /not found|PERMISSION_DENIED|403|404/i.test(raw) && /file/i.test(raw);
@@ -525,11 +577,17 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           ai, db, admin.firestore.FieldValue, lectureId, lecture.pdfUrl,
         );
         const retry = buildContents(rebuilt.fileUri, history, question.trim(), selection, turnCtx);
-        ({ usage, offTopic } = await streamAnswer(ai, settings.model, retry, onDelta));
+        streamRes = await streamAnswer(ai, settings.model, retry, onDelta);
+        usage = streamRes.usage;
+        offTopic = streamRes.offTopic;
+        clientDisconnected = !!streamRes.clientDisconnected;
+      } finally {
+        req.off('close', onSocketClose);
+        res.off('close', onSocketClose);
       }
 
       // --- settle ------------------------------------------------------------
-      const actual = unitsFromUsage(usage) || estimated;
+      const actual = usage ? unitsFromUsage(usage) : estimated;
       let remaining: number;
       let refunded = false;
 
@@ -605,7 +663,9 @@ export function createSimosanHandlers(deps: SimosanDeps) {
 
       // An off-topic refusal is not part of the student's study thread, so it
       // is neither stored nor counted against the chat cap.
-      const citedPages = extractCitedPages(answer);
+      // If client disconnected, persist the full completed answer generated by the model.
+      const savedAnswer = (clientDisconnected && streamRes?.fullText) ? streamRes.fullText : answer;
+      const citedPages = extractCitedPages(savedAnswer);
       if (!offTopic) {
         if (isSupabaseActive && supabase) {
           await recordSupaTurn(supabase, {
@@ -615,7 +675,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
             stageId: caller.stageId,
             question: question.trim(),
             selection,
-            answer,
+            answer: savedAnswer,
             citedPages,
             isFreeTier,
             currentQuestionCount: questionCount,
@@ -632,7 +692,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
           });
           batch.set(targetMsgsRef.doc(), {
             role: 'model',
-            text: answer,
+            text: savedAnswer,
             citedPages,
             units: actual,
             createdAt: now,
@@ -658,20 +718,22 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         }
       }
 
-      res.write(
-        `data: ${JSON.stringify({
-          type: 'done',
-          threadId,
-          offTopic,
-          refunded,
-          citedPages,
-          remaining,
-          questionNumber: offTopic ? questionCount : questionCount + 1,
-          isReadOnly: !offTopic && questionCount + 1 >= (isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT),
-          isFreeTier,
-        })}\n\n`,
-      );
-      res.end();
+      if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
+        res.write(
+          `data: ${JSON.stringify({
+            type: 'done',
+            threadId,
+            offTopic,
+            refunded,
+            citedPages,
+            remaining,
+            questionNumber: offTopic ? questionCount : questionCount + 1,
+            isReadOnly: !offTopic && questionCount + 1 >= (isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT),
+            isFreeTier,
+          })}\n\n`,
+        );
+        res.end();
+      }
     } catch (e: any) {
       console.error('[simosan] ask failed', e);
       // Any path that did not produce an answer hands the energy or free question back.
@@ -815,7 +877,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   async function adminSettings(req: any, res: any) {
     try {
       const db = admin.firestore();
-      const { enabled, weeklyUnitBudget, dailyUnitBudget, monthlyCeilingUsd, model } = req.body || {};
+      const { enabled, weeklyUnitBudget, dailyUnitBudget, monthlyUnitBudget, monthlyCeilingUsd, model } = req.body || {};
       const patch: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
 
       if (typeof enabled === 'boolean') {
@@ -829,6 +891,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         patch.weeklyUnitBudget = newBudget;
         patch.dailyUnitBudget = newBudget;
       }
+      if (Number(monthlyUnitBudget) > 0) patch.monthlyUnitBudget = Number(monthlyUnitBudget);
       if (Number(monthlyCeilingUsd) > 0) patch.monthlyCeilingUsd = Number(monthlyCeilingUsd);
       if (typeof model === 'string' && model.trim()) patch.model = model.trim();
 
@@ -837,6 +900,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       res.json({ ok: true, settings: await readSettings(ctx(), new Date(), true) });
     } catch (e: any) {
       console.error('[simosan] adminSettings failed', e);
+      res.status(500).json({ error: 'Failed to update settings' });
     }
   }
 

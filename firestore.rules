@@ -903,8 +903,15 @@ service cloud.firestore {
       // `request.resource == null`, not `request.resource.data == null`: a
       // delete carries no incoming resource, so reaching for .data raises a
       // null-value error and denied every delete a representative attempted.
-      allow update, delete: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures') &&
-        (request.resource == null || canWriteStage(request.resource.data.get('stageId', ''), 'manageLectures'));
+      allow delete: if canWriteStage(resource.data.get('stageId', ''), 'manageLectures');
+      allow update: if (
+        canWriteStage(resource.data.get('stageId', ''), 'manageLectures') &&
+        canWriteStage(request.resource.data.get('stageId', ''), 'manageLectures')
+      ) || (
+        isStaff() &&
+        (isMasterAdmin() || isSupport() || (userRole() == 'admin' && myManagedStage() != '' && myManagedStage() == resource.data.get('stageId', ''))) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['telegramPost', 'telegramShareRequestedAt'])
+      );
     }
 
     match /lecture_attachments/{attachmentId} {

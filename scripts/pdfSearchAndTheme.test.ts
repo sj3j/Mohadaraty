@@ -26,7 +26,7 @@ const searchHasHigherZIndex = searchPanelSource.includes('z-50') || searchPanelS
 assert(searchHasHigherZIndex, 'PdfSearchPanel has z-50+ to render strictly above header buttons (not behind z-40)');
 
 // PdfReaderOverlay must register searchOpen in interactive touch zones so touches are not forwarded to underlying native view
-assert(readerOverlaySource.includes('searchOpen') && readerOverlaySource.includes('isAnyDrawerOpen'), 'PdfReaderOverlay includes searchOpen in isAnyDrawerOpen check');
+assert(readerOverlaySource.includes('searchOpen') && readerOverlaySource.includes('isAnyWebOverlayOpen'), 'PdfReaderOverlay includes searchOpen in the native WebView overlay check');
 
 console.log('\n--- Test 2: Initial Dark Mode & Canvas Inversion in Web Mode ---');
 // PdfReaderOverlay must initialize isNightMode based on the app theme / document.documentElement.classList.contains('dark')

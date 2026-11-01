@@ -1,0 +1,707 @@
+/**
+ * Dedicated test suite for Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite)
+ * pricing constants, Option B weighted token credits, usage metadata extraction,
+ * streaming resilience against client disconnects, and 5-week rolling quota enforcement.
+ *
+ * Runnable standalone via:
+ *   npx tsx scripts/geminiPricing.test.ts
+ */
+import assert from 'node:assert/strict';
+import {
+  UNIT_WEIGHT_UNCACHED_INPUT,
+  UNIT_WEIGHT_CACHED_INPUT,
+  UNIT_WEIGHT_OUTPUT,
+  USD_PER_UNIT,
+  CONTEXT_CACHE_STORAGE_PER_HOUR_USD,
+  DEFAULT_MODEL,
+  DEFAULT_WEEKLY_UNIT_BUDGET,
+  DEFAULT_5_WEEK_UNIT_BUDGET,
+  WEEKLY_CAP_CREDITS,
+  MONTHLY_CAP_CREDITS,
+  unitsFromUsage,
+  unitsToUsd,
+  extractUsageMetadata,
+  getRollingWeekKeys,
+  baghdadWeekKey,
+  previousBaghdadWeekKey,
+  normaliseSettings,
+  reserveEnergy,
+  reconcileEnergy,
+  type GeminiUsage,
+  type SimosanCtx,
+} from '../shared/simosan.js';
+import { streamAnswer } from '../shared/simosanChat.js';
+import { reserveSupaEnergy, reconcileSupaEnergy } from '../shared/simosanSupabase.js';
+
+let totalTests = 0;
+let passedTests = 0;
+
+function test(name: string, fn: () => void | Promise<void>) {
+  totalTests++;
+  try {
+    const res = fn();
+    if (res instanceof Promise) {
+      return res.then(() => {
+        passedTests++;
+        console.log(`  [PASS] ${name}`);
+      }).catch((err) => {
+        console.error(`  [FAIL] ${name} -> ${err.message}`);
+        throw err;
+      });
+    }
+    passedTests++;
+    console.log(`  [PASS] ${name}`);
+  } catch (err: any) {
+    console.error(`  [FAIL] ${name} -> ${err.message}`);
+    throw err;
+  }
+}
+
+// In-memory Firestore mock for SimosanCtx
+function createMockFirestoreCtx() {
+  const store = new Map<string, any>();
+
+  const getDoc = (col: string, id: string) => {
+    const key = `${col}/${id}`;
+    const data = store.get(key) || null;
+    return {
+      exists: data !== null,
+      data: () => (data ? JSON.parse(JSON.stringify(data)) : null),
+    };
+  };
+
+  const setDoc = (col: string, id: string, data: any, opts?: any) => {
+    const key = `${col}/${id}`;
+    if (opts?.merge && store.has(key)) {
+      const existing = store.get(key);
+      store.set(key, { ...existing, ...JSON.parse(JSON.stringify(data)) });
+    } else {
+      store.set(key, JSON.parse(JSON.stringify(data)));
+    }
+  };
+
+  const db: any = {
+    collection: (col: string) => ({
+      doc: (id: string) => ({
+        get: async () => getDoc(col, id),
+        set: async (data: any, opts?: any) => setDoc(col, id, data, opts),
+      }),
+    }),
+    runTransaction: async (updateFn: (t: any) => Promise<any>) => {
+      const transaction = {
+        get: async (ref: any) => {
+          // Extract col and doc id
+          const parts = ref.path ? ref.path.split('/') : ['unknown', 'unknown'];
+          return ref.get();
+        },
+        set: (ref: any, data: any, opts?: any) => {
+          ref.set(data, opts);
+        },
+      };
+      return await updateFn(transaction);
+    },
+  };
+
+  const ctx: SimosanCtx = {
+    db,
+    FieldValue: {
+      serverTimestamp: () => new Date().toISOString(),
+      increment: (n: number) => n,
+    },
+    Timestamp: {
+      now: () => new Date(),
+      fromDate: (d: Date) => d,
+    },
+  };
+
+  return { ctx, store };
+}
+
+async function runAllTests() {
+  console.log('=====================================================================');
+  console.log('  Gemini 3.5 Flash-Lite Pricing, Billing & Token Verification Suite  ');
+  console.log('=====================================================================\n');
+
+  // -------------------------------------------------------------------------
+  // 1. Pricing Constants & Option B Weights
+  // -------------------------------------------------------------------------
+  console.log('--- 1. Pricing Constants & Option B Credit Weights ---');
+
+  test('Model identifier is gemini-3.5-flash-lite', () => {
+    assert.equal(DEFAULT_MODEL, 'gemini-3.5-flash-lite');
+  });
+
+  test('Unit weight: Uncached Input = 1.0 credit per token ($0.30 / 1M)', () => {
+    assert.equal(UNIT_WEIGHT_UNCACHED_INPUT, 1.0);
+  });
+
+  test('Unit weight: Cached Input = 0.10 credits per token ($0.03 / 1M)', () => {
+    assert.equal(UNIT_WEIGHT_CACHED_INPUT, 0.10);
+    // Ratio check: $0.03 / $0.30 === 0.10
+    assert.equal(0.03 / 0.30, 0.1);
+  });
+
+  test('Unit weight: Output (incl. thinking) = 25 / 3 credits per token ($2.50 / 1M)', () => {
+    assert.equal(UNIT_WEIGHT_OUTPUT, 25 / 3);
+    // Ratio check: $2.50 / $0.30 === 25 / 3 === 8.333333333333334
+    assert.equal(2.50 / 0.30, 25 / 3);
+  });
+
+  test('Context cache storage rate constant is $1.00 USD per hour', () => {
+    assert.equal(CONTEXT_CACHE_STORAGE_PER_HOUR_USD, 1.00);
+  });
+
+  test('1 credit == 1 uncached input token == $0.00000030 USD', () => {
+    assert.equal(USD_PER_UNIT, 0.30 / 1_000_000);
+    assert.equal(unitsToUsd(1_000_000), 0.30);
+    assert.equal(unitsToUsd(1), 0.00000030);
+  });
+
+  test('Weekly budget cap is 666,667 credits ($0.20 USD)', () => {
+    assert.equal(DEFAULT_WEEKLY_UNIT_BUDGET, 666_667);
+    assert.equal(WEEKLY_CAP_CREDITS, 666_667);
+    // 666,667 credits * $0.00000030 USD/credit = $0.20000010 USD (~$0.20 USD)
+    const cost = unitsToUsd(666_667);
+    assert.ok(Math.abs(cost - 0.20) < 0.0001, `Expected ~$0.20, got ${cost}`);
+  });
+
+  test('5-week monthly budget cap is 3,333,333 credits ($1.00 USD)', () => {
+    assert.equal(DEFAULT_5_WEEK_UNIT_BUDGET, 3_333_333);
+    assert.equal(MONTHLY_CAP_CREDITS, 3_333_333);
+    // 3,333,333 credits * $0.00000030 USD/credit = $0.99999990 USD (~$1.00 USD)
+    const cost = unitsToUsd(3_333_333);
+    assert.ok(Math.abs(cost - 1.00) < 0.0001, `Expected ~$1.00, got ${cost}`);
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. The 7 Reference Benchmarks for $0.20 Weekly Cap & $1.00 5-Week Cap
+  // -------------------------------------------------------------------------
+  console.log('\n--- 2. Reference Benchmarks (7 Profiles) ---');
+
+  // Benchmark 1: 100% Uncached Input
+  test('Benchmark 1 (100% Uncached Input): 666,667 weekly / 3,333,333 5-week tokens', () => {
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 666_667, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.equal(weeklyCredits, 666_667);
+    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
+
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 3_333_333, cachedContentTokenCount: 0, candidatesTokenCount: 0 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.equal(fiveWeekCredits, 3_333_333);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
+  });
+
+  // Benchmark 2: 100% Output (including thinking tokens)
+  test('Benchmark 2 (100% Output): 80,000 weekly / 400,000 5-week tokens', () => {
+    // Weekly: 80,000 output tokens * (25 / 3) = 666,666.666... -> Math.ceil = 666,667 credits
+    const weeklyCandidates: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 80_000 };
+    const weeklyCredits = unitsFromUsage(weeklyCandidates);
+    assert.equal(weeklyCredits, 666_667);
+    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
+
+    // Also verify with thinking tokens
+    const weeklyThinking: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 40_000, thoughtsTokenCount: 40_000 };
+    assert.equal(unitsFromUsage(weeklyThinking), 666_667);
+
+    // 5-week: 400,000 output tokens * (25 / 3) = 3,333,333.333... -> Math.ceil = 3,333,334 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 0, candidatesTokenCount: 200_000, thoughtsTokenCount: 200_000 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
+  });
+
+  // Benchmark 3: 100% Cached Input
+  test('Benchmark 3 (100% Cached Input): 6,666,667 weekly / 33,333,333 5-week tokens', () => {
+    // In Gemini API, promptTokenCount includes cachedContentTokenCount
+    // 6,666,667 cached tokens * 0.1 = 666,666.7 -> Math.ceil = 666,667 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 6_666_667, cachedContentTokenCount: 6_666_667 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.equal(weeklyCredits, 666_667);
+    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET);
+
+    // 5-week: 33,333,333 cached tokens * 0.1 = 3,333,333.3 -> Math.ceil = 3,333,334 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 33_333_333, cachedContentTokenCount: 33_333_333 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
+  });
+
+  // Benchmark 4: 1:1 Split (50% In / 50% Out)
+  test('Benchmark 4 (1:1 Split): 142,857 weekly / 714,286 5-week tokens', () => {
+    // 142,857 total tokens: 71,428 uncached input, 71,429 output
+    // Credits = 71,428 + 71,429 * (25 / 3) = 71,428 + 595,241.67 = 666,669.67 -> 666,670 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 71_428, candidatesTokenCount: 71_429 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.ok(weeklyCredits >= DEFAULT_WEEKLY_UNIT_BUDGET, `Expected >= 666667, got ${weeklyCredits}`);
+
+    // 5-week: 714,286 total tokens: 357,143 input, 357,143 output
+    // Credits = 357,143 + 357,143 * (25 / 3) = 357,143 + 2,976,191.67 = 3,333,334.67 -> 3,333,335 credits
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 357_143, candidatesTokenCount: 357_143 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET, `Expected >= 3333333, got ${fiveWeekCredits}`);
+  });
+
+  // Benchmark 5: 3:1 Split (75% In / 25% Out)
+  test('Benchmark 5 (3:1 Split): 235,294 weekly / 1,176,471 5-week tokens', () => {
+    // Theoretical combined rate: 0.75 * 1 + 0.25 * (25/3) = 17 / 6
+    // 235,294 tokens * (17 / 6) = 666,666.33 -> 666,667 credits
+    // Token split: 176,471 input, 58,823 output
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 176_471, candidatesTokenCount: 58_823 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 5);
+
+    // 5-week split: 882,353 input, 294,118 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 882_353, candidatesTokenCount: 294_118 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
+  });
+
+  // Benchmark 6: 4:1 Split (80% In / 20% Out)
+  test('Benchmark 6 (4:1 Split): 270,270 weekly / 1,351,351 5-week tokens', () => {
+    // Theoretical combined rate: 0.8 * 1 + 0.2 * (25/3) = 37 / 15
+    // 270,270 * 37 / 15 = 666,666.0 -> 666,666 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 216_216, candidatesTokenCount: 54_054 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 2);
+
+    // 5-week split: 1,081,081 input, 270,270 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_081_081, candidatesTokenCount: 270_270 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(Math.abs(fiveWeekCredits - DEFAULT_5_WEEK_UNIT_BUDGET) <= 2);
+  });
+
+  // Benchmark 7: 9:1 Split (90% In / 10% Out)
+  test('Benchmark 7 (9:1 Split): 384,615 weekly / 1,923,077 5-week tokens', () => {
+    // Theoretical combined rate: 0.9 * 1 + 0.1 * (25/3) = 26 / 15
+    // 384,615 * 26 / 15 = 666,666.0 -> 666,666 credits
+    const weeklyUsage: GeminiUsage = { promptTokenCount: 346_154, candidatesTokenCount: 38_461 };
+    const weeklyCredits = unitsFromUsage(weeklyUsage);
+    assert.ok(Math.abs(weeklyCredits - DEFAULT_WEEKLY_UNIT_BUDGET) <= 5);
+
+    // 5-week split: 1,730,769 input, 192,308 output
+    const fiveWeekUsage: GeminiUsage = { promptTokenCount: 1_730_769, candidatesTokenCount: 192_308 };
+    const fiveWeekCredits = unitsFromUsage(fiveWeekUsage);
+    assert.ok(fiveWeekCredits >= DEFAULT_5_WEEK_UNIT_BUDGET);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. Usage Metadata Extraction & Thinking Tokens
+  // -------------------------------------------------------------------------
+  console.log('\n--- 3. Usage Metadata Extraction & Thinking Tokens ---');
+
+  test('extractUsageMetadata parses unary GenerateContentResponse', () => {
+    const rawUnaryResponse = {
+      usageMetadata: {
+        promptTokenCount: 15_000,
+        candidatesTokenCount: 850,
+        cachedContentTokenCount: 12_000,
+        thoughtsTokenCount: 250,
+      },
+    };
+    const extracted = extractUsageMetadata(rawUnaryResponse);
+    assert.ok(extracted !== null);
+    assert.equal(extracted!.promptTokenCount, 15_000);
+    assert.equal(extracted!.candidatesTokenCount, 850);
+    assert.equal(extracted!.cachedContentTokenCount, 12_000);
+    assert.equal(extracted!.thoughtsTokenCount, 250);
+
+    // Uncached = 15,000 - 12,000 = 3,000
+    // Output = 850 + 250 = 1,100
+    // Credits = 3,000 * 1 + 12,000 * 0.1 + 1,100 * (25 / 3) = 3,000 + 1,200 + 9,166.67 = 13,367 credits
+    const credits = unitsFromUsage(extracted);
+    assert.equal(credits, 13_367);
+  });
+
+  test('Thinking tokens are billed at output rate (25 / 3) without double-counting', () => {
+    // 0 prompt, 100 candidate tokens, 50 thinking tokens
+    // Output = 150 tokens * (25 / 3) = 1,250 credits
+    const usage: GeminiUsage = {
+      promptTokenCount: 0,
+      candidatesTokenCount: 100,
+      thoughtsTokenCount: 50,
+    };
+    const credits = unitsFromUsage(usage);
+    assert.equal(credits, 1_250);
+  });
+
+  test('Cached input tokens deduction: prompt includes cached tokens', () => {
+    // Prompt = 10,000 with 7,000 cached. Uncached = 3,000.
+    // Credits = 3,000 * 1.0 + 7,000 * 0.1 = 3,000 + 700 = 3,700 credits
+    const usage: GeminiUsage = {
+      promptTokenCount: 10_000,
+      cachedContentTokenCount: 7_000,
+      candidatesTokenCount: 0,
+      thoughtsTokenCount: 0,
+    };
+    assert.equal(unitsFromUsage(usage), 3_700);
+  });
+
+  test('extractUsageMetadata rejects non-token objects and sanitizes negative counts', () => {
+    // Must return null for objects without usageMetadata or token properties
+    assert.equal(extractUsageMetadata(null), null);
+    assert.equal(extractUsageMetadata(undefined), null);
+    assert.equal(extractUsageMetadata({ text: 'just a streaming text chunk' }), null);
+    assert.equal(extractUsageMetadata({ error: 'service unavailable' }), null);
+
+    // Negative counts must be sanitized to 0
+    const corruptUsage = extractUsageMetadata({
+      usageMetadata: {
+        promptTokenCount: -100,
+        candidatesTokenCount: -50,
+        cachedContentTokenCount: -20,
+        thoughtsTokenCount: -10,
+      },
+    });
+    assert.ok(corruptUsage !== null);
+    assert.equal(corruptUsage!.promptTokenCount, 0);
+    assert.equal(corruptUsage!.candidatesTokenCount, 0);
+    assert.equal(corruptUsage!.cachedContentTokenCount, 0);
+    assert.equal(corruptUsage!.thoughtsTokenCount, 0);
+    assert.equal(unitsFromUsage(corruptUsage), 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. Streaming Chunk Aggregation & Client Disconnect Resilience
+  // -------------------------------------------------------------------------
+  console.log('\n--- 4. Streaming Chunk Aggregation & Disconnect Resilience ---');
+
+  test('Streaming chunk aggregation captures cumulative usage without token loss', async () => {
+    // Mock GenAI with chunks where usageMetadata updates on final chunk
+    const mockChunks = [
+      { text: 'Hello, ' },
+      { text: 'this is Simosan. ' },
+      {
+        text: 'Exam point.',
+        usageMetadata: {
+          promptTokenCount: 5_000,
+          cachedContentTokenCount: 4_000,
+          candidatesTokenCount: 120,
+          thoughtsTokenCount: 60,
+        },
+      },
+    ];
+
+    const mockAi: any = {
+      models: {
+        generateContentStream: async () => (async function* () {
+          for (const c of mockChunks) yield c;
+        })(),
+      },
+    };
+
+    let streamOutput = '';
+    const result = await streamAnswer(mockAi, DEFAULT_MODEL, [], (t) => { streamOutput += t; });
+
+    assert.equal(streamOutput, 'Hello, this is Simosan. Exam point.');
+    assert.ok(result.usage !== null);
+    assert.equal(result.usage!.promptTokenCount, 5_000);
+    assert.equal(result.usage!.cachedContentTokenCount, 4_000);
+    assert.equal(result.usage!.candidatesTokenCount, 120);
+    assert.equal(result.usage!.thoughtsTokenCount, 60);
+
+    // Uncached: 1,000 + Cached: 400 + Output: 180 * (25/3) = 1,500 = 2,900 credits
+    assert.equal(unitsFromUsage(result.usage), 2_900);
+  });
+
+  test('Streaming resilience: captures final usage even if client disconnects mid-stream', async () => {
+    const mockChunks = [
+      { text: 'First chunk sent to client. ' },
+      { text: 'Second chunk where client disconnects. ' },
+      {
+        text: 'Final chunk generated by model.',
+        usageMetadata: {
+          promptTokenCount: 20_000,
+          cachedContentTokenCount: 18_000,
+          candidatesTokenCount: 300,
+          thoughtsTokenCount: 120,
+        },
+      },
+    ];
+
+    const mockAi: any = {
+      models: {
+        generateContentStream: async () => (async function* () {
+          for (const c of mockChunks) yield c;
+        })(),
+      },
+    };
+
+    let chunksDelivered = 0;
+    const onDelta = (text: string) => {
+      chunksDelivered++;
+      if (chunksDelivered >= 2) {
+        // Simulate client socket drop / EPIPE
+        throw new Error('client_disconnected_epipe');
+      }
+    };
+
+    const result = await streamAnswer(mockAi, DEFAULT_MODEL, [], onDelta);
+
+    // Verify stream continued draining, captured final usage, and retained full generated response
+    assert.equal(result.clientDisconnected, true, 'clientDisconnected flag should be true');
+    assert.equal(
+      result.fullText,
+      'First chunk sent to client. Second chunk where client disconnects. Final chunk generated by model.',
+    );
+    assert.ok(result.usage !== null, 'Usage must not be null');
+    assert.equal(result.usage!.promptTokenCount, 20_000);
+    assert.equal(result.usage!.cachedContentTokenCount, 18_000);
+    assert.equal(result.usage!.candidatesTokenCount, 300);
+    assert.equal(result.usage!.thoughtsTokenCount, 120);
+
+    // Uncached = 2,000, Cached = 1,800, Output = 420 * (25/3) = 3,500. Total = 7,300 credits
+    assert.equal(unitsFromUsage(result.usage), 7_300);
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. Quota Management & 5-Week Rolling Cycle
+  // -------------------------------------------------------------------------
+  console.log('\n--- 5. Quota Management & 5-Week Rolling Cycle ---');
+
+  await test('Weekly quota exhaustion: request within 666,667 credits succeeds, request beyond is rejected', async () => {
+    const { ctx } = createMockFirestoreCtx();
+    const uid = 'student_weekly_test';
+    const t0 = new Date('2026-10-31T08:00:00Z');
+    const t1 = new Date('2026-10-31T12:00:00Z'); // 4h later (past 2h burst cooldown)
+    const t2 = new Date('2026-10-31T16:00:00Z'); // 4h later
+
+    // 1. Initial reservation of 400,000 credits succeeds
+    const res1 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 400_000 }, t0);
+    assert.equal(res1.ok, true);
+    assert.equal(res1.reserved, 400_000);
+    assert.equal(res1.remaining, 266_667);
+
+    // Settle with 400,000 credits
+    await reconcileEnergy(ctx, { uid, reservedUnits: 400_000, actualUnits: 400_000 }, t0);
+
+    // 2. Second reservation of 266,667 credits reaches exact weekly cap
+    const res2 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 266_667 }, t1);
+    assert.equal(res2.ok, true);
+    assert.equal(res2.remaining, 0);
+
+    await reconcileEnergy(ctx, { uid, reservedUnits: 266_667, actualUnits: 266_667 }, t1);
+
+    // 3. Third reservation attempts 1 credit past the cap -> rejected
+    const res3 = await reserveEnergy(ctx, { uid, stageId: 'stage_3', estimatedUnits: 1 }, t2);
+    assert.equal(res3.ok, false);
+    assert.equal(res3.reason, 'insufficient_energy');
+    assert.equal(res3.remaining, 0);
+  });
+
+  await test('5-Week Rolling Cycle: accumulating 3,333,333 credits across 5 weeks rejects new requests', async () => {
+    const { ctx, store } = createMockFirestoreCtx();
+    const uid = 'student_rolling_test';
+    const t0 = new Date('2026-10-31T08:00:00Z');
+    const t1 = new Date('2026-10-31T12:00:00Z'); // 4h later (past 2h burst cooldown)
+    const currentWeek = baghdadWeekKey(t0);
+    const rollingKeys = getRollingWeekKeys(currentWeek, 5);
+    assert.equal(rollingKeys.length, 5);
+
+    // Populate the 4 prior weeks with 666,666 credits each
+    // 4 * 666,666 = 2,666,664 credits already used
+    for (let i = 1; i < 5; i++) {
+      const priorWeekKey = rollingKeys[i];
+      store.set(`aiUsage/${uid}_${priorWeekKey}`, {
+        uid,
+        week: priorWeekKey,
+        unitsUsed: 666_666,
+        unitsReserved: 0,
+      });
+    }
+
+    // In current week, student has remaining 5-week allowance = 3,333,333 - 2,666,664 = 666,669 credits
+    // But weekly cap is 666,667 credits.
+    const res1 = await reserveEnergy(ctx, { uid, stageId: 's', estimatedUnits: 666_667 }, t0);
+    assert.equal(res1.ok, true);
+    await reconcileEnergy(ctx, { uid, reservedUnits: 666_667, actualUnits: 666_667 }, t0);
+
+    // Total 5-week usage is now 2,666,664 + 666,667 = 3,333,331 credits (~3,333,333).
+    // An additional request of 100 units exceeds 3,333,333 cap -> rejected
+    const res2 = await reserveEnergy(ctx, { uid, stageId: 's', estimatedUnits: 100 }, t1);
+    assert.equal(res2.ok, false);
+    assert.equal(res2.reason, 'insufficient_energy');
+  });
+
+  await test('Rolling window slide: oldest week drops out when window advances', async () => {
+    const currentWeek = '2026-10-31';
+    const keys = getRollingWeekKeys(currentWeek, 5);
+    assert.deepEqual(keys, [
+      '2026-10-31',
+      '2026-10-24',
+      '2026-10-17',
+      '2026-10-10',
+      '2026-10-03',
+    ]);
+
+    // Next week advances: 2026-10-03 drops off the 5-week window
+    const nextWeek = '2026-11-07';
+    const nextKeys = getRollingWeekKeys(nextWeek, 5);
+    assert.deepEqual(nextKeys, [
+      '2026-11-07',
+      '2026-10-31',
+      '2026-10-24',
+      '2026-10-17',
+      '2026-10-10',
+    ]);
+    assert.ok(!nextKeys.includes('2026-10-03'));
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Floating-point Precision & Atomic Accumulator Test
+  // -------------------------------------------------------------------------
+  console.log('\n--- 6. Floating-Point Precision & Atomic Accumulator ---');
+
+  test('Floating-point clean accumulator: 1,000 micro-transactions do not drift', () => {
+    let settings = normaliseSettings({
+      monthUsd: 0,
+      weeklyUnitBudget: 666_667,
+    });
+
+    // 1,000 micro calls of 333 units each (each call ~$0.00009990 USD)
+    for (let i = 0; i < 1_000; i++) {
+      const spendUsd = unitsToUsd(333);
+      const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
+      settings.monthUsd = nextMonthUsd;
+    }
+
+    // 333 * 1,000 = 333,000 credits
+    // 333,000 * 0.30 / 1,000,000 = 0.099900 USD
+    assert.equal(settings.monthUsd, 0.0999);
+    assert.equal(typeof settings.monthUsd, 'number');
+    assert.ok(!isNaN(settings.monthUsd));
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. Supabase / Firestore Quota Parity & Atomic Concurrency
+  // -------------------------------------------------------------------------
+  console.log('\n--- 7. Supabase / Firestore Quota Parity & Atomic Concurrency ---');
+
+  const createMockSupa = (supaStore: Map<string, any>, enableRpc = true) => ({
+    from: (table: string) => ({
+      select: (cols?: string) => ({
+        eq: (col: string, val: any) => ({
+          maybeSingle: async () => ({ data: supaStore.get(val) || null, error: null }),
+        }),
+        in: async (col: string, vals: any[]) => {
+          const rows = vals.map((v) => supaStore.get(v)).filter(Boolean);
+          return { data: rows, error: null };
+        },
+      }),
+      upsert: async (row: any) => {
+        const existing = supaStore.get(row.id) || {};
+        supaStore.set(row.id, { ...existing, ...row });
+        return { data: row, error: null };
+      },
+      update: (updates: any) => ({
+        eq: async (col: string, val: any) => {
+          const existing = supaStore.get(val) || {};
+          supaStore.set(val, { ...existing, ...updates });
+          return { data: supaStore.get(val), error: null };
+        },
+      }),
+    }),
+    rpc: async (fn: string, args: any) => {
+      if (!enableRpc) {
+        return { data: null, error: new Error('function increment_ai_usage does not exist') };
+      }
+      if (fn === 'increment_ai_usage') {
+        const { p_id, p_user_id, p_period_key, p_delta_used, p_delta_reserved, p_delta_window } = args;
+        const current = supaStore.get(p_id) || { units_used: 0, units_reserved: 0, window_units: 0, used_count: 0 };
+        const nextUsed = Math.max(0, (Number(current.units_used) || 0) + (Number(p_delta_used) || 0));
+        const nextReserved = Math.max(0, (Number(current.units_reserved) || 0) + (Number(p_delta_reserved) || 0));
+        const nextWindow = Math.max(0, (Number(current.window_units) || 0) + (Number(p_delta_window) || 0));
+        const nextCount = Number(p_delta_used) > 0 ? (Number(current.used_count) || 0) + 1 : (Number(current.used_count) || 0);
+        const updated = {
+          ...current,
+          id: p_id,
+          user_id: p_user_id,
+          period_key: p_period_key,
+          units_used: nextUsed,
+          units_reserved: nextReserved,
+          window_units: nextWindow,
+          used_count: nextCount,
+        };
+        supaStore.set(p_id, updated);
+        return { data: [{ units_used: nextUsed, units_reserved: nextReserved, window_units: nextWindow }], error: null };
+      }
+      return { data: null, error: new Error('unknown function') };
+    },
+  });
+
+  await test('Supabase reserveSupaEnergy enforces 666,667 weekly cap via atomic RPC', async () => {
+    const supaStore = new Map<string, any>();
+    const mockSupa: any = createMockSupa(supaStore, true);
+
+    const sUid = 'supa_student_rpc';
+    const sWeek = '2026-10-31';
+    const t0 = new Date('2026-10-31T09:00:00Z');
+    const t1 = new Date('2026-10-31T13:00:00Z'); // 4 hours later (past cooldown)
+
+    // 1. Reserve 666,667 credits succeeds
+    const sRes1 = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 666_667, now: t0 });
+    assert.equal(sRes1.ok, true);
+    assert.equal(sRes1.remaining, 0);
+
+    await reconcileSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, reservedUnits: 666_667, actualUnits: 666_667, now: t0 });
+
+    // 2. Subsequent reservation denied with insufficient_energy
+    const sRes2 = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 1, now: t1 });
+    assert.equal(sRes2.ok, false);
+    assert.equal(sRes2.reason, 'insufficient_energy');
+  });
+
+  await test('Supabase atomic RPC rolls back reservation when concurrent burst exceeds budget', async () => {
+    const supaStore = new Map<string, any>();
+    const mockSupa: any = createMockSupa(supaStore, true);
+
+    const sUid = 'supa_student_rollback';
+    const sWeek = '2026-10-31';
+    const t0 = new Date('2026-10-31T09:00:00Z');
+
+    // Pre-populate with 600,000 units used
+    supaStore.set(`${sUid}_${sWeek}`, {
+      id: `${sUid}_${sWeek}`,
+      user_id: sUid,
+      period_key: sWeek,
+      units_used: 600_000,
+      units_reserved: 0,
+      window_units: 0,
+    });
+
+    // Attempt reservation of 70,000 units (total would be 670,000 > 666,667 cap)
+    const res = await reserveSupaEnergy(mockSupa, { uid: sUid, weekKey: sWeek, estimatedUnits: 70_000, now: t0 });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'insufficient_energy');
+
+    // Verify rollback restored units_reserved back to 0
+    const row = supaStore.get(`${sUid}_${sWeek}`);
+    assert.equal(row.units_reserved, 0, 'units_reserved should be rolled back to 0');
+  });
+
+  await test('Supabase reserveSupaEnergy functions reliably via fallback upsert when RPC is absent', async () => {
+    const supaStore = new Map<string, any>();
+    const mockSupaFallback: any = createMockSupa(supaStore, false);
+
+    const sUid = 'supa_student_fallback';
+    const sWeek = '2026-10-31';
+    const t0 = new Date('2026-10-31T09:00:00Z');
+    const t1 = new Date('2026-10-31T13:00:00Z');
+
+    const res1 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 500_000, now: t0 });
+    assert.equal(res1.ok, true);
+    assert.equal(res1.reserved, 500_000);
+
+    await reconcileSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, reservedUnits: 500_000, actualUnits: 500_000, now: t0 });
+
+    const res2 = await reserveSupaEnergy(mockSupaFallback, { uid: sUid, weekKey: sWeek, estimatedUnits: 200_000, now: t1 });
+    assert.equal(res2.ok, false);
+    assert.equal(res2.reason, 'insufficient_energy');
+  });
+
+  console.log('\n=====================================================================');
+  console.log(`  ALL GEMINI PRICING & QUOTA TESTS PASSED (${passedTests}/${totalTests})!`);
+  console.log('=====================================================================\n');
+}
+
+runAllTests().catch((err) => {
+  console.error('\nTest suite execution failed:', err);
+  process.exit(1);
+});

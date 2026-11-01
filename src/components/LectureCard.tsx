@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { FileText, Download, Send, Clock, Tag, X, Trash2, Loader2, Edit2, CloudDownload, CheckCircle2, CloudOff, CheckCircle, Youtube, ClipboardList, BookOpen, Share2, ChevronRight, Image as ImageIcon, Check, Mic } from 'lucide-react';
 import { Lecture, CATEGORIES, Language, TRANSLATIONS, UserProfile } from '../types';
-import { canManage } from '../lib/permissions';
+import { canManage, isMasterAdmin, isSupport } from '../lib/permissions';
 import { motion, AnimatePresence } from 'motion/react';
 import { doc, deleteDoc, setDoc, updateDoc, serverTimestamp, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
@@ -56,6 +56,13 @@ export default React.memo(function LectureCard({
   const [isPostingTelegram, setIsPostingTelegram] = useState(false);
   const [telegramSuccess, setTelegramSuccess] = useState(false);
 
+  const canShareTelegram = isMasterAdmin(user)
+    || isSupport(user)
+    || (user?.role === 'admin' && user?.managedStageId === lecture.stageId)
+    || canManage(user, 'manageLectures');
+  const isAlreadyPostedTelegram = Boolean((lecture as any).telegramPost?.messageId);
+  const isPendingTelegram = (lecture as any).telegramPost?.status === 'pending';
+
   const { thumbnail, aspectRatio: thumbRatio, isLoading: isThumbLoading, error: thumbError } = usePdfThumbnail(
     lecture.id,
     lecture.pdfUrl,
@@ -69,10 +76,12 @@ export default React.memo(function LectureCard({
     if (isPostingTelegram) return;
     setIsPostingTelegram(true);
     try {
-      // Clearing telegramPost and updating createdAt triggers the bot's watcher immediately
+      // Request bot to post or re-share this lecture to Telegram
       await updateDoc(doc(db, 'lectures', lecture.id), {
-        telegramPost: null,
-        createdAt: serverTimestamp(),
+        telegramShareRequestedAt: serverTimestamp(),
+        'telegramPost.status': 'pending',
+        'telegramPost.requestedAt': serverTimestamp(),
+        'telegramPost.requestedBy': user?.uid ?? null,
       });
       setTelegramSuccess(true);
       setShareToast(isRtl ? 'تم إرسال طلب النشر إلى تيليجرام' : 'Sent to Telegram channel');
@@ -876,22 +885,34 @@ export default React.memo(function LectureCard({
                     </button>
                   )}
 
-                  {/* Admin Post to Telegram */}
-                  {canManage(user, 'manageLectures') && (
+                  {/* Admin & Support Post to Telegram */}
+                  {canShareTelegram && (
                     <button
                       type="button"
                       onClick={handlePostToTelegram}
-                      disabled={isPostingTelegram}
+                      disabled={isPostingTelegram || isPendingTelegram}
                       className="flex-1 flex flex-col items-center justify-center py-2 px-1 rounded-xl text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 transition-all disabled:opacity-50 cursor-pointer"
-                      title={isRtl ? 'نشر المحاضرة على قناة تيليجرام' : 'Post lecture to Telegram'}
+                      title={
+                        isAlreadyPostedTelegram
+                          ? (isRtl ? 'تم النشر مسبقاً — اضغط لإعادة النشر على تيليجرام' : 'Already posted — click to re-share to Telegram')
+                          : (isRtl ? 'نشر المحاضرة على قناة تيليجرام' : 'Post lecture to Telegram')
+                      }
                     >
-                      {isPostingTelegram ? (
+                      {isPostingTelegram || isPendingTelegram ? (
                         <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mb-1 animate-spin text-cyan-500" />
                       ) : (
-                        <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
+                        isAlreadyPostedTelegram ? (
+                          <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1 text-teal-600 dark:text-teal-400" />
+                        ) : (
+                          <Send className="w-4 h-4 sm:w-5 sm:h-5 mb-1" />
+                        )
                       )}
                       <span className="text-[10px] font-bold">
-                        {telegramSuccess ? (isRtl ? 'تم النشر' : 'Posted') : (isRtl ? 'تيليجرام' : 'Telegram')}
+                        {isPostingTelegram || isPendingTelegram
+                          ? (isRtl ? 'جاري الإرسال' : 'Sending...')
+                          : (telegramSuccess || isAlreadyPostedTelegram)
+                          ? (isRtl ? 'تم النشر' : 'Posted')
+                          : (isRtl ? 'تيليجرام' : 'Telegram')}
                       </span>
                     </button>
                   )}

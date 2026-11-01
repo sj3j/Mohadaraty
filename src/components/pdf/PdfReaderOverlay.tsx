@@ -90,11 +90,10 @@ const NO_ANNOTATIONS: PdfAnnotation[] = [];
 const MAX_MATCHES = 500;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING !== 'false';
-// Page-owned native ink is the safe default. The old WebView SVG layer is
-// screen-relative on native readers and makes marks float after zoom/page
-// changes. Set this explicitly to "false" only for an emergency rollback.
-const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 !== 'false';
+// Default to the proven pre-overhaul WebView routing. The newer native ink
+// renderer remains available only when explicitly enabled after device QA.
+const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING === 'true';
+const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 === 'true';
 
 const RESIST = 0.25;
 const RUBBER = 0.55;
@@ -159,12 +158,16 @@ export default function PdfReaderOverlay({
   const [activeDrawingTool, setActiveDrawingTool] = useState<DrawingTool>('pencil');
   const [activeDrawColor, setActiveDrawColor] = useState<string>('#4f46e5');
   const [activeDrawWidth, setActiveDrawWidth] = useState<StrokeWidth>('medium');
+  // Page-owned V3 ink and the old screen-owned SVG ink must never be merged.
+  // They use different coordinate spaces and renderers.
+  const [pageNativeStrokes, setPageNativeStrokes] = useState<Record<number, PdfStroke[]>>({});
   const [pageStrokes, setPageStrokes] = useState<Record<number, PdfStroke[]>>({});
   // Pre-V3 strokes were normalised against a viewport/SVG layer. They must
   // never be handed to the page-owned native renderer as though they used the
   // crop-box coordinate system; that would silently move a student's marks.
   const [pageStrokeCoordinateSpace, setPageStrokeCoordinateSpace] = useState<Record<number, 'pdf-page' | 'legacy-viewport'>>({});
   const legacyInkNoticeShownRef = useRef(false);
+  const [hasLegacyViewportInk, setHasLegacyViewportInk] = useState(false);
   const [history, setHistory] = useState<Record<number, { past: PdfStroke[][]; future: PdfStroke[][] }>>({});
 
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -354,39 +357,39 @@ export default function PdfReaderOverlay({
   useEffect(() => {
     if (!lectureId || !current) return;
     if (pageStrokes[current] !== undefined) {
-      if (isNative && nativeReady && NATIVE_INK_V2) {
-        const strokes = pageStrokeCoordinateSpace[current] === 'legacy-viewport'
-          ? []
-          : pageStrokes[current] || [];
-        NativePdf.setPageStrokes({ page: current, strokes }).catch(() => {});
+      if (isNative && nativeReady) {
+        NativePdf.setPageStrokes({ page: current, strokes: pageNativeStrokes[current] || [] }).catch(() => {});
       }
       return;
     }
-    loadCanonicalPageAnnotations(annotationDocumentId, current)
-      .then(async (canonical) => {
+    Promise.all([
+      loadCanonicalPageAnnotations(annotationDocumentId, current),
+      loadCanonicalPageAnnotations(lectureId, current),
+    ])
+      .then(async ([canonical, legacyCanonical]) => {
         const v3Strokes = canonical
           .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
           .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
         // Legacy records stay untouched until their old viewport coordinate
         // system has a fixture-validated migration path.
-        let strokes = v3Strokes;
-        let coordinateSpace: 'pdf-page' | 'legacy-viewport' = 'pdf-page';
+        let strokes = legacyCanonical
+          .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
+          .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
+        let coordinateSpace: 'pdf-page' | 'legacy-viewport' = 'legacy-viewport';
         if (strokes.length === 0) {
-          const legacyCanonical = await loadCanonicalPageAnnotations(lectureId, current);
-          strokes = legacyCanonical
-            .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
-            .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
-          if (strokes.length === 0) {
-            strokes = await getLecturePageStrokes(lectureId, current);
-          }
-          coordinateSpace = 'legacy-viewport';
+          strokes = await getLecturePageStrokes(lectureId, current);
         }
+        setPageNativeStrokes((prev) => ({ ...prev, [current]: v3Strokes }));
         setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
         setPageStrokeCoordinateSpace((prev) => ({ ...prev, [current]: coordinateSpace }));
+        if (strokes.length > 0) setHasLegacyViewportInk(true);
+        if (isNative && nativeReady) {
+          NativePdf.setPageStrokes({ page: current, strokes: v3Strokes }).catch(() => {});
+        }
         if (isNative && nativeReady && NATIVE_INK_V2) {
           NativePdf.setPageStrokes({
             page: current,
-            strokes: coordinateSpace === 'pdf-page' ? strokes : [],
+            strokes: v3Strokes,
           }).catch(() => {});
           if (coordinateSpace === 'legacy-viewport' && strokes.length > 0 && !legacyInkNoticeShownRef.current) {
             legacyInkNoticeShownRef.current = true;
@@ -397,7 +400,7 @@ export default function PdfReaderOverlay({
         }
       })
       .catch(() => {});
-  }, [lectureId, annotationDocumentId, current, pageStrokes, pageStrokeCoordinateSpace, isNative, nativeReady]);
+  }, [lectureId, annotationDocumentId, current, pageStrokes, pageNativeStrokes, pageStrokeCoordinateSpace, isNative, nativeReady]);
 
   const handleAddStroke = useCallback(
     (pageNum: number, stroke: PdfStroke) => {
@@ -408,7 +411,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
-      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'legacy-viewport' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -433,7 +436,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
-      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'legacy-viewport' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -1236,7 +1239,12 @@ export default function PdfReaderOverlay({
         setTimeout(() => URL.revokeObjectURL(url), 2000);
         setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
       }
-      setTimeout(() => setToast(null), 2500);
+      if (hasLegacyViewportInk) {
+        setToast(isRtl
+          ? 'تم تصدير الملاحظات المرتبطة بالصفحات. الرسومات القديمة تبقى متاحة داخل القارئ فقط.'
+          : 'Page-anchored annotations were exported. Older screen-anchored drawings remain available in the reader only.');
+      }
+      setTimeout(() => setToast(null), 3500);
     } catch (err) {
       console.error('[PdfReaderOverlay] Export PDF failed:', err);
       setToast(isRtl ? 'حدث خطأ أثناء تصدير PDF' : 'Error exporting PDF');

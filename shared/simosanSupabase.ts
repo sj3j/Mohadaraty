@@ -14,8 +14,11 @@ import {
   COOLDOWN_DURATION_MS,
   COOLDOWN_WINDOW_MS,
   COOLDOWN_UNIT_THRESHOLD,
+  DEFAULT_WEEKLY_UNIT_BUDGET,
+  DEFAULT_5_WEEK_UNIT_BUDGET,
   MAX_QUESTIONS_PER_CHAT,
   baghdadWeekKey,
+  getRollingWeekKeys,
 } from './simosan.js';
 import { ChatMessage } from './simosanChat.js';
 
@@ -333,9 +336,9 @@ export async function reserveSupaEnergy(
   },
 ): Promise<{ ok: boolean; reserved: number; remaining: number; reason?: string; resetsInMs?: number; cooldownUntil?: number; week: string }> {
   const { uid, estimatedUnits } = params;
-  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || baghdadWeekKey(params.now);
   const id = `${uid}_${periodKey}`;
-  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
+  const budget = params.weeklyBudget || params.dailyBudget || DEFAULT_WEEKLY_UNIT_BUDGET;
 
   try {
     const current = await getSupaUsage(supabase, id);
@@ -352,7 +355,7 @@ export async function reserveSupaEnergy(
     // Check previous week rollover if within 2 hours of Saturday midnight
     const satMidnightMs = Date.parse(`${periodKey}T00:00:00+03:00`);
     let prevUsage: any = null;
-    if (now >= satMidnightMs && now - satMidnightMs < COOLDOWN_DURATION_MS) {
+    if (!isNaN(satMidnightMs) && now >= satMidnightMs && now - satMidnightMs < COOLDOWN_DURATION_MS) {
       const prevWeekDate = new Date(satMidnightMs - 7 * 24 * 60 * 60 * 1000);
       const prevWeekKey = baghdadWeekKey(prevWeekDate);
       prevUsage = await getSupaUsage(supabase, `${uid}_${prevWeekKey}`);
@@ -402,6 +405,44 @@ export async function reserveSupaEnergy(
       };
     }
 
+    // 5-week rolling cycle check ($1.00 USD / 3,333,333 credits across 5 weeks)
+    // Batch query all 4 prior weeks in a single SQL round-trip with fallback
+    const priorWeeks = getRollingWeekKeys(periodKey, 5).slice(1);
+    const priorIds = priorWeeks.map((pw) => `${uid}_${pw}`);
+    let priorUsed = 0;
+    try {
+      const query = supabase.from('ai_usage').select('units_used');
+      if (typeof (query as any)?.in === 'function') {
+        const { data: priorRows } = await (query as any).in('id', priorIds);
+        priorUsed = (priorRows || []).reduce(
+          (sum: number, r: any) => sum + (Number(r?.units_used) || 0),
+          0,
+        );
+      } else {
+        for (const pw of priorWeeks) {
+          const pUsage = await getSupaUsage(supabase, `${uid}_${pw}`);
+          if (pUsage) priorUsed += Number(pUsage.units_used) || 0;
+        }
+      }
+    } catch {
+      for (const pw of priorWeeks) {
+        const pUsage = await getSupaUsage(supabase, `${uid}_${pw}`);
+        if (pUsage) priorUsed += Number(pUsage.units_used) || 0;
+      }
+    }
+    const rolling5WeekSpent = priorUsed + spent;
+    const monthlyBudget = (params as any).monthlyBudget || (budget === DEFAULT_WEEKLY_UNIT_BUDGET ? DEFAULT_5_WEEK_UNIT_BUDGET : budget * 5);
+
+    if (rolling5WeekSpent + estimatedUnits > monthlyBudget) {
+      return {
+        ok: false,
+        reserved: 0,
+        remaining: Math.max(0, Math.min(budget - spent, monthlyBudget - rolling5WeekSpent)),
+        reason: 'insufficient_energy',
+        week: periodKey,
+      };
+    }
+
     // Check burst usage
     const wouldExceedBurst =
       windowUnits >= COOLDOWN_UNIT_THRESHOLD ||
@@ -434,7 +475,61 @@ export async function reserveSupaEnergy(
       };
     }
 
-    const nextHeld = held + estimatedUnits;
+    const deltaEstimated = Math.round(estimatedUnits);
+
+    // 1. Try atomic PostgreSQL RPC first if client supports it
+    if (typeof (supabase as any)?.rpc === 'function') {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('increment_ai_usage', {
+        p_id: id,
+        p_user_id: uid,
+        p_period_key: periodKey,
+        p_delta_used: 0,
+        p_delta_reserved: deltaEstimated,
+        p_delta_window: deltaEstimated,
+      });
+
+      if (!rpcErr) {
+        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+        const currentUsed = (row && typeof row.units_used !== 'undefined') ? Number(row.units_used) : used;
+        const currentHeld = (row && typeof row.units_reserved !== 'undefined') ? Number(row.units_reserved) : (held + deltaEstimated);
+        const totalSpent = currentUsed + currentHeld;
+        const currentRolling5Week = priorUsed + totalSpent;
+
+        if (totalSpent > budget || currentRolling5Week > monthlyBudget) {
+          // Rollback atomic reservation if race exceeded caps
+          await supabase.rpc('increment_ai_usage', {
+            p_id: id,
+            p_user_id: uid,
+            p_period_key: periodKey,
+            p_delta_used: 0,
+            p_delta_reserved: -deltaEstimated,
+            p_delta_window: -deltaEstimated,
+          });
+          return {
+            ok: false,
+            reserved: 0,
+            remaining: Math.max(0, Math.min(budget - (totalSpent - deltaEstimated), monthlyBudget - (currentRolling5Week - deltaEstimated))),
+            reason: 'insufficient_energy',
+            week: periodKey,
+          };
+        }
+
+        const remainingBudget = Math.max(
+          0,
+          Math.min(budget - totalSpent, monthlyBudget - currentRolling5Week),
+        );
+
+        return {
+          ok: true,
+          reserved: deltaEstimated,
+          remaining: remainingBudget,
+          week: periodKey,
+        };
+      }
+    }
+
+    // 2. Fallback to upsert if RPC is not deployed
+    const nextHeld = Math.round(held + deltaEstimated);
     const { error: upsertErr } = await supabase.from('ai_usage').upsert(
       {
         id,
@@ -443,7 +538,7 @@ export async function reserveSupaEnergy(
         units_used: used,
         units_reserved: nextHeld,
         window_start: new Date(windowStart).toISOString(),
-        window_units: windowUnits + estimatedUnits,
+        window_units: Math.round(windowUnits + deltaEstimated),
         cooldown_until: null,
         used_count: Number(current?.used_count) || 0,
         reserved_count: Number(current?.reserved_count) || 0,
@@ -457,10 +552,15 @@ export async function reserveSupaEnergy(
       return { ok: false, reserved: 0, remaining: Math.max(0, budget - spent), reason: 'db_error', week: periodKey };
     }
 
+    const remainingBudget = Math.max(
+      0,
+      Math.min(budget - spent - deltaEstimated, monthlyBudget - rolling5WeekSpent - deltaEstimated),
+    );
+
     return {
       ok: true,
-      reserved: estimatedUnits,
-      remaining: Math.max(0, budget - spent - estimatedUnits),
+      reserved: deltaEstimated,
+      remaining: remainingBudget,
       week: periodKey,
     };
   } catch (err) {
@@ -484,15 +584,41 @@ export async function reconcileSupaEnergy(
   },
 ): Promise<{ remaining: number }> {
   const { uid, reservedUnits, actualUnits } = params;
-  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || baghdadWeekKey(params.now);
   const id = `${uid}_${periodKey}`;
-  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
+  const budget = params.weeklyBudget || params.dailyBudget || DEFAULT_WEEKLY_UNIT_BUDGET;
 
   try {
+    const deltaUsed = Math.round(actualUnits);
+    const deltaReserved = -Math.round(reservedUnits);
+    const deltaWindow = deltaUsed + deltaReserved;
+
+    // 1. Try atomic PostgreSQL RPC first if client supports it
+    if (typeof (supabase as any)?.rpc === 'function') {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('increment_ai_usage', {
+        p_id: id,
+        p_user_id: uid,
+        p_period_key: periodKey,
+        p_delta_used: deltaUsed,
+        p_delta_reserved: deltaReserved,
+        p_delta_window: deltaWindow,
+      });
+
+      if (!rpcErr) {
+        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+        if (row && typeof row.units_used !== 'undefined') {
+          const nextUsed = Number(row.units_used) || 0;
+          const nextHeld = Number(row.units_reserved) || 0;
+          return { remaining: Math.max(0, budget - nextUsed - nextHeld) };
+        }
+      }
+    }
+
+    // 2. Fallback to read-modify-write if RPC is not present
     const current = await getSupaUsage(supabase, id);
     const used = Number(current?.units_used) || 0;
     const held = Number(current?.units_reserved) || 0;
-    const nextUsed = used + actualUnits;
+    const nextUsed = used + deltaUsed;
     const nextHeld = Math.max(0, held - reservedUnits);
     const nextCount = (Number(current?.used_count) || 0) + 1;
 
@@ -546,13 +672,31 @@ export async function releaseSupaEnergy(
     weekKey?: string;
     periodKey?: string;
     reservedUnits: number;
+    now?: Date;
   },
 ): Promise<void> {
   const { uid, reservedUnits } = params;
-  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || baghdadWeekKey(params.now);
   const id = `${uid}_${periodKey}`;
 
   try {
+    const deltaReserved = -Math.round(reservedUnits);
+
+    // 1. Try atomic PostgreSQL RPC first if client supports it
+    if (typeof (supabase as any)?.rpc === 'function') {
+      const { error: rpcErr } = await supabase.rpc('increment_ai_usage', {
+        p_id: id,
+        p_user_id: uid,
+        p_period_key: periodKey,
+        p_delta_used: 0,
+        p_delta_reserved: deltaReserved,
+        p_delta_window: deltaReserved,
+      });
+
+      if (!rpcErr) return;
+    }
+
+    // 2. Fallback to update if RPC is not present
     const current = await getSupaUsage(supabase, id);
     if (!current) return;
     const held = Number(current.units_reserved) || 0;
@@ -676,9 +820,9 @@ export async function settleSupaOffTopic(
   },
 ): Promise<{ refunded: boolean; remaining: number }> {
   const { uid, reservedUnits, actualUnits, maxFreeOffTopic } = params;
-  const periodKey = params.weekKey || params.periodKey || params.dayKey || '';
+  const periodKey = params.weekKey || params.periodKey || params.dayKey || baghdadWeekKey(params.now);
   const id = `${uid}_${periodKey}`;
-  const budget = params.weeklyBudget || params.dailyBudget || 133_333;
+  const budget = params.weeklyBudget || params.dailyBudget || DEFAULT_WEEKLY_UNIT_BUDGET;
 
   try {
     const current = await getSupaUsage(supabase, id);
@@ -687,7 +831,7 @@ export async function settleSupaOffTopic(
     const offTopic = Number(current?.off_topic_count) || 0;
     const refunded = offTopic < maxFreeOffTopic;
 
-    const nextUsed = refunded ? used : used + actualUnits;
+    const nextUsed = Math.round(refunded ? used : used + actualUnits);
     const nextHeld = Math.max(0, held - reservedUnits);
     const now = params.now ? params.now.getTime() : Date.now();
     let windowStart = current?.window_start ? new Date(current.window_start).getTime() : now;
@@ -716,7 +860,7 @@ export async function settleSupaOffTopic(
         units_used: nextUsed,
         units_reserved: nextHeld,
         window_start: new Date(windowStart).toISOString(),
-        window_units: windowUnits,
+        window_units: Math.round(windowUnits),
         cooldown_until: cooldownUntil,
         off_topic_count: offTopic + 1,
         used_count: (Number(current?.used_count) || 0) + 1,

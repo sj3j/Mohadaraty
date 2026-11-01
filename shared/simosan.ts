@@ -26,27 +26,34 @@ import { serverCache } from './serverCache.js';
  * ------------------------------------------------------------------ */
 
 /**
- * Energy is denominated in "units", normalised so that one unit is one
- * uncached input token. That choice is what keeps the student's energy bar and
- * the Google invoice from ever diverging: every weight below is a real price
- * ratio, not a product guess.
+ * Energy is denominated in "units" (Input-Equivalent Token Credits under Option B),
+ * normalised so that one unit/credit is one uncached input token. That choice
+ * is what keeps the student's energy bar and the Google invoice from ever diverging:
+ * every weight below is a real price ratio against uncached input.
  *
- * gemini-3.5-flash: $1.50/1M uncached input, $0.15/1M cached input, $9.00/1M output.
- *   uncached input token = 1     ($1.50/1M)
- *   cached input token   = 0.1   ($0.15 / $1.50 = 0.10)
- *   output token         = 6     ($9.00 / $1.50 = 6)
+ * Official Gemini 3.5 Flash-Lite rates:
+ *   Uncached Input: $0.30 per 1M tokens ($0.00000030 per token) -> 1.0 credit / token
+ *   Context Caching (read): $0.03 per 1M tokens ($0.00000003 per token) -> 0.1 credits / token ($0.03 / $0.30 = 0.10)
+ *   Output (incl. thinking): $2.50 per 1M tokens ($0.00000250 per token) -> 25 / 3 credits / token ($2.50 / $0.30 = 8.333...)
+ *   Context Cache Storage: $1.00 per hour
  *
- * If the model changes, these MUST change with it, or the ceiling stops
- * meaning dollars. Keep USD_PER_UNIT in step with the input price.
+ * One credit == one uncached input token == $0.30 per million ($0.00000030 USD).
+ * Weekly Cap: 666,667 credits ($0.20 USD).
+ * Monthly Cap (5 Weeks): 3,333,333 credits ($1.00 USD).
+ * Deduction Formula:
+ *   Credits Used = Uncached Input Tokens + (Cached Input Tokens * 0.1) + ((Candidate Output Tokens + Thinking Tokens) * (25 / 3))
  */
 export const UNIT_WEIGHT_UNCACHED_INPUT = 1;
 export const UNIT_WEIGHT_CACHED_INPUT = 0.1;
-export const UNIT_WEIGHT_OUTPUT = 6;
+export const UNIT_WEIGHT_OUTPUT = 25 / 3;
 
-/** One unit == one uncached input token == $1.50 per million. */
-export const USD_PER_UNIT = 1.50 / 1_000_000;
+/** One unit == one uncached input token == $0.30 per million ($0.00000030 USD). */
+export const USD_PER_UNIT = 0.30 / 1_000_000;
 
-export const DEFAULT_MODEL = 'gemini-3.5-flash';
+/** Context cache storage rate: $1.00 USD per hour. */
+export const CONTEXT_CACHE_STORAGE_PER_HOUR_USD = 1.00;
+
+export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 /**
  * Tokens billed per PDF page. Natively embedded text is not charged on Gemini 3
@@ -77,15 +84,20 @@ export const MAX_QUESTIONS_PER_CHAT = 25;
 /**
  * Weekly energy allowance per subscriber:
  * 5 cycles per month, $1.00 USD / 5 = $0.20 USD per weekly cycle.
- * Energy units per week = $0.20 USD / USD_PER_UNIT = 133,333 units.
+ * Energy credits per week = $0.20 USD / USD_PER_UNIT = 666,667 credits.
+ * Monthly allowance across 5 weeks = $1.00 USD / USD_PER_UNIT = 3,333,333 credits.
  */
-export const DEFAULT_WEEKLY_UNIT_BUDGET = Math.round(0.20 / USD_PER_UNIT); // 133,333
+export const DEFAULT_WEEKLY_UNIT_BUDGET = Math.round(0.20 / USD_PER_UNIT); // 666,667
+export const DEFAULT_5_WEEK_UNIT_BUDGET = 3_333_333; // 5 weeks * 666,666.67 = $1.00 USD
+export const DEFAULT_MONTHLY_UNIT_BUDGET = DEFAULT_5_WEEK_UNIT_BUDGET;
+export const WEEKLY_CAP_CREDITS = DEFAULT_WEEKLY_UNIT_BUDGET;
+export const MONTHLY_CAP_CREDITS = DEFAULT_5_WEEK_UNIT_BUDGET;
 export const DEFAULT_DAILY_UNIT_BUDGET = DEFAULT_WEEKLY_UNIT_BUDGET;
 export const DEFAULT_MONTHLY_CEILING_USD = 50;
 
 /**
  * 2-hour cooldown when a student uses too many tokens in a short period.
- * Threshold: 60,000 units within a 10-minute window (~45% of weekly budget).
+ * Threshold: 60,000 units within a 10-minute window.
  */
 export const COOLDOWN_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
 export const COOLDOWN_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -118,6 +130,7 @@ export interface SimosanSettings {
   enabled: boolean;
   model: string;
   weeklyUnitBudget: number;
+  monthlyUnitBudget: number;
   /** Kept as an alias for backwards compatibility */
   dailyUnitBudget: number;
   monthlyCeilingUsd: number;
@@ -235,9 +248,32 @@ export function isSaturdayRolloverWindow(week: string, now: Date = new Date()): 
 }
 
 export function previousBaghdadWeekKey(week: string): string {
+  if (!week || typeof week !== 'string') {
+    return baghdadWeekKey();
+  }
   const satMidnightMs = Date.parse(`${week}T00:00:00+03:00`);
+  if (isNaN(satMidnightMs)) {
+    return baghdadWeekKey();
+  }
   const prevDate = new Date(satMidnightMs - 7 * 24 * 60 * 60 * 1000);
   return baghdadWeekKey(prevDate);
+}
+
+/**
+ * Return array of Baghdad academic week keys for the rolling window ending on `week`.
+ * Default count = 5 returns [week_0, week_1, week_2, week_3, week_4].
+ */
+export function getRollingWeekKeys(week: string, count: number = 5): string[] {
+  const safeWeek = week && typeof week === 'string' && !isNaN(Date.parse(`${week}T00:00:00+03:00`))
+    ? week
+    : baghdadWeekKey();
+  const keys: string[] = [safeWeek];
+  let curr = safeWeek;
+  for (let i = 1; i < count; i++) {
+    curr = previousBaghdadWeekKey(curr);
+    keys.push(curr);
+  }
+  return keys;
 }
 
 export function usageDocId(uid: string, day: string): string {
@@ -249,26 +285,61 @@ export function freeUsageDocId(uid: string, week: string): string {
 }
 
 /* ------------------------------------------------------------------ *
- * Energy arithmetic
+ * Energy arithmetic & Usage Metadata Extraction
  * ------------------------------------------------------------------ */
 
 /**
- * Convert real Gemini usage into energy units.
+ * Extract Gemini usage metadata from unary response or streaming chunk.
+ * Normalizes promptTokenCount, candidatesTokenCount, cachedContentTokenCount, and thoughtsTokenCount.
+ * Returns null if the response/chunk contains no usage metadata or token fields.
+ */
+export function extractUsageMetadata(responseOrChunk: any): GeminiUsage | null {
+  if (!responseOrChunk) return null;
+  const meta = responseOrChunk.usageMetadata || responseOrChunk;
+  if (!meta || typeof meta !== 'object') return null;
+
+  // Return null if neither usageMetadata wrapper nor any recognized token count field exists
+  const hasTokenProp =
+    'promptTokenCount' in meta ||
+    'candidatesTokenCount' in meta ||
+    'cachedContentTokenCount' in meta ||
+    'thoughtsTokenCount' in meta ||
+    'totalTokenCount' in meta;
+  if (!hasTokenProp) return null;
+
+  return {
+    promptTokenCount: Math.max(0, Number(meta.promptTokenCount) || 0),
+    candidatesTokenCount: Math.max(0, Number(meta.candidatesTokenCount) || 0),
+    cachedContentTokenCount: Math.max(0, Number(meta.cachedContentTokenCount) || 0),
+    thoughtsTokenCount: Math.max(0, Number(meta.thoughtsTokenCount) || 0),
+  };
+}
+
+/**
+ * Convert real Gemini usage into energy units (credits) under Option B.
  *
  * `promptTokenCount` INCLUDES cached tokens, so the uncached portion is the
- * difference. Thinking tokens are billed at the output rate, so they are
- * weighted as output.
+ * difference: uncached = Math.max(0, prompt - cached).
+ * Thinking tokens are billed at the output rate (25 / 3 credits/token).
+ *
+ * Credits Used = Uncached + (Cached * 0.1) + ((Candidates + Thoughts) * (25 / 3))
+ * Result is rounded up (Math.ceil) to discrete integer credits to eliminate fractional leakage.
  */
 export function unitsFromUsage(usage: GeminiUsage | undefined | null): number {
   if (!usage) return 0;
-  const prompt = usage.promptTokenCount ?? 0;
-  const cached = usage.cachedContentTokenCount ?? 0;
-  const output = (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0);
+  const prompt = Math.max(0, Number(usage.promptTokenCount) || 0);
+  const cached = Math.max(0, Number(usage.cachedContentTokenCount) || 0);
+  const candidates = Math.max(0, Number(usage.candidatesTokenCount) || 0);
+  const thoughts = Math.max(0, Number(usage.thoughtsTokenCount) || 0);
   const uncached = Math.max(0, prompt - cached);
-  return Math.ceil(
-    uncached * UNIT_WEIGHT_UNCACHED_INPUT +
-      cached * UNIT_WEIGHT_CACHED_INPUT +
-      output * UNIT_WEIGHT_OUTPUT,
+  const output = candidates + thoughts;
+  return Math.max(
+    0,
+    Math.ceil(
+      uncached * UNIT_WEIGHT_UNCACHED_INPUT +
+        cached * UNIT_WEIGHT_CACHED_INPUT +
+        output * UNIT_WEIGHT_OUTPUT,
+    ),
   );
 }
 
@@ -305,7 +376,7 @@ export function estimateUnits(input: {
 }
 
 export function unitsToUsd(units: number): number {
-  return units * USD_PER_UNIT;
+  return Number((units * USD_PER_UNIT).toFixed(8));
 }
 
 /* ------------------------------------------------------------------ *
@@ -343,16 +414,20 @@ export function normaliseSettings(raw: any, now: Date = new Date()): SimosanSett
   const budget = Number(raw?.weeklyUnitBudget) > 0
     ? Number(raw.weeklyUnitBudget)
     : (Number(raw?.dailyUnitBudget) > 0 ? Number(raw.dailyUnitBudget) : DEFAULT_WEEKLY_UNIT_BUDGET);
+  const monthlyUnitBudget = Number(raw?.monthlyUnitBudget) > 0
+    ? Number(raw.monthlyUnitBudget)
+    : (budget === DEFAULT_WEEKLY_UNIT_BUDGET ? DEFAULT_5_WEEK_UNIT_BUDGET : budget * 5);
   return {
     enabled: raw?.enabled !== false,
     model: raw?.model || DEFAULT_MODEL,
     weeklyUnitBudget: budget,
+    monthlyUnitBudget,
     dailyUnitBudget: budget,
     monthlyCeilingUsd: Number(raw?.monthlyCeilingUsd) > 0
       ? Number(raw.monthlyCeilingUsd)
       : DEFAULT_MONTHLY_CEILING_USD,
     month,
-    monthUsd: rolled ? 0 : Number(raw?.monthUsd) || 0,
+    monthUsd: rolled ? 0 : Number(Number(raw?.monthUsd || 0).toFixed(8)),
     alertsSent: rolled ? [] : (Array.isArray(raw?.alertsSent) ? raw.alertsSent : []),
   };
 }
@@ -483,6 +558,21 @@ export async function reserveEnergy(
       return deny('insufficient_energy', spent);
     }
 
+    // 5-week rolling cycle verification ($0.20/week up to $1.00 USD / 3,333,333 credits across 5 weeks)
+    const priorWeekKeys = getRollingWeekKeys(week, 5).slice(1);
+    const priorUsageRefs = priorWeekKeys.map((pw) => db.collection('aiUsage').doc(usageDocId(input.uid, pw)));
+    const priorSnaps = await Promise.all(priorUsageRefs.map((ref) => t.get(ref)));
+    const prior4WeeksUsed = priorSnaps.reduce(
+      (sum, snap) => sum + (snap.exists ? (Number(snap.data()?.unitsUsed) || 0) : 0),
+      0
+    );
+    const rolling5WeekSpent = prior4WeeksUsed + spent;
+    const monthlyBudget = settings.monthlyUnitBudget || DEFAULT_5_WEEK_UNIT_BUDGET;
+
+    if (rolling5WeekSpent + input.estimatedUnits > monthlyBudget) {
+      return deny('insufficient_energy', spent);
+    }
+
     // Check if adding this reservation pushes short-term burst usage past threshold.
     // If windowUnits > 0 (subsequent request in window) or windowUnits already at threshold,
     // trigger cooldown and deny. An initial single request within budget is allowed through
@@ -530,10 +620,15 @@ export async function reserveEnergy(
       { merge: true },
     );
 
+    const remainingBudget = Math.max(
+      0,
+      Math.min(budget - spent - input.estimatedUnits, monthlyBudget - rolling5WeekSpent - input.estimatedUnits),
+    );
+
     return {
       ok: true,
       reserved: input.estimatedUnits,
-      remaining: Math.max(0, budget - spent - input.estimatedUnits),
+      remaining: remainingBudget,
       weeklyBudget: budget,
       dailyBudget: budget,
       resetsInMs,
@@ -612,7 +707,7 @@ export async function reconcileEnergy(
       { merge: true },
     );
 
-    const nextMonthUsd = settings.monthUsd + spendUsd;
+    const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
     t.set(
       settingsRef,
       {
@@ -642,6 +737,7 @@ export async function reconcileEnergy(
     };
   });
 
+  serverCache.delete('simosan:settings');
   await maybeAlert(ctx, result);
   return result;
 }
@@ -752,7 +848,7 @@ export async function settleOffTopic(
     );
 
     // The spend is real either way, so the ceiling always sees it.
-    const nextMonthUsd = settings.monthUsd + spendUsd;
+    const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
     t.set(
       settingsRef,
       {
@@ -777,6 +873,7 @@ export async function settleOffTopic(
     };
   });
 
+  serverCache.delete('simosan:settings');
   await maybeAlert(ctx, result);
   return {
     refunded: result.refunded,
@@ -836,7 +933,7 @@ export async function recordSpendAndCheckCeiling(
   const result = await db.runTransaction(async (t) => {
     const snap = await t.get(settingsRef);
     const settings = normaliseSettings(snap.exists ? snap.data() : null, now);
-    const nextMonthUsd = settings.monthUsd + spendUsd;
+    const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
     const isOverCeiling = nextMonthUsd >= settings.monthlyCeilingUsd;
 
     t.set(
@@ -967,7 +1064,7 @@ export async function reconcileFreeQuestion(
       { merge: true },
     );
 
-    const nextMonthUsd = settings.monthUsd + spendUsd;
+    const nextMonthUsd = Number((settings.monthUsd + spendUsd).toFixed(8));
     t.set(
       settingsRef,
       {

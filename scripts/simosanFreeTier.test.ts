@@ -336,8 +336,8 @@ async function runTests() {
   const sResult1 = await recordSpendAndCheckCeiling(ceilingCtx, 10_000, new Date('2026-09-15T12:00:00Z'));
   assert.equal(sResult1.enabled, true, 'Simosan remains enabled below ceiling');
 
-  // 2. Spend pushing past $100 ceiling disables Simosan
-  const sResult2 = await recordSpendAndCheckCeiling(ceilingCtx, 70_000_000, new Date('2026-09-15T12:00:00Z'));
+  // 2. Spend pushing past $100 ceiling disables Simosan (~$105 USD spend)
+  const sResult2 = await recordSpendAndCheckCeiling(ceilingCtx, 350_000_000, new Date('2026-09-15T12:00:00Z'));
   assert.equal(sResult2.enabled, false, 'Simosan is disabled when ceiling is crossed');
 
   // 3. New month resets monthUsd to 0 and re-evaluates

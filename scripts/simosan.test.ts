@@ -66,10 +66,10 @@ const ctx: SimosanCtx = { db, FieldValue: FieldValue as any, Timestamp: Timestam
 const settingsRef = db.collection('app_settings').doc('simosan');
 const usageRef = (uid: string) => db.collection('aiUsage').doc(usageDocId(uid, baghdadWeekKey()));
 
-async function resetState(uid: string, weeklyUnitBudget = 133_333, monthlyCeilingUsd = 50) {
+async function resetState(uid: string, weeklyUnitBudget = DEFAULT_WEEKLY_UNIT_BUDGET, monthlyCeilingUsd = 50) {
   await settingsRef.set({
     enabled: true,
-    model: 'gemini-3.5-flash',
+    model: DEFAULT_MODEL,
     weeklyUnitBudget,
     dailyUnitBudget: weeklyUnitBudget,
     monthlyCeilingUsd,
@@ -90,17 +90,19 @@ async function main() {
   // -----------------------------------------------------------------------
 
   // promptTokenCount includes the cached portion, so the uncached part is the
-  // difference. gemini-3.5-flash: cached input is $0.15/1M vs uncached $1.50/1M (weight 0.10)
+  // difference. gemini-3.5-flash-lite: cached input is $0.03/1M vs uncached $0.30/1M (weight 0.10)
+  // output is $2.50/1M vs uncached $0.30/1M (weight 25/3)
   check(
     'unitsFromUsage weights cached input at a tenth (0.10)',
     unitsFromUsage({ promptTokenCount: 10_000, cachedContentTokenCount: 8_000, candidatesTokenCount: 100 })
-      === 2_000 + 800 + 600,
+      === 2_000 + 800 + Math.ceil(100 * (25 / 3)),
     String(unitsFromUsage({ promptTokenCount: 10_000, cachedContentTokenCount: 8_000, candidatesTokenCount: 100 })),
   );
 
   check(
     'unitsFromUsage bills thinking tokens as output',
-    unitsFromUsage({ promptTokenCount: 100, candidatesTokenCount: 10, thoughtsTokenCount: 10 }) === 100 + 120,
+    unitsFromUsage({ promptTokenCount: 100, candidatesTokenCount: 10, thoughtsTokenCount: 10 })
+      === 100 + Math.ceil(20 * (25 / 3)),
   );
 
   check('unitsFromUsage tolerates missing usage', unitsFromUsage(null) === 0);
@@ -121,9 +123,9 @@ async function main() {
     String(estimateUnits({ pageCount: 66, historyChars: 0, questionChars: 0 })),
   );
 
-  check('one unit is $1.50 per million', Math.abs(unitsToUsd(1_000_000) - 1.50) < 1e-9);
-  check('weekly budget equals $0.20 USD divided by unit price', DEFAULT_WEEKLY_UNIT_BUDGET === 133_333);
-  check('default model is gemini-3.5-flash', DEFAULT_MODEL === 'gemini-3.5-flash');
+  check('one unit is $0.30 per million', Math.abs(unitsToUsd(1_000_000) - 0.30) < 1e-9);
+  check('weekly budget equals $0.20 USD divided by unit price', DEFAULT_WEEKLY_UNIT_BUDGET === 666_667);
+  check('default model is gemini-3.5-flash-lite', DEFAULT_MODEL === 'gemini-3.5-flash-lite');
 
   // Baghdad is UTC+3, so 22:00 UTC is already tomorrow there.
   check(
@@ -206,13 +208,13 @@ async function main() {
   const off = await reserveEnergy(ctx, { uid: 'u4', stageId: 's', estimatedUnits: 10 });
   check('the kill switch denies everyone', !off.ok && off.reason === 'disabled');
 
-  await resetState('u5', 133_333, 1);
+  await resetState('u5', DEFAULT_WEEKLY_UNIT_BUDGET, 1);
   await settingsRef.set({ monthUsd: 1.5 }, { merge: true });
   const ceiling = await reserveEnergy(ctx, { uid: 'u5', stageId: 's', estimatedUnits: 10 });
   check('the monthly ceiling denies everyone', !ceiling.ok && ceiling.reason === 'ceiling_reached');
 
   // Reaching the ceiling must latch the switch off, not merely block one call.
-  await resetState('u6', 133_333, 0.000001);
+  await resetState('u6', DEFAULT_WEEKLY_UNIT_BUDGET, 0.000001);
   await reserveEnergy(ctx, { uid: 'u6', stageId: 's', estimatedUnits: 1_000 });
   await reconcileEnergy(ctx, { uid: 'u6', reservedUnits: 1_000, actualUnits: 1_000 });
   check('crossing the ceiling disables Simosan', (await settingsRef.get()).data()!.enabled === false);
@@ -364,8 +366,8 @@ async function main() {
   // -----------------------------------------------------------------------
   console.log('\nMonthly spend & ceiling enforcement');
   // -----------------------------------------------------------------------
-  await resetState('u_ceiling', 133_333, 10);
-  const ceilingRes = await recordSpendAndCheckCeiling(ctx, 70_000_000); // ~$105 USD spend
+  await resetState('u_ceiling', DEFAULT_WEEKLY_UNIT_BUDGET, 10);
+  const ceilingRes = await recordSpendAndCheckCeiling(ctx, 350_000_000); // ~$105 USD spend
   check('recordSpendAndCheckCeiling trips kill switch when ceiling is crossed', ceilingRes.enabled === false);
   const reReadSettings = (await settingsRef.get()).data()!;
   check('settings document is disabled in Firestore', reReadSettings.enabled === false);

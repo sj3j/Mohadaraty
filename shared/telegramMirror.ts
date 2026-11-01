@@ -162,11 +162,20 @@ export function resolveChannelForStage(config: TelegramConfig, stageId: string):
   return channel?.enabled && channel.mirrorOut ? channel : null;
 }
 
-/** Forward lookup for lecture posting: returns the target chat id for this stage, or null if disabled. */
+/** Forward lookup for automatic lecture posting: returns target chat id only if mirrorLectures is enabled. */
 export function resolveLectureChannelForStage(config: TelegramConfig, stageId: string): number | null {
   if (!config.enabled) return null;
   const channel = config.channels[stageId as MirrorStageId];
   if (!channel?.enabled || !channel.mirrorLectures) return null;
+  const targetId = channel.lectureChatId || channel.chatId;
+  return targetId && isChannelChatId(targetId) ? targetId : null;
+}
+
+/** Forward lookup for manual lecture posting: returns target chat id whenever the channel is enabled, even if mirrorLectures is off. */
+export function resolveManualLectureChannelForStage(config: TelegramConfig, stageId: string): number | null {
+  if (!config.enabled) return null;
+  const channel = config.channels[stageId as MirrorStageId];
+  if (!channel?.enabled) return null;
   const targetId = channel.lectureChatId || channel.chatId;
   return targetId && isChannelChatId(targetId) ? targetId : null;
 }

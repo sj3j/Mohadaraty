@@ -98,10 +98,19 @@ check(
 );
 
 check(
-  'React PdfReaderOverlay gates PdfDrawingLayer when NATIVE_INK_V2 is active on native',
-  /const NATIVE_INK_V2 = import\.meta\.env\.VITE_PDF_NATIVE_INK_V2 !== 'false'/.test(overlay) &&
+  'React PdfReaderOverlay keeps native ink opt-in and gates the SVG layer when enabled',
+  /const NATIVE_INK_V2 = import\.meta\.env\.VITE_PDF_NATIVE_INK_V2 === 'true'/.test(overlay) &&
     /\{!NATIVE_INK_V2 && \(/s.test(overlay),
-  'React SVG drawing layer must not double-render or intercept touches when native ink is active'
+  'React must use the compatibility SVG tools by default and avoid double-rendering when native ink is enabled'
+);
+
+check(
+  'React keeps page-owned and screen-owned ink in separate rendering paths',
+  /pageNativeStrokes/.test(overlay) &&
+    /loadCanonicalPageAnnotations\(annotationDocumentId, current\)/.test(overlay) &&
+    /loadCanonicalPageAnnotations\(lectureId, current\)/.test(overlay) &&
+    /strokes: v3Strokes/.test(overlay),
+  'V3 page-owned ink must be sent to the native renderer without merging it into legacy SVG strokes'
 );
 
 console.log('\n--- 2. Normalized Geometry & Coordinate Invariance ---');
@@ -168,5 +177,5 @@ check(
   'Stored annotation format must remain 100% intact across serialization'
 );
 
-console.log(`\nPhase 2 Summary: ${9 - failures} passed, ${failures} failed`);
+console.log(`\nPhase 2 Summary: ${10 - failures} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

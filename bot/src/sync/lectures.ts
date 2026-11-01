@@ -128,6 +128,8 @@ export async function sendLectureToTelegram(lecture: LectureDoc, chatId: number)
     'telegramPost.chatId': chatId,
     'telegramPost.messageId': messageId,
     'telegramPost.sentAt': FieldValue.serverTimestamp(),
+    'telegramPost.status': 'posted',
+    'telegramShareRequestedAt': FieldValue.delete(),
   });
 
   log.info('tg.lecture.sent', { lectureId: lecture.id, chatId, messageId });

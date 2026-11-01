@@ -15,6 +15,7 @@ import {
   MAX_PDF_BYTES,
   MAX_PDF_PAGES,
   TOKENS_PER_PDF_PAGE,
+  extractUsageMetadata,
   type GeminiUsage,
 } from './simosan.js';
 import { serverCache } from './serverCache.js';
@@ -376,6 +377,8 @@ Rules for the quiz:
 export interface StreamResult {
   usage: GeminiUsage | null;
   offTopic: boolean;
+  clientDisconnected?: boolean;
+  fullText?: string;
 }
 
 /**
@@ -384,6 +387,10 @@ export interface StreamResult {
  * The off-topic marker is detected and stripped from the first chunks so the
  * student never sees it, while the caller still learns the request was declined
  * and can refund accordingly.
+ *
+ * Reliably captures the final chunk's `usageMetadata` even if the client disconnects
+ * mid-stream by continuing to drain the Gemini stream without interrupting token tracking.
+ * Also preserves `fullText` so disconnected sessions can persist the completed model response.
  */
 export async function streamAnswer(
   ai: GoogleGenAI,
@@ -403,24 +410,41 @@ export async function streamAnswer(
   // characters to decide rather than leaking a partial "[[OFF_" to the client.
   let head = '';
   let headSettled = false;
+  let clientDisconnected = false;
+  let fullGenerated = '';
 
   for await (const chunk of stream as any) {
-    if (chunk?.usageMetadata) usage = chunk.usageMetadata;
+    const meta = extractUsageMetadata(chunk);
+    if (meta) {
+      usage = {
+        promptTokenCount: Math.max(usage?.promptTokenCount ?? 0, meta.promptTokenCount ?? 0),
+        candidatesTokenCount: Math.max(usage?.candidatesTokenCount ?? 0, meta.candidatesTokenCount ?? 0),
+        cachedContentTokenCount: Math.max(usage?.cachedContentTokenCount ?? 0, meta.cachedContentTokenCount ?? 0),
+        thoughtsTokenCount: Math.max(usage?.thoughtsTokenCount ?? 0, meta.thoughtsTokenCount ?? 0),
+      };
+    }
     const text: string = chunk?.text ?? '';
     if (!text) continue;
+    fullGenerated += text;
 
-    if (!headSettled) {
-      head += text;
-      if (head.length < OFF_TOPIC_MARKER.length) continue;
-      headSettled = true;
-      if (head.startsWith(OFF_TOPIC_MARKER)) {
-        offTopic = true;
-        head = head.slice(OFF_TOPIC_MARKER.length);
+    if (clientDisconnected) continue;
+
+    try {
+      if (!headSettled) {
+        head += text;
+        if (head.length < OFF_TOPIC_MARKER.length) continue;
+        headSettled = true;
+        if (head.startsWith(OFF_TOPIC_MARKER)) {
+          offTopic = true;
+          head = head.slice(OFF_TOPIC_MARKER.length);
+        }
+        if (head) onDelta(head);
+        continue;
       }
-      if (head) onDelta(head);
-      continue;
+      onDelta(text);
+    } catch {
+      clientDisconnected = true;
     }
-    onDelta(text);
   }
 
   // A reply shorter than the marker never settled the head above.
@@ -429,10 +453,22 @@ export async function streamAnswer(
       offTopic = true;
       head = head.slice(OFF_TOPIC_MARKER.length);
     }
-    if (head) onDelta(head);
+    if (head && !clientDisconnected) {
+      try {
+        onDelta(head);
+      } catch {
+        clientDisconnected = true;
+      }
+    }
   }
 
-  return { usage, offTopic };
+  let fullText = fullGenerated;
+  if (fullText.startsWith(OFF_TOPIC_MARKER)) {
+    offTopic = true;
+    fullText = fullText.slice(OFF_TOPIC_MARKER.length);
+  }
+
+  return { usage, offTopic, clientDisconnected, fullText };
 }
 
 /**
