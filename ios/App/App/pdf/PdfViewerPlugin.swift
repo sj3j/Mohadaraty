@@ -108,31 +108,32 @@ public class MohadaratyPdfPlugin: CAPPlugin, CAPBridgedPlugin {
 
             self.applyNightMode(nightMode, to: pdfView)
 
-            // Keep page overlays available to render existing V3 page-owned
-            // ink. Their canvases remain non-interactive unless nativeInkV2 is
-            // explicitly enabled, so the compatibility WebView tools still
-            // receive drawing input.
+            // PencilKit page overlays are iOS 16+. iOS 15 intentionally keeps
+            // the safe PDFKit read/navigation path rather than accepting ink
+            // it cannot restore page-by-page.
             var nativeInkAvailable = false
-            if #available(iOS 16.0, *) {
-                let provider = NativePdfPageOverlayProvider(pdfView: pdfView) { [weak self] (page, action, stroke, strokeId) in
-                    guard let self = self else { return }
-                    var ret: [String: Any] = [
-                        "page": page,
-                        "action": action
-                    ]
-                    if let s = stroke {
-                        ret["stroke"] = s.dictionary
-                        ret["opId"] = "op_add_\(s.id)"
+            if nativeInkV2 {
+                if #available(iOS 16.0, *) {
+                    let provider = NativePdfPageOverlayProvider(pdfView: pdfView) { [weak self] (page, action, stroke, strokeId) in
+                        guard let self = self else { return }
+                        var ret: [String: Any] = [
+                            "page": page,
+                            "action": action
+                        ]
+                        if let s = stroke {
+                            ret["stroke"] = s.dictionary
+                            ret["opId"] = "op_add_\(s.id)"
+                        }
+                        if let sid = strokeId {
+                            ret["strokeId"] = sid
+                            ret["opId"] = "op_erase_\(sid)"
+                        }
+                        self.notifyListeners("onStrokesUpdated", data: ret)
                     }
-                    if let sid = strokeId {
-                        ret["strokeId"] = sid
-                        ret["opId"] = "op_erase_\(sid)"
-                    }
-                    self.notifyListeners("onStrokesUpdated", data: ret)
+                    pdfView.pageOverlayViewProvider = provider
+                    self.overlayProvider = provider
+                    nativeInkAvailable = true
                 }
-                pdfView.pageOverlayViewProvider = provider
-                self.overlayProvider = provider
-                nativeInkAvailable = nativeInkV2
             }
 
             let path = filePath.hasPrefix("file://") ? String(filePath.dropFirst(7)) : filePath

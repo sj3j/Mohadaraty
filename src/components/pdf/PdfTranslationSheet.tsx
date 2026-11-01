@@ -115,33 +115,21 @@ export default function PdfTranslationSheet({
 
     return () => {
       if (abortRef.current) abortRef.current.abort();
-      if (cancelSpeechRef.current) {
-        cancelSpeechRef.current();
-        cancelSpeechRef.current = null;
-      }
+      if (cancelSpeechRef.current) cancelSpeechRef.current();
     };
   }, [targetLang, hasAccess]);
 
   // Clean speech synthesis on unmount
   useEffect(() => {
     return () => {
-      if (cancelSpeechRef.current) {
-        cancelSpeechRef.current();
-        cancelSpeechRef.current = null;
-      }
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel();
-        } catch {}
+        window.speechSynthesis.cancel();
       }
     };
   }, []);
 
   const handleToggleLang = () => {
-    if (cancelSpeechRef.current) {
-      cancelSpeechRef.current();
-      cancelSpeechRef.current = null;
-    }
+    if (cancelSpeechRef.current) cancelSpeechRef.current();
     setSpeaking(false);
     setSpeakingOriginal(false);
     setTargetLang((curr) => (curr === 'ar' ? 'en' : 'ar'));
@@ -158,27 +146,16 @@ export default function PdfTranslationSheet({
 
   const handleSpeakTranslation = () => {
     if (speaking) {
-      if (cancelSpeechRef.current) {
-        cancelSpeechRef.current();
-        cancelSpeechRef.current = null;
-      }
+      if (cancelSpeechRef.current) cancelSpeechRef.current();
       setSpeaking(false);
       return;
     }
 
-    if (cancelSpeechRef.current) {
-      cancelSpeechRef.current();
-      cancelSpeechRef.current = null;
-    }
+    if (cancelSpeechRef.current) cancelSpeechRef.current();
     setSpeakingOriginal(false);
 
     if (translatedText) {
-      cancelSpeechRef.current = speakText(translatedText, targetLang, (isSpeaking) => {
-        setSpeaking(isSpeaking);
-        if (!isSpeaking) {
-          cancelSpeechRef.current = null;
-        }
-      });
+      cancelSpeechRef.current = speakText(translatedText, targetLang, setSpeaking);
     }
   };
 
@@ -186,43 +163,22 @@ export default function PdfTranslationSheet({
     const text = inputText.trim();
     if (!text) return;
     if (speakingOriginal) {
-      if (cancelSpeechRef.current) {
-        cancelSpeechRef.current();
-        cancelSpeechRef.current = null;
-      }
+      if (cancelSpeechRef.current) cancelSpeechRef.current();
       setSpeakingOriginal(false);
       return;
     }
 
-    if (cancelSpeechRef.current) {
-      cancelSpeechRef.current();
-      cancelSpeechRef.current = null;
-    }
+    if (cancelSpeechRef.current) cancelSpeechRef.current();
     setSpeaking(false);
 
     const sourceLang = detectLanguage(text);
-    cancelSpeechRef.current = speakText(text, sourceLang, (isSpeaking) => {
-      setSpeakingOriginal(isSpeaking);
-      if (!isSpeaking) {
-        cancelSpeechRef.current = null;
-      }
-    });
+    cancelSpeechRef.current = speakText(text, sourceLang, setSpeakingOriginal);
   };
 
   const isLongSource = inputText.length > 140;
   const displayedSource = isLongSource && !showFullSource
     ? `${inputText.slice(0, 140)}...`
     : inputText;
-
-  const handleClose = () => {
-    if (cancelSpeechRef.current) {
-      cancelSpeechRef.current();
-      cancelSpeechRef.current = null;
-    }
-    setSpeaking(false);
-    setSpeakingOriginal(false);
-    onClose();
-  };
 
   return (
     <>
@@ -231,7 +187,7 @@ export default function PdfTranslationSheet({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        onClick={handleClose}
+        onClick={onClose}
         onTouchMove={(e) => e.preventDefault()}
         className="fixed inset-0 z-[170] bg-black/50 backdrop-blur-sm"
       />
@@ -256,7 +212,7 @@ export default function PdfTranslationSheet({
           dragElastic={0.35}
           dragMomentum={false}
           onDragEnd={(_, info) => {
-            if (info.offset.y > 50) handleClose();
+            if (info.offset.y > 50) onClose();
           }}
           className="shrink-0 pt-2.5 pb-1 flex items-center justify-center cursor-grab active:cursor-grabbing touch-none"
           aria-label={isRtl ? 'إغلاق اللوحة' : 'Close sheet'}
@@ -327,7 +283,7 @@ export default function PdfTranslationSheet({
 
             {/* Dismiss */}
             <button
-              onClick={handleClose}
+              onClick={onClose}
               aria-label={isRtl ? 'إغلاق' : 'Close'}
               className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-800 active:scale-90 transition"
             >
@@ -423,7 +379,7 @@ export default function PdfTranslationSheet({
                 {onOpenSubscription && (
                   <button
                     onClick={() => {
-                      handleClose();
+                      onClose();
                       onOpenSubscription();
                     }}
                     className="w-full py-2.5 px-3 rounded-xl bg-white text-violet-900 font-black text-xs hover:bg-violet-50 active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"

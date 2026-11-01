@@ -90,10 +90,11 @@ const NO_ANNOTATIONS: PdfAnnotation[] = [];
 const MAX_MATCHES = 500;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-// Default to the proven pre-overhaul WebView routing. The newer native ink
-// renderer remains available only when explicitly enabled after device QA.
-const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING === 'true';
-const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 === 'true';
+const STABLE_INTERACTION_ROUTING = import.meta.env.VITE_PDF_STABLE_INTERACTION_ROUTING !== 'false';
+// Page-owned native ink is the safe default. The old WebView SVG layer is
+// screen-relative on native readers and makes marks float after zoom/page
+// changes. Set this explicitly to "false" only for an emergency rollback.
+const NATIVE_INK_V2 = import.meta.env.VITE_PDF_NATIVE_INK_V2 !== 'false';
 
 const RESIST = 0.25;
 const RUBBER = 0.55;
@@ -158,16 +159,12 @@ export default function PdfReaderOverlay({
   const [activeDrawingTool, setActiveDrawingTool] = useState<DrawingTool>('pencil');
   const [activeDrawColor, setActiveDrawColor] = useState<string>('#4f46e5');
   const [activeDrawWidth, setActiveDrawWidth] = useState<StrokeWidth>('medium');
-  // Page-owned V3 ink and the old screen-owned SVG ink must never be merged.
-  // They use different coordinate spaces and renderers.
-  const [pageNativeStrokes, setPageNativeStrokes] = useState<Record<number, PdfStroke[]>>({});
   const [pageStrokes, setPageStrokes] = useState<Record<number, PdfStroke[]>>({});
   // Pre-V3 strokes were normalised against a viewport/SVG layer. They must
   // never be handed to the page-owned native renderer as though they used the
   // crop-box coordinate system; that would silently move a student's marks.
   const [pageStrokeCoordinateSpace, setPageStrokeCoordinateSpace] = useState<Record<number, 'pdf-page' | 'legacy-viewport'>>({});
   const legacyInkNoticeShownRef = useRef(false);
-  const [hasLegacyViewportInk, setHasLegacyViewportInk] = useState(false);
   const [history, setHistory] = useState<Record<number, { past: PdfStroke[][]; future: PdfStroke[][] }>>({});
 
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -344,11 +341,6 @@ export default function PdfReaderOverlay({
       const handle = pages.current.get(p);
       if (handle?.el) {
         handle.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else {
-        const container = scrollRef.current?.querySelector(`[data-page-container="${p}"]`);
-        if (container) {
-          container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
       }
     }
   }, [isNative, pageCount]);
@@ -357,39 +349,39 @@ export default function PdfReaderOverlay({
   useEffect(() => {
     if (!lectureId || !current) return;
     if (pageStrokes[current] !== undefined) {
-      if (isNative && nativeReady) {
-        NativePdf.setPageStrokes({ page: current, strokes: pageNativeStrokes[current] || [] }).catch(() => {});
+      if (isNative && nativeReady && NATIVE_INK_V2) {
+        const strokes = pageStrokeCoordinateSpace[current] === 'legacy-viewport'
+          ? []
+          : pageStrokes[current] || [];
+        NativePdf.setPageStrokes({ page: current, strokes }).catch(() => {});
       }
       return;
     }
-    Promise.all([
-      loadCanonicalPageAnnotations(annotationDocumentId, current),
-      loadCanonicalPageAnnotations(lectureId, current),
-    ])
-      .then(async ([canonical, legacyCanonical]) => {
+    loadCanonicalPageAnnotations(annotationDocumentId, current)
+      .then(async (canonical) => {
         const v3Strokes = canonical
           .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
           .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
         // Legacy records stay untouched until their old viewport coordinate
         // system has a fixture-validated migration path.
-        let strokes = legacyCanonical
-          .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
-          .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
-        let coordinateSpace: 'pdf-page' | 'legacy-viewport' = 'legacy-viewport';
+        let strokes = v3Strokes;
+        let coordinateSpace: 'pdf-page' | 'legacy-viewport' = 'pdf-page';
         if (strokes.length === 0) {
-          strokes = await getLecturePageStrokes(lectureId, current);
+          const legacyCanonical = await loadCanonicalPageAnnotations(lectureId, current);
+          strokes = legacyCanonical
+            .filter((annotation): annotation is CanonicalInkAnnotation => annotation.kind === 'ink' || annotation.kind === 'highlighter')
+            .map((annotation) => ({ ...canonicalToLegacyStroke(annotation), lectureId }));
+          if (strokes.length === 0) {
+            strokes = await getLecturePageStrokes(lectureId, current);
+          }
+          coordinateSpace = 'legacy-viewport';
         }
-        setPageNativeStrokes((prev) => ({ ...prev, [current]: v3Strokes }));
         setPageStrokes((prev) => ({ ...prev, [current]: strokes }));
         setPageStrokeCoordinateSpace((prev) => ({ ...prev, [current]: coordinateSpace }));
-        if (strokes.length > 0) setHasLegacyViewportInk(true);
-        if (isNative && nativeReady) {
-          NativePdf.setPageStrokes({ page: current, strokes: v3Strokes }).catch(() => {});
-        }
         if (isNative && nativeReady && NATIVE_INK_V2) {
           NativePdf.setPageStrokes({
             page: current,
-            strokes: v3Strokes,
+            strokes: coordinateSpace === 'pdf-page' ? strokes : [],
           }).catch(() => {});
           if (coordinateSpace === 'legacy-viewport' && strokes.length > 0 && !legacyInkNoticeShownRef.current) {
             legacyInkNoticeShownRef.current = true;
@@ -400,7 +392,7 @@ export default function PdfReaderOverlay({
         }
       })
       .catch(() => {});
-  }, [lectureId, annotationDocumentId, current, pageStrokes, pageNativeStrokes, pageStrokeCoordinateSpace, isNative, nativeReady]);
+  }, [lectureId, annotationDocumentId, current, pageStrokes, pageStrokeCoordinateSpace, isNative, nativeReady]);
 
   const handleAddStroke = useCallback(
     (pageNum: number, stroke: PdfStroke) => {
@@ -411,7 +403,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
-      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'legacy-viewport' }));
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -436,7 +428,7 @@ export default function PdfReaderOverlay({
         saveLecturePageStrokes(lectureId, pageNum, nextList).catch(() => {});
         return { ...prev, [pageNum]: nextList };
       });
-      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'legacy-viewport' }));
+      setPageStrokeCoordinateSpace((prev) => ({ ...prev, [pageNum]: 'pdf-page' }));
       setHistory((prev) => {
         const pageHist = prev[pageNum] || { past: [], future: [] };
         const currentList = pageStrokes[pageNum] || [];
@@ -977,16 +969,6 @@ export default function PdfReaderOverlay({
     setCurrent(n);
   }, [layout]);
 
-  // Web Fallback 3-Page Active Window Virtualization
-  const activePages = useMemo(() => {
-    const total = layout.length || pageCount || 1;
-    const windowPages = new Set<number>();
-    windowPages.add(Math.max(1, current - 1));
-    windowPages.add(current);
-    windowPages.add(Math.min(total, current + 1));
-    return windowPages;
-  }, [current, layout.length, pageCount]);
-
   // DOM position -> canonical offset within a page
   const canonicalOffset = useCallback((h: PageHandle, node: Node, offset: number): number | null => {
     const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement);
@@ -1211,40 +1193,17 @@ export default function PdfReaderOverlay({
         return;
       }
 
-      const safeName = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+      const url = URL.createObjectURL(result.exportedBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${lectureTitle || 'lecture'}-annotated.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
 
-      if (isNative) {
-        const buf = await result.exportedBlob.arrayBuffer();
-        const { cacheNativePdfBytes } = await import('../../lib/nativePdfRepository');
-        const cachedUri = await cacheNativePdfBytes(lectureId || 'export', buf);
-        if (cachedUri) {
-          const { saveNativePdf } = await import('../../lib/nativeFileTransfer');
-          const saveRes = await saveNativePdf(cachedUri, safeName);
-          if (saveRes.status === 'saved') {
-            setToast(isRtl ? 'تم تصدير وحفظ ملف PDF بنجاح' : 'PDF exported and saved successfully');
-          } else {
-            setToast(null);
-          }
-        } else {
-          throw new Error('Failed to cache exported PDF');
-        }
-      } else {
-        const url = URL.createObjectURL(result.exportedBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = safeName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-        setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
-      }
-      if (hasLegacyViewportInk) {
-        setToast(isRtl
-          ? 'تم تصدير الملاحظات المرتبطة بالصفحات. الرسومات القديمة تبقى متاحة داخل القارئ فقط.'
-          : 'Page-anchored annotations were exported. Older screen-anchored drawings remain available in the reader only.');
-      }
-      setTimeout(() => setToast(null), 3500);
+      setToast(isRtl ? 'تم تصدير ملف PDF بنجاح' : 'PDF exported successfully');
+      setTimeout(() => setToast(null), 2000);
     } catch (err) {
       console.error('[PdfReaderOverlay] Export PDF failed:', err);
       setToast(isRtl ? 'حدث خطأ أثناء تصدير PDF' : 'Error exporting PDF');
@@ -1352,11 +1311,9 @@ export default function PdfReaderOverlay({
             <div className="flex flex-col items-center gap-4">
               {layout.map((box, i) => {
                 const n = i + 1;
-                const isActive = activePages.has(n);
                 return (
                   <div
                     key={n}
-                    data-page-container={n}
                     className="relative my-3 shadow-lg shadow-black/20 shrink-0"
                     style={{
                       width: box.w,
@@ -1365,56 +1322,47 @@ export default function PdfReaderOverlay({
                       transition: 'filter 0.2s ease-in-out',
                     }}
                   >
-                    {isActive ? (
-                      <>
-                        <PdfPage
-                          pdfDoc={pdfDoc}
-                          pageNumber={n}
-                          scale={scale}
-                          rasterScale={rasterScale}
-                          rotation={rotation}
-                          boxW={box.w}
-                          boxH={box.h}
-                          annotations={byPage.get(n) ?? NO_ANNOTATIONS}
-                          registerPage={registerPage}
-                          onHighlightTap={setEditing}
-                          onOrphan={markOrphan}
-                          flashId={flashId}
-                          noMargin
-                        />
-                        <PdfDrawingLayer
-                          pageNumber={n}
-                          pageWidth={box.w}
-                          pageHeight={box.h}
-                          scale={scale}
-                          strokes={pageStrokes[n] || []}
-                          activeTool={activeDrawingTool}
-                          activeColor={activeDrawColor}
-                          activeWidth={activeDrawWidth}
-                          isAnnotationMode={isAnnotationMode}
-                          onAddStroke={(s) => handleAddStroke(n, s)}
-                          onEraseStroke={(id) => handleEraseStroke(n, id)}
-                        />
-                        <PdfTextBoxOverlay
-                          pageNumber={n}
-                          pageWidth={box.w}
-                          pageHeight={box.h}
-                          scale={scale}
-                          annotations={annotations}
-                          activeTool={activeDrawingTool}
-                          activeColor={activeDrawColor}
-                          isAnnotationMode={isAnnotationMode}
-                          onSaveText={upsert}
-                          onDeleteText={remove}
-                          isRtl={isRtl}
-                        />
-                      </>
-                    ) : (
-                      <div
-                        className="w-full h-full bg-white/80 dark:bg-zinc-800/80 rounded"
-                        style={{ width: box.w, height: box.h }}
-                      />
-                    )}
+                    <PdfPage
+                      pdfDoc={pdfDoc}
+                      pageNumber={n}
+                      scale={scale}
+                      rasterScale={rasterScale}
+                      rotation={rotation}
+                      boxW={box.w}
+                      boxH={box.h}
+                      annotations={byPage.get(n) ?? NO_ANNOTATIONS}
+                      registerPage={registerPage}
+                      onHighlightTap={setEditing}
+                      onOrphan={markOrphan}
+                      flashId={flashId}
+                      noMargin
+                    />
+                    <PdfDrawingLayer
+                      pageNumber={n}
+                      pageWidth={box.w}
+                      pageHeight={box.h}
+                      scale={scale}
+                      strokes={pageStrokes[n] || []}
+                      activeTool={activeDrawingTool}
+                      activeColor={activeDrawColor}
+                      activeWidth={activeDrawWidth}
+                      isAnnotationMode={isAnnotationMode}
+                      onAddStroke={(s) => handleAddStroke(n, s)}
+                      onEraseStroke={(id) => handleEraseStroke(n, id)}
+                    />
+                    <PdfTextBoxOverlay
+                      pageNumber={n}
+                      pageWidth={box.w}
+                      pageHeight={box.h}
+                      scale={scale}
+                      annotations={annotations}
+                      activeTool={activeDrawingTool}
+                      activeColor={activeDrawColor}
+                      isAnnotationMode={isAnnotationMode}
+                      onSaveText={upsert}
+                      onDeleteText={remove}
+                      isRtl={isRtl}
+                    />
                   </div>
                 );
               })}

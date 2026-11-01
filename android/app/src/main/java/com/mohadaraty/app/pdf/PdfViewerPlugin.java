@@ -21,8 +21,6 @@ import com.github.barteksc.pdfviewer.listener.OnLongPressListener;
 import com.github.barteksc.pdfviewer.listener.OnDrawListener;
 import com.github.barteksc.pdfviewer.listener.OnPageChangeListener;
 import com.github.barteksc.pdfviewer.listener.OnTapListener;
-import com.github.barteksc.pdfviewer.util.Constants;
-import com.github.barteksc.pdfviewer.util.FitPolicy;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -34,11 +32,6 @@ import java.util.List;
 
 @CapacitorPlugin(name = "MohadaratyPdf")
 public class PdfViewerPlugin extends Plugin {
-
-    static {
-        com.github.barteksc.pdfviewer.util.Constants.PRELOAD_OFFSET = 1000;
-        com.github.barteksc.pdfviewer.util.Constants.Cache.CACHE_SIZE = 160;
-    }
 
     private static final String LOG_TAG = "MohadaratyPdf";
     private static final float TOP_CHROME_DP = 120f;
@@ -179,18 +172,11 @@ public class PdfViewerPlugin extends Plugin {
                 int webViewIndex = parent.indexOfChild(webView);
                 parent.addView(readerHost, Math.max(0, webViewIndex), params);
 
-                com.github.barteksc.pdfviewer.util.Constants.PRELOAD_OFFSET = 1000;
-                com.github.barteksc.pdfviewer.util.Constants.Cache.CACHE_SIZE = 160;
-
                 pdfView.fromFile(file)
                         .defaultPage(Math.max(0, initialPage - 1))
                         .enableSwipe(true)
                         .swipeHorizontal(swipeHorizontal)
                         .enableDoubletap(true)
-                        .pageSnap(true)
-                        .pageFling(true)
-                        .autoSpacing(true)
-                        .pageFitPolicy(com.github.barteksc.pdfviewer.util.FitPolicy.WIDTH)
                         .enableAnnotationRendering(true)
                         .nightMode(nightMode)
                         .spacing(12)
