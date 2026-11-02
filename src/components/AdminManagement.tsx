@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UserPlus, Trash2, Shield, Loader2, AlertCircle } from 'lucide-react';
 import { db, auth } from '../lib/firebase';
-import { collection, getDocs, getDoc, doc, query, where, serverTimestamp, deleteField, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, query, where, serverTimestamp, deleteField, writeBatch, limit } from 'firebase/firestore';
 import { Language, TRANSLATIONS, UserProfile } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { logAdminAction } from '../services/adminLogService';
@@ -206,7 +206,7 @@ export default function AdminManagement({ isOpen, onClose, lang, user }: AdminMa
   const fetchAdmins = async () => {
     setIsLoading(true);
     try {
-      const q = query(collection(db, 'allowed_admins'));
+      const q = query(collection(db, 'allowed_admins'), limit(50));
       const snapshot = await getDocs(q);
       let adminList: AdminRole[] = snapshot.docs.map(doc => ({
         id: doc.id,

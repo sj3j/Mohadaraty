@@ -55,6 +55,12 @@ check('a Date works as well as a Timestamp',
   hasLiveSubscription({ isSubscribed: true, subscriptionEnd: future }));
 check('an ISO string works as well as a Timestamp',
   hasLiveSubscription({ isSubscribed: true, subscriptionEnd: future.toISOString() }));
+check('a serialized _seconds Timestamp works across JSON boundaries',
+  hasLiveSubscription({ isSubscribed: true, subscriptionEnd: { _seconds: Math.floor(future.getTime() / 1000), _nanoseconds: 0 } }));
+check('a serialized seconds Timestamp works across JSON boundaries',
+  hasLiveSubscription({ isSubscribed: true, subscriptionEnd: { seconds: Math.floor(future.getTime() / 1000) } }));
+check('a serialized past _seconds Timestamp correctly expires',
+  !hasLiveSubscription({ isSubscribed: true, subscriptionEnd: { _seconds: Math.floor(past.getTime() / 1000) } }));
 check('isSubscribed false beats a future end date',
   !hasLiveSubscription({ isSubscribed: false, subscriptionEnd: stamp(future) }));
 // Staff have access; they have not bought anything. A SUBSCRIBED crown on a

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UserPlus, Trash2, Users, Loader2, AlertCircle, CheckCircle2, XCircle, Upload, Download, GitMerge, User, Mail, Calendar, Flame, BookOpen, BookMarked, Settings, KeyRound, Copy, RotateCcw, ArrowRightLeft, Image as ImageIcon } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
-import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit, deleteDoc, doc, updateDoc, setDoc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { Language, TRANSLATIONS, Student, UserProfile, Subject } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { hashPassword } from '../lib/hash';
@@ -482,8 +482,8 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
       // But if we just filter users, students who haven't logged in won't be filtered by stage. 
       // Let's assume students collection has stageId or we only filter users for now.
       // Wait, let's filter both.
-      const snapshot = await getDocs(query(collection(db, 'students'), where('stageId', '==', effectiveStageId)));
-      const usersSnapshot = await getDocs(query(collection(db, 'users'), where('stageId', '==', effectiveStageId)));
+      const snapshot = await getDocs(query(collection(db, 'students'), where('stageId', '==', effectiveStageId), limit(500)));
+      const usersSnapshot = await getDocs(query(collection(db, 'users'), where('stageId', '==', effectiveStageId), limit(500)));
       
       const userMap = new Map<string, any[]>();
       usersSnapshot.docs.forEach((doc: any) => {
@@ -994,7 +994,7 @@ export default function StudentManagement({ isOpen, onClose, lang, user }: Stude
 
   const handleDeleteAllStudents = async () => {
     try {
-      const snapshot = await getDocs(query(collection(db, 'students'), where('stageId', '==', effectiveStageId)));
+      const snapshot = await getDocs(query(collection(db, 'students'), where('stageId', '==', effectiveStageId), limit(500)));
       const batch = writeBatch(db);
       snapshot.docs.forEach((doc) => {
         batch.delete(doc.ref);

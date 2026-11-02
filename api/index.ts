@@ -2195,6 +2195,7 @@ app.get("/api/ai/state", verifyAuth, simosan.state);
 app.get("/api/ai/history", verifyAuth, simosan.history);
 app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
 app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
+app.post("/api/ai/report", verifyAuth, simosan.report);
 
 /* Simosan attendance. Keep this route block identical to server.ts. */
   const attendance = createAttendanceHandlers({ admin });

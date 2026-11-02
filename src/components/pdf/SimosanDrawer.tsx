@@ -1,11 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useMotionValue } from 'motion/react';
 import { AlertTriangle, ArrowUp, BatteryLow, ListOrdered, Plus, Sparkles, WifiOff, X, Flag, Settings, Copy, Check } from 'lucide-react';
-import { db, auth } from '../../lib/firebase';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import {
   AskError, askSimosan, fetchSimosanHistory, fetchSimosanState, formatReset, parseCitations,
-  parseSimosanQuiz,
+  parseSimosanQuiz, reportSimosanContent,
   type SimosanMessage, type SimosanState, type SimosanLanguageMode, type SimosanQuizQuestion,
 } from '../../services/simosanService';
 import SimosanMarkdown from './SimosanMarkdown';
@@ -229,7 +227,7 @@ export default function SimosanDrawer({
           lectureId,
           question: text,
           selection: usedSelection || undefined,
-          newThread: opts.newThread,
+          newThread: opts.newThread ?? (threadId === '' && messages.length === 0),
           walkthrough: isWalkthrough,
           languageMode,
           autoQuiz,
@@ -246,20 +244,16 @@ export default function SimosanDrawer({
           onDone: (done) => {
             setState((s) => (s ? { ...s, remaining: done.remaining } : s));
             setReadOnly(done.isReadOnly);
-            if (done.offTopic) {
-              setStreaming('');
-              setError(new AskError('internal'));
-            } else {
-              // Immediately commit model message to state so it NEVER flickers or disappears!
-              const finalAnswer = accumulatedText;
-              if (finalAnswer.trim()) {
-                const tempModelId = `model_${Date.now()}`;
-                setMessages((prev) => [
-                  ...prev,
-                  { id: tempModelId, role: 'model', text: finalAnswer },
-                ]);
-              }
-              setStreaming('');
+            const finalAnswer = accumulatedText;
+            if (finalAnswer.trim()) {
+              const tempModelId = `model_${Date.now()}`;
+              setMessages((prev) => [
+                ...prev,
+                { id: tempModelId, role: 'model', text: finalAnswer },
+              ]);
+            }
+            setStreaming('');
+            if (!done.offTopic) {
               loadHistory();
             }
           },
@@ -701,14 +695,16 @@ function Bubble({ m, isRtl, onJumpToPage }: BubbleProps) {
     if (!reason?.trim()) return;
     
     try {
-      await addDoc(collection(db, 'ai_reports'), {
+      const ok = await reportSimosanContent({
         messageId: m.id,
         text: m.text,
         reason: reason.trim(),
-        reportedBy: auth.currentUser?.uid || 'unknown',
-        reportedAt: serverTimestamp(),
       });
-      alert(isRtl ? 'تم إرسال البلاغ بنجاح.' : 'Report submitted successfully.');
+      if (ok) {
+        alert(isRtl ? 'تم إرسال البلاغ بنجاح.' : 'Report submitted successfully.');
+      } else {
+        alert(isRtl ? 'حدث خطأ أثناء الإبلاغ.' : 'An error occurred while reporting.');
+      }
     } catch (e) {
       console.error('Failed to report:', e);
       alert(isRtl ? 'حدث خطأ أثناء الإبلاغ.' : 'An error occurred while reporting.');

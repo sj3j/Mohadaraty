@@ -163,11 +163,17 @@ export const DEFAULT_MONTHLY_CEILING_USD = 50;
 
 /**
  * 2-hour cooldown when a student uses too many tokens in a short period.
- * Threshold: 60,000 units within a 10-minute window.
+ * Threshold: 25% of the weekly budget within a 2-hour window.
  */
 export const COOLDOWN_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
-export const COOLDOWN_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-export const COOLDOWN_UNIT_THRESHOLD = 60_000; // units
+export const COOLDOWN_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+export const COOLDOWN_PERCENT_THRESHOLD = 0.25; // 25% of weekly budget
+export const COOLDOWN_UNIT_THRESHOLD = Math.round(DEFAULT_WEEKLY_UNIT_BUDGET * COOLDOWN_PERCENT_THRESHOLD); // fallback units
+
+export function getCooldownThreshold(weeklyBudget?: number): number {
+  const base = weeklyBudget || DEFAULT_WEEKLY_UNIT_BUDGET;
+  return Math.round(base * COOLDOWN_PERCENT_THRESHOLD);
+}
 
 /** Fractions of the monthly ceiling that raise an admin alert. 1.0 also trips
  *  the kill switch. */
@@ -655,9 +661,10 @@ export async function reserveEnergy(
     // If windowUnits > 0 (subsequent request in window) or windowUnits already at threshold,
     // trigger cooldown and deny. An initial single request within budget is allowed through
     // and will enter cooldown on reconcile if actual usage reaches threshold.
+    const cooldownThreshold = getCooldownThreshold(budget);
     const wouldExceedBurst =
-      windowUnits >= COOLDOWN_UNIT_THRESHOLD ||
-      (windowUnits > 0 && windowUnits + input.estimatedUnits >= COOLDOWN_UNIT_THRESHOLD);
+      windowUnits >= cooldownThreshold ||
+      (windowUnits > 0 && windowUnits + input.estimatedUnits >= cooldownThreshold);
 
     if (wouldExceedBurst) {
       const triggerCooldownUntil = nowMs + COOLDOWN_DURATION_MS;
@@ -762,7 +769,8 @@ export async function reconcileEnergy(
       else if (data.cooldownUntil instanceof Date) existingCdMs = data.cooldownUntil.getTime();
     }
 
-    const triggerCooldown = windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownThreshold = getCooldownThreshold(settings.weeklyUnitBudget);
+    const triggerCooldown = windowUnits >= cooldownThreshold;
     const cooldownUntil = triggerCooldown
       ? nowMs + COOLDOWN_DURATION_MS
       : (existingCdMs > nowMs ? existingCdMs : null);
@@ -900,7 +908,8 @@ export async function settleOffTopic(
     }
 
     const existingCdMs = extractCooldownMs(data?.cooldownUntil);
-    const triggerCooldown = !refunded && windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownThreshold = getCooldownThreshold(settings.weeklyUnitBudget);
+    const triggerCooldown = !refunded && windowUnits >= cooldownThreshold;
     const cooldownUntil = triggerCooldown
       ? nowMs + COOLDOWN_DURATION_MS
       : (existingCdMs > nowMs ? existingCdMs : null);

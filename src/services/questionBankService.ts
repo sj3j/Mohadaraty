@@ -5,18 +5,24 @@ import {
   getDocs, 
   setDoc, 
   updateDoc, 
-  addDoc,
+  addDoc, 
   query, 
   where, 
-  orderBy,
-  serverTimestamp,
-  increment,
-  writeBatch
+  orderBy, 
+  limit,
+  serverTimestamp, 
+  increment, 
+  writeBatch 
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { BankQuestion, QuestionTag } from '../types/questionBank.types';
 
-export async function addBankQuestion(data: Omit<BankQuestion, 'id' | 'addedBy' | 'addedAt' | 'lastEditedBy' | 'lastEditedAt' | 'viewCount' | 'attemptCount' | 'correctCount' | 'accuracyRate'>) {
+export type NewBankQuestionInput = Omit<
+  BankQuestion,
+  'id' | 'addedBy' | 'addedAt' | 'lastEditedBy' | 'lastEditedAt' | 'viewCount' | 'attemptCount' | 'correctCount' | 'accuracyRate'
+>;
+
+export async function addBankQuestion(data: NewBankQuestionInput) {
   const user = auth.currentUser;
   if (!user) throw new Error('Not logged in');
 
@@ -35,6 +41,50 @@ export async function addBankQuestion(data: Omit<BankQuestion, 'id' | 'addedBy' 
   const docRef = await addDoc(collection(db, 'questionBank'), payload);
   // Add ID to output
   return docRef.id;
+}
+
+/**
+ * Bulk insert questions into questionBank using Firestore writeBatch in chunks
+ * of 400 (under Firestore's 500 operation limit).
+ * Reports progress so callers can render smooth progress bars.
+ */
+export async function batchAddBankQuestions(
+  items: NewBankQuestionInput[],
+  onProgress?: (savedCount: number, totalCount: number) => void
+): Promise<{ savedCount: number }> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Not logged in');
+
+  const BATCH_SIZE = 400;
+  let savedCount = 0;
+
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const chunk = items.slice(i, i + BATCH_SIZE);
+    const batch = writeBatch(db);
+
+    for (const item of chunk) {
+      const docRef = doc(collection(db, 'questionBank'));
+      batch.set(docRef, {
+        ...item,
+        addedBy: user.uid,
+        addedAt: serverTimestamp(),
+        lastEditedBy: null,
+        lastEditedAt: null,
+        viewCount: 0,
+        attemptCount: 0,
+        correctCount: 0,
+        accuracyRate: 0,
+      });
+    }
+
+    await batch.commit();
+    savedCount += chunk.length;
+    if (onProgress) {
+      onProgress(savedCount, items.length);
+    }
+  }
+
+  return { savedCount };
 }
 
 export async function editBankQuestion(id: string, data: Partial<BankQuestion>) {
@@ -113,7 +163,7 @@ export async function getQuestionsForLecture(lectureId: string, subjectId: strin
 
 export async function getAllBankQuestionsForAdmin(): Promise<BankQuestion[]> {
   // Ordered by latest. In production with many docs we would paginate
-  const q = query(collection(db, 'questionBank'), orderBy('addedAt', 'desc'));
+  const q = query(collection(db, 'questionBank'), orderBy('addedAt', 'desc'), limit(250));
   const snap = await getDocs(q);
   const results: BankQuestion[] = [];
   snap.forEach(d => results.push({ id: d.id, ...d.data() } as BankQuestion));

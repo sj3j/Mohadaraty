@@ -11,6 +11,7 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
   persistentSingleTabManager,
+  setLogLevel,
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { getStorage } from 'firebase/storage';
@@ -56,6 +57,15 @@ export const auth = initializeAuth(app, {
  * exactly that (it must never fire on a fromCache-empty snapshot) - check any
  * other unconditional write that keys off an "empty" read before adding one.
  */
+if (typeof window !== 'undefined') {
+  try {
+    if (localStorage.getItem('debug_firestore') === 'true' || sessionStorage.getItem('debug_firestore') === 'true') {
+      setLogLevel('debug');
+      console.info('[firebase] Firestore debug logging enabled via storage flag.');
+    }
+  } catch {}
+}
+
 export const db = initializeFirestore(
   app,
   { 
@@ -164,3 +174,5 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   // Do not throw the error to prevent the app from completely crashing on permission denied
 }
+
+export { isFirestoreAssertionError, recoverCorruptedFirestoreCache } from './firestoreRecovery';

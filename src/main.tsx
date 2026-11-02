@@ -1,3 +1,4 @@
+import { isFirestoreAssertionError, recoverCorruptedFirestoreCache } from './lib/firestoreRecovery';
 import './lib/pdfPolyfills';
 import { logPerfMark } from './lib/perf';
 
@@ -34,6 +35,16 @@ console.warn = (...args) => {
   originalConsoleWarn.apply(console, args);
 };
 
+
+// Global self-healing handler for Firestore AsyncQueue assertion crashes
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    if (isFirestoreAssertionError(event.reason)) {
+      console.warn('[main] Caught fatal Firestore assertion in unhandledrejection. Triggering recovery...');
+      void recoverCorruptedFirestoreCache(false);
+    }
+  });
+}
 // Register PWA Service Worker
 if (!IS_MACOS_BUILD && 'serviceWorker' in navigator) {
   registerSW({ immediate: true });

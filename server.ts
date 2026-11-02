@@ -2260,6 +2260,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
   app.get("/api/ai/history", verifyAuth, simosan.history);
   app.get("/api/ai/admin/stats", verifyAuth, verifyAdmin, simosan.adminStats);
   app.patch("/api/ai/admin/settings", verifyAuth, verifyAdmin, simosan.adminSettings);
+app.post("/api/ai/report", verifyAuth, simosan.report);
 
   /* Simosan attendance. Firebase authenticates the caller; the shared gateway
    * is the only process granted Supabase attendance privileges. */

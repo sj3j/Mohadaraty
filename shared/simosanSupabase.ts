@@ -14,6 +14,7 @@ import {
   COOLDOWN_DURATION_MS,
   COOLDOWN_WINDOW_MS,
   COOLDOWN_UNIT_THRESHOLD,
+  getCooldownThreshold,
   DEFAULT_WEEKLY_UNIT_BUDGET,
   DEFAULT_5_WEEK_UNIT_BUDGET,
   MAX_QUESTIONS_PER_CHAT,
@@ -444,9 +445,10 @@ export async function reserveSupaEnergy(
     }
 
     // Check burst usage
+    const cooldownThreshold = getCooldownThreshold(budget);
     const wouldExceedBurst =
-      windowUnits >= COOLDOWN_UNIT_THRESHOLD ||
-      (windowUnits > 0 && windowUnits + estimatedUnits >= COOLDOWN_UNIT_THRESHOLD);
+      windowUnits >= cooldownThreshold ||
+      (windowUnits > 0 && windowUnits + estimatedUnits >= cooldownThreshold);
 
     if (wouldExceedBurst) {
       const triggerCooldownUntil = now + COOLDOWN_DURATION_MS;
@@ -632,7 +634,8 @@ export async function reconcileSupaEnergy(
       windowUnits = Math.max(0, windowUnits - reservedUnits + actualUnits);
     }
 
-    const triggerCooldown = windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownThreshold = getCooldownThreshold(budget);
+    const triggerCooldown = windowUnits >= cooldownThreshold;
     let existingCdMs = 0;
     if (current?.cooldown_until) {
       existingCdMs = new Date(current.cooldown_until).getTime();
@@ -843,7 +846,8 @@ export async function settleSupaOffTopic(
       windowUnits = Math.max(0, windowUnits - reservedUnits + (refunded ? 0 : actualUnits));
     }
 
-    const triggerCooldown = !refunded && windowUnits >= COOLDOWN_UNIT_THRESHOLD;
+    const cooldownThreshold = getCooldownThreshold(budget);
+    const triggerCooldown = !refunded && windowUnits >= cooldownThreshold;
     let existingCdMs = 0;
     if (current?.cooldown_until) {
       existingCdMs = new Date(current.cooldown_until).getTime();

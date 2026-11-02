@@ -11,10 +11,7 @@
  * directly from the browser with a bundled API key. That is the pattern this
  * one exists to not repeat.
  */
-import {
-  collection, doc, getDocs, limit, onSnapshot, orderBy, query,
-} from 'firebase/firestore';
-import { auth, db } from '../lib/firebase';
+import { auth } from '../lib/firebase';
 import { apiUrl } from '../lib/apiBase';
 
 export interface SimosanMessage {
@@ -76,6 +73,13 @@ export class AskError extends Error {
 }
 
 async function authHeader(): Promise<Record<string, string>> {
+  if (!auth.currentUser && typeof (auth as any).authStateReady === 'function') {
+    try {
+      await (auth as any).authStateReady();
+    } catch {
+      /* ignore */
+    }
+  }
   const token = await auth.currentUser?.getIdToken();
   if (!token) throw new AskError('not_subscribed');
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -95,14 +99,7 @@ export async function fetchSimosanState(): Promise<SimosanState | null> {
  * History
  * ------------------------------------------------------------------ */
 
-const lectureRef = (uid: string, lectureId: string) =>
-  doc(db, 'aiChats', uid, 'lectures', lectureId);
-
-const threadsRef = (uid: string, lectureId: string) =>
-  collection(db, 'aiChats', uid, 'lectures', lectureId, 'threads');
-
-const messagesRef = (uid: string, lectureId: string, threadId: string) =>
-  collection(db, 'aiChats', uid, 'lectures', lectureId, 'threads', threadId, 'messages');
+// Deprecated Firestore references removed - Simosan now runs exclusively on Supabase
 
 export async function fetchSimosanHistory(
   lectureId: string,
@@ -121,48 +118,20 @@ export async function fetchSimosanHistory(
 
 /** Live view of one thread's messages. Chats are read straight from Firestore
  *  rather than replayed through the API — the API is only for spending. */
+/** Deprecated Firestore watcher stub - Simosan history is loaded via Supabase API */
 export function watchMessages(
-  lectureId: string,
-  threadId: string,
-  onChange: (msgs: SimosanMessage[]) => void,
+  _lectureId: string,
+  _threadId: string,
+  _onChange: (msgs: SimosanMessage[]) => void,
 ): () => void {
-  const uid = auth.currentUser?.uid;
-  if (!uid || !threadId) return () => {};
-  const q = query(messagesRef(uid, lectureId, threadId), orderBy('createdAt', 'asc'), limit(60));
-  return onSnapshot(
-    q,
-    (snap) => {
-      onChange(
-        snap.docs.map((d) => ({
-          id: d.id,
-          role: d.data().role,
-          text: d.data().text || '',
-          citedPages: d.data().citedPages || [],
-          selection: d.data().selection ?? null,
-        })),
-      );
-    },
-    (err) => {
-      console.warn('[simosan] message listener failed', err);
-      onChange([]);
-    },
-  );
+  return () => {};
 }
 
 export function watchLecture(
-  lectureId: string,
-  onChange: (activeThreadId: string) => void,
+  _lectureId: string,
+  _onChange: (activeThreadId: string) => void,
 ): () => void {
-  const uid = auth.currentUser?.uid;
-  if (!uid) return () => {};
-  return onSnapshot(
-    lectureRef(uid, lectureId),
-    (snap) => onChange(snap.exists() ? snap.data()?.activeThreadId || '' : ''),
-    (err) => {
-      console.warn('[simosan] lecture listener failed', err);
-      onChange('');
-    },
-  );
+  return () => {};
 }
 
 /* ------------------------------------------------------------------ *
@@ -243,33 +212,55 @@ export async function askSimosan(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let streamCompleted = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  const STREAM_TIMEOUT_MS = 35_000;
+  let watchdogTimer: any = null;
 
-    // SSE frames are separated by a blank line; a partial frame stays buffered.
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() || '';
+  const resetWatchdog = () => {
+    if (watchdogTimer) clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      try { reader.cancel('stream_inactivity_timeout'); } catch {}
+    }, STREAM_TIMEOUT_MS);
+  };
 
-    for (const frame of frames) {
-      const line = frame.split('\n').find((l) => l.startsWith('data: '));
-      if (!line) continue;
-      let evt: any;
-      try {
-        evt = JSON.parse(line.slice(6));
-      } catch {
-        continue;
-      }
+  try {
+    resetWatchdog();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetWatchdog();
+      buffer += decoder.decode(value, { stream: true });
 
-      if (evt.type === 'delta') cbs.onDelta(evt.text);
-      else if (evt.type === 'meta') cbs.onMeta?.(evt);
-      else if (evt.type === 'done') cbs.onDone(evt);
-      else if (evt.type === 'error') {
-        throw new AskError((evt.code as AskErrorCode) || 'internal', evt);
+      // SSE frames are separated by a blank line (CRLF tolerant); a partial frame stays buffered.
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || '';
+
+      for (const frame of frames) {
+        const line = frame.split(/\r?\n/).find((l) => l.trimStart().startsWith('data: '));
+        if (!line) continue;
+        let evt: any;
+        try {
+          evt = JSON.parse(line.trimStart().slice(6).trim());
+        } catch {
+          continue;
+        }
+
+        if (evt.type === 'delta') cbs.onDelta(evt.text);
+        else if (evt.type === 'meta') cbs.onMeta?.(evt);
+        else if (evt.type === 'done') {
+          streamCompleted = true;
+          cbs.onDone(evt);
+        } else if (evt.type === 'error') {
+          throw new AskError((evt.code as AskErrorCode) || 'internal', evt);
+        }
       }
     }
+    if (!streamCompleted && !signal?.aborted) {
+      throw new AskError('ai_unavailable');
+    }
+  } finally {
+    if (watchdogTimer) clearTimeout(watchdogTimer);
   }
 }
 
@@ -368,3 +359,22 @@ export function parseSimosanQuiz(rawText: string): ParsedSimosanMessage {
   return { markdownText, quizzes: [], isQuizStreaming: false };
 }
 
+
+/** Submit an AI content review or quality flag via server API without direct Firestore writes */
+export async function reportSimosanContent(params: {
+  messageId?: string;
+  text: string;
+  reason: string;
+}): Promise<boolean> {
+  try {
+    const res = await fetch(apiUrl('/api/ai/report'), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify(params),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('[simosan] reportSimosanContent failed', err);
+    return false;
+  }
+}

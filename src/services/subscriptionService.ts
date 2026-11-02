@@ -1,6 +1,6 @@
 import { db, auth, storage } from '../lib/firebase';
 import {
-  collection, query, where, orderBy, onSnapshot, getDocs,
+  collection, query, where, orderBy, onSnapshot, getDocs, limit,
   doc, addDoc, setDoc, updateDoc, serverTimestamp, Timestamp, getDoc
 } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -199,11 +199,14 @@ export function onAllSubscriptions(
 ): () => void {
   const q = query(
     collection(db, SUBSCRIPTIONS_COL),
-    orderBy('createdAt', 'desc')
+    orderBy('createdAt', 'desc'),
+    limit(100)
   );
   return onSnapshot(q, (snap) => {
     const subs: Subscription[] = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Subscription));
     callback(subs);
+  }, (err) => {
+    console.warn('[subscriptionService] onAllSubscriptions listener error:', err);
   });
 }
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, updateDoc, doc, deleteDoc, orderBy, addDoc, serverTimestamp, getDoc, setDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, updateDoc, limit, doc, deleteDoc, orderBy, addDoc, serverTimestamp, getDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { X, ShieldAlert, Trash2, Ban, UserX, AlertTriangle, Eye, RefreshCw } from 'lucide-react';
 import { TRANSLATIONS, Language } from '../types';
@@ -52,7 +52,7 @@ export default function AntiCheatDashboard({ isOpen, onClose, lang }: AntiCheatD
     setErrorMsg('');
     try {
       // Fetch lectures for mapping
-      const lecturesSnap = await getDocs(collection(db, 'lectures'));
+      const lecturesSnap = await getDocs(query(collection(db, 'lectures'), limit(100)));
       const lMap: Record<string, string> = {};
       lecturesSnap.forEach(d => {
         lMap[d.id] = d.data().title;
@@ -68,7 +68,7 @@ export default function AntiCheatDashboard({ isOpen, onClose, lang }: AntiCheatD
       });
       setUsersMap(uMap);
 
-      const q = query(collection(db, 'antiCheatLogs'), orderBy('timestamp', 'desc'));
+      const q = query(collection(db, 'antiCheatLogs'), orderBy('timestamp', 'desc'), limit(150));
       const snap = await getDocs(q);
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 

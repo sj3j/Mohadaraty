@@ -51,11 +51,33 @@ export const SUBSCRIPTION_PROFILE_FIELDS = [
  * and expiry paths all clear `isSubscribed` alongside `subscriptionEnd`, so a
  * null end only ever means "no expiry recorded".
  */
+export function parseSubscriptionEndDate(end: any): Date | null {
+  if (!end) return null;
+  if (typeof end?.toDate === 'function') {
+    try { return end.toDate(); } catch { /* ignore */ }
+  }
+  if (end instanceof Date) {
+    return isNaN(end.getTime()) ? null : end;
+  }
+  if (typeof end?._seconds === 'number') {
+    return new Date(end._seconds * 1000);
+  }
+  if (typeof end?.seconds === 'number') {
+    return new Date(end.seconds * 1000);
+  }
+  if (typeof end === 'string' || typeof end === 'number') {
+    const d = new Date(end);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
 export function hasLiveSubscription(userData: any, now: Date = new Date()): boolean {
   if (!userData?.isSubscribed) return false;
   const end = userData.subscriptionEnd;
   if (!end) return true;
-  const endDate = typeof end?.toDate === 'function' ? end.toDate() : new Date(end);
+  const endDate = parseSubscriptionEndDate(end);
+  if (!endDate) return true;
   return endDate > now;
 }
 

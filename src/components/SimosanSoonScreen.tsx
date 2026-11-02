@@ -52,6 +52,20 @@ export default function SimosanSoonScreen({ lang, onSelectService }: SimosanSoon
       return;
     }
 
+    if (service.id === 'simosan') {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      const simosanHelp = isRtl
+        ? 'سيموسان متاح داخل قارئ المحاضرات — افتح أي محاضرة واضغط أيقونة سيموسان لبدء الشرح الذكي!'
+        : 'Simosan is available inside the lecture reader — open any lecture and tap the Simosan icon!';
+      setToastMessage(simosanHelp);
+      toastTimeoutRef.current = setTimeout(() => {
+        setToastMessage(null);
+      }, 3500);
+      return;
+    }
+
     if (toastTimeoutRef.current) {
       clearTimeout(toastTimeoutRef.current);
     }

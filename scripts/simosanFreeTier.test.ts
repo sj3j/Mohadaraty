@@ -277,15 +277,20 @@ async function runTests() {
   assert.equal(sRes1.ok, true, 'Supabase initial reserve succeeds');
   await reconcileSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, reservedUnits: 35_000, actualUnits: 35_000 });
 
-  // 2. Second burst request: 30,000 units pushes window past 60k threshold -> triggers cooldown
+  // 2. Second normal request: 30,000 units (65k total) does NOT trigger cooldown (well below 25% = 200k)
   const sRes2 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 30_000 });
-  assert.equal(sRes2.ok, false, 'Supabase burst request triggers cooldown');
-  assert.equal(sRes2.reason, 'cooldown_active');
+  assert.equal(sRes2.ok, true, 'Supabase normal request within 25% allowance succeeds without false cooldown');
+  await reconcileSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, reservedUnits: 30_000, actualUnits: 30_000 });
 
-  // 3. Subsequent request during cooldown is rejected
-  const sRes3 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 500 });
-  assert.equal(sRes3.ok, false, 'Supabase rejects requests while cooldown is active');
+  // 3. Third heavy request pushing past 25% threshold (200k units on 800k budget) triggers cooldown
+  const sRes3 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 140_000 });
+  assert.equal(sRes3.ok, false, 'Supabase burst request exceeding 25% threshold triggers cooldown');
   assert.equal(sRes3.reason, 'cooldown_active');
+
+  // 4. Subsequent request during cooldown is rejected
+  const sRes4 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 500 });
+  assert.equal(sRes4.ok, false, 'Supabase rejects requests while cooldown is active');
+  assert.equal(sRes4.reason, 'cooldown_active');
 
   // 4. Test settleSupaOffTopic window tracking and refund logic
   const otUid = 'supa_offtopic';
@@ -311,10 +316,10 @@ async function runTests() {
     id: `${rollUid}_${prevWeekKey}`,
     user_id: rollUid,
     period_key: prevWeekKey,
-    units_used: 50_000,
+    units_used: 160_000,
     units_reserved: 0,
     window_start: fridayWindowStart,
-    window_units: 50_000,
+    window_units: 160_000,
     cooldown_until: null,
   });
   // Now at Saturday 00:02 Baghdad time, user tries to burst another 20,000 units
@@ -322,7 +327,7 @@ async function runTests() {
   const rollRes = await reserveSupaEnergy(mockSupaClient, {
     uid: rollUid,
     weekKey: nextWeekKey,
-    estimatedUnits: 20_000,
+    estimatedUnits: 50_000,
     now: satRollNow,
   });
   assert.equal(rollRes.ok, false, 'Rapid burst across Saturday midnight triggers burst cooldown');

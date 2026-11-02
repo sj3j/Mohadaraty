@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs } from 'firebase/firestore';
-import { addBankQuestion, bankLectureIdFor } from '../../services/questionBankService';
+import { addBankQuestion, batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput } from '../../services/questionBankService';
 import { extractMCQsFromStoragePath, AIUnavailableError } from '../../services/mcqGenerationService';
 import { storage } from '../../lib/firebase';
 import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
@@ -248,16 +248,20 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
     const resolvedStageId = effectiveStageId || (subjectMeta as any)?.stageId || null;
 
     try {
-      for (const q of extractedQuestions) {
-        // filter out empty choices
-        const validChoices = q.choices.filter((c: any) => typeof c.text === 'string' && c.text.trim() !== '');
-        
+      const payloads: NewBankQuestionInput[] = extractedQuestions.map(q => {
+        const validChoices = (Array.isArray(q.choices) ? q.choices : [])
+          .filter((c: any) => typeof c.text === 'string' && c.text.trim() !== '')
+          .map((c: any, idx: number) => ({
+            label: c.label || String.fromCharCode(65 + idx),
+            text: c.text.trim(),
+          }));
+
         const questionTags = [..._tags];
         if (q.session && q.session.trim()) {
           questionTags.push(q.session.trim());
         }
 
-        await addBankQuestion({
+        return {
           scope,
           subjectId,
           stageId: resolvedStageId,
@@ -266,7 +270,7 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
           subjectNameAr: subjectMeta?.subjectNameAr || null,
           lectureId: scope === 'lecture' ? resolvedLectureId : null,
           tags: questionTags,
-          year: null, // AI pdf extraction doesn't imply a specific year unless requested
+          year: null,
           type: 'mcq',
           stemFormat: 'standard',
           stem: q.stem || 'بدون نص',
@@ -275,9 +279,13 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
           explanation: q.explanation || '',
           difficulty: difficulty,
           isActive: true
-        });
-        setCompletedSaves(prev => prev + 1);
-      }
+        };
+      });
+
+      await batchAddBankQuestions(payloads, (saved) => {
+        setCompletedSaves(saved);
+      });
+
       setStage('done');
       setTimeout(() => {
         onAdded();

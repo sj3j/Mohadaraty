@@ -125,13 +125,18 @@ export function createSimosanHandlers(deps: SimosanDeps) {
 
   /** The caller's own user document is the only source for stage and access. */
   async function loadCaller(db: any, uid: string) {
+    const cacheKey = `caller:${uid}`;
+    const cached = serverCache.get<{ data: any; stageId: string }>(cacheKey);
+    if (cached) return cached;
     const snap = await db.collection('users').doc(uid).get();
     if (!snap.exists) return null;
     const data = snap.data();
-    return {
+    const result = {
       data,
       stageId: data?.stageId || '',
     };
+    serverCache.set(cacheKey, result, 60 * 1000);
+    return result;
   }
 
   async function getCachedLecture(db: any, lectureId: string) {
@@ -538,15 +543,18 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         languageMode: (languageMode === 'en' || languageMode === 'bilingual') ? languageMode : 'ar',
         autoQuiz: autoQuiz !== false,
       };
-      let clientClosed = false;
-      const onSocketClose = () => { clientClosed = true; };
-      req.on('close', onSocketClose);
-      res.on('close', onSocketClose);
+      let clientAborted = false;
+      const onResponseClose = () => {
+        if (!res.writableEnded) {
+          clientAborted = true;
+        }
+      };
+      res.on('close', onResponseClose);
 
       let answer = '';
       const onDelta = (delta: string) => {
         answer += delta;
-        if (clientClosed || res.writableEnded || res.destroyed || req.destroyed) {
+        if (clientAborted || res.writableEnded || res.destroyed) {
           throw new Error('client_disconnected');
         }
         res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
@@ -593,8 +601,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         offTopic = streamRes.offTopic;
         clientDisconnected = !!streamRes.clientDisconnected;
       } finally {
-        req.off('close', onSocketClose);
-        res.off('close', onSocketClose);
+        res.off('close', onResponseClose);
       }
 
       // --- settle ------------------------------------------------------------
@@ -729,20 +736,22 @@ export function createSimosanHandlers(deps: SimosanDeps) {
         }
       }
 
-      if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
-        res.write(
-          `data: ${JSON.stringify({
-            type: 'done',
-            threadId,
-            offTopic,
-            refunded,
-            citedPages,
-            remaining,
-            questionNumber: offTopic ? questionCount : questionCount + 1,
-            isReadOnly: !offTopic && questionCount + 1 >= (isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT),
-            isFreeTier,
-          })}\n\n`,
-        );
+      if (!res.writableEnded && !res.destroyed) {
+        if (!clientDisconnected) {
+          res.write(
+            `data: ${JSON.stringify({
+              type: 'done',
+              threadId,
+              offTopic,
+              refunded,
+              citedPages,
+              remaining,
+              questionNumber: offTopic ? questionCount : questionCount + 1,
+              isReadOnly: !offTopic && questionCount + 1 >= (isFreeTier ? 1 : MAX_QUESTIONS_PER_CHAT),
+              isFreeTier,
+            })}\n\n`,
+          );
+        }
         res.end();
       }
     } catch (e: any) {
@@ -815,6 +824,7 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       const week = baghdadWeekKey();
 
       let top: Array<{ uid: string; stageId: string; unitsUsed: number; requestCount: number; usd: number }> = [];
+      let supabaseActive = false;
       const supabase = getSupabaseAdmin();
       if (supabase) {
         try {
@@ -824,21 +834,24 @@ export function createSimosanHandlers(deps: SimosanDeps) {
             .eq('period_key', week)
             .order('units_used', { ascending: false })
             .limit(20);
-          if (!supaErr && supaRows && supaRows.length > 0) {
-            top = supaRows.map((r: any) => ({
-              uid: r.user_id,
-              stageId: '',
-              unitsUsed: Number(r.units_used) || 0,
-              requestCount: Number(r.used_count) || 0,
-              usd: unitsToUsd(Number(r.units_used) || 0),
-            }));
+          if (!supaErr) {
+            supabaseActive = true;
+            if (supaRows && supaRows.length > 0) {
+              top = supaRows.map((r: any) => ({
+                uid: r.user_id,
+                stageId: '',
+                unitsUsed: Number(r.units_used) || 0,
+                requestCount: Number(r.used_count) || 0,
+                usd: unitsToUsd(Number(r.units_used) || 0, settings.model),
+              }));
+            }
           }
         } catch (err) {
           console.warn('[simosan] adminStats supabase query failed', err);
         }
       }
 
-      if (top.length === 0) {
+      if (!supabaseActive && top.length === 0) {
         const thisWeekSnap = await db
           .collection('aiUsage')
           .where('day', '==', week)
@@ -946,15 +959,15 @@ export function createSimosanHandlers(deps: SimosanDeps) {
       const supabase = getSupabaseAdmin();
       if (supabase) {
         const supaResult = await getClientMessagesFromSupabase(supabase, { userId: uid, lectureId });
-        if (supaResult && supaResult.threadId) {
+        if (supaResult !== null) {
           return res.json({
-            threadId: supaResult.threadId,
-            messages: supaResult.messages,
+            threadId: supaResult.threadId || '',
+            messages: supaResult.messages || [],
           });
         }
       }
 
-      // Fallback to Firestore
+      // Fallback to Firestore only if Supabase is unavailable
       const db = admin.firestore();
       const lectureRef = db.collection('aiChats').doc(uid).collection('lectures').doc(lectureId);
       const lectureDoc = await lectureRef.get();
@@ -986,5 +999,34 @@ export function createSimosanHandlers(deps: SimosanDeps) {
     }
   }
 
-  return { ask, state, adminStats, adminSettings, history };
+  /* ---------------------------------------------------------------- *
+   * POST /api/ai/report
+   * ---------------------------------------------------------------- */
+  async function report(req: any, res: any) {
+    try {
+      const uid = req.user.uid;
+      const { messageId, text, reason } = req.body || {};
+      if (!text || !reason) {
+        return res.status(400).json({ error: 'text and reason are required' });
+      }
+
+      console.log(`[simosan] AI Content Report from ${uid}: messageId=${messageId || 'none'}, reason="${String(reason).slice(0, 100)}"`);
+
+      const db = admin.firestore();
+      await db.collection('ai_reports').add({
+        messageId: messageId || null,
+        text: String(text).slice(0, 4000),
+        reason: String(reason).trim().slice(0, 1000),
+        reportedBy: uid,
+        reportedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[simosan] report failed', err);
+      res.status(500).json({ error: 'Failed to record report' });
+    }
+  }
+
+  return { ask, state, adminStats, adminSettings, history, report };
 }
