@@ -19,8 +19,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Play requires versionCode to be strictly greater than every build
-        // already uploaded. Version 1.4.0 advances the release code to 23.
-        versionCode 23
+        // already uploaded. Version 1.4.0 advances the release code to 24.
+        versionCode 24
         versionName "1.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

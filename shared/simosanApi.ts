@@ -81,6 +81,13 @@ export function createSimosanHandlers(deps: SimosanDeps) {
   const apiKey = deps.apiKey || process.env.GEMINI_API_KEY;
   const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
+  const initSupabase = getSupabaseAdmin();
+  if (initSupabase) {
+    console.log('[simosan] Supabase active: chat threads, histories, and usage ledger offloaded from Firestore.');
+  } else {
+    console.warn('[simosan] Supabase not configured: falling back to Firestore (burns ~27-32 reads per turn).');
+  }
+
   const ctx = (): SimosanCtx => ({
     db: admin.firestore(),
     FieldValue: admin.firestore.FieldValue,
