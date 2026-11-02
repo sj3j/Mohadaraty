@@ -42,6 +42,16 @@ check(
     pbxproj.includes('isa = PBXResourcesBuildPhase;'),
 );
 
+const marketingMatch = pbxproj.match(/MARKETING_VERSION = ([^;]+);/);
+const marketingVer = marketingMatch ? marketingMatch[1].trim() : '';
+const [major, minor, patch] = marketingVer.split('.').map(Number);
+const isTrainOpen = (major > 1) || (major === 1 && (minor > 0 || patch > 3));
+check(
+  `project.pbxproj MARKETING_VERSION (${marketingVer}) is strictly higher than closed train 1.0.3`,
+  isTrainOpen,
+  `Version ${marketingVer} is already approved on App Store. Apple rejects all uploads to closed trains (error 90062/90186).`,
+);
+
 // 2. Info.plist checks
 const infoPlist = fs.readFileSync('ios/App/App/Info.plist', 'utf8');
 check(

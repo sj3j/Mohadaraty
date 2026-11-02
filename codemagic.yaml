@@ -201,6 +201,22 @@ workflows:
             exit 1
           fi
 
+      - name: Preflight - verify App Store marketing version train is open
+        script: |
+          MARKETING_VER=$(grep -m 1 "MARKETING_VERSION" ios/App/App.xcodeproj/project.pbxproj | awk -F' = ' '{print $2}' | tr -d '; ')
+          echo "Target iOS MARKETING_VERSION: $MARKETING_VER"
+          case "$MARKETING_VER" in
+            1.0.0|1.0.1|1.0.2|1.0.3)
+              echo "=========================================================================="
+              echo "FATAL: MARKETING_VERSION ($MARKETING_VER) was already approved on App Store!"
+              echo "Apple error 90062 / 90186: Closed version trains reject all new uploads."
+              echo "Bump MARKETING_VERSION in ios/App/App.xcodeproj/project.pbxproj to 1.0.4+"
+              echo "BEFORE building to avoid wasting build minutes."
+              echo "=========================================================================="
+              exit 1
+              ;;
+          esac
+
       - name: Preflight - the RevenueCat public key must be present
         script: |
           if [ -z "$VITE_REVENUECAT_IOS_KEY" ]; then
@@ -259,7 +275,7 @@ workflows:
       - name: Set a unique build number
         script: |
           if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [ "$BUILD_NUMBER" -le 31 ]; then
-            echo "iOS 1.0.3 requires a numeric build number greater than installed build 31."
+            echo "iOS requires a numeric build number greater than installed build 31 (received: $BUILD_NUMBER)."
             exit 1
           fi
           sed -i '' "s/CURRENT_PROJECT_VERSION = .*;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/g" \
