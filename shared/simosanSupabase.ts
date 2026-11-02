@@ -446,9 +446,7 @@ export async function reserveSupaEnergy(
 
     // Check burst usage
     const cooldownThreshold = getCooldownThreshold(budget);
-    const wouldExceedBurst =
-      windowUnits >= cooldownThreshold ||
-      (windowUnits > 0 && windowUnits + estimatedUnits >= cooldownThreshold);
+    const wouldExceedBurst = windowUnits >= cooldownThreshold;
 
     if (wouldExceedBurst) {
       const triggerCooldownUntil = now + COOLDOWN_DURATION_MS;
@@ -487,7 +485,7 @@ export async function reserveSupaEnergy(
         p_period_key: periodKey,
         p_delta_used: 0,
         p_delta_reserved: deltaEstimated,
-        p_delta_window: deltaEstimated,
+        p_delta_window: 0,
       });
 
       if (!rpcErr) {
@@ -505,7 +503,7 @@ export async function reserveSupaEnergy(
             p_period_key: periodKey,
             p_delta_used: 0,
             p_delta_reserved: -deltaEstimated,
-            p_delta_window: -deltaEstimated,
+            p_delta_window: 0,
           });
           return {
             ok: false,
@@ -540,7 +538,7 @@ export async function reserveSupaEnergy(
         units_used: used,
         units_reserved: nextHeld,
         window_start: new Date(windowStart).toISOString(),
-        window_units: Math.round(windowUnits + deltaEstimated),
+        window_units: Math.round(windowUnits),
         cooldown_until: null,
         used_count: Number(current?.used_count) || 0,
         reserved_count: Number(current?.reserved_count) || 0,
@@ -593,7 +591,7 @@ export async function reconcileSupaEnergy(
   try {
     const deltaUsed = Math.round(actualUnits);
     const deltaReserved = -Math.round(reservedUnits);
-    const deltaWindow = deltaUsed + deltaReserved;
+    const deltaWindow = deltaUsed;
 
     // 1. Try atomic PostgreSQL RPC first if client supports it
     if (typeof (supabase as any)?.rpc === 'function') {
@@ -631,7 +629,7 @@ export async function reconcileSupaEnergy(
       windowStart = now;
       windowUnits = actualUnits;
     } else {
-      windowUnits = Math.max(0, windowUnits - reservedUnits + actualUnits);
+      windowUnits = Math.round(windowUnits + actualUnits);
     }
 
     const cooldownThreshold = getCooldownThreshold(budget);
@@ -693,7 +691,7 @@ export async function releaseSupaEnergy(
         p_period_key: periodKey,
         p_delta_used: 0,
         p_delta_reserved: deltaReserved,
-        p_delta_window: deltaReserved,
+        p_delta_window: 0,
       });
 
       if (!rpcErr) return;
@@ -704,11 +702,8 @@ export async function releaseSupaEnergy(
     if (!current) return;
     const held = Number(current.units_reserved) || 0;
     const nextHeld = Math.max(0, held - reservedUnits);
-    const windowUnits = Math.max(0, (Number(current.window_units) || 0) - reservedUnits);
-
     await supabase.from('ai_usage').update({
       units_reserved: nextHeld,
-      window_units: windowUnits,
       updated_at: new Date().toISOString(),
     }).eq('id', id);
   } catch (err) {
@@ -843,7 +838,7 @@ export async function settleSupaOffTopic(
       windowStart = now;
       windowUnits = refunded ? 0 : actualUnits;
     } else {
-      windowUnits = Math.max(0, windowUnits - reservedUnits + (refunded ? 0 : actualUnits));
+      windowUnits = refunded ? windowUnits : Math.round(windowUnits + actualUnits);
     }
 
     const cooldownThreshold = getCooldownThreshold(budget);

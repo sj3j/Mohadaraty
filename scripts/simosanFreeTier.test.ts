@@ -282,17 +282,41 @@ async function runTests() {
   assert.equal(sRes2.ok, true, 'Supabase normal request within 25% allowance succeeds without false cooldown');
   await reconcileSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, reservedUnits: 30_000, actualUnits: 30_000 });
 
-  // 3. Third heavy request pushing past 25% threshold (200k units on 800k budget) triggers cooldown
+  // 3. Third request within budget is allowed through because consumed units (65k) is well below 25% (200k)
   const sRes3 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 140_000 });
-  assert.equal(sRes3.ok, false, 'Supabase burst request exceeding 25% threshold triggers cooldown');
-  assert.equal(sRes3.reason, 'cooldown_active');
+  assert.equal(sRes3.ok, true, 'Supabase request within allowance succeeds without false premature cooldown');
+  // Reconciling 140,000 actual units brings total windowUnits to 205,000 (>= 200,000 = 25% threshold), triggering cooldown
+  await reconcileSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, reservedUnits: 140_000, actualUnits: 140_000 });
 
   // 4. Subsequent request during cooldown is rejected
   const sRes4 = await reserveSupaEnergy(mockSupaClient, { uid: sUid, weekKey: sWeek, estimatedUnits: 500 });
   assert.equal(sRes4.ok, false, 'Supabase rejects requests while cooldown is active');
   assert.equal(sRes4.reason, 'cooldown_active');
 
-  // 4. Test settleSupaOffTopic window tracking and refund logic
+  // 4b. Verify user scenario: 6 questions on a 500k budget lecture (100k estimated each) totaling 46,392 actual units does NOT trigger cooldown
+  const medUid = 'supa_med_student';
+  const medBudget = 500_000;
+  for (let q = 1; q <= 6; q++) {
+    const medRes = await reserveSupaEnergy(mockSupaClient, {
+      uid: medUid,
+      weekKey: sWeek,
+      estimatedUnits: 100_000,
+      weeklyBudget: medBudget,
+    });
+    assert.equal(medRes.ok, true, `Question ${q}/6 must succeed on 500k budget without premature cooldown`);
+    await reconcileSupaEnergy(mockSupaClient, {
+      uid: medUid,
+      weekKey: sWeek,
+      reservedUnits: 100_000,
+      actualUnits: 7_732,
+      weeklyBudget: medBudget,
+    });
+  }
+  const medUsage = supaStore.get(`${medUid}_${sWeek}`);
+  assert.equal(medUsage.units_used, 46_392, 'Exactly 46,392 units consumed');
+  assert.equal(medUsage.cooldown_until, null, 'No cooldown triggered at 9.2% usage');
+
+  // 4c. Test settleSupaOffTopic window tracking and refund logic
   const otUid = 'supa_offtopic';
   const otRes = await reserveSupaEnergy(mockSupaClient, { uid: otUid, weekKey: sWeek, estimatedUnits: 10_000 });
   assert.equal(otRes.ok, true);
@@ -316,10 +340,10 @@ async function runTests() {
     id: `${rollUid}_${prevWeekKey}`,
     user_id: rollUid,
     period_key: prevWeekKey,
-    units_used: 160_000,
+    units_used: 210_000,
     units_reserved: 0,
     window_start: fridayWindowStart,
-    window_units: 160_000,
+    window_units: 210_000,
     cooldown_until: null,
   });
   // Now at Saturday 00:02 Baghdad time, user tries to burst another 20,000 units

@@ -662,9 +662,7 @@ export async function reserveEnergy(
     // trigger cooldown and deny. An initial single request within budget is allowed through
     // and will enter cooldown on reconcile if actual usage reaches threshold.
     const cooldownThreshold = getCooldownThreshold(budget);
-    const wouldExceedBurst =
-      windowUnits >= cooldownThreshold ||
-      (windowUnits > 0 && windowUnits + input.estimatedUnits >= cooldownThreshold);
+    const wouldExceedBurst = windowUnits >= cooldownThreshold;
 
     if (wouldExceedBurst) {
       const triggerCooldownUntil = nowMs + COOLDOWN_DURATION_MS;
@@ -697,7 +695,7 @@ export async function reserveEnergy(
         unitsUsed: used,
         unitsReserved: held + input.estimatedUnits,
         windowStart: windowStartMs,
-        windowUnits: windowUnits + input.estimatedUnits,
+        windowUnits,
         cooldownUntil: null,
         requestCount: sameWeek ? Number(data?.requestCount) || 0 : 0,
         updatedAt: FieldValue.serverTimestamp(),
@@ -759,7 +757,7 @@ export async function reconcileEnergy(
       windowStartMs = nowMs;
       windowUnits = input.actualUnits;
     } else {
-      windowUnits = Math.max(0, windowUnits - input.reservedUnits + input.actualUnits);
+      windowUnits = windowUnits + input.actualUnits;
     }
 
     let existingCdMs = 0;
@@ -852,7 +850,6 @@ export async function releaseEnergy(
       usageRef,
       {
         unitsReserved: Math.max(0, held - input.reservedUnits),
-        windowUnits: Math.max(0, windowUnits - input.reservedUnits),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -904,7 +901,7 @@ export async function settleOffTopic(
       windowStartMs = nowMs;
       windowUnits = refunded ? 0 : input.actualUnits;
     } else {
-      windowUnits = Math.max(0, windowUnits - input.reservedUnits + (refunded ? 0 : input.actualUnits));
+      windowUnits = refunded ? windowUnits : windowUnits + input.actualUnits;
     }
 
     const existingCdMs = extractCooldownMs(data?.cooldownUntil);
