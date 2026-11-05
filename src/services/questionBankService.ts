@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { BankQuestion, QuestionTag } from '../types/questionBank.types';
+export { bankLectureIdFor } from '../lib/questionBankMatching';
 
 export type NewBankQuestionInput = Omit<
   BankQuestion,
@@ -109,28 +110,6 @@ export async function softDeleteBankQuestion(id: string) {
     lastEditedBy: user.uid,
     lastEditedAt: serverTimestamp()
   });
-}
-
-/**
- * The lecture id a pair of lectures shares for question-bank purposes.
- *
- * A translated lecture and the original it came from are two independent
- * `lectures` documents. Left alone, a `scope: 'lecture'` question attached to
- * one is invisible from the other - so "lecture 5 translated" and "lecture 5
- * raw" would each need their own copy of every question.
- *
- * Collapsing the pair onto the ORIGINAL's id (never the translation's) makes
- * them share one bank, and makes the direction stable: a translation always
- * points at an original, so there is no chain to follow and no cycle to guard
- * against. Apply this at BOTH ends - reading questions and writing them - or
- * questions land under one id and are read back under another.
- *
- * Takes the minimum it needs rather than a full Lecture so callers holding a
- * loosely-typed Firestore doc can use it too.
- */
-export function bankLectureIdFor(lecture: { id: string; translationOf?: string } | null | undefined): string {
-  if (!lecture) return '';
-  return lecture.translationOf || lecture.id;
 }
 
 export async function getQuestionsForLecture(lectureId: string, subjectId: string): Promise<BankQuestion[]> {

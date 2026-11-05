@@ -3,8 +3,16 @@ import { collection, query, getDocs, updateDoc, doc, deleteDoc, orderBy, limit }
 import { db, auth } from '../../lib/firebase';
 import { X, Search, Filter, Plus, Edit2, Trash2, ShieldAlert, FileSpreadsheet, Bell } from 'lucide-react';
 import { TRANSLATIONS, Language, CATEGORIES, COURSE_IDS, COURSE_LABELS } from '../../types';
+import type { Lecture } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
-import { subjectsForCourse } from '../../lib/subjectDisplay';
+import { subjectsForCourse, subjectSlugOf } from '../../lib/subjectDisplay';
+import {
+  bankLectureIdFor,
+  canonicalBankLectureId,
+  isQuestionMatchingLecture,
+  isQuestionMatchingSubject,
+  questionBankLectureOptions,
+} from '../../lib/questionBankMatching';
 import { BankQuestion } from '../../types/questionBank.types';
 import { getAllBankQuestionsForAdmin, softDeleteBankQuestion, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import AddBankQuestionModal from './AddBankQuestionModal';
@@ -18,13 +26,24 @@ interface AdminQuestionBankScreenProps {
   lang: Language;
   targetQuestionId?: string | null;
   targetAlert?: any | null;
+  targetLectureId?: string | null;
+  targetSubjectId?: string | null;
   canOpenAntiCheat?: boolean;
 }
 
-export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQuestionId, targetAlert, canOpenAntiCheat = false }: AdminQuestionBankScreenProps) {
+export default function AdminQuestionBankScreen({
+  isOpen,
+  onClose,
+  lang,
+  targetQuestionId,
+  targetAlert,
+  targetLectureId,
+  targetSubjectId,
+  canOpenAntiCheat = false
+}: AdminQuestionBankScreenProps) {
   const { subjects } = useStageSubjects();
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
-  const [lectures, setLectures] = useState<any[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -58,8 +77,22 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
       });
 
       setQuestions(enrichedQuestions);
-      const snap = await getDocs(query(collection(db, 'lectures'), limit(100)));
-      setLectures(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const snap = await getDocs(query(collection(db, 'lectures')));
+      const fetchedLectures: Lecture[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as Lecture));
+      setLectures(fetchedLectures);
+
+      if (targetLectureId) {
+        const canonicalTargetLectureId = canonicalBankLectureId(targetLectureId, fetchedLectures);
+        setSelectedLecture(canonicalTargetLectureId);
+        if (!targetSubjectId) {
+          const foundLec = fetchedLectures.find(l => l.id === canonicalTargetLectureId)
+            ?? fetchedLectures.find(l => bankLectureIdFor(l) === canonicalTargetLectureId);
+          if (foundLec) {
+            const resolvedSubj = subjectSlugOf(foundLec) || null;
+            if (resolvedSubj) setSelectedSubject(resolvedSubj);
+          }
+        }
+      }
 
       // Auto-target question if requested
       if (targetQuestionId) {
@@ -82,8 +115,13 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
   };
 
   useEffect(() => {
-    if (isOpen) fetchQuestionsAndLectures();
-  }, [isOpen, targetQuestionId]);
+    if (isOpen) {
+      if (targetSubjectId) {
+        setSelectedSubject(targetSubjectId);
+      }
+      fetchQuestionsAndLectures();
+    }
+  }, [isOpen, targetQuestionId, targetLectureId, targetSubjectId]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -96,9 +134,15 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
 
   const handleSendDoctorNotification = async () => {
     if (!selectedLecture) return;
-    const lecObj = lectures.find(l => l.id === selectedLecture);
+    const canonicalLectureId = canonicalBankLectureId(selectedLecture, lectures);
+    const lecObj = lectures.find(l => l.id === canonicalLectureId)
+      ?? lectures.find(l => bankLectureIdFor(l) === canonicalLectureId);
     const lecTitle = lecObj?.title || 'المحاضرة';
-    const docQs = questions.filter(q => q.lectureId === selectedLecture && q.tags?.includes('سؤال_الدكتور') && q.isActive !== false);
+    const docQs = questions.filter(q =>
+      isQuestionMatchingLecture(q, canonicalLectureId, lectures) &&
+      q.tags?.includes('سؤال_الدكتور') &&
+      q.isActive !== false,
+    );
 
     const confirmMsg = `هل تريد بالتأكيد إرسال إشعار للطلاب (تعال ادرس) لمحاضرة:\n"${lecTitle}"؟\n(يوجد ${docQs.length} سؤال دكتور مضاف لهذه المحاضرة)`;
     if (!window.confirm(confirmMsg)) return;
@@ -106,7 +150,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
     setIsSendingNotif(true);
     try {
       const res = await sendDoctorQuestionsNotification({
-        lectureId: selectedLecture,
+        lectureId: canonicalLectureId,
         lectureTitle: lecTitle,
         stageId: lecObj?.stageId,
         subjectId: lecObj?.subjectId,
@@ -124,8 +168,8 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
     if (q.isActive === false) return false;
     if (searchTerm && !q.stem.toLowerCase().includes(searchTerm.toLowerCase())) return false;
     if (selectedTag && selectedTag !== 'الكل' && !q.tags.includes(selectedTag as any)) return false;
-    if (selectedSubject && q.subjectId !== selectedSubject) return false;
-    if (selectedLecture && q.lectureId !== selectedLecture) return false;
+    if (!isQuestionMatchingSubject(q, selectedSubject)) return false;
+    if (!isQuestionMatchingLecture(q, selectedLecture, lectures)) return false;
     return true;
   });
 
@@ -239,18 +283,6 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
                    })
                  : CATEGORIES.map(c => <option key={c.value} value={c.value}>{t[c.labelKey]}</option>)}
              </select>
-              {selectedLecture && (
-                <button
-                  type="button"
-                  onClick={handleSendDoctorNotification}
-                  disabled={isSendingNotif}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors shrink-0 disabled:opacity-50"
-                  title="إرسال إشعار للطلاب بتوفر أسئلة الدكتور لهذه المحاضرة"
-                >
-                  <Bell className="w-4 h-4" />
-                  <span>{isSendingNotif ? 'جاري الإرسال...' : 'إرسال إشعار للطلاب'}</span>
-                </button>
-              )}
 
              <select
                value={selectedLecture || ''}
@@ -259,7 +291,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
                disabled={!selectedSubject}
              >
                <option value="">جميع المحاضرات</option>
-               {lectures.filter(l => l.category === selectedSubject || l.subjectId === selectedSubject).map(l => (
+               {questionBankLectureOptions(lectures, selectedSubject).map(l => (
                  <option key={l.id} value={l.id}>{l.title}</option>
                ))}
              </select>
@@ -330,6 +362,9 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
         isOpen={isAddOpen} 
         onClose={() => setIsAddOpen(false)} 
         onAdded={fetchQuestionsAndLectures} 
+        initialScope={selectedLecture ? 'lecture' : 'subject'}
+        initialSubjectId={selectedSubject}
+        initialLectureId={selectedLecture}
       />
 
       {editingQuestion && (
@@ -349,12 +384,18 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
         isOpen={isImportPdfOpen}
         onClose={() => setIsImportPdfOpen(false)}
         onAdded={fetchQuestionsAndLectures}
+        initialScope={selectedLecture ? 'lecture' : 'subject'}
+        initialSubjectId={selectedSubject}
+        initialLectureId={selectedLecture}
       />
 
       <UploadExcelModal
         isOpen={isImportExcelOpen}
         onClose={() => setIsImportExcelOpen(false)}
         onAdded={fetchQuestionsAndLectures}
+        initialScope={selectedLecture ? 'lecture' : 'subject'}
+        initialSubjectId={selectedSubject}
+        initialLectureId={selectedLecture}
       />
       
       <ConfirmModal

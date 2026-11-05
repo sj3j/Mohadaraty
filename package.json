@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server.ts",
-    "build": "node scripts/copyPdfjsAssets.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "npm run typecheck && node scripts/copyPdfjsAssets.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:native": "node scripts/copyPdfjsAssets.mjs && vite build --mode native && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:ios": "node scripts/copyPdfjsAssets.mjs && vite build --mode ios",
     "build:macos": "node scripts/copyPdfjsAssets.mjs && vite build --mode macos && node scripts/stageMacWebBundle.mjs && node scripts/assert-no-payment-surface.mjs macos/MohadaratyMac/Resources/WebApp",
@@ -29,7 +29,8 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit",
+    "typecheck": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit",
+    "lint": "npm run typecheck",
     "test:rules": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"node scripts/rules.test.mjs\"",
     "test:calendar": "npx tsx scripts/calendar.test.ts",
     "test:mobile-update": "npx tsx scripts/mobileReleasePolicy.test.ts",
@@ -104,7 +105,8 @@
     "test:wipe": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/wipe.test.ts\"",
     "test:simosan": "npx -y firebase-tools@13 emulators:exec --only firestore --project mylectures-rules-test \"npx tsx scripts/simosan.test.ts\"",
     "test:attendance": "npx tsx scripts/attendance.test.ts && npx tsx scripts/attendanceConfiguration.test.ts && npx tsx scripts/doctorAttendanceSubgroups.test.ts && npx tsx scripts/officialRosterFallback.test.ts && npx tsx scripts/subjectDeduplication.test.ts && npx tsx scripts/attendanceRemediationRegressions.test.ts && npx tsx --test scripts/attendanceSecurity.test.ts scripts/attendanceLocationGate.test.ts scripts/attendanceOffline.test.ts scripts/attendanceDatabase.test.ts scripts/attendanceIntegrationContract.test.ts scripts/attendanceRepositoryReview.test.ts",
-    "test:subject-dedup": "npx tsx scripts/subjectDeduplication.test.ts"
+    "test:subject-dedup": "npx tsx scripts/subjectDeduplication.test.ts",
+    "test:question-bank-matching": "npx tsx scripts/questionBankMatching.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",

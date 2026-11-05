@@ -22,15 +22,17 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { QuestionScope, QuestionTag, Difficulty } from '../../types/questionBank.types';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
+import type { Lecture } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { useStageContext } from '../../contexts/StageContext';
 import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
+import { bankLectureIdFor, questionBankLectureOptions } from '../../lib/questionBankMatching';
 import { 
   parseQuestionBankExcel, 
   downloadQuestionBankTemplate, 
   ParsedExcelQuestion 
 } from '../../services/questionBankExcelService';
-import { batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
+import { batchAddBankQuestions, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
@@ -38,12 +40,22 @@ interface UploadExcelModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAdded: () => void;
+  initialScope?: QuestionScope;
+  initialSubjectId?: string | null;
+  initialLectureId?: string | null;
 }
 
 type Stage = 'upload' | 'review' | 'saving' | 'done';
 type ReviewFilter = 'all' | 'valid' | 'invalid';
 
-export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExcelModalProps) {
+export default function UploadExcelModal({
+  isOpen,
+  onClose,
+  onAdded,
+  initialScope,
+  initialSubjectId,
+  initialLectureId
+}: UploadExcelModalProps) {
   const [stage, setStage] = useState<Stage>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -56,7 +68,7 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
   const [tags, setTags] = useState<Set<QuestionTag>>(new Set());
   const [customTag, setCustomTag] = useState<string>('');
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
-  const [lectures, setLectures] = useState<any[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
   const [notifyStudents, setNotifyStudents] = useState<boolean>(true);
 
   const { effectiveStageId } = useStageContext();
@@ -79,22 +91,33 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
       setQuestions([]);
       setCompletedSaves(0);
       setTotalToSave(0);
-      setScope('subject');
-      setSubjectId('');
-      setLectureId('');
+      setScope(initialScope || (initialLectureId ? 'lecture' : 'subject'));
+      setSubjectId(initialSubjectId || '');
+      setLectureId(initialLectureId || '');
       setTags(new Set());
       setReviewFilter('all');
       setExpandedIndex(null);
 
       getDocs(query(collection(db, 'lectures')))
         .then(snap => {
-          setLectures(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const fetched: Lecture[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as Lecture));
+          setLectures(fetched);
+          if (initialLectureId) {
+            const found = fetched.find(l => l.id === initialLectureId || bankLectureIdFor(l) === initialLectureId);
+            if (found) {
+              setLectureId(bankLectureIdFor(found));
+              if (!initialSubjectId) {
+                const subj = subjectSlugOf(found);
+                if (subj) setSubjectId(subj);
+              }
+            }
+          }
         })
         .catch(err => {
           console.error('[UploadExcelModal] Failed to fetch lectures', err);
         });
     }
-  }, [isOpen]);
+  }, [isOpen, initialScope, initialSubjectId, initialLectureId]);
 
   const toggleTag = (tag: QuestionTag) => {
     const newTags = new Set(tags);
@@ -417,7 +440,10 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
                       </label>
                       <select 
                         value={subjectId} 
-                        onChange={e => setSubjectId(e.target.value)}
+                        onChange={e => {
+                          setSubjectId(e.target.value);
+                          setLectureId('');
+                        }}
                         className="w-full p-2.5 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-850 text-sm focus:ring-2 focus:ring-sky-500 transition-all"
                       >
                         <option value="">-- اختر المادة الدراسية --</option>
@@ -448,7 +474,7 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
                           className="w-full p-2.5 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-850 text-sm focus:ring-2 focus:ring-sky-500 transition-all"
                         >
                           <option value="">-- اختر محاضرة --</option>
-                          {lectures.filter(l => subjectSlugOf(l) === subjectId).map(l => (
+                          {questionBankLectureOptions(lectures, subjectId).map(l => (
                             <option key={l.id} value={l.id}>{l.title}</option>
                           ))}
                         </select>

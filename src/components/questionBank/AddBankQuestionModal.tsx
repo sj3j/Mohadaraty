@@ -4,11 +4,13 @@ import { collection, query, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { X, Save, ShieldAlert } from 'lucide-react';
 import { BankQuestion, QuestionScope, QuestionTag, QuestionType, StemFormat, Difficulty, BankChoice } from '../../types/questionBank.types';
-import { addBankQuestion, editBankQuestion, bankLectureIdFor, replyToQuestionReport, sendDoctorQuestionsNotification } from '../../services/questionBankService';
+import { addBankQuestion, editBankQuestion, replyToQuestionReport, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
+import type { Lecture } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { useStageContext } from '../../contexts/StageContext';
 import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
+import { bankLectureIdFor, questionBankLectureOptions } from '../../lib/questionBankMatching';
 
 interface Props {
   isOpen: boolean;
@@ -16,11 +18,23 @@ interface Props {
   onAdded: () => void;
   initialData?: BankQuestion | null;
   targetAlert?: any | null;
+  initialScope?: QuestionScope;
+  initialSubjectId?: string | null;
+  initialLectureId?: string | null;
 }
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
-export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initialData, targetAlert }: Props) {
+export default function AddBankQuestionModal({
+  isOpen,
+  onClose,
+  onAdded,
+  initialData,
+  targetAlert,
+  initialScope,
+  initialSubjectId,
+  initialLectureId
+}: Props) {
   const { effectiveStageId } = useStageContext();
   const { subjects } = useStageSubjects();
   const hasCurriculum = subjects.length > 0;
@@ -82,7 +96,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
     }
   };
   
-  const [lectures, setLectures] = useState<any[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -109,9 +123,9 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
         setExplanation(initialData.explanation || '');
       } else {
         // Reset form
-        setScope('subject');
-        setSubjectId('');
-        setLectureId('');
+        setScope(initialScope || (initialLectureId ? 'lecture' : 'subject'));
+        setSubjectId(initialSubjectId || '');
+        setLectureId(initialLectureId || '');
         setTags(new Set());
         setYear('');
         setType('mcq');
@@ -131,13 +145,24 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
 
       getDocs(query(collection(db, 'lectures')))
         .then(snap => {
-          setLectures(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const fetched: Lecture[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as Lecture));
+          setLectures(fetched);
+          if (!initialData && initialLectureId) {
+            const found = fetched.find(l => l.id === initialLectureId || bankLectureIdFor(l) === initialLectureId);
+            if (found) {
+              setLectureId(bankLectureIdFor(found));
+              if (!initialSubjectId) {
+                const subj = subjectSlugOf(found);
+                if (subj) setSubjectId(subj);
+              }
+            }
+          }
         })
         .catch(err => {
           console.error("Failed to fetch lectures", err);
         });
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, initialScope, initialSubjectId, initialLectureId]);
 
   const toggleTag = (tag: QuestionTag) => {
     const newTags = new Set(tags);
@@ -298,7 +323,10 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المادة</label>
               <select 
                 value={subjectId} 
-                onChange={e => setSubjectId(e.target.value)}
+                onChange={e => {
+                  setSubjectId(e.target.value);
+                  setLectureId('');
+                }}
                 className="w-full p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
               >
                 <option value="" disabled>-- اختر المادة --</option>
@@ -326,7 +354,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
                   className="w-full p-3 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800"
                 >
                   <option value="">-- اختر محاضرة --</option>
-                  {lectures.filter(l => subjectSlugOf(l) === subjectId).map(l => (
+                  {questionBankLectureOptions(lectures, subjectId).map(l => (
                     <option key={l.id} value={l.id}>{l.title}</option>
                   ))}
                 </select>

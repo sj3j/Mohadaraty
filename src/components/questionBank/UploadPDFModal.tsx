@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs } from 'firebase/firestore';
-import { addBankQuestion, batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
+import { addBankQuestion, batchAddBankQuestions, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import { extractMCQsFromStoragePath, AIUnavailableError } from '../../services/mcqGenerationService';
 import { storage } from '../../lib/firebase';
 import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
@@ -10,9 +10,11 @@ import { X, Upload, Loader2, Edit3, Save, CheckCircle, FileText, ChevronDown, Ch
 import { QuestionScope, QuestionTag, QuestionType, Difficulty } from '../../types/questionBank.types';
 import { motion, AnimatePresence } from 'motion/react';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
+import type { Lecture } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { useStageContext } from '../../contexts/StageContext';
 import { subjectMetaFrom, subjectSlugOf, subjectsForCourse } from '../../lib/subjectDisplay';
+import { bankLectureIdFor, questionBankLectureOptions } from '../../lib/questionBankMatching';
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
@@ -22,11 +24,21 @@ interface UploadPDFModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAdded: () => void;
+  initialScope?: QuestionScope;
+  initialSubjectId?: string | null;
+  initialLectureId?: string | null;
 }
 
 type Stage = 'upload' | 'processing' | 'review' | 'saving' | 'done';
 
-export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFModalProps) {
+export default function UploadPDFModal({
+  isOpen,
+  onClose,
+  onAdded,
+  initialScope,
+  initialSubjectId,
+  initialLectureId
+}: UploadPDFModalProps) {
   const [stage, setStage] = useState<Stage>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,11 +55,12 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
   // Resolved once rather than per question: a PDF import writes the whole batch
   // against one subject, and subjectMetaFrom walks the list on every call.
   const subjectMeta = subjectMetaFrom(subjects, subjectId);
+
   const [lectureId, setLectureId] = useState<string>('');
   const [tags, setTags] = useState<Set<QuestionTag>>(new Set());
   const [customTag, setCustomTag] = useState<string>('');
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
-  const [lectures, setLectures] = useState<any[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
   const [notifyStudents, setNotifyStudents] = useState<boolean>(true);
   
   // Review Data
@@ -62,19 +75,30 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
       setError(null);
       setExtractedQuestions([]);
       setCompletedSaves(0);
-      setScope('subject');
-      setSubjectId('');
-      setLectureId('');
+      setScope(initialScope || (initialLectureId ? 'lecture' : 'subject'));
+      setSubjectId(initialSubjectId || '');
+      setLectureId(initialLectureId || '');
       setTags(new Set());
       getDocs(query(collection(db, 'lectures')))
         .then(snap => {
-          setLectures(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const fetched: Lecture[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as Lecture));
+          setLectures(fetched);
+          if (initialLectureId) {
+            const found = fetched.find(l => l.id === initialLectureId || bankLectureIdFor(l) === initialLectureId);
+            if (found) {
+              setLectureId(bankLectureIdFor(found));
+              if (!initialSubjectId) {
+                const subj = subjectSlugOf(found);
+                if (subj) setSubjectId(subj);
+              }
+            }
+          }
         })
         .catch(err => {
           console.error("Failed to fetch lectures", err);
         });
     }
-  }, [isOpen]);
+  }, [isOpen, initialScope, initialSubjectId, initialLectureId]);
 
   const toggleTag = (tag: QuestionTag) => {
     const newTags = new Set(tags);
@@ -367,7 +391,10 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
                       <label className="block text-xs font-bold text-slate-500 mb-1">المادة</label>
                       <select 
                         value={subjectId} 
-                        onChange={e => setSubjectId(e.target.value)}
+                        onChange={e => {
+                          setSubjectId(e.target.value);
+                          setLectureId('');
+                        }}
                         className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
                       >
                         <option value="" disabled>-- اختر المادة --</option>
@@ -395,7 +422,7 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
                           className="w-full p-2.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm"
                         >
                           <option value="">-- اختر محاضرة --</option>
-                          {lectures.filter(l => subjectSlugOf(l) === subjectId).map(l => (
+                          {questionBankLectureOptions(lectures, subjectId).map(l => (
                             <option key={l.id} value={l.id}>{l.title}</option>
                           ))}
                         </select>

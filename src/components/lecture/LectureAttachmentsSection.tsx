@@ -148,7 +148,7 @@ function AttachmentGridCard({
       )}
 
       {/* Top Badges Row */}
-      <div className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none z-20">
+      <div className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none z-30">
         {/* Free Badge / Staff Toggle */}
         {isStaff && onToggleFree ? (
           <button
@@ -195,10 +195,11 @@ function AttachmentGridCard({
                 e.stopPropagation();
                 onDelete(item);
               }}
-              className="pointer-events-auto p-1 rounded-md bg-rose-600/90 hover:bg-rose-700 text-white shadow-sm transition-all cursor-pointer hover:scale-105 active:scale-95 flex items-center justify-center"
+              className="pointer-events-auto p-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white shadow-md transition-all cursor-pointer hover:scale-110 active:scale-95 flex items-center justify-center min-w-[26px] min-h-[26px]"
+              aria-label={isRtl ? 'حذف هذا المرفق نهائياً' : 'Delete this attachment permanently'}
               title={isRtl ? 'حذف هذا المرفق نهائياً' : 'Delete this attachment permanently'}
             >
-              <Trash2 className="w-3 h-3" />
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
 
@@ -216,7 +217,7 @@ function AttachmentGridCard({
       <div
         className={`absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent ${
           isLocked ? 'opacity-95' : 'opacity-90 sm:opacity-0 group-hover:opacity-100'
-        } transition-opacity flex flex-col justify-end p-2 text-white z-20`}
+        } transition-opacity flex flex-col justify-end p-2 text-white z-20 pointer-events-none`}
       >
         {item.title && (
           <p className="text-[11px] font-bold truncate text-white leading-tight mb-0.5">

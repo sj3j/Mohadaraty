@@ -214,6 +214,8 @@ export default function App() {
   const [showAdminBank, setShowAdminBank] = useState(false);
   const [adminBankTargetQuestionId, setAdminBankTargetQuestionId] = useState<string | null>(null);
   const [adminBankTargetAlert, setAdminBankTargetAlert] = useState<any | null>(null);
+  const [adminBankTargetLectureId, setAdminBankTargetLectureId] = useState<string | null>(null);
+  const [adminBankTargetSubjectId, setAdminBankTargetSubjectId] = useState<string | null>(null);
   const [editingLectureMcq, setEditingLectureMcq] = useState<{
     lectureId: string;
     lectureTitle?: string;
@@ -433,7 +435,19 @@ export default function App() {
 
   useEffect(() => {
     const handleOpenAntiCheat = () => { if (canManageAntiCheat(user)) setShowAntiCheat(true); };
-    const handleOpenBank = () => { if (canManageMcqSystem(user)) setShowAdminBank(true); };
+    const handleOpenBank = (e?: Event) => {
+      if (canManageMcqSystem(user)) {
+        const detail = (e as CustomEvent)?.detail;
+        if (detail?.lectureId) {
+          setAdminBankTargetLectureId(detail.lectureId);
+          setAdminBankTargetSubjectId(detail.subjectId || null);
+        } else {
+          setAdminBankTargetLectureId(null);
+          setAdminBankTargetSubjectId(null);
+        }
+        setShowAdminBank(true);
+      }
+    };
     window.addEventListener('open-anti-cheat-board', handleOpenAntiCheat);
     window.addEventListener('open-admin-bank', handleOpenBank);
     return () => {
@@ -1571,10 +1585,14 @@ export default function App() {
           setShowAdminBank(false);
           setAdminBankTargetQuestionId(null);
           setAdminBankTargetAlert(null);
+          setAdminBankTargetLectureId(null);
+          setAdminBankTargetSubjectId(null);
         }} 
         lang={lang} 
         targetQuestionId={adminBankTargetQuestionId}
         targetAlert={adminBankTargetAlert}
+        targetLectureId={adminBankTargetLectureId}
+        targetSubjectId={adminBankTargetSubjectId}
         canOpenAntiCheat={canManageAntiCheat(user)}
       />
       <AntiCheatDashboard isOpen={showAntiCheat} onClose={() => setShowAntiCheat(false)} lang={lang} />

@@ -5,6 +5,8 @@ import { BookOpen, X, Clock, Trophy, AlertTriangle, ArrowRight, ArrowLeft, Bot, 
 import { getLockedAnswers } from '../../services/mcqAnswerService';
 import { BankQuestion } from '../../types/questionBank.types';
 import { canManageAntiCheat, canManageLectures, canManageMcqSystem, canManagePaidMcq } from '../../lib/permissions';
+import { subjectSlugOf } from '../../lib/subjectDisplay';
+import { bankLectureIdFor } from '../../lib/questionBankMatching';
 
 interface Props {
   lecture: Lecture;
@@ -414,7 +416,12 @@ export default function MCQIntroScreen({
             <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-4">أدوات المشرف</h2>
             
             {canManageMcqSystem(user) && <button
-              onClick={() => window.dispatchEvent(new CustomEvent('open-admin-bank'))}
+              onClick={() => window.dispatchEvent(new CustomEvent('open-admin-bank', {
+                detail: {
+                  lectureId: bankLectureIdFor(lecture),
+                  subjectId: subjectSlugOf(lecture) || lecture.subjectId || lecture.category,
+                }
+              }))}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-50 dark:bg-emerald-900/10 text-emerald-600 dark:text-emerald-400 rounded-xl font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors mb-3"
             >
               <FileText className="w-5 h-5" />
