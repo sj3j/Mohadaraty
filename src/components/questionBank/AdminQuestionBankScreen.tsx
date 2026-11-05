@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, updateDoc, doc, deleteDoc, orderBy, limit } from 'firebase/firestore';
 import { db, auth } from '../../lib/firebase';
-import { X, Search, Filter, Plus, Edit2, Trash2, ShieldAlert, FileSpreadsheet } from 'lucide-react';
+import { X, Search, Filter, Plus, Edit2, Trash2, ShieldAlert, FileSpreadsheet, Bell } from 'lucide-react';
 import { TRANSLATIONS, Language, CATEGORIES, COURSE_IDS, COURSE_LABELS } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { subjectsForCourse } from '../../lib/subjectDisplay';
 import { BankQuestion } from '../../types/questionBank.types';
-import { getAllBankQuestionsForAdmin, softDeleteBankQuestion } from '../../services/questionBankService';
+import { getAllBankQuestionsForAdmin, softDeleteBankQuestion, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import AddBankQuestionModal from './AddBankQuestionModal';
 import UploadPDFModal from './UploadPDFModal';
 import UploadExcelModal from './UploadExcelModal';
@@ -35,6 +35,7 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
   const [isImportExcelOpen, setIsImportExcelOpen] = useState(false);
   const [questionToDelete, setQuestionToDelete] = useState<string | null>(null);
   const [editingQuestion, setEditingQuestion] = useState<BankQuestion | null>(null);
+  const [isSendingNotif, setIsSendingNotif] = useState(false);
 
   const tags = ['الكل', 'وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
   const t = TRANSLATIONS[lang];
@@ -91,7 +92,33 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
     } catch (e: any) {
       alert("Error: " + e.message);
     }
-  }
+  };
+
+  const handleSendDoctorNotification = async () => {
+    if (!selectedLecture) return;
+    const lecObj = lectures.find(l => l.id === selectedLecture);
+    const lecTitle = lecObj?.title || 'المحاضرة';
+    const docQs = questions.filter(q => q.lectureId === selectedLecture && q.tags?.includes('سؤال_الدكتور') && q.isActive !== false);
+
+    const confirmMsg = `هل تريد بالتأكيد إرسال إشعار للطلاب (تعال ادرس) لمحاضرة:\n"${lecTitle}"؟\n(يوجد ${docQs.length} سؤال دكتور مضاف لهذه المحاضرة)`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsSendingNotif(true);
+    try {
+      const res = await sendDoctorQuestionsNotification({
+        lectureId: selectedLecture,
+        lectureTitle: lecTitle,
+        stageId: lecObj?.stageId,
+        subjectId: lecObj?.subjectId,
+      });
+      alert(`تم إرسال الإشعار بنجاح!\nعدد المستلمين المستهدفين: ${res.recipientsCount}\nالأجهزة التي استلمت الإشعار: ${res.sentCount}`);
+    } catch (err: any) {
+      console.error('Failed to send notification:', err);
+      alert('فشل إرسال الإشعار: ' + (err?.message || 'خطأ غير معروف'));
+    } finally {
+      setIsSendingNotif(false);
+    }
+  };
 
   const filtered = questions.filter(q => {
     if (q.isActive === false) return false;
@@ -212,6 +239,18 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
                    })
                  : CATEGORIES.map(c => <option key={c.value} value={c.value}>{t[c.labelKey]}</option>)}
              </select>
+              {selectedLecture && (
+                <button
+                  type="button"
+                  onClick={handleSendDoctorNotification}
+                  disabled={isSendingNotif}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors shrink-0 disabled:opacity-50"
+                  title="إرسال إشعار للطلاب بتوفر أسئلة الدكتور لهذه المحاضرة"
+                >
+                  <Bell className="w-4 h-4" />
+                  <span>{isSendingNotif ? 'جاري الإرسال...' : 'إرسال إشعار للطلاب'}</span>
+                </button>
+              )}
 
              <select
                value={selectedLecture || ''}
@@ -224,6 +263,19 @@ export default function AdminQuestionBankScreen({ isOpen, onClose, lang, targetQ
                  <option key={l.id} value={l.id}>{l.title}</option>
                ))}
              </select>
+
+              {selectedLecture && (
+                <button
+                  type="button"
+                  onClick={handleSendDoctorNotification}
+                  disabled={isSendingNotif}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors shrink-0 disabled:opacity-50"
+                  title="إرسال إشعار للطلاب بتوفر أسئلة الدكتور لهذه المحاضرة"
+                >
+                  <Bell className="w-4 h-4" />
+                  <span>{isSendingNotif ? 'جاري الإرسال...' : 'إرسال إشعار للطلاب'}</span>
+                </button>
+              )}
            </div>
         </div>
 

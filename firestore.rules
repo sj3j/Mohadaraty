@@ -1157,6 +1157,12 @@ service cloud.firestore {
       allow update, delete: if canManage('manageLectures') || canManage('manageMcqSystem');
     }
 
+    match /doctorQuestionNotifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow create: if canManage('manageLectures') || canManage('manageMcqSystem');
+      allow delete: if canManage('manageMcqSystem');
+    }
+
     match /antiCheatLogs/{logId} {
       allow create: if hasAccess();
       allow read, update, delete: if canManage('manageAntiCheat');

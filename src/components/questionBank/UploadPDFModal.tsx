@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs } from 'firebase/firestore';
-import { addBankQuestion, batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput } from '../../services/questionBankService';
+import { addBankQuestion, batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import { extractMCQsFromStoragePath, AIUnavailableError } from '../../services/mcqGenerationService';
 import { storage } from '../../lib/firebase';
 import { ref as storageRef, uploadBytes, deleteObject } from 'firebase/storage';
@@ -48,6 +48,7 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
   const [customTag, setCustomTag] = useState<string>('');
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [lectures, setLectures] = useState<any[]>([]);
+  const [notifyStudents, setNotifyStudents] = useState<boolean>(true);
   
   // Review Data
   const [extractedQuestions, setExtractedQuestions] = useState<any[]>([]);
@@ -285,6 +286,22 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
       await batchAddBankQuestions(payloads, (saved) => {
         setCompletedSaves(saved);
       });
+
+      const hasDoctorTag = payloads.some(p => p.tags?.includes('سؤال_الدكتور'));
+      if (notifyStudents && hasDoctorTag && scope === 'lecture' && resolvedLectureId) {
+        try {
+          const lecObj = lectures.find(l => l.id === lectureId);
+          const lecTitle = lecObj?.title || 'المحاضرة';
+          await sendDoctorQuestionsNotification({
+            lectureId: resolvedLectureId,
+            lectureTitle: lecTitle,
+            stageId: resolvedStageId || undefined,
+            subjectId: subjectId || undefined,
+          });
+        } catch (notifErr) {
+          console.error('[UploadPDFModal] Notification failed:', notifErr);
+        }
+      }
 
       setStage('done');
       setTimeout(() => {
@@ -690,6 +707,19 @@ export default function UploadPDFModal({ isOpen, onClose, onAdded }: UploadPDFMo
               >
                 إلغاء
               </button>
+              {tags.has('سؤال_الدكتور') && scope === 'lecture' && (
+                <label className="flex items-center gap-2 cursor-pointer bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 rounded-xl border border-purple-200 dark:border-purple-800">
+                  <input
+                    type="checkbox"
+                    checked={notifyStudents}
+                    onChange={e => setNotifyStudents(e.target.checked)}
+                    className="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-3.5 h-3.5"
+                  />
+                  <span className="text-[11px] font-bold text-purple-900 dark:text-purple-200">
+                    إشعار الطلاب (تعال ادرس)
+                  </span>
+                </label>
+              )}
               <button
                 onClick={handleSaveToBank}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center gap-2 transition-colors"

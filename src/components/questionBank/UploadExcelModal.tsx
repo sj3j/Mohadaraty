@@ -30,7 +30,7 @@ import {
   downloadQuestionBankTemplate, 
   ParsedExcelQuestion 
 } from '../../services/questionBankExcelService';
-import { batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput } from '../../services/questionBankService';
+import { batchAddBankQuestions, bankLectureIdFor, NewBankQuestionInput, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 
 const ALL_TAGS: QuestionTag[] = ['وزاري', 'سنين_سابقة', 'سؤال_الدكتور', 'مهم', 'متوقع'];
 
@@ -57,6 +57,7 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
   const [customTag, setCustomTag] = useState<string>('');
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [lectures, setLectures] = useState<any[]>([]);
+  const [notifyStudents, setNotifyStudents] = useState<boolean>(true);
 
   const { effectiveStageId } = useStageContext();
   const { subjects } = useStageSubjects();
@@ -264,6 +265,22 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
       await batchAddBankQuestions(payloads, (saved) => {
         setCompletedSaves(saved);
       });
+
+      const hasDoctorTag = payloads.some(p => p.tags?.includes('سؤال_الدكتور'));
+      if (notifyStudents && hasDoctorTag && scope === 'lecture' && resolvedLectureId) {
+        try {
+          const lecObj = lectures.find(l => l.id === lectureId);
+          const lecTitle = lecObj?.title || 'المحاضرة';
+          await sendDoctorQuestionsNotification({
+            lectureId: resolvedLectureId,
+            lectureTitle: lecTitle,
+            stageId: resolvedStageId || undefined,
+            subjectId: subjectId || undefined,
+          });
+        } catch (notifErr) {
+          console.error('[UploadExcelModal] Notification failed:', notifErr);
+        }
+      }
 
       setStage('done');
       setTimeout(() => {
@@ -862,7 +879,20 @@ export default function UploadExcelModal({ isOpen, onClose, onAdded }: UploadExc
           </button>
 
           {stage === 'review' && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {(tags.has('سؤال_الدكتور') || questions.some(q => q.tags?.includes('سؤال_الدكتور'))) && scope === 'lecture' && (
+                <label className="flex items-center gap-2 cursor-pointer bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 rounded-xl border border-purple-200 dark:border-purple-800">
+                  <input
+                    type="checkbox"
+                    checked={notifyStudents}
+                    onChange={e => setNotifyStudents(e.target.checked)}
+                    className="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-3.5 h-3.5"
+                  />
+                  <span className="text-[11px] font-bold text-purple-900 dark:text-purple-200">
+                    إشعار الطلاب (تعال ادرس)
+                  </span>
+                </label>
+              )}
               <button
                 onClick={handleSaveToBank}
                 disabled={validCount === 0}

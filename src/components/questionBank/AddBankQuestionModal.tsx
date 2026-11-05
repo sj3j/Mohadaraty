@@ -4,7 +4,7 @@ import { collection, query, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { X, Save, ShieldAlert } from 'lucide-react';
 import { BankQuestion, QuestionScope, QuestionTag, QuestionType, StemFormat, Difficulty, BankChoice } from '../../types/questionBank.types';
-import { addBankQuestion, editBankQuestion, bankLectureIdFor, replyToQuestionReport } from '../../services/questionBankService';
+import { addBankQuestion, editBankQuestion, bankLectureIdFor, replyToQuestionReport, sendDoctorQuestionsNotification } from '../../services/questionBankService';
 import { CATEGORIES, TRANSLATIONS, COURSE_IDS, COURSE_LABELS } from '../../types';
 import { useStageSubjects } from '../../hooks/useStageSubjects';
 import { useStageContext } from '../../contexts/StageContext';
@@ -37,6 +37,7 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
   const [tags, setTags] = useState<Set<QuestionTag>>(new Set());
   const [customTag, setCustomTag] = useState<string>('');
   const [year, setYear] = useState<string>('');
+  const [notifyStudents, setNotifyStudents] = useState<boolean>(true);
 
   const [type, setType] = useState<QuestionType>('mcq');
   const [stemFormat, setStemFormat] = useState<StemFormat>('standard');
@@ -222,6 +223,21 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
           await replyToQuestionReport(targetAlert.id, targetAlert.reportedBy, replyText.trim(), true);
         } catch (repErr) {
           console.error("Failed to send student reply:", repErr);
+        }
+      }
+
+      if (notifyStudents && _tags.includes('سؤال_الدكتور') && scope === 'lecture' && resolvedLectureId) {
+        try {
+          const lecObj = lectures.find(l => l.id === lectureId);
+          const lecTitle = lecObj?.title || 'المحاضرة';
+          await sendDoctorQuestionsNotification({
+            lectureId: resolvedLectureId,
+            lectureTitle: lecTitle,
+            stageId: effectiveStageId || undefined,
+            subjectId: subjectId || undefined
+          });
+        } catch (notifErr: any) {
+          console.error("Failed to send doctor questions notification:", notifErr);
         }
       }
 
@@ -520,6 +536,22 @@ export default function AddBankQuestionModal({ isOpen, onClose, onAdded, initial
             </div>
           )}
 
+          {/* Doctor Question Notification Toggle */}
+          {tags.has('سؤال_الدكتور') && scope === 'lecture' && (
+            <div className="p-4 bg-purple-50/70 dark:bg-purple-950/20 rounded-2xl border border-purple-200/80 dark:border-purple-900/40">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyStudents}
+                  onChange={e => setNotifyStudents(e.target.checked)}
+                  className="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                />
+                <span className="text-xs font-bold text-purple-900 dark:text-purple-200">
+                  إرسال إشعار للطلاب بتوفر أسئلة الدكتور؟ (تعال ادرس: تم رفع أسئلة جديدة للدكتور...)
+                </span>
+              </label>
+            </div>
+          )}
         </div>
 
         <div className="p-4 border-t border-gray-100 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900">

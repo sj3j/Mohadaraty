@@ -266,6 +266,26 @@ export default function App() {
     setAdminBankTargetAlert(alertData);
     setShowAdminBank(true);
   };
+
+  const handleOpenDoctorQuiz = useCallback(async (lectureId: string) => {
+    setShowNotificationsModal(false);
+    const found = lectures.find(l => l.id === lectureId);
+    if (found) {
+      setAutoStartDoctorQuiz(true);
+      setMcqLecture(found);
+      return;
+    }
+    try {
+      const snap = await getDoc(doc(db, 'lectures', lectureId));
+      if (snap.exists()) {
+        const lec = { id: snap.id, ...snap.data() } as Lecture;
+        setAutoStartDoctorQuiz(true);
+        setMcqLecture(lec);
+      }
+    } catch (e) {
+      console.error('Failed to load lecture for doctor quiz:', e);
+    }
+  }, [lectures]);
   const [showAntiCheat, setShowAntiCheat] = useState(false);
   const [showAdminLogs, setShowAdminLogs] = useState(false);
   const [showSimosanAdmin, setShowSimosanAdmin] = useState(false);
@@ -283,20 +303,33 @@ export default function App() {
     }
   }, []);
 
-  // Deep linking: automatically opens lecture if ?lecture=... is present in URL
+  // Deep linking: automatically opens lecture or doctor quiz if ?lecture=... or ?doctorQuiz=... is present in URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const targetLectureId = params.get('lecture') || params.get('lectureId');
+    const doctorQuizLectureId = params.get('doctorQuiz');
+    const targetLectureId = doctorQuizLectureId || params.get('lecture') || params.get('lectureId');
     if (!targetLectureId) return;
 
     let active = true;
-    const found = lectures.find(l => l.id === targetLectureId);
-    if (found) {
-      setReaderLecture(found);
+    const isDoctorQuiz = Boolean(doctorQuizLectureId);
+
+    const openTarget = (lec: Lecture) => {
+      if (isDoctorQuiz) {
+        setAutoStartDoctorQuiz(true);
+        setMcqLecture(lec);
+      } else {
+        setReaderLecture(lec);
+      }
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete('lecture');
       nextUrl.searchParams.delete('lectureId');
+      nextUrl.searchParams.delete('doctorQuiz');
       window.history.replaceState({}, '', nextUrl.toString());
+    };
+
+    const found = lectures.find(l => l.id === targetLectureId);
+    if (found) {
+      openTarget(found);
       return;
     }
 
@@ -305,11 +338,7 @@ export default function App() {
       .then(snap => {
         if (!active || !snap.exists()) return;
         const lec = { id: snap.id, ...snap.data() } as Lecture;
-        setReaderLecture(lec);
-        const nextUrl = new URL(window.location.href);
-        nextUrl.searchParams.delete('lecture');
-        nextUrl.searchParams.delete('lectureId');
-        window.history.replaceState({}, '', nextUrl.toString());
+        openTarget(lec);
       })
       .catch(err => console.warn('[DeepLink] Failed to load target lecture', err));
 
@@ -438,6 +467,7 @@ export default function App() {
   }, [isRtl]);
   useAccountSessionGuard(!!user && !!authenticatedUid, onAccountSessionRevoked);
   const [mcqLecture, setMcqLecture] = useState<Lecture | null>(null);
+  const [autoStartDoctorQuiz, setAutoStartDoctorQuiz] = useState(false);
   const [readerLecture, setReaderLecture] = useState<Lecture | null>(null);
   const [localReaderFile, setLocalReaderFile] = useState<UserFile | null>(null);
   const [localBlobUrl, setLocalBlobUrl] = useState<string | null>(null);
@@ -1571,6 +1601,7 @@ export default function App() {
           lang={lang}
           onClose={() => setShowNotificationsModal(false)}
           onNavigateToQuestion={handleNavigateToReportedQuestion}
+          onNavigateToDoctorQuiz={handleOpenDoctorQuiz}
         />
       )}
 
@@ -1593,7 +1624,11 @@ export default function App() {
           lang={lang} 
           isSubscribed={hasMCQAccess(user)}
           onShowPaywall={() => setShowPaywall(true)}
-          onClose={() => setMcqLecture(null)} 
+          autoStartDoctorQuiz={autoStartDoctorQuiz}
+          onClose={() => {
+            setMcqLecture(null);
+            setAutoStartDoctorQuiz(false);
+          }} 
         />
       )}
 

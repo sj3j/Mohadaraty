@@ -263,3 +263,42 @@ export async function saveUserBankAnswer(userId: string, questionId: string, sel
     }
   } catch(e) {}
 }
+
+export interface SendDoctorQuestionsNotificationParams {
+  lectureId: string;
+  lectureTitle: string;
+  stageId?: string;
+  subjectId?: string;
+}
+
+export interface SendDoctorQuestionsNotificationResult {
+  success: boolean;
+  recipientsCount: number;
+  sentCount: number;
+  failureCount: number;
+  notificationId?: string;
+}
+
+export async function sendDoctorQuestionsNotification(
+  params: SendDoctorQuestionsNotificationParams
+): Promise<SendDoctorQuestionsNotificationResult> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Not logged in');
+
+  const token = await user.getIdToken();
+  const response = await fetch('/api/notify/doctor-questions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(params)
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to send doctor questions notification');
+  }
+
+  return data as SendDoctorQuestionsNotificationResult;
+}

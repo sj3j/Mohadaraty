@@ -26,9 +26,10 @@ interface MCQOverlayProps {
   onClose: () => void;
   isSubscribed?: boolean;
   onShowPaywall?: () => void;
+  autoStartDoctorQuiz?: boolean;
 }
 
-export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed = false, onShowPaywall }: MCQOverlayProps) {
+export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed = false, onShowPaywall, autoStartDoctorQuiz = false }: MCQOverlayProps) {
   const isRtl = lang === 'ar';
   const { isPendingProgression } = useStageContext();
   const [route, setRoute] = useState<MCQStackRoute>('init_loading');
@@ -81,7 +82,20 @@ export default function MCQOverlay({ lecture, user, lang, onClose, isSubscribed 
         if (!active) return;
         
         setQuestions(fetchedQuestions);
-        setRoute('intro');
+        if (autoStartDoctorQuiz && !isPendingProgression) {
+          const doctorQuestions = bq.filter(q => q.tags?.includes('سؤال_الدكتور'));
+          if (!isSubscribed) {
+            setRoute('intro');
+            onShowPaywall?.();
+          } else if (doctorQuestions.length > 0) {
+            setBankQuizQuestions(doctorQuestions);
+            setRoute('bank_quiz');
+          } else {
+            setRoute('intro');
+          }
+        } else {
+          setRoute('intro');
+        }
       } catch (err: any) {
         console.error(err);
         if (active) {

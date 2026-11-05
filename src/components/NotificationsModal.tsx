@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, orderBy, limit, where, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy, Image as ImageIcon, ExternalLink } from 'lucide-react';
+import { X, Bell, BookOpen, Clock, ShieldAlert, LifeBuoy, Image as ImageIcon, ExternalLink, GraduationCap } from 'lucide-react';
 import { Language, TRANSLATIONS, UserProfile, Homework } from '../types';
 import { denormalizedSubjectName } from '../lib/subjectDisplay';
 import { useStageContext } from '../contexts/StageContext';
@@ -31,11 +31,12 @@ interface NotificationsModalProps {
   lang: Language;
   onClose: () => void;
   onNavigateToQuestion?: (alertData: any) => void;
+  onNavigateToDoctorQuiz?: (lectureId: string) => void;
 }
 
 interface NotificationItem {
   id: string;
-  type: 'homework' | 'system' | 'report' | 'support_ticket' | 'attachment';
+  type: 'homework' | 'system' | 'report' | 'support_ticket' | 'attachment' | 'doctor_questions';
   title: string;
   body: string;
   createdAt: any;
@@ -43,7 +44,7 @@ interface NotificationItem {
   extraData?: any;
 }
 
-export default function NotificationsModal({ user, lang, onClose, onNavigateToQuestion }: NotificationsModalProps) {
+export default function NotificationsModal({ user, lang, onClose, onNavigateToQuestion, onNavigateToDoctorQuiz }: NotificationsModalProps) {
   const isRtl = lang === 'ar';
   const t = TRANSLATIONS[lang];
   const { effectiveStageId } = useStageContext();
@@ -197,6 +198,59 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
           console.error("System notifications fetch failed", e);
         }
 
+        // 3. Fetch doctor questions notifications
+        try {
+          const dqItems: any[] = [];
+          const seenDqIds = new Set<string>();
+
+          // Stage scoped
+          if (effectiveStageId) {
+            const dqQuery = query(
+              collection(db, 'doctorQuestionNotifications'),
+              where('stageId', '==', effectiveStageId),
+              orderBy('createdAt', 'desc'),
+              limit(15)
+            );
+            const dqSnap = await getDocs(dqQuery);
+            dqSnap.forEach(d => {
+              seenDqIds.add(d.id);
+              dqItems.push({ id: d.id, ...d.data() });
+            });
+          }
+
+          // Tahmeel scoped
+          if (user.tahmeelSubjects && user.tahmeelSubjects.length > 0) {
+            const tahmeelSubjs = user.tahmeelSubjects.slice(0, 10);
+            const tahmeelQuery = query(
+              collection(db, 'doctorQuestionNotifications'),
+              where('subjectId', 'in', tahmeelSubjs),
+              orderBy('createdAt', 'desc'),
+              limit(15)
+            );
+            const tahmeelSnap = await getDocs(tahmeelQuery);
+            tahmeelSnap.forEach(d => {
+              if (!seenDqIds.has(d.id)) {
+                seenDqIds.add(d.id);
+                dqItems.push({ id: d.id, ...d.data() });
+              }
+            });
+          }
+
+          dqItems.forEach(data => {
+            items.push({
+              id: data.id,
+              type: 'doctor_questions',
+              title: data.title || 'تعال ادرس',
+              body: data.body || `تم رفع أسئلة جديدة للدكتور لمحاضرة الـ (${data.lectureTitle || ''})`,
+              createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now(),
+              icon: GraduationCap,
+              extraData: data
+            });
+          });
+        } catch (e) {
+          console.error("Doctor questions notifications fetch failed", e);
+        }
+
         // Sort combined
         items.sort((a, b) => b.createdAt - a.createdAt);
         setNotifications(items);
@@ -245,11 +299,20 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
               return (
               <div 
                 key={item.id} 
-                onClick={() => toggleItem(item.id)}
+                onClick={() => {
+                  if (item.type === 'doctor_questions' && item.extraData?.lectureId) {
+                    onClose();
+                    onNavigateToDoctorQuiz?.(item.extraData.lectureId);
+                  } else {
+                    toggleItem(item.id);
+                  }
+                }}
                 className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 flex gap-4 items-start shadow-sm hover:shadow-md transition-all cursor-pointer group"
               >
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                  item.type === 'support_ticket'
+                  item.type === 'doctor_questions'
+                    ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
+                    : item.type === 'support_ticket'
                     ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'
                     : item.type === 'attachment'
                     ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
@@ -272,6 +335,24 @@ export default function NotificationsModal({ user, lang, onClose, onNavigateToQu
                   <p className={`text-sm text-slate-600 dark:text-slate-400 leading-snug whitespace-pre-wrap ${!isExpanded ? 'line-clamp-2' : ''}`}>
                     {item.body}
                   </p>
+                  
+                  {item.type === 'doctor_questions' && item.extraData?.lectureId && (
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onClose();
+                          onNavigateToDoctorQuiz?.(item.extraData.lectureId);
+                        }}
+                        className="w-full py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors"
+                      >
+                        <GraduationCap className="w-4 h-4" />
+                        <span>{isRtl ? 'بدء اختبار أسئلة الدكتور' : 'Start Doctor Quiz'}</span>
+                        <ExternalLink className="w-3.5 h-3.5 rtl:rotate-180" />
+                      </button>
+                    </div>
+                  )}
                   
                   {item.type === 'attachment' && item.extraData && isExpanded && (
                     <div 

@@ -278,7 +278,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
     const role = data.role;
     // 'support' belongs in this list or EVERY admin route 403s for the role.
     if (!isMaster && role !== 'admin' && role !== 'moderator'
-        && role !== 'support' && role !== 'master_admin') {
+        && role !== 'support' && role !== 'master_admin' && role !== 'doctor') {
       return res.status(403).json({ error: 'Forbidden: Requires admin privileges' });
     }
     if (!isMaster && role === 'support' && data.staffDisabled === true) {
@@ -555,6 +555,195 @@ app.post("/api/notify", verifyAuth, verifyAdmin, async (req, res) => {
   } catch (error) {
     console.error("Error sending FCM notification:", error);
     res.status(500).json({ error: "Failed to send notification" });
+  }
+});
+
+// Send Doctor Questions Notification
+app.post("/api/notify/doctor-questions", verifyAuth, verifyAdmin, async (req, res) => {
+  if (!admin.apps.length) {
+    return res.status(500).json({ error: "Firebase Admin is not configured." });
+  }
+
+  try {
+    const { lectureId, lectureTitle, stageId, subjectId } = req.body;
+    if (!lectureId) {
+      return res.status(400).json({ error: "lectureId is required." });
+    }
+
+    const db = admin.firestore();
+
+    // 1. Resolve lecture details if missing
+    let resolvedTitle = (lectureTitle || '').trim();
+    let resolvedStageId = stageId;
+    let resolvedSubjectId = subjectId;
+
+    if (!resolvedTitle || !resolvedStageId || !resolvedSubjectId) {
+      const lectureDoc = await db.collection('lectures').doc(lectureId).get();
+      if (!lectureDoc.exists) {
+        return res.status(404).json({ error: "Lecture not found." });
+      }
+      const lecData = lectureDoc.data() || {};
+      if (!resolvedTitle) resolvedTitle = lecData.title || 'المحاضرة';
+      if (!resolvedStageId) resolvedStageId = lecData.stageId || null;
+      if (!resolvedSubjectId) resolvedSubjectId = lecData.subjectId || null;
+    }
+
+    // 2. Write in-app notification document into doctorQuestionNotifications
+    const user = (req as any).user;
+    const notificationDocRef = await db.collection('doctorQuestionNotifications').add({
+      lectureId,
+      lectureTitle: resolvedTitle,
+      stageId: resolvedStageId,
+      subjectId: resolvedSubjectId,
+      title: 'تعال ادرس',
+      body: `تم رفع أسئلة جديدة للدكتور لمحاضرة الـ (${resolvedTitle})`,
+      type: 'doctor_questions',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: user?.uid || 'admin',
+    });
+
+    // 3. Find target students:
+    // a) Stage students (where stageId == resolvedStageId)
+    // b) Tahmeel students (where tahmeelSubjects array-contains resolvedSubjectId)
+    // Note: Both subscribed and non-subscribed receive this notification.
+    const targetUserUids = new Set<string>();
+
+    if (resolvedStageId) {
+      const stageSnap = await db.collection('users')
+        .where('stageId', '==', resolvedStageId)
+        .get();
+      stageSnap.forEach(doc => {
+        const prefs = doc.data()?.notificationPreferences || {};
+        if (prefs.doctorQuestions !== false) {
+          targetUserUids.add(doc.id);
+        }
+      });
+    }
+
+    if (resolvedSubjectId) {
+      const tahmeelSnap = await db.collection('users')
+        .where('tahmeelSubjects', 'array-contains', resolvedSubjectId)
+        .get();
+      tahmeelSnap.forEach(doc => {
+        const prefs = doc.data()?.notificationPreferences || {};
+        if (prefs.doctorQuestions !== false) {
+          targetUserUids.add(doc.id);
+        }
+      });
+    }
+
+    const uids = Array.from(targetUserUids);
+    if (uids.length === 0) {
+      return res.json({
+        success: true,
+        recipientsCount: 0,
+        sentCount: 0,
+        failureCount: 0,
+        notificationId: notificationDocRef.id
+      });
+    }
+
+    // 4. Fetch tokens in chunks of 30 from fcm_tokens collection
+    const tokenMap = new Map<string, string>(); // token -> userId
+    for (let i = 0; i < uids.length; i += 30) {
+      const chunk = uids.slice(i, i + 30);
+      const tokensSnap = await db.collection('fcm_tokens')
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .get();
+      tokensSnap.forEach(doc => {
+        const token = doc.data()?.token;
+        if (token && typeof token === 'string') {
+          tokenMap.set(token, doc.id);
+        }
+      });
+    }
+
+    const tokens = Array.from(tokenMap.keys());
+    if (tokens.length === 0) {
+      return res.json({
+        success: true,
+        recipientsCount: uids.length,
+        sentCount: 0,
+        failureCount: 0,
+        notificationId: notificationDocRef.id
+      });
+    }
+
+    // 5. Send FCM Multicast in chunks of 500 (FCM limit per multicast)
+    const payload = {
+      notification: {
+        title: 'تعال ادرس',
+        body: `تم رفع أسئلة جديدة للدكتور لمحاضرة الـ (${resolvedTitle})`,
+      },
+      data: {
+        url: `/?doctorQuiz=${lectureId}`,
+        lectureId: lectureId,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        type: 'doctor_questions'
+      },
+      webpush: {
+        fcmOptions: {
+          link: `/?doctorQuiz=${lectureId}`
+        }
+      }
+    };
+
+    let totalSuccess = 0;
+    let totalFailure = 0;
+    const tokensToDelete: string[] = [];
+
+    for (let i = 0; i < tokens.length; i += 500) {
+      const tokenBatch = tokens.slice(i, i + 500);
+      const response = await admin.messaging().sendEachForMulticast({
+        tokens: tokenBatch,
+        notification: payload.notification,
+        data: payload.data,
+        webpush: payload.webpush,
+      });
+
+      totalSuccess += response.successCount;
+      totalFailure += response.failureCount;
+
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success && resp.error) {
+          const code = resp.error.code;
+          if (
+            code === 'messaging/invalid-registration-token' ||
+            code === 'messaging/registration-token-not-registered'
+          ) {
+            tokensToDelete.push(tokenBatch[idx]);
+          }
+        }
+      });
+    }
+
+    // 6. Clean up invalid tokens
+    if (tokensToDelete.length > 0) {
+      const batch = db.batch();
+      for (const t of tokensToDelete) {
+        const uid = tokenMap.get(t);
+        if (uid) {
+          batch.delete(db.collection('fcm_tokens').doc(uid));
+        }
+      }
+      try {
+        await batch.commit();
+        console.log(`[DoctorQuestionsNotify] Cleaned up ${tokensToDelete.length} invalid tokens.`);
+      } catch (cleanErr) {
+        console.error('[DoctorQuestionsNotify] Error cleaning up tokens:', cleanErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      recipientsCount: uids.length,
+      sentCount: totalSuccess,
+      failureCount: totalFailure,
+      notificationId: notificationDocRef.id
+    });
+  } catch (error: any) {
+    console.error("Error sending doctor questions notification:", error);
+    return res.status(500).json({ error: error?.message || "Failed to send notification" });
   }
 });
 
