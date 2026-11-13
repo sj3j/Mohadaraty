@@ -1,0 +1,74 @@
+name: Production release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A production release must never overlap another: Firebase rules are deployed
+# before Vercel receives the corresponding client bundle.
+concurrency:
+  group: mohadaraty-production-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:lecture-session
+      - run: npm run verify:firestore
+
+  deploy:
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - name: Configure Firebase credentials
+        run: |
+          test -n "$FIREBASE_SERVICE_ACCOUNT_JSON"
+          credential_path="$RUNNER_TEMP/firebase-service-account.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$credential_path"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$credential_path" >> "$GITHUB_ENV"
+      - name: Deploy Firebase rules before the web bundle
+        run: npx -y firebase-tools@13 deploy --only firestore:rules,storage --project mylectures-app --non-interactive
+      - name: Verify deployed Firebase rules match this revision
+        run: npm run check:rules
+      - name: Deploy the verified production build to Vercel
+        run: |
+          npx -y vercel@65.15.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx -y vercel@65.15.0 build --prod --token="$VERCEL_TOKEN"
+          npx -y vercel@65.15.0 deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN"
+      - name: Verify the production API is healthy
+        run: curl --fail --retry 6 --retry-all-errors --retry-delay 5 https://mohadaraty.vercel.app/api/health

@@ -7,6 +7,7 @@ export type SessionBootstrapStatus =
 export type SessionBootstrapReason =
   | 'firebase-user-restored'
   | 'cached-profile-restored'
+  | 'online-session-missing'
   | 'no-persisted-session'
   | 'cached-profile-unavailable'
   | 'account-verified'
@@ -61,13 +62,20 @@ export function resolveAuthState(input: {
 }): SessionBootstrapResult {
   if (input.firebaseUserPresent) return AUTHENTICATED;
 
-  if (input.wasSignedIn && input.cachedProfileAvailable) {
+  // Firebase Auth persistence survives an offline restart, so a missing
+  // Firebase user while offline is inconclusive and the cached profile remains
+  // useful for downloaded content. When the browser is online, however, the
+  // null auth callback is a completed restoration result: rendering the cached
+  // profile as a live session would make protected queries look empty.
+  if (input.wasSignedIn && input.cachedProfileAvailable && !input.isOnline) {
     return preserve('cached-profile-restored', true);
   }
 
   return {
     status: 'signed-out',
-    reason: input.wasSignedIn ? 'cached-profile-unavailable' : 'no-persisted-session',
+    reason: input.wasSignedIn && input.cachedProfileAvailable
+      ? 'online-session-missing'
+      : input.wasSignedIn ? 'cached-profile-unavailable' : 'no-persisted-session',
     showLogin: true,
     shouldSignOut: false,
     clearPersistence: true,

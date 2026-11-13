@@ -7,6 +7,20 @@ export interface LectureLoadDecision {
 }
 
 /**
+ * Separates a confirmed empty lecture snapshot from an unavailable one. The
+ * subject browser may have a cached curriculum before its protected lecture
+ * query is ready; rendering that cache with zero counters would be a false
+ * statement about the server's content.
+ */
+export type LecturePresentationState = 'content' | 'loading' | 'unavailable';
+
+export function resolveLecturePresentationState(state: LectureLoadState): LecturePresentationState {
+  if (state === 'ready') return 'content';
+  if (state === 'loading') return 'loading';
+  return 'unavailable';
+}
+
+/**
  * Keeps cache hydration separate from a permission-denied Firestore query.
  * A restored Firebase UID changes this decision even when the profile's group
  * and stage remain unchanged, which is the iOS recovery case.

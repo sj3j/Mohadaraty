@@ -33,10 +33,23 @@ const TARGETS = [
   { label: 'storage', releasePrefix: 'firebase.storage', file: 'storage.rules' },
 ];
 
-const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
+const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+let serviceAccount = null;
+if (serviceAccountJson) {
+  try {
+    serviceAccount = JSON.parse(serviceAccountJson);
+  } catch {
+    console.error('FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.');
+    process.exit(1);
+  }
+}
+
+const FIREBASE_PROJECT_ID = serviceAccount?.project_id || process.env.FIREBASE_PROJECT_ID;
+const FIREBASE_CLIENT_EMAIL = serviceAccount?.client_email || process.env.FIREBASE_CLIENT_EMAIL;
+const FIREBASE_PRIVATE_KEY = serviceAccount?.private_key || process.env.FIREBASE_PRIVATE_KEY;
 if (!FIREBASE_PROJECT_ID || !FIREBASE_CLIENT_EMAIL || !FIREBASE_PRIVATE_KEY) {
-  console.error('Missing FIREBASE_* credentials in the environment.');
-  console.error('This check talks to the live project; it cannot run without them.');
+  console.error('Missing Firebase service-account credentials in the environment.');
+  console.error('Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY.');
   process.exit(1);
 }
 

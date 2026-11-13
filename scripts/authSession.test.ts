@@ -59,6 +59,20 @@ test('offline process restart uses the cached profile instead of login', () => {
   assert.equal(result.shouldSignOut, false);
 });
 
+test('online cached profile without a Firebase user is signed out instead of becoming a phantom session', () => {
+  const result = resolveAuthState({
+    firebaseUserPresent: false,
+    isOnline: true,
+    wasSignedIn: true,
+    cachedProfileAvailable: true,
+  });
+  assert.equal(result.status, 'signed-out');
+  assert.equal(result.reason, 'online-session-missing');
+  assert.equal(result.useCachedProfile, false);
+  assert.equal(result.clearPersistence, true);
+  assert.equal(result.showLogin, true);
+});
+
 test('transient whitelist failure preserves the session', () => {
   const result = resolveWhitelistVerification({
     outcome: 'error',

@@ -16,6 +16,7 @@ import { safeFileName } from '../lib/shareFileName';
 import { forceDownload } from '../lib/utils';
 import { shareMultipleFiles, type ShareFileInput } from '../lib/shareFile';
 import { useStageSubjects } from '../hooks/useStageSubjects';
+import { resolveLecturePresentationState, type LectureLoadState } from '../lib/lectureLoadState';
 
 interface SubjectBrowserProps {
   lectures: Lecture[];
@@ -28,24 +29,42 @@ interface SubjectBrowserProps {
   isLoading?: boolean;
   onRemoveDownload?: (lecture: Lecture) => void;
   onShowPaywall?: () => void;
-  lectureLoadState?: 'loading' | 'ready' | 'error' | 'waiting-auth' | 'missing-stage';
+  lectureLoadState?: LectureLoadState;
   onRetryLectures?: () => void;
   showCourseTabs?: boolean;
 }
 
-function LectureLoadFailure({ isRtl, onRetry }: { isRtl: boolean; onRetry?: () => void }) {
+function LectureLoadFailure({ isRtl, state = 'error', onRetry }: { isRtl: boolean; state?: LectureLoadState; onRetry?: () => void }) {
+  const waitingForAuth = state === 'waiting-auth';
+  const missingStage = state === 'missing-stage';
+  const title = waitingForAuth
+    ? (isRtl ? 'جارٍ استعادة جلسة الدخول' : 'Restoring your signed-in session')
+    : missingStage
+      ? (isRtl ? 'تعذّر تحديد المرحلة الدراسية' : 'Your academic stage could not be resolved')
+      : (isRtl ? 'تعذّر تحديث المحاضرات الآن' : 'Lectures could not be refreshed');
+  const description = waitingForAuth
+    ? (isRtl
+      ? 'تحتاج المحاضرات المباشرة إلى جلسة دخول صالحة. ستبقى الملفات التي نزّلتها متاحة.'
+      : 'Live lectures need a valid signed-in session. Your downloaded files remain available.')
+    : missingStage
+      ? (isRtl
+        ? 'سجّل الدخول مرة أخرى بعد الاتصال بالإنترنت لتحديث بيانات المرحلة.'
+        : 'Sign in again while online to refresh your academic-stage details.')
+      : (isRtl
+        ? 'تحقق من الاتصال ثم أعد المحاولة. ستبقى الملفات التي نزّلتها متاحة.'
+        : 'Check your connection and try again. Your downloaded files remain available.');
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center px-4 bg-white dark:bg-zinc-800 rounded-3xl border border-amber-200 dark:border-amber-900/60 border-dashed">
       <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4">
         <BookOpen className="w-8 h-8 text-amber-600 dark:text-amber-400" />
       </div>
       <h3 className="text-lg font-bold text-slate-900 dark:text-stone-100 mb-1">
-        {isRtl ? 'تعذّر تحديث المحاضرات الآن' : 'Lectures could not be refreshed'}
+        {title}
       </h3>
       <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md">
-        {isRtl ? 'تحقق من الاتصال ثم أعد المحاولة. ستبقى الملفات التي نزّلتها متاحة.' : 'Check your connection and try again. Your downloaded files remain available.'}
+        {description}
       </p>
-      {onRetry && (
+      {state === 'error' && onRetry && (
         <button type="button" onClick={onRetry} className="mt-4 px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-xl text-sm font-bold transition-colors">
           {isRtl ? 'إعادة المحاولة' : 'Retry'}
         </button>
@@ -247,6 +266,21 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
       fetchCustomTabs();
     }
   }, [showTabsModal]);
+
+  // A cached curriculum can arrive before the protected lecture query. Do not
+  // turn that unknown state into a row of convincing-but-false zero counters.
+  const lecturePresentation = resolveLecturePresentationState(lectureLoadState);
+  if (lecturePresentation === 'loading') {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-4">
+        <Loader2 className="w-8 h-8 text-sky-600 dark:text-sky-400 animate-spin" />
+        <p className="text-slate-500 dark:text-slate-400 font-medium">{t.loading}</p>
+      </div>
+    );
+  }
+  if (lecturePresentation === 'unavailable') {
+    return <LectureLoadFailure isRtl={isRtl} state={lectureLoadState} onRetry={onRetryLectures} />;
+  }
 
   // If searching, show all matching lectures regardless of category
   if (searchQuery.trim()) {

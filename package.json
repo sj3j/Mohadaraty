@@ -62,6 +62,8 @@
     "test:auth-session": "npx tsx scripts/authSession.test.ts",
     "test:student-login": "npx tsx --test scripts/studentLogin.test.ts",
     "test:lecture-load": "npx tsx --test scripts/lectureLoadState.test.ts",
+    "test:lecture-session": "npm run test:auth-session && npm run test:lecture-load",
+    "verify:firestore": "npm run check:indexes && npm run test:rules && npm run test:migration && npm run test:promotion && npm run test:progression && npm run test:season && npm run test:calendar",
     "test:records": "npx tsx scripts/runRecordsTests.ts",
     "test:records:e2e": "npx tsx --test scripts/recordsOpaqueE2E.test.ts",
     "test:pdf:e2e": "npx tsx --test scripts/pdfReaderE2E.test.ts",

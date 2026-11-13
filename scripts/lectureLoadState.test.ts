@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { resolveLectureLoadDecision } from '../src/lib/lectureLoadState';
+import { resolveLectureLoadDecision, resolveLecturePresentationState } from '../src/lib/lectureLoadState';
 
 test('cached profile waits for its matching Firebase session, then subscribes without a stage change', () => {
   const cached = resolveLectureLoadDecision({
@@ -25,6 +25,17 @@ test('a different restored account cannot reuse the visible profile query', () =
     effectiveStageId: 'stage_3', canBrowseLectures: true,
   });
   assert.equal(decision.shouldSubscribe, false);
+});
+
+test('cached subjects cannot render false zero lecture counters before a query is confirmed', () => {
+  assert.equal(resolveLecturePresentationState('waiting-auth'), 'unavailable');
+  assert.equal(resolveLecturePresentationState('error'), 'unavailable');
+  assert.equal(resolveLecturePresentationState('loading'), 'loading');
+  assert.equal(resolveLecturePresentationState('ready'), 'content');
+
+  const subjectBrowserSource = readFileSync(new URL('../src/components/SubjectBrowser.tsx', import.meta.url), 'utf8');
+  assert.match(subjectBrowserSource, /resolveLecturePresentationState\(lectureLoadState\)/);
+  assert.match(subjectBrowserSource, /lecturePresentation === 'unavailable'/);
 });
 
 test('stage-assigned students are not blocked by a missing legacy group field', () => {
