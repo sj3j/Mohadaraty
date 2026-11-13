@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Lecture, Category, CATEGORIES, Language, TRANSLATIONS, LectureType, UserProfile, LectureTab } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Lecture, Category, CATEGORIES, Language, TRANSLATIONS, LectureType, UserProfile, LectureTab, Subject } from '../types';
 import LectureCard from './LectureCard';
 import SpotlightTooltip from './SpotlightTooltip';
 import ManageLectureTabsModal from './ManageLectureTabsModal';
@@ -357,9 +357,32 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     l.category === subj?.nameEn?.toLowerCase().replace(' ', '_')
   );
 
-  const courseSubjects = subjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === activeCourseId);
+  // Fallback: derive active subjects from loaded lectures if the curriculum query is still loading or failed.
+  // This guarantees students always see their own stage's subjects, never the obsolete Stage 3 categories.
+  const derivedSubjectsFromLectures = useMemo<Subject[]>(() => {
+    if (subjects.length > 0 || !lectures.length) return [];
+    const map = new Map<string, Subject>();
+    for (const lec of lectures) {
+      const slug = (lec as any).subjectId || lec.category;
+      if (!slug || map.has(slug)) continue;
+      map.set(slug, {
+        id: slug,
+        stageId: lec.stageId || effectiveStageId || '',
+        courseId: (lec as any).courseId || DEFAULT_COURSE_ID,
+        nameEn: (lec as any).subjectName || slug,
+        nameAr: (lec as any).subjectNameAr || (lec as any).subjectName || slug,
+        types: ['theoretical', 'practical'],
+        isActive: true,
+        order: 0,
+      });
+    }
+    return Array.from(map.values());
+  }, [subjects.length, lectures, effectiveStageId]);
+
+  const effectiveSubjects = subjects.length > 0 ? subjects : derivedSubjectsFromLectures;
+  const courseSubjects = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === activeCourseId);
   const courseCounts = COURSE_IDS.reduce((acc, id) => {
-    acc[id] = subjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === id).length;
+    acc[id] = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === id).length;
     return acc;
   }, {} as Record<string, number>);
 
@@ -374,14 +397,14 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     
     return (
       <div className="flex flex-col gap-4">
-        {showCourseTabs && !isSubjectsLoading && subjects.length > 0 && (
+        {showCourseTabs && !isSubjectsLoading && effectiveSubjects.length > 0 && (
           <CourseTabs lang={lang} counts={courseCounts} />
         )}
-        {isSubjectsLoading ? (
+        {isSubjectsLoading && effectiveSubjects.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <Loader2 className="w-8 h-8 text-sky-600 dark:text-sky-400 animate-spin" />
           </div>
-        ) : subjects.length > 0 ? (
+        ) : effectiveSubjects.length > 0 ? (
           courseSubjects.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
               <SearchX className="w-10 h-10 text-slate-300 dark:text-zinc-600" />
@@ -389,109 +412,82 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
                 {isRtl ? 'لا توجد مواد في هذا الكورس بعد' : 'No subjects in this course yet'}
               </p>
             </div>
-          ) :
-          courseSubjects.map((subj, index) => {
-            const catId = subj.id;
-            const categoryLectures = lecturesForSubject(subj);
-            const count = categoryLectures.length;
-          const studiedCount = categoryLectures.filter(l => user?.studied?.includes(l.id)).length;
-          const progress = count > 0 ? Math.round((studiedCount / count) * 100) : 0;
-          
-          // Deterministic color assignment based on index
-          const defaultColors = [
-            { bg: 'bg-[#2196F3]/10', text: 'text-[#2196F3]', progress: 'bg-[#2196F3]' },
-            { bg: 'bg-emerald-50 dark:bg-emerald-900/30', text: 'text-emerald-600 dark:text-emerald-400', progress: 'bg-emerald-500' },
-            { bg: 'bg-indigo-50 dark:bg-indigo-900/30', text: 'text-indigo-600 dark:text-indigo-400', progress: 'bg-indigo-500' },
-            { bg: 'bg-rose-50 dark:bg-rose-900/30', text: 'text-rose-600 dark:text-rose-400', progress: 'bg-rose-500' },
-            { bg: 'bg-amber-50 dark:bg-amber-900/30', text: 'text-amber-600 dark:text-amber-400', progress: 'bg-amber-500' },
-            { bg: 'bg-fuchsia-50 dark:bg-fuchsia-900/30', text: 'text-fuchsia-600 dark:text-fuchsia-400', progress: 'bg-fuchsia-500' }
-          ];
-          const colors = categoryColors[catId] || categoryColors[subj.nameEn?.toLowerCase()] || defaultColors[index % defaultColors.length];
-          
-          return (
-            <button
-              key={catId}
-              onClick={() => {
-                setSelectedCategory(catId as any);
-                setSelectedType('theoretical');
-              }}
-              className={`flex flex-col p-3.5 sm:p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} border-${colors.progress.replace('bg-', '')}`}
-            >
-              <div className="flex items-center justify-between w-full mb-6">
-                <div className="flex items-center gap-4">
-                  <div className={`p-3 rounded-xl ${colors.bg} ${colors.text} group-hover:scale-110 transition-transform`}>
-                    <BookOpen className="w-6 h-6" />
-                  </div>
-                  <div className="text-start">
-                    <h3 className="text-lg font-bold text-slate-900 dark:text-stone-100 mb-1">{isRtl ? subj.nameAr : subj.nameEn}</h3>
-                    <div className="inline-flex items-center justify-center bg-sky-100 dark:bg-sky-900/40 text-[#2196F3] dark:text-sky-400 text-xs font-bold px-3 py-1 rounded-full">
-                      {count} {t.navLectures}
-                    </div>
-                  </div>
-                </div>
-                <div className="text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors bg-slate-50 dark:bg-zinc-900 p-2 rounded-full">
-                  {isRtl ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                </div>
-              </div>
+          ) : (
+            courseSubjects.map((subj, index) => {
+              const catId = subj.id;
+              const categoryLectures = lecturesForSubject(subj);
+              const count = categoryLectures.length;
+              const studiedCount = categoryLectures.filter(l => user?.studied?.includes(l.id)).length;
+              const progress = count > 0 ? Math.round((studiedCount / count) * 100) : 0;
               
-              <div className="w-full flex items-center justify-between gap-3 text-sm mb-1 text-slate-500 dark:text-slate-400">
-                <span className="font-bold text-slate-700 dark:text-slate-300">{progress}%</span>
-              </div>
-              <div className="w-full h-2 bg-slate-100 dark:bg-zinc-700 rounded-full overflow-hidden" id={index === 0 ? "subject-progress-0" : undefined}>
-                <div 
-                  className={`h-full ${colors.progress} rounded-full transition-all duration-500 ease-out`}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            </button>
-          );
-        })
-        ) : (
-          CATEGORIES.map((cat, index) => {
-            const categoryLectures = lectures.filter(l => l.category === cat.value);
-            const count = categoryLectures.length;
-            const studiedCount = categoryLectures.filter(l => user?.studied?.includes(l.id)).length;
-            const progress = count > 0 ? Math.round((studiedCount / count) * 100) : 0;
-            const colors = categoryColors[cat.value] || { bg: 'bg-[#2196F3]/10', text: 'text-[#2196F3]', progress: 'bg-[#2196F3]', border: 'border-[#2196F3]' };
-            
-            return (
-              <button
-                key={cat.value}
-                onClick={() => {
-                  setSelectedCategory(cat.value);
-                  setSelectedType('theoretical');
-                }}
-                className={`flex flex-col p-3.5 sm:p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} ${categoryColors[cat.value] ? 'border-' + categoryColors[cat.value].progress.replace('bg-', '') : 'border-[#2196F3]'}`}
-              >
-                <div className="flex items-center justify-between w-full mb-6">
-                  <div className="flex items-center gap-4">
-                    <div className={`p-3 rounded-xl ${colors.bg} ${colors.text} group-hover:scale-110 transition-transform`}>
-                      <BookOpen className="w-6 h-6" />
-                    </div>
-                    <div className="text-start">
-                      <h3 className="text-lg font-bold text-slate-900 dark:text-stone-100 mb-1">{t[cat.labelKey]}</h3>
-                      <div className="inline-flex items-center justify-center bg-sky-100 dark:bg-sky-900/40 text-[#2196F3] dark:text-sky-400 text-xs font-bold px-3 py-1 rounded-full">
-                        {count} {t.navLectures}
+              // Deterministic color assignment based on index
+              const defaultColors = [
+                { bg: 'bg-[#2196F3]/10', text: 'text-[#2196F3]', progress: 'bg-[#2196F3]' },
+                { bg: 'bg-emerald-50 dark:bg-emerald-900/30', text: 'text-emerald-600 dark:text-emerald-400', progress: 'bg-emerald-500' },
+                { bg: 'bg-indigo-50 dark:bg-indigo-900/30', text: 'text-indigo-600 dark:text-indigo-400', progress: 'bg-indigo-500' },
+                { bg: 'bg-rose-50 dark:bg-rose-900/30', text: 'text-rose-600 dark:text-rose-400', progress: 'bg-rose-500' },
+                { bg: 'bg-amber-50 dark:bg-amber-900/30', text: 'text-amber-600 dark:text-amber-400', progress: 'bg-amber-500' },
+                { bg: 'bg-fuchsia-50 dark:bg-fuchsia-900/30', text: 'text-fuchsia-600 dark:text-fuchsia-400', progress: 'bg-fuchsia-500' }
+              ];
+              const colors = categoryColors[catId] || categoryColors[subj.nameEn?.toLowerCase()] || defaultColors[index % defaultColors.length];
+              
+              return (
+                <button
+                  key={catId}
+                  onClick={() => {
+                    setSelectedCategory(catId as any);
+                    setSelectedType('theoretical');
+                  }}
+                  className={`flex flex-col p-3.5 sm:p-5 bg-white dark:bg-zinc-800 rounded-[16px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-md transition-all group overflow-hidden relative ${isRtl ? 'border-r-4' : 'border-l-4'} border-${colors.progress.replace('bg-', '')}`}
+                >
+                  <div className="flex items-center justify-between w-full mb-6">
+                    <div className="flex items-center gap-4">
+                      <div className={`p-3 rounded-xl ${colors.bg} ${colors.text} group-hover:scale-110 transition-transform`}>
+                        <BookOpen className="w-6 h-6" />
+                      </div>
+                      <div className="text-start">
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-stone-100 mb-1">{isRtl ? subj.nameAr : subj.nameEn}</h3>
+                        <div className="inline-flex items-center justify-center bg-sky-100 dark:bg-sky-900/40 text-[#2196F3] dark:text-sky-400 text-xs font-bold px-3 py-1 rounded-full">
+                          {count} {t.navLectures}
+                        </div>
                       </div>
                     </div>
+                    <div className="text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors bg-slate-50 dark:bg-zinc-900 p-2 rounded-full">
+                      {isRtl ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                    </div>
                   </div>
-                  <div className="text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors bg-slate-50 dark:bg-zinc-900 p-2 rounded-full">
-                    {isRtl ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                  
+                  <div className="w-full flex items-center justify-between gap-3 text-sm mb-1 text-slate-500 dark:text-slate-400">
+                    <span className="font-bold text-slate-700 dark:text-slate-300">{progress}%</span>
                   </div>
-                </div>
-                
-                <div className="w-full flex items-center justify-between gap-3 text-sm mb-1 text-slate-500 dark:text-slate-400">
-                  <span className="font-bold text-slate-700 dark:text-slate-300">{progress}%</span>
-                </div>
-                <div className="w-full h-2 bg-slate-100 dark:bg-zinc-700 rounded-full overflow-hidden" id={index === 0 ? "subject-progress-0" : undefined}>
-                  <div 
-                    className={`h-full ${colors.progress} rounded-full transition-all duration-500 ease-out`}
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
+                  <div className="w-full h-2 bg-slate-100 dark:bg-zinc-700 rounded-full overflow-hidden" id={index === 0 ? "subject-progress-0" : undefined}>
+                    <div 
+                      className={`h-full ${colors.progress} rounded-full transition-all duration-500 ease-out`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </button>
+              );
+            })
+          )
+        ) : (lectureLoadState === 'error' || lectureLoadState === 'waiting-auth') ? (
+          <LectureLoadFailure isRtl={isRtl} onRetry={onRetryLectures} />
+        ) : (
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+            <SearchX className="w-10 h-10 text-slate-300 dark:text-zinc-600" />
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {isRtl ? 'لا توجد مواد في هذه المرحلة بعد' : 'No subjects in this stage yet'}
+            </p>
+            {onRetryLectures && (
+              <button
+                type="button"
+                onClick={onRetryLectures}
+                className="mt-2 px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-xl text-sm font-bold transition-colors"
+              >
+                {isRtl ? 'إعادة المحاولة' : 'Retry'}
               </button>
-            );
-          })
+            )}
+          </div>
         )}
         <SpotlightTooltip targetSelector="#subject-progress-0" text="يتتبع تقدمك في كل مادة" tooltipKey="lectures" />
       </div>
@@ -499,7 +495,7 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
   }
 
   const currentCategoryData = CATEGORIES.find(c => c.value === selectedCategory);
-  const currentSubjectData = subjects.find(s => s.id === selectedCategory);
+  const currentSubjectData = effectiveSubjects.find(s => s.id === selectedCategory);
   
   const categoryLectures = lecturesForSubject(currentSubjectData || { id: selectedCategory });
   let filteredLectures = categoryLectures.filter(l => l.type === selectedType);

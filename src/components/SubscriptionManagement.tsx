@@ -4,6 +4,7 @@ import type { Language, Subscription, SubscriptionPlan, UserProfile } from '../t
 import { PLAN_CONFIG } from '../types';
 import {
   canActivateSubscription,
+  canRequestSubscriptionCancellation,
   canViewExpiringSubscriptions,
   canViewOwnSupportBalance,
   canViewSubscriptionHistory,
@@ -21,6 +22,8 @@ import {
 } from '../services/subscriptionService';
 import {
   getActiveSubscriptions,
+  getCancellationRequestPreview,
+  getCancellationRequests,
   getExpiringSubscriptions,
   getSubscriptionHistory,
   getSubscriptionPreview,
@@ -28,13 +31,17 @@ import {
   getSupportBalances,
   grantAuditedSubscription,
   manualActivateSubscription,
+  decideCancellationRequest,
   requestSupportGrant,
   modifySubscriptionEndDate,
   newRequestId,
   settleSupportBalance,
+  submitCancellationRequest,
   terminateSubscription,
   voidSubscriptionRecord,
   type ActiveSubscriptionItem,
+  type CancellationRequestItem,
+  type CancellationRequestPreview,
   type HistoryItem,
   type SubscriptionPreview,
   type SupportBalance,
@@ -46,7 +53,7 @@ import { EMPTY_PAYMENT_CONTACT, hasPaymentChannel, normalizePaymentContact, type
 import { needsManualApproval } from '../lib/subscriptionStats';
 
 interface Props { user: UserProfile; lang: Language; onClose: () => void }
-type Tab = 'history' | 'active' | 'legacy' | 'balances' | 'reports' | 'expiring';
+type Tab = 'history' | 'active' | 'legacy' | 'balances' | 'reports' | 'expiring' | 'cancellations';
 
 const money = (value: number) => `${Math.abs(value || 0).toLocaleString()} IQD`;
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleString() : '—';
@@ -55,6 +62,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const rtl = lang === 'ar';
   const master = isMasterAdmin(user);
   const canActivate = canActivateSubscription(user);
+  const canRequestCancellation = canRequestSubscriptionCancellation(user);
   const canHistory = canViewSubscriptionHistory(user);
   const canOwnBalance = canViewOwnSupportBalance(user);
   const canExpiring = canViewExpiringSubscriptions(user);
@@ -63,7 +71,8 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     ...(master ? ['active' as const, 'legacy' as const, 'balances' as const, 'reports' as const] : []),
     ...(!master && canOwnBalance ? ['balances' as const] : []),
     ...(canExpiring ? ['expiring' as const] : []),
-  ], [master, canHistory, canOwnBalance, canExpiring]);
+    ...((master || canRequestCancellation) ? ['cancellations' as const] : []),
+  ], [master, canHistory, canOwnBalance, canExpiring, canRequestCancellation]);
   const [tab, setTab] = useState<Tab>(tabs[0] || 'history');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -79,6 +88,17 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const [previewing, setPreviewing] = useState(false);
   const [activationRequestId, setActivationRequestId] = useState('');
   const previewSequence = useRef(0);
+
+  const [showCancellation, setShowCancellation] = useState(false);
+  const [cancellationEmail, setCancellationEmail] = useState('');
+  const [selectedCancellationStudent, setSelectedCancellationStudent] = useState<SubscriptionStudentSearchResult | null>(null);
+  const [cancellationPreview, setCancellationPreview] = useState<CancellationRequestPreview | null>(null);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [cancellationRequestId, setCancellationRequestId] = useState('');
+  const [cancellationPreviewing, setCancellationPreviewing] = useState(false);
+  const cancellationPreviewSequence = useRef(0);
+  const [cancellationRows, setCancellationRows] = useState<CancellationRequestItem[]>([]);
+  const [cancellationCursor, setCancellationCursor] = useState<string | null>(null);
 
   const [showGrant, setShowGrant] = useState(false);
   const [grantEmail, setGrantEmail] = useState('');
@@ -177,6 +197,77 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
 
+  const loadCancellationRequests = async (append = false) => {
+    if (!master && !canRequestCancellation) return;
+    setBusy('cancellations'); setError('');
+    try {
+      const result = await getCancellationRequests(append ? cancellationCursor : null);
+      setCancellationRows(current => append ? [...current, ...result.requests] : result.requests);
+      setCancellationCursor(result.nextCursor);
+    } catch (err) { fail(err); } finally { setBusy(''); }
+  };
+
+  const submitCancellation = async () => {
+    if (!cancellationPreview || !cancellationRequestId) return;
+    setBusy('request_cancellation'); setError(''); setNotice('');
+    try {
+      await submitCancellationRequest({
+        requestId: cancellationRequestId,
+        studentEmail: cancellationPreview.studentEmail,
+        previewStateToken: cancellationPreview.stateToken,
+        reason: cancellationReason.trim() || undefined,
+      });
+      setShowCancellation(false);
+      setCancellationEmail('');
+      setSelectedCancellationStudent(null);
+      setCancellationPreview(null);
+      setCancellationReason('');
+      setCancellationRequestId('');
+      setNotice(rtl
+        ? 'تم إرسال طلب الإلغاء وتعليق وصول الطالب فوراً. لن تتغير التقارير المالية حتى يوافق الماستر.'
+        : 'Cancellation requested and student access suspended. Financial reports remain unchanged until Master approval.');
+      setTab('cancellations');
+      await loadCancellationRequests();
+    } catch (err: any) {
+      fail(err);
+      if (err?.code === 'PREVIEW_STALE') setCancellationPreview(null);
+    } finally { setBusy(''); }
+  };
+
+  const decideCancellation = async (row: CancellationRequestItem, action: 'approve' | 'reject') => {
+    const noteInput = window.prompt(
+      rtl ? 'ملاحظة القرار (اختيارية، حتى 200 حرف)' : 'Decision note (optional, up to 200 characters)',
+      '',
+    );
+    if (noteInput === null) return;
+    const note = noteInput.trim();
+    if (Array.from(note).length > 200) {
+      setError(rtl ? 'الملاحظة يجب ألا تتجاوز 200 حرف.' : 'Note must be at most 200 characters.');
+      return;
+    }
+    const confirmation = action === 'approve'
+      ? (rtl
+        ? `الموافقة ستلغي الوصول نهائياً وتخصم ${money(row.amount)} من التقارير ورصيد موظف الدعم. متابعة؟`
+        : `Approval permanently cancels access and deducts ${money(row.amount)} from reports and the Support balance. Continue?`)
+      : (rtl
+        ? 'الرفض سيعيد حالة الاشتراك الأصلية وموعد انتهائها من دون إضافة مدة المراجعة. متابعة؟'
+        : 'Rejection restores the original subscription and expiry without adding review time. Continue?');
+    if (!window.confirm(confirmation)) return;
+    const key = `cancellation:${row.id}:${action}:${note}`;
+    const decisionRequestId = retryRequestIds.current.get(key) || newRequestId();
+    retryRequestIds.current.set(key, decisionRequestId);
+    setBusy(`cancellation_${row.id}`); setError(''); setNotice('');
+    try {
+      await decideCancellationRequest(row.id, action, { decisionRequestId, note: note || undefined });
+      retryRequestIds.current.delete(key);
+      setNotice(action === 'approve'
+        ? (rtl ? 'تمت الموافقة وخصم القيمة المالية كاملة.' : 'Cancellation approved and the full recorded amount was reversed.')
+        : (rtl ? 'تم رفض الطلب واستعادة حالة الاشتراك الأصلية.' : 'Cancellation rejected and the original access state was restored.'));
+      await loadCancellationRequests();
+      if (master) await Promise.all([loadReports(), loadBalances()]);
+    } catch (err) { fail(err); } finally { setBusy(''); }
+  };
+
   const handleModifyEndDate = async () => {
     if (!modifyingTarget || !modifyNewDate) return;
     setBusy('modify_date'); setError('');
@@ -225,6 +316,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   useEffect(() => { if (tab === 'reports') loadReports(); }, [tab, period]);
   useEffect(() => { if (tab === 'expiring') loadExpiring(); }, [tab]);
   useEffect(() => { if (tab === 'active') loadActive(); }, [tab]);
+  useEffect(() => { if (tab === 'cancellations') loadCancellationRequests(); }, [tab]);
 
   useEffect(() => {
     if (!master) return;
@@ -258,6 +350,26 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     }, 400);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [showActivation, activationEmail, activationPlan]);
+
+  useEffect(() => {
+    setCancellationPreview(null);
+    const email = cancellationEmail.trim().toLowerCase();
+    if (!showCancellation || !email) return;
+    const sequence = ++cancellationPreviewSequence.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setCancellationPreviewing(true); setError('');
+      try {
+        const result = await getCancellationRequestPreview(email, controller.signal);
+        if (sequence === cancellationPreviewSequence.current) setCancellationPreview(result);
+      } catch (err: any) {
+        if (err?.name !== 'AbortError' && sequence === cancellationPreviewSequence.current) fail(err);
+      } finally {
+        if (sequence === cancellationPreviewSequence.current) setCancellationPreviewing(false);
+      }
+    }, 400);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [showCancellation, cancellationEmail]);
 
   const activate = async () => {
     if (!preview) return;
@@ -366,6 +478,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     balances: 'حسابات الدعم',
     reports: 'التقارير',
     expiring: 'قريب الانتهاء',
+    cancellations: 'طلبات الإلغاء',
   } : {
     history: 'History',
     active: 'Active subscriptions',
@@ -373,6 +486,7 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     balances: 'Support accounting',
     reports: 'Reports',
     expiring: 'Expiring soon',
+    cancellations: 'Cancellation requests',
   };
 
   const normalizedContact = normalizePaymentContact(contact);
@@ -394,6 +508,14 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
           </div>
           <div className="flex gap-2">
             {canActivate && <button onClick={() => { setActivationRequestId(newRequestId()); setActivationEmail(''); setSelectedActivationStudent(null); setShowActivation(true); }} className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-bold text-white">{rtl ? 'تفعيل يدوي' : 'Manual activation'}</button>}
+            {!master && canRequestCancellation && <button onClick={() => {
+              setCancellationRequestId(newRequestId());
+              setCancellationEmail('');
+              setSelectedCancellationStudent(null);
+              setCancellationPreview(null);
+              setCancellationReason('');
+              setShowCancellation(true);
+            }} className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-bold text-white">{rtl ? 'طلب إلغاء اشتراك' : 'Request cancellation'}</button>}
             {master && <button onClick={() => { setGrantRequestId(newRequestId()); setGrantEmail(''); setSelectedGrantStudent(null); setShowGrant(true); }} className="rounded-xl bg-amber-500 px-3 py-2 text-sm font-bold text-white"><Gift className="me-1 inline h-4 w-4" />{rtl ? 'منح' : 'Grant'}</button>}
             <button onClick={onClose} className="rounded-xl bg-slate-100 p-2 text-slate-600 dark:bg-zinc-800 dark:text-slate-300"><X className="h-5 w-5" /></button>
           </div>
@@ -811,6 +933,48 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
           {busy === 'reports' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
         </section>}
 
+        {tab === 'cancellations' && (master || canRequestCancellation) && <section className="space-y-3">
+          {cancellationRows.length === 0 && busy !== 'cancellations' && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500 dark:border-zinc-700 dark:bg-zinc-900">
+              {rtl ? 'لا توجد طلبات إلغاء.' : 'No cancellation requests.'}
+            </div>
+          )}
+          {cancellationRows.map(row => {
+            const statusClass = row.status === 'approved'
+              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+              : row.status === 'rejected'
+                ? 'bg-slate-100 text-slate-700 dark:bg-zinc-800 dark:text-slate-300'
+                : 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300';
+            const statusLabel = rtl
+              ? (row.status === 'approved' ? 'مقبول' : row.status === 'rejected' ? 'مرفوض' : 'قيد المراجعة')
+              : row.status;
+            return <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-bold text-slate-900 dark:text-white">{row.studentName}</p>
+                  <p className="text-xs text-slate-500">{row.studentEmail}</p>
+                  {master && <p className="mt-1 text-xs text-slate-500">{rtl ? 'موظف الدعم' : 'Support'}: {row.requester?.name || row.requester?.email || row.requesterUid}</p>}
+                </div>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${statusClass}`}>{statusLabel}</span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2 lg:grid-cols-4">
+                <span>{rtl ? 'الخطة' : 'Plan'}: {row.plan || '—'}</span>
+                <span>{rtl ? 'قيمة الاسترجاع' : 'Full reversal'}: {money(row.amount)}</span>
+                <span>{rtl ? 'الانتهاء الأصلي' : 'Original expiry'}: {dateText(row.originalExpiry)}</span>
+                <span>{rtl ? 'تاريخ الطلب' : 'Requested'}: {dateText(row.requestedAt)}</span>
+                <span className="sm:col-span-2">{rtl ? 'سبب الطلب' : 'Reason'}: {row.reason || (rtl ? 'لا يوجد' : 'None')}</span>
+                {row.decisionNote && <span className="sm:col-span-2">{rtl ? 'ملاحظة القرار' : 'Decision note'}: {row.decisionNote}</span>}
+              </div>
+              {master && row.status === 'pending' && <div className="mt-3 flex gap-2 border-t border-slate-100 pt-3 dark:border-zinc-800">
+                <button onClick={() => decideCancellation(row, 'approve')} disabled={!!busy} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">{rtl ? 'موافقة وخصم المبلغ' : 'Approve & reverse'}</button>
+                <button onClick={() => decideCancellation(row, 'reject')} disabled={!!busy} className="rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 disabled:opacity-50 dark:bg-zinc-700 dark:text-slate-200">{rtl ? 'رفض واستعادة الوصول' : 'Reject & restore'}</button>
+              </div>}
+            </article>;
+          })}
+          {busy === 'cancellations' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
+          {cancellationCursor && <button onClick={() => loadCancellationRequests(true)} className="mx-auto block rounded-xl bg-white px-4 py-2 text-sm dark:bg-zinc-900">{rtl ? 'المزيد' : 'Load more'}</button>}
+        </section>}
+
         {tab === 'expiring' && canExpiring && <section className="space-y-3">
           {expiring.map(item => (
             <article key={item.studentId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -867,6 +1031,58 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
           {busy === 'expiring' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
         </section>}
       </main>
+
+      {showCancellation && <Modal title={rtl ? 'طلب إلغاء اشتراك' : 'Request subscription cancellation'} onClose={() => {
+        setShowCancellation(false);
+        setCancellationRequestId('');
+        setSelectedCancellationStudent(null);
+        setCancellationPreview(null);
+      }}>
+        <StudentSearchDropdown
+          value={cancellationEmail}
+          selectedStudent={selectedCancellationStudent}
+          onSelect={(student, rawEmail) => {
+            setSelectedCancellationStudent(student);
+            setCancellationEmail(rawEmail ?? student?.email ?? '');
+          }}
+          rtl={rtl}
+          placeholder={rtl ? 'ابحث باسم الطالب أو البريد...' : 'Search by student name or email...'}
+          disabled={busy === 'request_cancellation'}
+        />
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+          {rtl
+            ? 'عند الإرسال سيتوقف وصول الطالب فوراً. لن يُخصم أي مبلغ حتى موافقة الماستر. إذا رُفض الطلب سيعود موعد الانتهاء الأصلي من دون إضافة مدة المراجعة.'
+            : 'Submitting suspends student access immediately. No money is reversed until Master approval. Rejection restores the original expiry without adding review time.'}
+        </div>
+        {cancellationPreviewing && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
+        {cancellationPreview && <div className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-zinc-800">
+          <p className="font-bold text-slate-900 dark:text-white">{cancellationPreview.studentName}</p>
+          <p className="text-xs text-slate-500">{cancellationPreview.studentEmail}</p>
+          <div className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
+            <span>{rtl ? 'الخطة' : 'Plan'}: {cancellationPreview.plan || '—'}</span>
+            <span>{rtl ? 'الانتهاء' : 'Expiry'}: {dateText(cancellationPreview.expiry)}</span>
+            <span className="font-bold text-rose-600">{rtl ? 'قيمة الاسترجاع الكاملة' : 'Full reversal amount'}: {money(cancellationPreview.amount)}</span>
+          </div>
+        </div>}
+        <div>
+          <textarea
+            value={cancellationReason}
+            maxLength={200}
+            rows={3}
+            onChange={e => setCancellationReason(e.target.value)}
+            placeholder={rtl ? 'سبب طلب الإلغاء (اختياري)' : 'Cancellation reason (optional)'}
+            className="w-full resize-none rounded-xl border p-3 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <p className="text-end text-xs text-slate-400">{Array.from(cancellationReason).length}/200</p>
+        </div>
+        <button
+          onClick={submitCancellation}
+          disabled={!cancellationRequestId || !cancellationPreview || cancellationPreview.studentEmail.toLowerCase() !== cancellationEmail.trim().toLowerCase() || busy === 'request_cancellation'}
+          className="w-full rounded-xl bg-rose-600 p-3 font-bold text-white disabled:opacity-40"
+        >
+          {busy === 'request_cancellation' ? '…' : (rtl ? 'إرسال الطلب وتعليق الوصول' : 'Submit request & suspend access')}
+        </button>
+      </Modal>}
 
       {showActivation && <Modal title={rtl ? 'تفعيل اشتراك مدفوع' : 'Manual paid activation'} onClose={() => { setShowActivation(false); setActivationRequestId(''); setSelectedActivationStudent(null); }}>
         <StudentSearchDropdown

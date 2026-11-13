@@ -185,6 +185,71 @@ export interface ActiveSubscriptionItem {
   daysLeft: number | null;
 }
 
+export type CancellationRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface CancellationRequestPreview {
+  studentId: string;
+  studentEmail: string;
+  studentName: string;
+  plan: SubscriptionPlan | string | null;
+  expiry: string;
+  amount: number;
+  entitlementId: string;
+  activationRecordId: string;
+  stateToken: string;
+}
+
+export interface CancellationRequestItem {
+  id: string;
+  requestId: string;
+  status: CancellationRequestStatus;
+  studentId: string;
+  studentEmail: string;
+  studentName: string;
+  requesterUid: string;
+  requester?: { uid?: string; email?: string; name?: string };
+  plan?: string | null;
+  amount: number;
+  originalExpiry?: string | null;
+  reason?: string;
+  requestedAt?: string;
+  suspendedAt?: string;
+  decisionBy?: { uid?: string; email?: string; name?: string };
+  decisionNote?: string;
+  decidedAt?: string;
+}
+
+export const getCancellationRequestPreview = (studentEmail: string, signal?: AbortSignal) =>
+  api<CancellationRequestPreview>(
+    `/api/subscriptions/cancellation-requests/preview?studentEmail=${encodeURIComponent(studentEmail)}`,
+    {},
+    signal,
+  );
+
+export const submitCancellationRequest = (input: {
+  requestId: string;
+  studentEmail: string;
+  previewStateToken: string;
+  reason?: string;
+}) => api<{ success: boolean; requestId: string; status: CancellationRequestStatus; suspendedAt: string }>(
+  '/api/subscriptions/cancellation-requests',
+  { method: 'POST', body: JSON.stringify(input) },
+);
+
+export const getCancellationRequests = (cursor?: string | null) =>
+  api<{ requests: CancellationRequestItem[]; nextCursor: string | null }>(
+    `/api/subscriptions/cancellation-requests${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+
+export const decideCancellationRequest = (
+  id: string,
+  action: 'approve' | 'reject',
+  input: { decisionRequestId: string; note?: string },
+) => api<any>(`/api/subscriptions/cancellation-requests/${encodeURIComponent(id)}/${action}`, {
+  method: 'POST',
+  body: JSON.stringify(input),
+});
+
 export const getSubscriptionReports = (period: 'today' | 'this_month' | 'last_month' | 'this_year') =>
   api<any>(`/api/subscriptions/reports?period=${period}`);
 

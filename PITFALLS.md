@@ -491,6 +491,9 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
   needed" misses the commonest count-query shape: two equality filters plus one
   inequality DOES need one. Ours reported a clean bill while three indexes were
   missing in production, including the one behind `expireSubscriptions`.
+- A Firestore composite index's final sort direction matters: an
+  `isSubscribed == true` query ordered by `subscriptionEnd desc` needs its own
+  descending index even when the ascending subscription-list index already exists.
 - A `getCountFromServer` for a "what is my rank" row belongs in its own
   try/catch. Sharing the board's catch means one missing index throws away the
   twenty rows already fetched, and the screen reads "no students in this stage"

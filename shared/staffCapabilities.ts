@@ -24,6 +24,7 @@ export const SYSTEM_CAPABILITIES = [
  * Every key is default-denied: only an explicitly stored `true` grants it. */
 export const SUBSCRIPTION_SUPPORT_CAPABILITIES = [
   'canActivate',
+  'canRequestCancellation',
   'canViewHistory',
   'canViewOwnBalance',
   'canViewExpiring',

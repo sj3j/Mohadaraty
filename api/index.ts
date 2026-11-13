@@ -1946,6 +1946,11 @@ app.get('/api/subscriptions/balances', verifyAuth, subscriptionManagement.balanc
 app.get('/api/subscriptions/reports', verifyAuth, subscriptionManagement.reports);
 app.get('/api/subscriptions/expiring', verifyAuth, subscriptionManagement.expiring);
 app.get('/api/subscriptions/active', verifyAuth, subscriptionManagement.active);
+app.get('/api/subscriptions/cancellation-requests/preview', verifyAuth, subscriptionManagement.previewCancellation);
+app.get('/api/subscriptions/cancellation-requests', verifyAuth, subscriptionManagement.listCancellationRequests);
+app.post('/api/subscriptions/cancellation-requests', verifyAuth, subscriptionManagement.requestCancellation);
+app.post('/api/subscriptions/cancellation-requests/:id/approve', verifyAuth, subscriptionManagement.approveCancellation);
+app.post('/api/subscriptions/cancellation-requests/:id/reject', verifyAuth, subscriptionManagement.rejectCancellation);
 app.post('/api/subscriptions/admin/modify-end-date', verifyAuth, subscriptionManagement.modifyEndDate);
 app.post('/api/subscriptions/admin/terminate', verifyAuth, subscriptionManagement.terminate);
 app.post('/api/admin/supports/:uid/status', verifyAuth, subscriptionManagement.supportStatus);

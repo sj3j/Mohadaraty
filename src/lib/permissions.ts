@@ -199,12 +199,15 @@ export const canViewStaffInbox = (user?: UserProfile | null): boolean =>
 export const canManageSubscriptions = (user?: UserProfile | null): boolean =>
   isMasterAdmin(user)
   || canManage(user, 'canActivate')
+  || canManage(user, 'canRequestCancellation')
   || canManage(user, 'canViewHistory')
   || canManage(user, 'canViewOwnBalance')
   || canManage(user, 'canViewExpiring');
 
 export const canActivateSubscription = (user?: UserProfile | null): boolean =>
   canManage(user, 'canActivate');
+export const canRequestSubscriptionCancellation = (user?: UserProfile | null): boolean =>
+  canManage(user, 'canRequestCancellation');
 export const canViewSubscriptionHistory = (user?: UserProfile | null): boolean =>
   canManage(user, 'canViewHistory');
 export const canViewOwnSupportBalance = (user?: UserProfile | null): boolean =>

@@ -3,7 +3,13 @@ import 'dotenv/config';
 import {
   commitManagedActivation,
   createSubscriptionManagementHandlers,
+  approveSubscriptionCancellation,
+  getReports,
+  listSubscriptionCancellationRequests,
   previewManagedSubscription,
+  previewSubscriptionCancellation,
+  rejectSubscriptionCancellation,
+  requestSubscriptionCancellation,
   settleManagedBalance,
   voidManagedRecord,
   type SubscriptionActor,
@@ -41,10 +47,11 @@ const clear = async (name: string) => {
   const snap = await db.collection(name).get();
   await Promise.all(snap.docs.map(doc => doc.ref.delete()));
 };
-for (const collection of ['users', 'subscriptions', 'subscriptionRecords', 'supportBalances', 'supportLedger', 'referenceCodes', 'subscriptionRequests', 'fcm_tokens']) await clear(collection);
+for (const collection of ['users', 'subscriptions', 'subscriptionRecords', 'supportBalances', 'supportLedger', 'referenceCodes', 'subscriptionRequests', 'subscriptionCancellationRequests', 'fcm_tokens']) await clear(collection);
 
 const master: SubscriptionActor = { uid: 'master@test.dev', email: 'master@test.dev', name: 'Master', role: 'master_admin', isMasterAdmin: true, staffDisabled: false, permissions: {} };
 const support: SubscriptionActor = { uid: 'support@test.dev', email: 'support@test.dev', name: 'Support One', role: 'support', isMasterAdmin: false, staffDisabled: false, permissions: { canActivate: true } };
+const cancellationSupport: SubscriptionActor = { ...support, permissions: { canActivate: true, canRequestCancellation: true } };
 await db.collection('users').doc(support.uid).set({ email: support.email, name: support.name, role: 'support', permissions: support.permissions });
 await db.collection('users').doc('student@test.dev').set({ email: 'student@test.dev', name: 'Stack Student', role: 'student', isSubscribed: false });
 
@@ -134,6 +141,153 @@ const ledger = await db.collection('supportLedger').where('supportUid', '==', su
 const deltaSum = ledger.docs.reduce((sum, doc) => sum + doc.data().balanceDelta, 0);
 check('balance equals sum of ledger deltas', finalBalance.outstanding === deltaSum, `${finalBalance.outstanding} != ${deltaSum}`);
 
+console.log('\n--- Support cancellation review workflow ---');
+await db.collection('users').doc('cancel-approve@test.dev').set({
+  email: 'cancel-approve@test.dev', name: 'Cancel Approve', role: 'student', isSubscribed: false,
+});
+preview = await previewManagedSubscription(admin, 'cancel-approve@test.dev', 'monthly');
+await commitManagedActivation(admin, cancellationSupport, {
+  requestId: 'cancel_activation_approve', studentEmail: 'cancel-approve@test.dev', plan: 'monthly',
+  paymentMethod: 'cash', previewStateToken: preview.stateToken,
+}, 'manual');
+const cancellationPreview = await previewSubscriptionCancellation(admin, cancellationSupport, 'cancel-approve@test.dev');
+const balanceBeforeRequest = (await db.collection('supportBalances').doc(support.uid).get()).data()!;
+const reportsBeforeRequest = await getReports(admin, master, 'today');
+await requestSubscriptionCancellation(admin, cancellationSupport, {
+  requestId: 'cancel_request_approve', studentEmail: 'cancel-approve@test.dev',
+  previewStateToken: cancellationPreview.stateToken, reason: 'student asked',
+});
+const suspended = (await db.collection('users').doc('cancel-approve@test.dev').get()).data()!;
+const balanceWhilePending = (await db.collection('supportBalances').doc(support.uid).get()).data()!;
+const reportsWhilePending = await getReports(admin, master, 'today');
+check('submission suspends access and stores the pending marker', suspended.isSubscribed === false
+  && suspended.pendingCancellationRequestId === 'cancel_request_approve');
+check('submission leaves Support balance and reports unchanged', balanceWhilePending.outstanding === balanceBeforeRequest.outstanding
+  && reportsWhilePending.revenue.total === reportsBeforeRequest.revenue.total);
+check('duplicate pending request is blocked', await rejects(
+  () => requestSubscriptionCancellation(admin, cancellationSupport, {
+    requestId: 'cancel_request_duplicate', studentEmail: 'cancel-approve@test.dev',
+    previewStateToken: cancellationPreview.stateToken,
+  }),
+  'CANCELLATION_PENDING',
+));
+const ownRequests = await listSubscriptionCancellationRequests(admin, cancellationSupport, {});
+check('Support list is scoped to its own request', ownRequests.requests.length === 1
+  && ownRequests.requests[0].requesterUid === support.uid);
+const approval = await approveSubscriptionCancellation(admin, master, 'cancel_request_approve', {
+  decisionRequestId: 'cancel_decision_approve', note: 'verified',
+});
+const approvalReplay = await approveSubscriptionCancellation(admin, master, 'cancel_request_approve', {
+  decisionRequestId: 'cancel_decision_approve', note: 'verified',
+});
+const approvedBalance = (await db.collection('supportBalances').doc(support.uid).get()).data()!;
+const approvedReports = await getReports(admin, master, 'today');
+const approvedActivation = (await db.collection('subscriptionRecords').doc('cancel_activation_approve').get()).data()!;
+const approvedEntitlement = (await db.collection('subscriptions').doc('cancel_activation_approve').get()).data()!;
+check('approval is idempotent', approval.status === 'approved' && approvalReplay.replayed === true);
+check('approval reverses the full amount exactly once', approvedBalance.outstanding === balanceBeforeRequest.outstanding - 2000
+  && (await db.collection('supportLedger').doc('cancel_decision_approve').get()).data()?.balanceDelta === -2000);
+check('approval removes the sale from its original report period', approvedReports.revenue.total === reportsBeforeRequest.revenue.total - 2000);
+check('approval removes the sale from yearly revenue too', approvedReports.yearlyRevenue === reportsBeforeRequest.yearlyRevenue - 2000);
+check('approval cancels captured records and clears the marker', !!approvedActivation.cancelledBy
+  && approvedEntitlement.status === 'cancelled'
+  && !(await db.collection('users').doc('cancel-approve@test.dev').get()).data()?.pendingCancellationRequestId);
+
+await db.collection('users').doc('cancel-reject@test.dev').set({
+  email: 'cancel-reject@test.dev', name: 'Cancel Reject', role: 'student', isSubscribed: false,
+});
+preview = await previewManagedSubscription(admin, 'cancel-reject@test.dev', 'seasonal');
+await commitManagedActivation(admin, cancellationSupport, {
+  requestId: 'cancel_activation_reject', studentEmail: 'cancel-reject@test.dev', plan: 'seasonal',
+  paymentMethod: 'cash', previewStateToken: preview.stateToken,
+}, 'manual');
+const rejectPreview = await previewSubscriptionCancellation(admin, cancellationSupport, 'cancel-reject@test.dev');
+const originalRejectExpiry = rejectPreview.expiry;
+const rejectBalanceBefore = (await db.collection('supportBalances').doc(support.uid).get()).data()!.outstanding;
+await requestSubscriptionCancellation(admin, cancellationSupport, {
+  requestId: 'cancel_request_reject', studentEmail: 'cancel-reject@test.dev', previewStateToken: rejectPreview.stateToken,
+});
+await rejectSubscriptionCancellation(admin, master, 'cancel_request_reject', {
+  decisionRequestId: 'cancel_decision_reject', note: 'keep access',
+});
+const rejectedUser = (await db.collection('users').doc('cancel-reject@test.dev').get()).data()!;
+check('rejection restores the exact original future expiry without review time', rejectedUser.isSubscribed === true
+  && rejectedUser.subscriptionEnd.toDate().toISOString() === originalRejectExpiry);
+check('rejection leaves finances unchanged', (await db.collection('supportBalances').doc(support.uid).get()).data()!.outstanding === rejectBalanceBefore
+  && !(await db.collection('supportLedger').doc('cancel_decision_reject').get()).exists);
+
+await db.collection('users').doc('cancel-expired@test.dev').set({
+  email: 'cancel-expired@test.dev', name: 'Cancel Expired', role: 'student', isSubscribed: false,
+});
+preview = await previewManagedSubscription(admin, 'cancel-expired@test.dev', 'monthly');
+await commitManagedActivation(admin, cancellationSupport, {
+  requestId: 'cancel_activation_expired', studentEmail: 'cancel-expired@test.dev', plan: 'monthly',
+  paymentMethod: 'cash', previewStateToken: preview.stateToken,
+}, 'manual');
+const expiredPreview = await previewSubscriptionCancellation(admin, cancellationSupport, 'cancel-expired@test.dev');
+await requestSubscriptionCancellation(admin, cancellationSupport, {
+  requestId: 'cancel_request_expired', studentEmail: 'cancel-expired@test.dev', previewStateToken: expiredPreview.stateToken,
+});
+const pastExpiry = admin.firestore.Timestamp.fromMillis(Date.now() - 1_000);
+await db.collection('subscriptionCancellationRequests').doc('cancel_request_expired').update({
+  originalExpiry: pastExpiry,
+  'originalUserFields.subscriptionEnd.value': pastExpiry,
+});
+await rejectSubscriptionCancellation(admin, master, 'cancel_request_expired', {
+  decisionRequestId: 'cancel_decision_expired',
+});
+check('rejection never reactivates an entitlement whose captured expiry has elapsed',
+  (await db.collection('users').doc('cancel-expired@test.dev').get()).data()?.isSubscribed === false
+  && (await db.collection('subscriptions').doc('cancel_activation_expired').get()).data()?.status === 'expired');
+
+const otherSupport: SubscriptionActor = {
+  uid: 'support-two-cancel@test.dev', email: 'support-two-cancel@test.dev', name: 'Support Two', role: 'support',
+  isMasterAdmin: false, staffDisabled: false, permissions: { canRequestCancellation: true },
+};
+check('cross-Support cancellation preview is rejected', await rejects(
+  () => previewSubscriptionCancellation(admin, otherSupport, 'cancel-reject@test.dev'),
+  'NOT_OWN_ACTIVATION',
+));
+const futureExpiry = admin.firestore.Timestamp.fromMillis(Date.now() + 86_400_000);
+await db.collection('users').doc('external-cancel@test.dev').set({
+  email: 'external-cancel@test.dev', role: 'student', isSubscribed: true,
+  subscriptionPlan: 'monthly', subscriptionEnd: futureExpiry,
+});
+await db.collection('subscriptions').doc('external_cancel_entitlement').set({
+  userId: 'external-cancel@test.dev', status: 'active', plan: 'monthly', endDate: futureExpiry,
+  paymentMethod: 'apple_iap', amount: 2000,
+});
+check('external-store entitlement cancellation is rejected', await rejects(
+  () => previewSubscriptionCancellation(admin, cancellationSupport, 'external-cancel@test.dev'),
+  'EXTERNAL_SUBSCRIPTION',
+));
+await db.collection('subscriptions').doc('cancel_reject_extra_entitlement').set({
+  userId: 'cancel-reject@test.dev', status: 'active', plan: 'monthly', endDate: futureExpiry,
+  paymentMethod: 'zaincash', amount: 2000,
+});
+check('multiple active entitlements require Master handling', await rejects(
+  () => previewSubscriptionCancellation(admin, cancellationSupport, 'cancel-reject@test.dev'),
+  'CANCELLATION_REQUIRES_MASTER',
+));
+await db.collection('subscriptions').doc('cancel_reject_extra_entitlement').delete();
+const staleCancellationPreview = await previewSubscriptionCancellation(admin, cancellationSupport, 'cancel-reject@test.dev');
+await db.collection('subscriptionRecords').doc('cancel_activation_reject').update({ amount: 5001 });
+check('stale cancellation preview fails safely', await rejects(
+  () => requestSubscriptionCancellation(admin, cancellationSupport, {
+    requestId: 'cancel_request_stale', studentEmail: 'cancel-reject@test.dev',
+    previewStateToken: staleCancellationPreview.stateToken,
+  }),
+  'PREVIEW_STALE',
+));
+await db.collection('subscriptionRecords').doc('cancel_activation_reject').update({ amount: 5000 });
+check('optional reason is limited to 200 Unicode characters', await rejects(
+  () => requestSubscriptionCancellation(admin, cancellationSupport, {
+    requestId: 'cancel_reason_too_long', studentEmail: 'cancel-reject@test.dev',
+    previewStateToken: rejectPreview.stateToken, reason: 'ع'.repeat(201),
+  }),
+  'TEXT_TOO_LONG',
+));
+
 console.log('\n--- stale preview, exact restoration, and void ordering ---');
 await db.collection('users').doc('stale@test.dev').set({ email: 'stale@test.dev', name: 'Stale Preview', role: 'student', isSubscribed: false });
 const stalePreview = await previewManagedSubscription(admin, 'stale@test.dev', 'monthly');
@@ -207,6 +361,14 @@ check('canViewHistory independently permits history',
 check('canViewHistory does not imply activation',
   (await invoke(handlers.preview, { user: supportToken, query: { studentEmail: 'paid@test.dev', plan: 'monthly' } })).status === 403);
 
+await setSupportPermissions({ canRequestCancellation: true });
+check('canRequestCancellation independently permits own cancellation preview',
+  (await invoke(handlers.previewCancellation, {
+    user: supportToken, query: { studentEmail: 'cancel-reject@test.dev' },
+  })).status === 200);
+check('canRequestCancellation does not imply activation',
+  (await invoke(handlers.preview, { user: supportToken, query: { studentEmail: 'cancel-reject@test.dev', plan: 'monthly' } })).status === 403);
+
 await db.collection('users').doc('support-two@test.dev').set({ email: 'support-two@test.dev', role: 'support', permissions: {} });
 await setSupportPermissions({ canViewOwnBalance: true });
 check('canViewOwnBalance independently permits own balance',
@@ -241,10 +403,15 @@ const masterOnlyAttempts = await Promise.all([
 ]);
 check('stored Master-only keys cannot authorize Support endpoints', masterOnlyAttempts.every(result => result.status === 403));
 
-await setSupportPermissions({ canActivate: true, canViewHistory: true, canViewOwnBalance: true, canViewExpiring: true }, true);
+await setSupportPermissions({ canActivate: true, canRequestCancellation: true, canViewHistory: true, canViewOwnBalance: true, canViewExpiring: true }, true);
 const disabledAttempt = await invoke(handlers.preview, { user: supportToken, query: { studentEmail: 'paid@test.dev', plan: 'monthly' } });
 check('disabled Support is denied immediately despite stored grants',
   disabledAttempt.status === 403 && disabledAttempt.body?.code === 'STAFF_DISABLED');
+const disabledCancellationAttempt = await invoke(handlers.previewCancellation, {
+  user: supportToken, query: { studentEmail: 'cancel-reject@test.dev' },
+});
+check('disabled Support cannot request cancellation despite stored grant',
+  disabledCancellationAttempt.status === 403 && disabledCancellationAttempt.body?.code === 'STAFF_DISABLED');
 
 const masterToken = { uid: 'master-handler@test.dev', email: 'master-handler@test.dev', email_verified: true, role: 'master_admin' };
 const disableInput = { requestId: 'master_status_001', disabled: true };

@@ -1015,21 +1015,23 @@ export default function WeeklyListScreen({ lang, user }: WeeklyListScreenProps) 
                     className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 outline-none focus:border-sky-500 dark:text-stone-100"
                   >
                     <option value="" disabled>{isRtl ? 'اختر المادة...' : 'Select subject...'}</option>
-                    {hasCurriculum
-                      ? COURSE_IDS.map(courseId => {
-                          const courseSubjects = subjectsForCourse(subjects, courseId);
-                          if (courseSubjects.length === 0) return null;
-                          return (
-                            <optgroup key={courseId} label={isRtl ? COURSE_LABELS[courseId].ar : COURSE_LABELS[courseId].en}>
-                              {courseSubjects.map(sub => (
-                                <option key={sub.id} value={sub.id}>{isRtl ? sub.nameAr : sub.nameEn}</option>
-                              ))}
-                            </optgroup>
-                          );
-                        })
-                      : CATEGORIES.map(cat => (
-                          <option key={cat.value} value={cat.value}>{t[cat.labelKey]}</option>
-                        ))}
+                    {hasCurriculum ? (
+                      COURSE_IDS.map(courseId => {
+                        const courseSubjects = subjectsForCourse(subjects, courseId);
+                        if (courseSubjects.length === 0) return null;
+                        return (
+                          <optgroup key={courseId} label={isRtl ? COURSE_LABELS[courseId].ar : COURSE_LABELS[courseId].en}>
+                            {courseSubjects.map(sub => (
+                              <option key={sub.id} value={sub.id}>{isRtl ? sub.nameAr : sub.nameEn}</option>
+                            ))}
+                          </optgroup>
+                        );
+                      })
+                    ) : (
+                      <option value="" disabled>
+                        {isRtl ? 'لا توجد مواد مضافة لهذه المرحلة بعد' : 'No subjects available'}
+                      </option>
+                    )}
                   </select>
                 </div>
 

@@ -24,6 +24,7 @@ const REF_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const NOTE_LIMIT = 200;
 const HISTORY_PAGE_SIZE = 25;
 const EXPIRING_PAGE_SIZE = 25;
+const CANCELLATION_PAGE_SIZE = 50;
 const USER_SUBSCRIPTION_FIELDS = ['isSubscribed', 'subscriptionEnd', 'subscriptionPlan'] as const;
 
 type AnyMap = Record<string, any>;
@@ -277,6 +278,13 @@ function actorSnapshot(actor: SubscriptionActor): AnyMap {
   return { uid: actor.uid, email: actor.email, name: actor.name, role: actor.role };
 }
 
+function requireCancellationRequester(actor: SubscriptionActor): void {
+  requireCapability(actor, 'canRequestCancellation');
+  if (actor.isMasterAdmin || actor.role !== 'support') {
+    throw new SubscriptionManagementError(403, 'SUPPORT_ONLY', 'Only an enabled Support account can request cancellation');
+  }
+}
+
 function balanceDefaults(): AnyMap {
   return {
     outstanding: 0,
@@ -441,6 +449,9 @@ export async function commitManagedActivation(
       if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
 
       const userData = userSnap.data() || {};
+      if (userData.pendingCancellationRequestId) {
+        throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is awaiting review');
+      }
       const resolvedStudentEmail = userData.email || studentEmail;
       const currentStateToken = subscriptionStateToken(userData);
       if (input.previewStateToken && input.previewStateToken !== currentStateToken) {
@@ -754,6 +765,9 @@ export async function voidManagedRecord(admin: any, actor: SubscriptionActor, re
     const referenceSnap = await tx.get(referenceRef);
     if (referenceSnap.exists) collision();
     if (!userSnap.exists || !entitlementSnap.exists) throw new SubscriptionManagementError(409, 'ENTITLEMENT_MISSING', 'The entitlement can no longer be restored safely');
+    if (userSnap.data()?.pendingCancellationRequestId) {
+      throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is awaiting review');
+    }
 
     const laterPrivate = latestPrivate.docs.find((doc: any) => {
       if (doc.id === recordId) return false;
@@ -1358,6 +1372,9 @@ export async function modifySubscriptionEnd(
       if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
 
       const userData = userSnap.data() || {};
+      if (userData.pendingCancellationRequestId) {
+        throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is awaiting review');
+      }
       const nowDate = new Date();
       const now = admin.firestore.Timestamp.fromDate(nowDate);
       const newExpiryTimestamp = admin.firestore.Timestamp.fromDate(newEndDate);
@@ -1482,6 +1499,9 @@ export async function terminateSubscription(
       if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
 
       const userData = userSnap.data() || {};
+      if (userData.pendingCancellationRequestId) {
+        throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is awaiting review');
+      }
       const nowDate = new Date();
       const now = admin.firestore.Timestamp.fromDate(nowDate);
       const effectiveTimestamp = admin.firestore.Timestamp.fromDate(effectiveEndDate);
@@ -1635,6 +1655,476 @@ export async function terminateSubscription(
       return { ...resultValue, replayed: false };
     });
   });
+}
+
+function cancellationStateToken(userData: AnyMap, entitlementId: string, entitlement: AnyMap, recordId: string, record: AnyMap): string {
+  return requestPayloadHash({
+    user: stateShape(userData),
+    entitlement: {
+      id: entitlementId,
+      status: entitlement.status,
+      endDate: asMillis(entitlement.endDate),
+      auditedRecordId: entitlement.auditedRecordId || null,
+    },
+    activation: {
+      id: recordId,
+      amount: record.amount,
+      actorUid: record.actorUid,
+      source: record.source,
+      voidedBy: record.voidedBy || null,
+      cancelledBy: record.cancelledBy || null,
+    },
+  });
+}
+
+function validateCancellationEligibility(
+  actor: SubscriptionActor,
+  userData: AnyMap,
+  activeDocs: any[],
+  activationSnap: any,
+  now = new Date(),
+): { entitlementDoc: any; entitlement: AnyMap; activation: AnyMap; expiry: Date; amount: number } {
+  if (userData.pendingCancellationRequestId) {
+    throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is already awaiting review');
+  }
+  const expiry = asDate(userData.subscriptionEnd);
+  if (userData.isSubscribed !== true || !expiry || expiry.getTime() <= now.getTime()) {
+    throw new SubscriptionManagementError(409, 'SUBSCRIPTION_NOT_ACTIVE', 'The subscription is no longer active');
+  }
+  if (activeDocs.length !== 1) {
+    throw new SubscriptionManagementError(409, 'CANCELLATION_REQUIRES_MASTER', 'This account has multiple or missing active entitlements and requires Master review');
+  }
+  const entitlementDoc = activeDocs[0];
+  const entitlement = entitlementDoc.data() || {};
+  if (!entitlement.auditedRecordId || !activationSnap?.exists) {
+    throw new SubscriptionManagementError(409, 'EXTERNAL_SUBSCRIPTION', 'Only an audited manual activation can be requested for cancellation');
+  }
+  const activation = activationSnap.data() || {};
+  if (activation.type !== 'activation' || activation.source !== 'manual' || activation.actorUid !== actor.uid) {
+    throw new SubscriptionManagementError(403, 'NOT_OWN_ACTIVATION', 'Support may only request cancellation of their own manual activation');
+  }
+  if (activation.voidedBy || activation.cancelledBy || entitlement.status !== 'active') {
+    throw new SubscriptionManagementError(409, 'ACTIVATION_NOT_ELIGIBLE', 'The activation is no longer eligible for cancellation');
+  }
+  const amount = parsePositiveInteger(activation.amount, 'recorded amount');
+  return { entitlementDoc, entitlement, activation, expiry, amount };
+}
+
+export async function previewSubscriptionCancellation(
+  admin: any,
+  actor: SubscriptionActor,
+  studentEmailValue: unknown,
+): Promise<AnyMap> {
+  requireCancellationRequester(actor);
+  const studentEmail = normalizeStudentEmail(studentEmailValue);
+  const target = await resolveStudent(admin, studentEmail);
+  const userData = target.snap.data() || {};
+  const activeSnap = await admin.firestore().collection('subscriptions')
+    .where('userId', '==', target.snap.id)
+    .where('status', '==', 'active')
+    .get();
+  const activeDocs = activeSnap.docs || [];
+  const auditedRecordId = activeDocs.length === 1 ? activeDocs[0].data()?.auditedRecordId : null;
+  const activationSnap = auditedRecordId
+    ? await admin.firestore().collection('subscriptionRecords').doc(auditedRecordId).get()
+    : null;
+  const eligible = validateCancellationEligibility(actor, userData, activeDocs, activationSnap);
+  return {
+    studentId: target.snap.id,
+    studentEmail: String(userData.email || target.snap.id),
+    studentName: String(userData.name || userData.originalName || userData.email || target.snap.id),
+    plan: eligible.activation.plan || eligible.entitlement.plan || userData.subscriptionPlan || null,
+    expiry: eligible.expiry.toISOString(),
+    amount: eligible.amount,
+    entitlementId: eligible.entitlementDoc.id,
+    activationRecordId: eligible.entitlement.auditedRecordId,
+    stateToken: cancellationStateToken(
+      userData,
+      eligible.entitlementDoc.id,
+      eligible.entitlement,
+      eligible.entitlement.auditedRecordId,
+      eligible.activation,
+    ),
+  };
+}
+
+export async function requestSubscriptionCancellation(
+  admin: any,
+  actor: SubscriptionActor,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireCancellationRequester(actor);
+  const requestId = validateRequestId(input.requestId);
+  const studentEmail = normalizeStudentEmail(input.studentEmail);
+  const previewStateToken = String(input.previewStateToken || '');
+  if (!/^[a-f0-9]{64}$/.test(previewStateToken)) {
+    throw new SubscriptionManagementError(400, 'PREVIEW_REQUIRED', 'A current cancellation preview is required');
+  }
+  const reason = normalizeLimitedText(input.reason, 'reason');
+  const payloadHash = requestPayloadHash({
+    action: 'request_cancellation',
+    studentEmail,
+    previewStateToken,
+    ...(reason ? { reason } : {}),
+  });
+  const db = admin.firestore();
+  const target = await resolveStudent(admin, studentEmail);
+
+  return db.runTransaction(async (tx: any) => {
+    const requestRef = db.collection('subscriptionCancellationRequests').doc(requestId);
+    const existing = await tx.get(requestRef);
+    if (existing.exists) return idempotencyResult(existing, payloadHash);
+    const userSnap = await tx.get(target.ref);
+    if (!userSnap.exists) throw new SubscriptionManagementError(404, 'STUDENT_NOT_FOUND', 'Student not found');
+    const activeSnap = await tx.get(db.collection('subscriptions')
+      .where('userId', '==', target.snap.id)
+      .where('status', '==', 'active'));
+    const activeDocs = activeSnap.docs || [];
+    const auditedRecordId = activeDocs.length === 1 ? activeDocs[0].data()?.auditedRecordId : null;
+    const activationSnap = auditedRecordId
+      ? await tx.get(db.collection('subscriptionRecords').doc(auditedRecordId))
+      : null;
+    const userData = userSnap.data() || {};
+    const eligible = validateCancellationEligibility(actor, userData, activeDocs, activationSnap);
+    const liveToken = cancellationStateToken(
+      userData,
+      eligible.entitlementDoc.id,
+      eligible.entitlement,
+      eligible.entitlement.auditedRecordId,
+      eligible.activation,
+    );
+    if (liveToken !== previewStateToken) {
+      throw new SubscriptionManagementError(409, 'PREVIEW_STALE', 'Subscription state changed; refresh the cancellation preview');
+    }
+
+    const now = admin.firestore.Timestamp.now();
+    const studentEmailResolved = String(userData.email || target.snap.id);
+    const studentName = String(userData.name || userData.originalName || studentEmailResolved);
+    const result = { success: true, requestId, status: 'pending', suspendedAt: now.toDate().toISOString() };
+    tx.create(requestRef, {
+      requestId,
+      payloadHash,
+      status: 'pending',
+      studentId: target.snap.id,
+      studentEmail: studentEmailResolved,
+      studentName,
+      requesterUid: actor.uid,
+      requester: actorSnapshot(actor),
+      ...(reason ? { reason } : {}),
+      entitlementId: eligible.entitlementDoc.id,
+      activationRecordId: eligible.entitlement.auditedRecordId,
+      plan: eligible.activation.plan || eligible.entitlement.plan || userData.subscriptionPlan || null,
+      amount: eligible.amount,
+      originalExpiry: userData.subscriptionEnd,
+      originalUserFields: previousFieldSnapshot(userData),
+      previewStateToken,
+      requestedAt: now,
+      suspendedAt: now,
+      result,
+    });
+    tx.update(target.ref, {
+      isSubscribed: false,
+      pendingCancellationRequestId: requestId,
+      subscriptionCancellationSuspendedAt: now,
+    });
+    return { ...result, replayed: false };
+  });
+}
+
+function cancellationDecisionReplay(data: AnyMap, decisionRequestId: string, payloadHash: string, action: string): AnyMap {
+  if (data.decisionRequestId !== decisionRequestId
+      || data.decisionPayloadHash !== payloadHash
+      || data.decisionAction !== action) {
+    throw new SubscriptionManagementError(409, 'CANCELLATION_ALREADY_DECIDED', 'This cancellation request has already been decided');
+  }
+  return { ...(data.decisionResult || data.result || {}), replayed: true };
+}
+
+export async function approveSubscriptionCancellation(
+  admin: any,
+  actor: SubscriptionActor,
+  cancellationId: string,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireMaster(actor, 'canGrant');
+  validateRequestId(cancellationId);
+  const decisionRequestId = validateRequestId(input.decisionRequestId);
+  const note = normalizeLimitedText(input.note, 'note');
+  const decisionPayloadHash = requestPayloadHash({ action: 'approve', cancellationId, ...(note ? { note } : {}) });
+  const db = admin.firestore();
+
+  return withUniqueReference('TRM', async (referenceCode) => db.runTransaction(async (tx: any) => {
+    const requestRef = db.collection('subscriptionCancellationRequests').doc(cancellationId);
+    const requestSnap = await tx.get(requestRef);
+    if (!requestSnap.exists) throw new SubscriptionManagementError(404, 'CANCELLATION_NOT_FOUND', 'Cancellation request not found');
+    const requestData = requestSnap.data() || {};
+    if (requestData.status !== 'pending') {
+      return cancellationDecisionReplay(requestData, decisionRequestId, decisionPayloadHash, 'approve');
+    }
+
+    const userRef = db.collection('users').doc(requestData.studentId);
+    const entitlementRef = db.collection('subscriptions').doc(requestData.entitlementId);
+    const activationRef = db.collection('subscriptionRecords').doc(requestData.activationRecordId);
+    const decisionRecordRef = db.collection('subscriptionRecords').doc(decisionRequestId);
+    const balanceRef = db.collection('supportBalances').doc(requestData.requesterUid);
+    const ledgerRef = db.collection('supportLedger').doc(decisionRequestId);
+    const referenceRef = db.collection('referenceCodes').doc(referenceCode);
+    const [userSnap, entitlementSnap, activationSnap, decisionRecordSnap, balanceSnap, ledgerSnap, referenceSnap] = await Promise.all([
+      tx.get(userRef), tx.get(entitlementRef), tx.get(activationRef), tx.get(decisionRecordRef),
+      tx.get(balanceRef), tx.get(ledgerRef), tx.get(referenceRef),
+    ]);
+    if (referenceSnap.exists) collision();
+    if (decisionRecordSnap.exists || ledgerSnap.exists) {
+      throw new SubscriptionManagementError(409, 'IDEMPOTENCY_CONFLICT', 'decisionRequestId was already used');
+    }
+    if (!userSnap.exists || !entitlementSnap.exists || !activationSnap.exists || !balanceSnap.exists) {
+      throw new SubscriptionManagementError(409, 'CANCELLATION_STATE_CHANGED', 'The captured subscription can no longer be cancelled safely');
+    }
+    const userData = userSnap.data() || {};
+    const entitlement = entitlementSnap.data() || {};
+    const activation = activationSnap.data() || {};
+    if (userData.pendingCancellationRequestId !== cancellationId
+        || entitlement.status !== 'active'
+        || entitlement.auditedRecordId !== requestData.activationRecordId
+        || activation.cancelledBy
+        || activation.voidedBy
+        || activation.actorUid !== requestData.requesterUid
+        || activation.source !== 'manual'
+        || activation.amount !== requestData.amount) {
+      throw new SubscriptionManagementError(409, 'CANCELLATION_STATE_CHANGED', 'The captured subscription changed during review');
+    }
+
+    const amount = parsePositiveInteger(requestData.amount, 'recorded amount');
+    const balance = withBalanceDefaults(balanceSnap.data());
+    const balanceAfter = balance.outstanding - amount;
+    const now = admin.firestore.Timestamp.now();
+    const terminationDate = requestData.suspendedAt || now;
+    const result = {
+      success: true,
+      requestId: cancellationId,
+      decisionRequestId,
+      status: 'approved',
+      referenceCode,
+      amount,
+      balanceAfter,
+      terminationDate: serialize(terminationDate),
+    };
+
+    tx.update(entitlementRef, {
+      status: 'cancelled', endDate: terminationDate, updatedAt: now, terminatedByRecord: decisionRequestId,
+    });
+    tx.update(activationRef, {
+      cancelledBy: {
+        recordId: decisionRequestId,
+        requestId: cancellationId,
+        referenceCode,
+        actor: actorSnapshot(actor),
+        createdAt: now,
+      },
+      updatedAt: now,
+    });
+    tx.set(balanceRef, {
+      ...balance,
+      outstanding: balanceAfter,
+      totalReversed: balance.totalReversed + amount,
+      updatedAt: now,
+    }, { merge: true });
+    tx.create(ledgerRef, {
+      requestId: decisionRequestId,
+      payloadHash: decisionPayloadHash,
+      referenceCode,
+      type: 'void_reversal',
+      amount,
+      balanceDelta: -amount,
+      balanceAfter,
+      supportUid: requestData.requesterUid,
+      actor: actorSnapshot(actor),
+      recordId: requestData.activationRecordId,
+      cancellationRequestId: cancellationId,
+      commissionRate: balance.commissionRate,
+      createdAt: now,
+      result,
+    });
+    tx.update(userRef, {
+      isSubscribed: false,
+      subscriptionEnd: terminationDate,
+      pendingCancellationRequestId: admin.firestore.FieldValue.delete(),
+      subscriptionCancellationSuspendedAt: admin.firestore.FieldValue.delete(),
+    });
+    tx.create(decisionRecordRef, {
+      requestId: decisionRequestId,
+      payloadHash: decisionPayloadHash,
+      referenceCode,
+      referenceCodeNormalized: referenceCode.toUpperCase(),
+      studentId: requestData.studentId,
+      studentEmail: requestData.studentEmail,
+      studentName: requestData.studentName,
+      type: 'termination',
+      source: 'support_cancellation_request',
+      immediate: true,
+      actorUid: actor.uid,
+      actor: actorSnapshot(actor),
+      requestedBy: requestData.requester,
+      cancellationRequestId: cancellationId,
+      previousExpiry: requestData.originalExpiry || null,
+      terminationDate,
+      previousIsSubscribed: true,
+      newIsSubscribed: false,
+      previousUserFields: requestData.originalUserFields,
+      ...(requestData.reason ? { reason: requestData.reason } : {}),
+      ...(note ? { decisionNote: note } : {}),
+      createdAt: now,
+      result,
+    });
+    tx.create(referenceRef, { referenceCode, targetCollection: 'subscriptionRecords', targetId: decisionRequestId, createdAt: now });
+    tx.update(requestRef, {
+      status: 'approved',
+      decisionAction: 'approve',
+      decisionRequestId,
+      decisionPayloadHash,
+      decisionBy: actorSnapshot(actor),
+      ...(note ? { decisionNote: note } : {}),
+      decidedAt: now,
+      decisionResult: result,
+      result,
+    });
+    return { ...result, replayed: false };
+  }));
+}
+
+export async function rejectSubscriptionCancellation(
+  admin: any,
+  actor: SubscriptionActor,
+  cancellationId: string,
+  input: AnyMap,
+): Promise<AnyMap> {
+  requireMaster(actor, 'canGrant');
+  validateRequestId(cancellationId);
+  const decisionRequestId = validateRequestId(input.decisionRequestId);
+  const note = normalizeLimitedText(input.note, 'note');
+  const decisionPayloadHash = requestPayloadHash({ action: 'reject', cancellationId, ...(note ? { note } : {}) });
+  const db = admin.firestore();
+  return db.runTransaction(async (tx: any) => {
+    const requestRef = db.collection('subscriptionCancellationRequests').doc(cancellationId);
+    const requestSnap = await tx.get(requestRef);
+    if (!requestSnap.exists) throw new SubscriptionManagementError(404, 'CANCELLATION_NOT_FOUND', 'Cancellation request not found');
+    const requestData = requestSnap.data() || {};
+    if (requestData.status !== 'pending') {
+      return cancellationDecisionReplay(requestData, decisionRequestId, decisionPayloadHash, 'reject');
+    }
+    const userRef = db.collection('users').doc(requestData.studentId);
+    const entitlementRef = db.collection('subscriptions').doc(requestData.entitlementId);
+    const userSnap = await tx.get(userRef);
+    const entitlementSnap = await tx.get(entitlementRef);
+    if (!userSnap.exists
+        || !entitlementSnap.exists
+        || userSnap.data()?.pendingCancellationRequestId !== cancellationId
+        || entitlementSnap.data()?.auditedRecordId !== requestData.activationRecordId) {
+      throw new SubscriptionManagementError(409, 'CANCELLATION_STATE_CHANGED', 'The captured subscription changed during review');
+    }
+    const originalExpiry = asDate(requestData.originalExpiry);
+    const restore = restorePatch(requestData.originalUserFields, admin.firestore.FieldValue);
+    restore.isSubscribed = requestData.originalUserFields?.isSubscribed?.present === true
+      && requestData.originalUserFields.isSubscribed.value === true
+      && !!originalExpiry
+      && originalExpiry.getTime() > Date.now();
+    restore.pendingCancellationRequestId = admin.firestore.FieldValue.delete();
+    restore.subscriptionCancellationSuspendedAt = admin.firestore.FieldValue.delete();
+    const now = admin.firestore.Timestamp.now();
+    const result = {
+      success: true,
+      requestId: cancellationId,
+      decisionRequestId,
+      status: 'rejected',
+      restored: restore.isSubscribed === true,
+      expiry: originalExpiry?.toISOString() || null,
+    };
+    tx.update(userRef, restore);
+    tx.update(entitlementRef, {
+      status: restore.isSubscribed ? 'active' : 'expired',
+      endDate: requestData.originalExpiry,
+      updatedAt: now,
+    });
+    tx.update(requestRef, {
+      status: 'rejected',
+      decisionAction: 'reject',
+      decisionRequestId,
+      decisionPayloadHash,
+      decisionBy: actorSnapshot(actor),
+      ...(note ? { decisionNote: note } : {}),
+      decidedAt: now,
+      decisionResult: result,
+      result,
+    });
+    return { ...result, replayed: false };
+  });
+}
+
+export async function listSubscriptionCancellationRequests(
+  admin: any,
+  actor: SubscriptionActor,
+  input: AnyMap,
+): Promise<AnyMap> {
+  if (!actor.isMasterAdmin) requireCancellationRequester(actor);
+  const db = admin.firestore();
+  const cursor = decodeCursor(input.cursor);
+  const addCursor = (query: any) => cursor.requestedAt && cursor.id
+    ? query.startAfter(admin.firestore.Timestamp.fromMillis(cursor.requestedAt), cursor.id)
+    : query;
+  let docs: any[];
+  if (actor.isMasterAdmin) {
+    requireMaster(actor, 'canGrant');
+    const pendingQuery = addCursor(db.collection('subscriptionCancellationRequests')
+      .where('status', '==', 'pending')
+      .orderBy('requestedAt', 'desc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
+      .limit(CANCELLATION_PAGE_SIZE));
+    const decidedQuery = addCursor(db.collection('subscriptionCancellationRequests')
+      .where('status', 'in', ['approved', 'rejected'])
+      .orderBy('requestedAt', 'desc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
+      .limit(CANCELLATION_PAGE_SIZE));
+    const [pending, decided] = await Promise.all([pendingQuery.get(), decidedQuery.get()]);
+    docs = [...pending.docs, ...decided.docs]
+      .sort((a, b) => (asMillis(b.data().requestedAt) || 0) - (asMillis(a.data().requestedAt) || 0)
+        || b.id.localeCompare(a.id))
+      .slice(0, CANCELLATION_PAGE_SIZE);
+  } else {
+    const snap = await addCursor(db.collection('subscriptionCancellationRequests')
+      .where('requesterUid', '==', actor.uid)
+      .orderBy('requestedAt', 'desc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
+      .limit(CANCELLATION_PAGE_SIZE)).get();
+    docs = snap.docs;
+  }
+  const last = docs[docs.length - 1];
+  return {
+    requests: docs.map((doc) => {
+      const data = doc.data() || {};
+      return serialize({
+        id: doc.id,
+        requestId: data.requestId,
+        status: data.status,
+        studentId: data.studentId,
+        studentEmail: data.studentEmail,
+        studentName: data.studentName,
+        requesterUid: data.requesterUid,
+        requester: data.requester,
+        plan: data.plan,
+        amount: data.amount,
+        originalExpiry: data.originalExpiry,
+        reason: data.reason,
+        requestedAt: data.requestedAt,
+        suspendedAt: data.suspendedAt,
+        decisionBy: data.decisionBy,
+        decisionNote: data.decisionNote,
+        decidedAt: data.decidedAt,
+      });
+    }),
+    nextCursor: docs.length === CANCELLATION_PAGE_SIZE && last
+      ? encodeCursor({ requestedAt: asMillis(last.data().requestedAt), id: last.id })
+      : null,
+  };
 }
 
 const ACTIVE_PAGE_SIZE = 25;
@@ -2116,7 +2606,10 @@ export function createSubscriptionManagementHandlers({ admin }: SubscriptionMana
     }),
     searchStudents: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);
-      if (!actor.isMasterAdmin && !hasStaffCapability(actor, 'canActivate') && !hasStaffCapability(actor, 'canGrant')) {
+      if (!actor.isMasterAdmin
+          && !hasStaffCapability(actor, 'canActivate')
+          && !hasStaffCapability(actor, 'canRequestCancellation')
+          && !hasStaffCapability(actor, 'canGrant')) {
         throw new SubscriptionManagementError(403, 'PERMISSION_DENIED', 'Missing subscription search permission');
       }
       res.json(await searchStudentsForSubscription(admin, actor, String(req.query.q || '')));
@@ -2173,6 +2666,26 @@ export function createSubscriptionManagementHandlers({ admin }: SubscriptionMana
     active: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);
       res.json(await getActiveSubscriptions(admin, actor, req.query || {}));
+    }),
+    previewCancellation: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await previewSubscriptionCancellation(admin, actor, req.query.studentEmail));
+    }),
+    requestCancellation: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await requestSubscriptionCancellation(admin, actor, req.body || {}));
+    }),
+    listCancellationRequests: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await listSubscriptionCancellationRequests(admin, actor, req.query || {}));
+    }),
+    approveCancellation: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await approveSubscriptionCancellation(admin, actor, req.params.id, req.body || {}));
+    }),
+    rejectCancellation: asyncHandler(async (req, res) => {
+      const actor = await loadActor(admin, req);
+      res.json(await rejectSubscriptionCancellation(admin, actor, req.params.id, req.body || {}));
     }),
     modifyEndDate: asyncHandler(async (req, res) => {
       const actor = await loadActor(admin, req);

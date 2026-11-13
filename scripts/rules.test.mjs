@@ -349,7 +349,7 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
     role: 'support', email: 'supdisabled@x.com', staffDisabled: true,
     permissions: {
       manageLectures: true, manageSubscriptions: true,
-      canActivate: true, canViewHistory: true, canViewOwnBalance: true,
+      canActivate: true, canRequestCancellation: true, canViewHistory: true, canViewOwnBalance: true,
       canViewExpiring: true, canGrant: true, canSettle: true,
     },
   });
@@ -376,6 +376,15 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, 'subscriptionRequests/status_request_1'), {
     requestId: 'status_request_1', payloadHash: 'hash',
     action: 'support_status', targetUid: 'sup_uid',
+  });
+  await setDoc(doc(db, 'subscriptionCancellationRequests/cancel_request_1'), {
+    requestId: 'cancel_request_1', status: 'pending', requesterUid: 'supsubs_uid',
+    studentId: 'stu_uid', amount: 2000,
+  });
+  await setDoc(doc(db, 'users/cancel_pending_uid'), {
+    role: 'student', email: 'cancel-pending@x.com', isSubscribed: false,
+    subscriptionPlan: 'monthly', subscriptionEnd: new Date('2099-01-01'),
+    pendingCancellationRequestId: 'cancel_request_1',
   });
 
   // An observer (read-only master admin)
@@ -805,6 +814,14 @@ await check('student CANNOT extend their own subscription',
   assertFails(updateDoc(doc(student, 'users/stu_uid'), { subscriptionEnd: new Date('2099-01-01') })));
 await check('student CANNOT upgrade their own plan',
   assertFails(updateDoc(doc(student, 'users/stu_uid'), { subscriptionPlan: 'semi_annual' })));
+await check('student CANNOT forge a pending cancellation marker',
+  assertFails(updateDoc(doc(student, 'users/stu_uid'), { pendingCancellationRequestId: 'forged' })));
+await check('student CANNOT forge a cancellation suspension timestamp',
+  assertFails(updateDoc(doc(student, 'users/stu_uid'), { subscriptionCancellationSuspendedAt: serverTimestamp() })));
+await check('Master client CANNOT forge a pending cancellation marker',
+  assertFails(updateDoc(doc(master, 'users/stu_uid'), { pendingCancellationRequestId: 'forged' })));
+await check('Master client CANNOT mutate subscription state while cancellation is pending',
+  assertFails(updateDoc(doc(master, 'users/cancel_pending_uid'), { isSubscribed: true })));
 // Clearing this would let them open a second gateway transaction while one is
 // still live, which ZainCash then refuses to settle - locking them out of both.
 await check('student CANNOT clear the in-flight payment pointer',
@@ -1532,6 +1549,14 @@ await check('Support-management idempotency rows are private even to Master',
 await check('no client can create a Support-management idempotency row',
   assertFails(setDoc(doc(master, 'subscriptionRequests/forged_request'), {
     requestId: 'forged_request', action: 'remove_support',
+  })));
+await check('cancellation requests are private even to Master clients',
+  assertFails(getDoc(doc(master, 'subscriptionCancellationRequests/cancel_request_1'))));
+await check('cancellation requests are private to Support clients too',
+  assertFails(getDoc(doc(supportSubs, 'subscriptionCancellationRequests/cancel_request_1'))));
+await check('no client can create a cancellation request directly',
+  assertFails(setDoc(doc(supportSubs, 'subscriptionCancellationRequests/forged_cancel'), {
+    requestId: 'forged_cancel', status: 'pending', requesterUid: 'supsubs_uid',
   })));
 
 console.log('\nDisabled Support loses legacy and new capabilities immediately');

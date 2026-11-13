@@ -55,6 +55,11 @@ rules_version = '2';
 // Fields:
 //   - server-owned idempotency record for Support status/removal actions
 //
+// Collection: subscriptionCancellationRequests
+// Document ID: {requestId}
+// Fields:
+//   - server-owned Support cancellation request, access snapshot, and decision audit
+//
 // ===============================================================
 
 service cloud.firestore {
@@ -221,7 +226,7 @@ service cloud.firestore {
     // fails if either side changes independently.
     function supportSubscriptionCan(capability) {
       return capability in [
-          'canActivate', 'canViewHistory', 'canViewOwnBalance', 'canViewExpiring'
+          'canActivate', 'canRequestCancellation', 'canViewHistory', 'canViewOwnBalance', 'canViewExpiring'
         ] && supportCan(capability);
     }
 
@@ -250,6 +255,24 @@ service cloud.firestore {
       return resource.data.get('role', '') != 'support' ||
         request.resource.data.get('role', '') == 'support' ||
         supportBalanceIsZero(supportUid);
+    }
+
+    function cancellationMarkersUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'pendingCancellationRequestId', 'subscriptionCancellationSuspendedAt'
+      ]);
+    }
+
+    function cancellationMarkersAbsent(data) {
+      return !('pendingCancellationRequestId' in data) &&
+        !('subscriptionCancellationSuspendedAt' in data);
+    }
+
+    function subscriptionStateUnchangedDuringCancellation() {
+      return !('pendingCancellationRequestId' in resource.data) ||
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'isSubscribed', 'subscriptionEnd', 'subscriptionPlan'
+        ]);
     }
 
     function isValidPendingSuperQiSubscription(data) {
@@ -294,7 +317,7 @@ service cloud.firestore {
           'manageStreakSystem', 'manageMcqSystem', 'manageAntiCheat',
           'manageSubscriptions', 'viewAdminLogs', 'manageCalendar',
           'manageSimosanBilling', 'canActivate', 'canViewHistory',
-          'canViewOwnBalance', 'canViewExpiring'
+           'canRequestCancellation', 'canViewOwnBalance', 'canViewExpiring'
         ]) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid))
           .data.get('permissions', {}).get(capability, true) != false;
@@ -738,11 +761,11 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && cancellationMarkersAbsent(request.resource.data) &&
                     (request.resource.data.role == 'student' || 
                      (request.resource.data.role == assistantRole() && assistantRole() != '') ||
                      (request.resource.data.role in ['admin'] && isMasterAdmin()));
-      allow update: if (isMasterAdmin() && isSettledSupportRoleTransition(userId)) ||
+      allow update: if (isMasterAdmin() && isSettledSupportRoleTransition(userId) && cancellationMarkersUnchanged() && subscriptionStateUnchangedDuringCancellation()) ||
                       (supportCan('manageStudents') && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stageId', 'updatedAt'])) ||
                       (canManageStudentsOn(resource.data.get('stageId', '')) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['examCode', 'name', 'originalName'])) ||
                       // Appointing a moderator writes these three fields onto their
@@ -1300,6 +1323,12 @@ service cloud.firestore {
     // payload hashes, actor snapshots, and replay results; only the Admin SDK
     // may create or inspect them.
     match /subscriptionRequests/{requestId} {
+      allow read, write: if false;
+    }
+
+    // Cancellation requests include private student, payment, and staff audit
+    // data. They are created and reviewed only through the authenticated API.
+    match /subscriptionCancellationRequests/{requestId} {
       allow read, write: if false;
     }
 

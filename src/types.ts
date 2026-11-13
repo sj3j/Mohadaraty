@@ -300,6 +300,7 @@ export interface UserProfile {
      *  why it sits with the system-wide three rather than the per-stage ones. */
     manageSubscriptions?: boolean;
     canActivate?: boolean;
+    canRequestCancellation?: boolean;
     canViewHistory?: boolean;
     canViewOwnBalance?: boolean;
     canViewExpiring?: boolean;
