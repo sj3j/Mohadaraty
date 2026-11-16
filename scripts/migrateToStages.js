@@ -198,24 +198,32 @@ async function migrate() {
     process.exit(1);
   }
 
-  let credential;
-  if (serviceAccountPath) {
-    credential = cert(JSON.parse(readFileSync(serviceAccountPath, 'utf8')));
+  let appOptions;
+  if (process.env.FIRESTORE_EMULATOR_HOST) {
+    // Firebase Admin targets the emulator from FIRESTORE_EMULATOR_HOST; do not
+    // require or accidentally load live credentials for an emulator run.
+    const projectId = process.env.GCLOUD_PROJECT || process.env.FIREBASE_PROJECT_ID || 'mylectures-rules-test';
+    appOptions = { projectId };
+    console.log(`Using Firestore emulator for project ${projectId}.`);
+  } else if (serviceAccountPath) {
+    appOptions = { credential: cert(JSON.parse(readFileSync(serviceAccountPath, 'utf8'))) };
   } else {
     const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
     if (!FIREBASE_PROJECT_ID || !FIREBASE_CLIENT_EMAIL || !FIREBASE_PRIVATE_KEY) {
       console.error("No service account path given and .env is missing FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY.");
       process.exit(1);
     }
-    credential = cert({
-      projectId: FIREBASE_PROJECT_ID,
-      clientEmail: FIREBASE_CLIENT_EMAIL,
-      privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    });
+    appOptions = {
+      credential: cert({
+        projectId: FIREBASE_PROJECT_ID,
+        clientEmail: FIREBASE_CLIENT_EMAIL,
+        privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+    };
     console.log(`Authenticating as ${FIREBASE_CLIENT_EMAIL} (project ${FIREBASE_PROJECT_ID}).`);
   }
 
-  initializeApp({ credential });
+  initializeApp(appOptions);
   const db = getFirestore();
 
   console.log(`Starting migration to Multi-Stage Architecture (default stage: ${defaultStage})...\n`);

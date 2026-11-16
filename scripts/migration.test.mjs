@@ -6,7 +6,7 @@
  * Seeds pre-course content, runs the real migration, then asserts the curriculum
  * landed and every legacy lecture/record was tagged with the right course+subject.
  */
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import 'dotenv/config';
 import { execFileSync } from 'child_process';
@@ -23,14 +23,11 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
   process.exit(1);
 }
 
-const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
-const credential = cert({
-  projectId: FIREBASE_PROJECT_ID,
-  clientEmail: FIREBASE_CLIENT_EMAIL,
-  privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-});
-
-const seedApp = initializeApp({ credential, projectId: FIREBASE_PROJECT_ID }, 'seeder');
+// The emulator needs a project id, not production credentials. Keeping this
+// independent from .env lets CI exercise the real migration without granting
+// its verification job access to the production service account.
+const emulatorProjectId = process.env.GCLOUD_PROJECT || 'mylectures-rules-test';
+const seedApp = initializeApp({ projectId: emulatorProjectId }, 'seeder');
 const db = getFirestore(seedApp);
 
 let passed = 0, failed = 0;
