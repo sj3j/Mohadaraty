@@ -19,6 +19,25 @@ import {
 } from './subscriptionTypes.js';
 import { PLAN_CONFIG } from './subscriptions.js';
 import { serverCache } from './serverCache.js';
+import { hasLiveSubscription } from './subscriptionAccess.js';
+
+export interface StageReportItem {
+  stageId: string;
+  nameAr: string;
+  nameEn: string;
+  order: number;
+  activeSubscribers: number;
+  activePercentage: number;
+  periodRevenue: number;
+  periodRevenuePercentage: number;
+  periodActivations: number;
+}
+
+export interface StageAnalysisReport {
+  stages: StageReportItem[];
+  totalActiveSubscribers: number;
+  totalPeriodRevenue: number;
+}
 
 const REF_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const NOTE_LIMIT = 200;
@@ -356,19 +375,110 @@ async function sendActivationNotification(admin: any, userId: string, plan: stri
   }
 }
 
+export async function resolveStudentRosterName(db: any, email: string): Promise<string | null> {
+  if (!email) return null;
+  const lower = email.toLowerCase().trim();
+  try {
+    const sDoc = await db.collection('students').doc(lower).get();
+    if (sDoc.exists) {
+      const d = sDoc.data() || {};
+      const name = (d.originalName || d.name || '').trim();
+      if (name) return name;
+    }
+  } catch {}
+  try {
+    const sDocComma = await db.collection('students').doc(lower.replace(/\./g, ',')).get();
+    if (sDocComma.exists) {
+      const d = sDocComma.data() || {};
+      const name = (d.originalName || d.name || '').trim();
+      if (name) return name;
+    }
+  } catch {}
+  try {
+    const byGoogle = await db.collection('students').where('googleEmail', '==', lower).limit(1).get();
+    if (!byGoogle.empty) {
+      const d = byGoogle.docs[0].data() || {};
+      const name = (d.originalName || d.name || '').trim();
+      if (name) return name;
+    }
+  } catch {}
+  return null;
+}
+
+export async function resolveStudentDisplayName(db: any, userData: AnyMap, email: string): Promise<string> {
+  const rosterName = await resolveStudentRosterName(db, email);
+  if (rosterName) return rosterName;
+  const userOriginal = typeof userData?.originalName === 'string' ? userData.originalName.trim() : '';
+  if (userOriginal && !userOriginal.includes('@')) return userOriginal;
+  const userName = typeof userData?.name === 'string' ? userData.name.trim() : '';
+  if (userName && !userName.includes('@')) return userName;
+  return email;
+}
+
+export async function enrichStudentNames(db: any, items: AnyMap[]): Promise<void> {
+  const needsEnrichment = items.filter(
+    item => !item.studentName || item.studentName.includes('@') || item.studentName.toLowerCase() === (item.studentEmail || '').toLowerCase()
+  );
+  if (needsEnrichment.length === 0) return;
+
+  const emailsToLookup = new Set<string>();
+  for (const item of needsEnrichment) {
+    const email = (item.studentEmail || item.studentId || '').trim().toLowerCase();
+    if (email && email.includes('@')) {
+      emailsToLookup.add(email);
+    }
+  }
+  if (emailsToLookup.size === 0) return;
+
+  const emailList = Array.from(emailsToLookup);
+  const nameMap = new Map<string, string>();
+
+  await Promise.all(
+    emailList.map(async (email) => {
+      try {
+        const rosterName = await resolveStudentRosterName(db, email);
+        if (rosterName) {
+          nameMap.set(email, rosterName);
+          return;
+        }
+        const uDoc = await db.collection('users').doc(email).get();
+        if (uDoc.exists) {
+          const d = uDoc.data() || {};
+          const name = (d.originalName || d.name || '').trim();
+          if (name && !name.includes('@')) {
+            nameMap.set(email, name);
+            return;
+          }
+        }
+      } catch {}
+    })
+  );
+
+  for (const item of needsEnrichment) {
+    const email = (item.studentEmail || item.studentId || '').trim().toLowerCase();
+    const resolved = nameMap.get(email);
+    if (resolved) {
+      item.studentName = resolved;
+    }
+  }
+}
+
 export async function previewManagedSubscription(admin: any, email: string, plan: string): Promise<AnyMap> {
   if (!(PAID_MANUAL_PLANS as readonly string[]).includes(plan) && !(GRANT_PLANS as readonly string[]).includes(plan as any)) {
     throw new SubscriptionManagementError(400, 'INVALID_PLAN', 'Invalid subscription plan');
   }
+  const db = admin.firestore();
   const target = await resolveStudent(admin, email);
   const snap = target.snap;
   const data = snap.data() || {};
+  const studentEmail = data.email || snap.id;
+  const studentName = await resolveStudentDisplayName(db, data, studentEmail);
   const now = new Date();
   const expiry = computeSubscriptionExpiry(now, asDate(data.subscriptionEnd), data.isSubscribed === true, plan);
   return {
     studentId: snap.id,
-    studentEmail: data.email || snap.id,
-    studentName: data.name || data.originalName || email,
+    studentEmail,
+    studentName,
     status: data.isSubscribed === true ? 'active' : 'inactive',
     isSubscribed: data.isSubscribed === true,
     currentPlan: data.subscriptionPlan || null,
@@ -426,6 +536,9 @@ export async function commitManagedActivation(
   const target = await resolveStudent(admin, studentEmail);
   const targetUserRef = target.ref;
   const targetUserId = target.snap.id;
+  const targetUserData = target.snap.data() || {};
+  const resolvedStudentEmail = targetUserData.email || studentEmail;
+  const resolvedStudentName = await resolveStudentDisplayName(db, targetUserData, resolvedStudentEmail);
 
   const result = await withUniqueReference(prefix, async (referenceCode) => {
     return db.runTransaction(async (tx: any) => {
@@ -452,7 +565,7 @@ export async function commitManagedActivation(
       if (userData.pendingCancellationRequestId) {
         throw new SubscriptionManagementError(409, 'CANCELLATION_PENDING', 'A cancellation request is awaiting review');
       }
-      const resolvedStudentEmail = userData.email || studentEmail;
+      const studentEmailResolved = userData.email || resolvedStudentEmail;
       const currentStateToken = subscriptionStateToken(userData);
       if (input.previewStateToken && input.previewStateToken !== currentStateToken) {
         throw new SubscriptionManagementError(409, 'PREVIEW_STALE', 'Subscription state changed; refresh the preview');
@@ -484,14 +597,14 @@ export async function commitManagedActivation(
         });
       }
 
-      const studentName = String(userData.name || userData.originalName || resolvedStudentEmail);
+      const studentName = resolvedStudentName;
       tx.create(recordRef, {
         requestId,
         payloadHash,
         referenceCode,
         referenceCodeNormalized: referenceCode.toUpperCase(),
         studentId: targetUserId,
-        studentEmail: resolvedStudentEmail,
+        studentEmail: studentEmailResolved,
         studentName,
         type: mode === 'grant' ? 'grant' : 'activation',
         source: mode === 'grant' ? 'grant' : 'manual',
@@ -511,7 +624,7 @@ export async function commitManagedActivation(
       });
       tx.create(entitlementRef, {
         userId: targetUserId,
-        userEmail: resolvedStudentEmail,
+        userEmail: studentEmailResolved,
         userName: studentName,
         plan,
         status: 'active',
@@ -553,6 +666,9 @@ export async function commitManagedActivation(
           commissionRate: balance.commissionRate,
           createdAt: now,
           result: resultValue,
+          studentName,
+          studentEmail: studentEmailResolved,
+          plan,
         });
       }
       return { ...resultValue, replayed: false };
@@ -587,7 +703,7 @@ export async function requestSupportGrant(
   const userData = userSnap.data() || {};
   const resolvedStudentEmail = userData.email || studentEmail;
   const resolvedStudentId = userSnap.id;
-  const studentName = userData.name || userData.originalName || resolvedStudentEmail;
+  const studentName = await resolveStudentDisplayName(db, userData, resolvedStudentEmail);
 
   const existingSub = await db.collection('subscriptions').doc(requestId).get();
   if (existingSub.exists) {
@@ -838,6 +954,9 @@ export async function voidManagedRecord(admin: any, actor: SubscriptionActor, re
         commissionRate: balance.commissionRate,
         createdAt: now,
         result,
+        studentName: original.studentName,
+        studentEmail: original.studentEmail,
+        plan: original.plan,
       });
     }
     return { ...result, replayed: false };
@@ -879,28 +998,62 @@ function applyCursor(query: any, cursor: AnyMap, Timestamp: any): any {
     : query;
 }
 
-async function getHistory(admin: any, actor: SubscriptionActor, queryInput: AnyMap): Promise<AnyMap> {
+export async function getHistory(admin: any, actor: SubscriptionActor, queryInput: AnyMap): Promise<AnyMap> {
   requireCapability(actor, 'canViewHistory');
   const db = admin.firestore();
-  const limit = Math.min(50, Math.max(1, Number(queryInput.limit) || HISTORY_PAGE_SIZE));
+  const maxLimit = actor.isMasterAdmin ? 1000 : 100;
+  const limit = Math.min(maxLimit, Math.max(1, Number(queryInput.limit) || HISTORY_PAGE_SIZE));
   const cursor = decodeCursor(queryInput.cursor);
   const student = typeof queryInput.student === 'string' && queryInput.student.trim()
     ? queryInput.student.trim().toLowerCase() : '';
-  const staff = typeof queryInput.staff === 'string' && queryInput.staff.trim()
+  let staff = typeof queryInput.staff === 'string' && queryInput.staff.trim()
     ? queryInput.staff.trim() : '';
   const reference = typeof queryInput.reference === 'string' && queryInput.reference.trim()
     ? queryInput.reference.trim().toUpperCase() : '';
+
+  if (!actor.isMasterAdmin) {
+    if (staff && staff !== actor.uid) {
+      throw new SubscriptionManagementError(403, 'OWN_HISTORY_ONLY', 'Support staff may only view their own activations');
+    }
+    staff = actor.uid;
+  }
+
+  let fromDate = asDate(queryInput.fromDate || queryInput.startDate);
+  const toDate = asDate(queryInput.toDate || queryInput.endDate);
+
+  if (queryInput.unsettledOnly === 'true' || queryInput.unsettledOnly === true) {
+    if (staff) {
+      try {
+        const lastSettlementSnap = await db.collection('supportLedger')
+          .where('supportUid', '==', staff)
+          .where('type', 'in', ['receive_full', 'reset'])
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+        if (!lastSettlementSnap.empty) {
+          const lastDate = asDate(lastSettlementSnap.docs[0].data()?.createdAt);
+          if (lastDate && (!fromDate || lastDate > fromDate)) {
+            fromDate = lastDate;
+          }
+        }
+      } catch {}
+    }
+  }
 
   let privateQuery: any = db.collection('subscriptionRecords');
   if (student) privateQuery = privateQuery.where('studentId', '==', student);
   if (staff) privateQuery = privateQuery.where('actorUid', '==', staff);
   if (reference) privateQuery = privateQuery.where('referenceCodeNormalized', '==', reference);
+  if (fromDate) privateQuery = privateQuery.where('createdAt', '>=', admin.firestore.Timestamp.fromDate(fromDate));
+  if (toDate) privateQuery = privateQuery.where('createdAt', '<=', admin.firestore.Timestamp.fromDate(toDate));
   privateQuery = privateQuery.orderBy('createdAt', 'desc')
     .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
   privateQuery = applyCursor(privateQuery, cursor.private, admin.firestore.Timestamp).limit(limit + 1);
 
   let legacyQuery: any = db.collection('subscriptions');
   if (student) legacyQuery = legacyQuery.where('userId', '==', student);
+  if (fromDate) legacyQuery = legacyQuery.where('createdAt', '>=', admin.firestore.Timestamp.fromDate(fromDate));
+  if (toDate) legacyQuery = legacyQuery.where('createdAt', '<=', admin.firestore.Timestamp.fromDate(toDate));
   legacyQuery = legacyQuery.orderBy('createdAt', 'desc')
     .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
   legacyQuery = applyCursor(legacyQuery, cursor.legacy, admin.firestore.Timestamp).limit(limit + 1);
@@ -923,8 +1076,12 @@ async function getHistory(admin: any, actor: SubscriptionActor, queryInput: AnyM
   for (const item of merged) nextCursor[item.source] = cursorPoint(item.doc);
   const hasMore = privateDocs.length > merged.filter(x => x.source === 'private').length
     || legacyDocs.length > merged.filter(x => x.source === 'legacy').length;
+
+  const rows = merged.map(item => historyRow(item.doc, item.source));
+  await enrichStudentNames(db, rows);
+
   return {
-    items: merged.map(item => historyRow(item.doc, item.source)),
+    items: rows,
     nextCursor: hasMore ? encodeCursor(nextCursor) : null,
   };
 }
@@ -948,9 +1105,36 @@ async function getBalances(admin: any, actor: SubscriptionActor, queryInput: Any
       db.collection('supportLedger').where('supportUid', '==', supportUid).orderBy('createdAt', 'desc').limit(50).get(),
       db.collection('users').doc(supportUid).get(),
     ]);
+
+    const ledgerDocs = ledgerSnap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    const missingRecords = ledgerDocs.filter(
+      (d: any) => !d.studentName && d.recordId && ['credit', 'void_reversal'].includes(d.type)
+    );
+    if (missingRecords.length > 0) {
+      const recordIds = Array.from(new Set(missingRecords.map((d: any) => d.recordId as string)));
+      const recordDocs = await Promise.all(
+        recordIds.map((id) => db.collection('subscriptionRecords').doc(id).get().catch(() => null))
+      );
+      const recordMap = new Map<string, AnyMap>();
+      for (const snap of recordDocs) {
+        if (snap && snap.exists) {
+          recordMap.set(snap.id, snap.data());
+        }
+      }
+      for (const d of missingRecords) {
+        const rec = recordMap.get(d.recordId);
+        if (rec) {
+          d.studentName = rec.studentName;
+          d.studentEmail = rec.studentEmail;
+          d.plan = rec.plan;
+        }
+      }
+    }
+    await enrichStudentNames(db, ledgerDocs);
+
     return {
       balance: serialize({ supportUid, ...withBalanceDefaults(balanceSnap.data()), staffDisabled: userSnap.data()?.staffDisabled === true }),
-      ledger: ledgerSnap.docs.map((doc: any) => serialize({ id: doc.id, ...doc.data() })),
+      ledger: ledgerDocs.map((item: any) => serialize(item)),
     };
   }
 
@@ -976,6 +1160,82 @@ async function getBalances(admin: any, actor: SubscriptionActor, queryInput: Any
   return { balances: rows };
 }
 
+export async function resolveStudentStageId(
+  db: any,
+  studentId: string,
+  studentEmail: string,
+  stageCache: Map<string, string>,
+): Promise<string> {
+  const normId = (studentId || '').toLowerCase().trim();
+  const normEmail = (studentEmail || '').toLowerCase().trim();
+
+  if (normId && stageCache.has(normId)) return stageCache.get(normId)!;
+  if (normEmail && stageCache.has(normEmail)) return stageCache.get(normEmail)!;
+
+  // 1. Direct users doc lookup
+  if (normId) {
+    try {
+      const uDoc = await db.collection('users').doc(normId).get();
+      if (uDoc.exists) {
+        const d = uDoc.data() || {};
+        if (d.stageId && typeof d.stageId === 'string' && d.stageId.trim()) {
+          const st = d.stageId.trim();
+          stageCache.set(normId, st);
+          if (normEmail) stageCache.set(normEmail, st);
+          return st;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Direct students doc or query lookup by email
+  const emailToLookup = normEmail || normId;
+  if (emailToLookup && emailToLookup.includes('@')) {
+    try {
+      const sDoc = await db.collection('students').doc(emailToLookup).get();
+      if (sDoc.exists) {
+        const d = sDoc.data() || {};
+        if (d.stageId && typeof d.stageId === 'string' && d.stageId.trim()) {
+          const st = d.stageId.trim();
+          stageCache.set(emailToLookup, st);
+          if (normId) stageCache.set(normId, st);
+          return st;
+        }
+      }
+    } catch {}
+
+    try {
+      const sDocComma = await db.collection('students').doc(emailToLookup.replace(/\./g, ',')).get();
+      if (sDocComma.exists) {
+        const d = sDocComma.data() || {};
+        if (d.stageId && typeof d.stageId === 'string' && d.stageId.trim()) {
+          const st = d.stageId.trim();
+          stageCache.set(emailToLookup, st);
+          if (normId) stageCache.set(normId, st);
+          return st;
+        }
+      }
+    } catch {}
+
+    try {
+      const byGoogle = await db.collection('students').where('googleEmail', '==', emailToLookup).limit(1).get();
+      if (!byGoogle.empty) {
+        const d = byGoogle.docs[0].data() || {};
+        if (d.stageId && typeof d.stageId === 'string' && d.stageId.trim()) {
+          const st = d.stageId.trim();
+          stageCache.set(emailToLookup, st);
+          if (normId) stageCache.set(normId, st);
+          return st;
+        }
+      }
+    } catch {}
+  }
+
+  if (normId) stageCache.set(normId, 'unassigned');
+  if (normEmail) stageCache.set(normEmail, 'unassigned');
+  return 'unassigned';
+}
+
 export async function getReports(admin: any, actor: SubscriptionActor, period: string): Promise<AnyMap> {
   requireMaster(actor, 'canViewReports');
   if (!['today', 'this_month', 'last_month', 'this_year'].includes(period)) {
@@ -994,6 +1254,7 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
     db.collection('subscriptionRecords').where('createdAt', '>=', start).where('createdAt', '<', end).get(),
     db.collection('subscriptions').where('createdAt', '>=', start).where('createdAt', '<', end).get(),
     getBalances(admin, actor, {}),
+    db.collection('users').where('isSubscribed', '==', true).get(),
   ];
 
   const needSeparateYearQuery = period !== 'this_year';
@@ -1008,8 +1269,9 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
   const privateSnap = results[0];
   const legacySnap = results[1];
   const balances = results[2];
-  const yearPrivateSnap = needSeparateYearQuery ? results[3] : privateSnap;
-  const yearLegacySnap = needSeparateYearQuery ? results[4] : legacySnap;
+  const activeUsersSnap = results[3];
+  const yearPrivateSnap = needSeparateYearQuery ? results[4] : privateSnap;
+  const yearLegacySnap = needSeparateYearQuery ? results[5] : legacySnap;
 
   const ALL_PLANS = ['monthly', 'seasonal', 'semi_annual', 'annual'] as const;
   const revenue: AnyMap = { total: 0, bySource: {}, byPlan: {} };
@@ -1048,6 +1310,8 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
     }
   }
 
+  const validPeriodRecords: Array<{ amount: number; studentId: string; studentEmail: string }> = [];
+
   for (const doc of privateSnap.docs) {
     const data = doc.data();
     if (
@@ -1059,6 +1323,11 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
       (data.entitlementId && cancelledIds.has(String(data.entitlementId)))
     ) continue;
     add('manual', data.plan, data.amount || 0, data.studentEmail || data.studentId || '');
+    validPeriodRecords.push({
+      amount: data.amount || 0,
+      studentId: data.studentId || doc.id,
+      studentEmail: data.studentEmail || '',
+    });
   }
   for (const doc of legacySnap.docs) {
     const data = doc.data();
@@ -1071,6 +1340,123 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
     ) continue;
     const source = ['zaincash', 'superkey'].includes(data.paymentMethod) ? 'gateway' : 'legacy';
     add(source, data.plan, data.amount || 0, data.userEmail || data.userId || '');
+    validPeriodRecords.push({
+      amount: data.amount || 0,
+      studentId: data.userId || doc.id,
+      studentEmail: data.userEmail || '',
+    });
+  }
+
+  // --- Stage-by-Stage Analysis ---
+  const activeCountByStage: Record<string, number> = {
+    stage_1: 0,
+    stage_2: 0,
+    stage_3: 0,
+    stage_4: 0,
+    stage_5: 0,
+    unassigned: 0,
+  };
+  const periodRevenueByStage: Record<string, number> = {
+    stage_1: 0,
+    stage_2: 0,
+    stage_3: 0,
+    stage_4: 0,
+    stage_5: 0,
+    unassigned: 0,
+  };
+  const periodActivationsByStage: Record<string, number> = {
+    stage_1: 0,
+    stage_2: 0,
+    stage_3: 0,
+    stage_4: 0,
+    stage_5: 0,
+    unassigned: 0,
+  };
+
+  const stageCache = new Map<string, string>();
+  const nowDate = new Date();
+  let totalActiveSubscribers = 0;
+
+  if (activeUsersSnap && activeUsersSnap.docs) {
+    for (const doc of activeUsersSnap.docs) {
+      const uData = doc.data() || {};
+      if (!hasLiveSubscription(uData, nowDate)) continue;
+
+      totalActiveSubscribers++;
+      let stage = (uData.stageId && typeof uData.stageId === 'string') ? uData.stageId.trim() : '';
+      if (!stage && (uData.email || doc.id)) {
+        stage = await resolveStudentStageId(db, doc.id, uData.email || '', stageCache);
+      }
+      const normalizedStage = ['stage_1', 'stage_2', 'stage_3', 'stage_4', 'stage_5'].includes(stage) ? stage : 'unassigned';
+      stageCache.set(doc.id, normalizedStage);
+      if (uData.email) stageCache.set(String(uData.email).toLowerCase(), normalizedStage);
+
+      activeCountByStage[normalizedStage] = (activeCountByStage[normalizedStage] || 0) + 1;
+    }
+  }
+
+  for (const item of validPeriodRecords) {
+    const amt = item.amount;
+    if (Number.isSafeInteger(amt) && amt > 0) {
+      const stage = await resolveStudentStageId(db, item.studentId, item.studentEmail, stageCache);
+      const normalizedStage = ['stage_1', 'stage_2', 'stage_3', 'stage_4', 'stage_5'].includes(stage) ? stage : 'unassigned';
+      periodRevenueByStage[normalizedStage] = (periodRevenueByStage[normalizedStage] || 0) + amt;
+      periodActivationsByStage[normalizedStage] = (periodActivationsByStage[normalizedStage] || 0) + 1;
+    }
+  }
+
+  const CANONICAL_STAGE_DEFS = [
+    { stageId: 'stage_1', nameAr: 'المرحلة الأولى', nameEn: 'First Stage', order: 1 },
+    { stageId: 'stage_2', nameAr: 'المرحلة الثانية', nameEn: 'Second Stage', order: 2 },
+    { stageId: 'stage_3', nameAr: 'المرحلة الثالثة', nameEn: 'Third Stage', order: 3 },
+    { stageId: 'stage_4', nameAr: 'المرحلة الرابعة', nameEn: 'Fourth Stage', order: 4 },
+    { stageId: 'stage_5', nameAr: 'المرحلة الخامسة', nameEn: 'Fifth Stage', order: 5 },
+  ];
+
+  const stageReportItems: StageReportItem[] = CANONICAL_STAGE_DEFS.map(def => {
+    const activeSubscribers = activeCountByStage[def.stageId] || 0;
+    const activePercentage = totalActiveSubscribers > 0
+      ? Math.round((activeSubscribers / totalActiveSubscribers) * 1000) / 10
+      : 0;
+    const periodRevenue = periodRevenueByStage[def.stageId] || 0;
+    const periodRevenuePercentage = revenue.total > 0
+      ? Math.round((periodRevenue / revenue.total) * 1000) / 10
+      : 0;
+    const periodActivations = periodActivationsByStage[def.stageId] || 0;
+
+    return {
+      stageId: def.stageId,
+      nameAr: def.nameAr,
+      nameEn: def.nameEn,
+      order: def.order,
+      activeSubscribers,
+      activePercentage,
+      periodRevenue,
+      periodRevenuePercentage,
+      periodActivations,
+    };
+  });
+
+  const unassignedActive = activeCountByStage.unassigned || 0;
+  const unassignedRevenue = periodRevenueByStage.unassigned || 0;
+  const unassignedActivations = periodActivationsByStage.unassigned || 0;
+
+  if (unassignedActive > 0 || unassignedRevenue > 0) {
+    stageReportItems.push({
+      stageId: 'unassigned',
+      nameAr: 'غير محدد',
+      nameEn: 'Unassigned',
+      order: 99,
+      activeSubscribers: unassignedActive,
+      activePercentage: totalActiveSubscribers > 0
+        ? Math.round((unassignedActive / totalActiveSubscribers) * 1000) / 10
+        : 0,
+      periodRevenue: unassignedRevenue,
+      periodRevenuePercentage: revenue.total > 0
+        ? Math.round((unassignedRevenue / revenue.total) * 1000) / 10
+        : 0,
+      periodActivations: unassignedActivations,
+    });
   }
 
   let yearlyTotal = 0;
@@ -1130,6 +1516,11 @@ export async function getReports(admin: any, actor: SubscriptionActor, period: s
     },
     yearlyRevenue: yearlyTotal,
     balances: balances.balances,
+    stageAnalysis: {
+      stages: stageReportItems,
+      totalActiveSubscribers,
+      totalPeriodRevenue: revenue.total,
+    },
   };
 }
 
@@ -1162,7 +1553,7 @@ async function getExpiring(admin: any, actor: SubscriptionActor, cursorValue: un
     return serialize({
       studentId: doc.id,
       studentEmail: data.email || doc.id,
-      studentName: data.name || data.originalName || data.email || doc.id,
+      studentName: data.originalName || data.name || data.email || doc.id,
       plan: data.subscriptionPlan || null,
       expiry: data.subscriptionEnd,
       daysLeft: expiryMillis === null ? null : Math.max(0, Math.ceil((expiryMillis - now.getTime()) / 86_400_000)),
@@ -1289,7 +1680,7 @@ export async function resolveStudent(admin: any, value: string): Promise<{ ref: 
             }
           } catch {}
         }
-        const initialName = sData.name || sData.originalName || value;
+        const initialName = sData.originalName || sData.name || value;
         const nowTimestamp = admin.firestore.FieldValue?.serverTimestamp
           ? admin.firestore.FieldValue.serverTimestamp()
           : new Date();
@@ -1612,6 +2003,9 @@ export async function terminateSubscription(
               commissionRate: balance.commissionRate,
               createdAt: now,
               result: resultValue,
+              studentName: item.data.studentName,
+              studentEmail: item.data.studentEmail,
+              plan: item.data.plan,
             });
           }
         }
@@ -1944,6 +2338,9 @@ export async function approveSubscriptionCancellation(
       commissionRate: balance.commissionRate,
       createdAt: now,
       result,
+      studentName: requestData.studentName,
+      studentEmail: requestData.studentEmail,
+      plan: requestData.plan,
     });
     tx.update(userRef, {
       isSubscribed: false,
@@ -2169,7 +2566,7 @@ export async function getActiveSubscriptions(
           items.push(serialize({
             studentId: doc.id,
             studentEmail: data.email || doc.id,
-            studentName: data.name || data.originalName || data.email || doc.id,
+            studentName: data.originalName || data.name || data.email || doc.id,
             plan: data.subscriptionPlan || null,
             expiry: data.subscriptionEnd || null,
             isSubscribed: data.isSubscribed === true,
@@ -2196,7 +2593,7 @@ export async function getActiveSubscriptions(
         items.push(serialize({
           studentId: doc.id,
           studentEmail: data.email || doc.id,
-          studentName: data.name || data.originalName || data.email || doc.id,
+          studentName: data.originalName || data.name || data.email || doc.id,
           plan: data.subscriptionPlan || null,
           expiry: data.subscriptionEnd || null,
           isSubscribed: data.isSubscribed === true,
@@ -2226,7 +2623,7 @@ export async function getActiveSubscriptions(
     return serialize({
       studentId: doc.id,
       studentEmail: data.email || doc.id,
-      studentName: data.name || data.originalName || data.email || doc.id,
+      studentName: data.originalName || data.name || data.email || doc.id,
       plan: data.subscriptionPlan || null,
       expiry: data.subscriptionEnd || null,
       isSubscribed: data.isSubscribed === true,
@@ -2279,7 +2676,7 @@ export async function searchStudentsForSubscription(
         resultsMap.set(email, {
           id: directUserSnap.id,
           email: data.email || directUserSnap.id,
-          name: data.name || data.originalName || email,
+          name: data.originalName || data.name || email,
           isSubscribed: data.isSubscribed === true,
           currentPlan: data.subscriptionPlan || null,
           currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
@@ -2293,11 +2690,17 @@ export async function searchStudentsForSubscription(
       if (directStudentSnap.exists) {
         const data = directStudentSnap.data() || {};
         const email = (data.email || directStudentSnap.id).toLowerCase();
-        if (!resultsMap.has(email)) {
+        const rosterName = (data.originalName || data.name || '').trim();
+        const existing = resultsMap.get(email);
+        if (existing) {
+          if (rosterName && (!existing.name || existing.name === email || existing.name.includes('@') || existing.name !== rosterName)) {
+            existing.name = rosterName;
+          }
+        } else {
           resultsMap.set(email, {
             id: directStudentSnap.id,
             email: data.email || directStudentSnap.id,
-            name: data.name || email,
+            name: rosterName || email,
             isSubscribed: false,
             currentPlan: null,
             currentExpiry: null,
@@ -2315,11 +2718,17 @@ export async function searchStudentsForSubscription(
       for (const doc of googleStudentSnap.docs) {
         const data = doc.data() || {};
         const email = (data.email || doc.id).toLowerCase();
-        if (!resultsMap.has(email)) {
+        const rosterName = (data.originalName || data.name || '').trim();
+        const existing = resultsMap.get(email);
+        if (existing) {
+          if (rosterName && (!existing.name || existing.name === email || existing.name.includes('@') || existing.name !== rosterName)) {
+            existing.name = rosterName;
+          }
+        } else {
           resultsMap.set(email, {
             id: doc.id,
             email: data.email || doc.id,
-            name: data.name || email,
+            name: rosterName || email,
             isSubscribed: false,
             currentPlan: null,
             currentExpiry: null,
@@ -2341,11 +2750,17 @@ export async function searchStudentsForSubscription(
       for (const doc of byCode.docs) {
         const data = doc.data() || {};
         const email = (data.email || doc.id).toLowerCase();
-        if (!resultsMap.has(email)) {
+        const rosterName = (data.originalName || data.name || '').trim();
+        const existing = resultsMap.get(email);
+        if (existing) {
+          if (rosterName && (!existing.name || existing.name === email || existing.name.includes('@') || existing.name !== rosterName)) {
+            existing.name = rosterName;
+          }
+        } else {
           resultsMap.set(email, {
             id: doc.id,
             email: data.email || doc.id,
-            name: data.name || email,
+            name: rosterName || email,
             isSubscribed: false,
             currentPlan: null,
             currentExpiry: null,
@@ -2368,7 +2783,7 @@ export async function searchStudentsForSubscription(
       const rosterSnap = await db.collection('students').get();
       roster = rosterSnap.docs.map((doc: any) => {
         const d = doc.data() || {};
-        const name = d.name || d.originalName || doc.id;
+        const name = d.originalName || d.name || doc.id;
         const norm = normalizeName(name);
         return {
           id: doc.id,
@@ -2435,7 +2850,7 @@ export async function searchStudentsForSubscription(
           resultsMap.set(email, {
             id: doc.id,
             email: data.email || doc.id,
-            name: data.name || email,
+            name: data.originalName || data.name || email,
             isSubscribed: false,
             currentPlan: null,
             currentExpiry: null,
@@ -2461,7 +2876,7 @@ export async function searchStudentsForSubscription(
         resultsMap.set(email, {
           id: doc.id,
           email: data.email || doc.id,
-          name: data.name || email,
+          name: data.originalName || data.name || email,
           isSubscribed: false,
           currentPlan: null,
           currentExpiry: null,
@@ -2486,7 +2901,7 @@ export async function searchStudentsForSubscription(
         resultsMap.set(email, {
           id: doc.id,
           email: data.email || doc.id,
-          name: data.name || data.originalName || data.email || doc.id,
+          name: data.originalName || data.name || data.email || doc.id,
           isSubscribed: data.isSubscribed === true,
           currentPlan: data.subscriptionPlan || null,
           currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
@@ -2496,7 +2911,7 @@ export async function searchStudentsForSubscription(
     }
   } catch {}
 
-  const userQueryFields = ['name', 'displayName', 'originalName'];
+  const userQueryFields = ['originalName', 'name', 'displayName'];
   for (const field of userQueryFields) {
     try {
       const userSnap = await db.collection('users')
@@ -2512,7 +2927,7 @@ export async function searchStudentsForSubscription(
           resultsMap.set(email, {
             id: doc.id,
             email: data.email || doc.id,
-            name: data.name || data.displayName || data.originalName || data.email || doc.id,
+            name: data.originalName || data.name || data.displayName || data.email || doc.id,
             isSubscribed: data.isSubscribed === true,
             currentPlan: data.subscriptionPlan || null,
             currentExpiry: asDate(data.subscriptionEnd)?.toISOString() || null,
@@ -2534,7 +2949,9 @@ export async function searchStudentsForSubscription(
           item.isSubscribed = uData.isSubscribed === true;
           item.currentPlan = uData.subscriptionPlan || null;
           item.currentExpiry = asDate(uData.subscriptionEnd)?.toISOString() || null;
-          if (uData.name) item.name = uData.name;
+          if ((!item.name || item.name === item.email || item.name.includes('@')) && (uData.originalName || uData.name)) {
+            item.name = uData.originalName || uData.name;
+          }
         } else {
           const uByEmail = await db.collection('users').where('email', '==', item.email).limit(1).get();
           if (!uByEmail.empty) {
@@ -2542,7 +2959,9 @@ export async function searchStudentsForSubscription(
             item.isSubscribed = uData.isSubscribed === true;
             item.currentPlan = uData.subscriptionPlan || null;
             item.currentExpiry = asDate(uData.subscriptionEnd)?.toISOString() || null;
-            if (uData.name) item.name = uData.name;
+            if ((!item.name || item.name === item.email || item.name.includes('@')) && (uData.originalName || uData.name)) {
+              item.name = uData.originalName || uData.name;
+            }
           }
         }
       } catch {}

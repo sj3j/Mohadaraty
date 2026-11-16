@@ -21,6 +21,30 @@ test('SubjectBrowser has completely eliminated the legacy CATEGORIES.map fallbac
   );
 });
 
+test('SubjectBrowser calls all React hooks unconditionally before any early returns', () => {
+  const browserSource = readFileSync(new URL('../src/components/SubjectBrowser.tsx', import.meta.url), 'utf8');
+  
+  // Find the first conditional return in SubjectBrowser
+  const firstReturnIndex = browserSource.indexOf('if (lecturePresentation === \'loading\')');
+  assert.ok(firstReturnIndex > 0, 'Could not find early return in SubjectBrowser');
+
+  // Verify that all useMemo, useEffect, useState, useStageContext calls are BEFORE firstReturnIndex
+  const hooks = ['useMemo', 'useState', 'useEffect', 'useStageContext', 'useStageSubjects'];
+  for (const hook of hooks) {
+    let pos = 0;
+    while ((pos = browserSource.indexOf(hook, pos)) !== -1) {
+      // Ignore imports at the top
+      if (pos > 200) {
+        assert.ok(
+          pos < firstReturnIndex,
+          `Hook call ${hook} at char ${pos} must appear before the first early return at ${firstReturnIndex}`,
+        );
+      }
+      pos += hook.length;
+    }
+  }
+});
+
 test('useStageSubjects uses real-time onSnapshot and local cache persistence', () => {
   const hookSource = readFileSync(new URL('../src/hooks/useStageSubjects.ts', import.meta.url), 'utf8');
   assert.match(hookSource, /onSnapshot\(/, 'useStageSubjects must use onSnapshot instead of one-shot getDocs');
@@ -37,4 +61,3 @@ test('WeeklyListScreen does not render legacy CATEGORIES.map as fallback', () =>
     'WeeklyListScreen must not fall back to CATEGORIES.map in the subject select',
   );
 });
-

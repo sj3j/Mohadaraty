@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Loader2, Search, CheckCircle2, AlertTriangle, Gift, Wallet, History, CalendarClock, BarChart3, XCircle } from 'lucide-react';
+import { X, Loader2, Search, CheckCircle2, AlertTriangle, Gift, Wallet, History, CalendarClock, BarChart3, XCircle, Users, Layers, TrendingUp, FileSpreadsheet, Download } from 'lucide-react';
 import type { Language, Subscription, SubscriptionPlan, UserProfile } from '../types';
 import { PLAN_CONFIG } from '../types';
+import { downloadSupportSubscriptionsExcel } from '../lib/supportExcelExport';
 import {
   canActivateSubscription,
   canRequestSubscriptionCancellation,
@@ -45,7 +46,10 @@ import {
   type HistoryItem,
   type SubscriptionPreview,
   type SupportBalance,
+  type SupportLedgerItem,
   type SubscriptionStudentSearchResult,
+  type SubscriptionReportsData,
+  type StageReportItem,
 } from '../services/subscriptionManagementService';
 import StudentSearchDropdown from './subscription/StudentSearchDropdown';
 import type { ManualPaymentMethod } from '../../shared/subscriptionTypes';
@@ -118,8 +122,9 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
   const [balances, setBalances] = useState<SupportBalance[]>([]);
   const [ownBalance, setOwnBalance] = useState<SupportBalance | null>(null);
-  const [ledger, setLedger] = useState<any[]>([]);
-  const [reports, setReports] = useState<any>(null);
+  const [ledger, setLedger] = useState<SupportLedgerItem[]>([]);
+  const [reports, setReports] = useState<SubscriptionReportsData | null>(null);
+  const [stageMetric, setStageMetric] = useState<'subscribers' | 'revenue'>('subscribers');
   const [period, setPeriod] = useState<'today' | 'this_month' | 'last_month' | 'this_year'>('today');
   const [expiring, setExpiring] = useState<any[]>([]);
   const [expiringCursor, setExpiringCursor] = useState<string | null>(null);
@@ -137,6 +142,12 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
   const [terminateCustomDate, setTerminateCustomDate] = useState('');
   const [terminateReason, setTerminateReason] = useState('');
 
+  const [exportingSupport, setExportingSupport] = useState<SupportBalance | null>(null);
+  const [exportScope, setExportScope] = useState<'all' | 'unsettled' | 'range'>('all');
+  const [exportFromDate, setExportFromDate] = useState('');
+  const [exportToDate, setExportToDate] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+
   const fail = (err: unknown) => {
     console.error(err);
     setError(err instanceof Error ? err.message : 'Request failed');
@@ -147,7 +158,9 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     setBusy('history'); setError('');
     try {
       const result = await getSubscriptionHistory({
-        ...filters,
+        student: filters.student.trim() || undefined,
+        staff: master ? (filters.staff.trim() || undefined) : user.uid,
+        reference: filters.reference.trim() || undefined,
         cursor: append ? historyCursor : null,
       });
       setHistoryRows(current => append ? [...current, ...result.items] : result.items);
@@ -467,6 +480,46 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
     } catch (err) { fail(err); } finally { setBusy(''); }
   };
 
+  const handleExportExcel = async () => {
+    if (!exportingSupport) return;
+    setIsExporting(true);
+    setError('');
+    try {
+      const res = await getSubscriptionHistory({
+        staff: exportingSupport.supportUid,
+        limit: 500,
+        unsettledOnly: exportScope === 'unsettled' ? true : undefined,
+        fromDate: exportScope === 'range' && exportFromDate ? exportFromDate : undefined,
+        toDate: exportScope === 'range' && exportToDate ? exportToDate : undefined,
+      });
+
+      const activations = res.items.filter(item => item.type === 'activation' && !item.voidedBy);
+      if (activations.length === 0) {
+        setNotice(rtl ? 'لا توجد اشتراكات مفعلة ضمن النطاق المحدد' : 'No activations found in the selected range');
+        setExportingSupport(null);
+        return;
+      }
+
+      const filterLabel = exportScope === 'unsettled'
+        ? (rtl ? 'الرصيد_غير_المسوى' : 'unsettled')
+        : exportScope === 'range'
+          ? (rtl ? `فترة_${exportFromDate}_إلى_${exportToDate}` : `range_${exportFromDate}_to_${exportToDate}`)
+          : (rtl ? 'جميع_الاشتراكات' : 'all_subscriptions');
+
+      downloadSupportSubscriptionsExcel(
+        exportingSupport.supportName || exportingSupport.supportEmail,
+        activations,
+        filterLabel,
+      );
+      setNotice(rtl ? 'تم تحميل ملف Excel بنجاح' : 'Excel file downloaded successfully');
+      setExportingSupport(null);
+    } catch (err: any) {
+      fail(err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const pendingGrants = legacy.filter(s => s.status === 'pending' && s.paymentMethod === 'grant');
   const pendingSuperKey = legacy.filter(s => s.status === 'pending' && s.paymentMethod !== 'grant' && needsManualApproval(s));
   const pendingTotal = pendingGrants.length + pendingSuperKey.length;
@@ -537,12 +590,19 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
         {tab === 'history' && canHistory && (
           <section>
-            <div className="mb-4 grid gap-2 rounded-2xl bg-white p-4 shadow-sm dark:bg-zinc-900 md:grid-cols-4">
+            <div className={`mb-4 grid gap-2 rounded-2xl bg-white p-4 shadow-sm dark:bg-zinc-900 ${master ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
               <input value={filters.student} onChange={e => setFilters({ ...filters, student: e.target.value })} placeholder={rtl ? 'بريد الطالب (مطابقة تامة)' : 'Student email (exact)'} className="rounded-xl border p-2 dark:border-zinc-700 dark:bg-zinc-800" />
-              <input value={filters.staff} onChange={e => setFilters({ ...filters, staff: e.target.value })} placeholder={rtl ? 'معرّف الموظف' : 'Staff UID (exact)'} className="rounded-xl border p-2 dark:border-zinc-700 dark:bg-zinc-800" />
+              {master && (
+                <input value={filters.staff} onChange={e => setFilters({ ...filters, staff: e.target.value })} placeholder={rtl ? 'معرّف الموظف' : 'Staff UID (exact)'} className="rounded-xl border p-2 dark:border-zinc-700 dark:bg-zinc-800" />
+              )}
               <input value={filters.reference} onChange={e => setFilters({ ...filters, reference: e.target.value })} placeholder={rtl ? 'المرجع' : 'Reference code'} className="rounded-xl border p-2 uppercase dark:border-zinc-700 dark:bg-zinc-800" />
               <button onClick={() => loadHistory()} className="rounded-xl bg-sky-600 p-2 font-bold text-white"><Search className="me-1 inline h-4 w-4" />{rtl ? 'بحث' : 'Search'}</button>
             </div>
+            {!master && (
+              <p className="mb-3 px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                {rtl ? '• يتم عرض الاشتراكات التي تم تفعيلها بواسطتك فقط' : '• Showing subscriptions activated by your account only'}
+              </p>
+            )}
             <div className="space-y-3">
               {historyRows.map(row => <article key={`${row.source}-${row.id}`} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -833,9 +893,90 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
 
         {tab === 'balances' && <section className="space-y-3">
           {!master && ownBalance && <BalanceCard balance={ownBalance} rtl={rtl} />}
-          {!master && ledger.length > 0 && <div className="rounded-2xl bg-white p-4 dark:bg-zinc-900"><h3 className="mb-2 font-bold">{rtl ? 'الحركات' : 'Ledger'}</h3>{ledger.map(row => <div key={row.id} className="flex justify-between border-t py-2 text-xs dark:border-zinc-800"><span>{row.type} · {row.referenceCode}</span><span>{row.balanceDelta > 0 ? '+' : ''}{money(row.balanceDelta)}</span></div>)}</div>}
+          {!master && ledger.length > 0 && (
+            <div className="rounded-2xl bg-white p-4 shadow-sm dark:bg-zinc-900">
+              <h3 className="mb-3 font-bold text-slate-900 dark:text-white">{rtl ? 'الحركات والاشتراكات المفعلة' : 'Ledger & Activations'}</h3>
+              <div className="divide-y divide-slate-100 dark:divide-zinc-800">
+                {ledger.map(row => {
+                  const typeLabel = rtl ? {
+                    credit: 'تفعيل اشتراك',
+                    void_reversal: 'عكس إبطال / إلغاء',
+                    receive_partial: 'استلام جزئي',
+                    receive_full: 'استلام كامل',
+                    reset: 'تصفير تسوية',
+                    payout: 'دفع مستحقات',
+                  }[row.type] || row.type : {
+                    credit: 'Subscription activation',
+                    void_reversal: 'Reversal / Cancellation',
+                    receive_partial: 'Partial receipt',
+                    receive_full: 'Full settlement',
+                    reset: 'Reset adjustment',
+                    payout: 'Payout',
+                  }[row.type] || row.type;
+
+                  const isPositive = (row.balanceDelta || 0) > 0;
+                  const deltaClass = isPositive
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : (row.balanceDelta || 0) < 0
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-slate-600 dark:text-slate-300';
+
+                  const planName = row.plan && PLAN_CONFIG[row.plan as SubscriptionPlan]
+                    ? (rtl ? PLAN_CONFIG[row.plan as SubscriptionPlan].labelAr : PLAN_CONFIG[row.plan as SubscriptionPlan].labelEn)
+                    : row.plan;
+
+                  return (
+                    <article key={row.id} className="py-3 first:pt-0 last:pb-0">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-slate-900 dark:text-white">
+                              {row.studentName || typeLabel}
+                            </span>
+                            {planName && (
+                              <span className="inline-flex items-center rounded-md bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700 dark:bg-sky-950/50 dark:text-sky-300">
+                                {planName}
+                              </span>
+                            )}
+                            {row.studentName && (
+                              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
+                                {typeLabel}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+                            {row.studentEmail && <span>{row.studentEmail}</span>}
+                            <span>{rtl ? 'المرجع:' : 'Ref:'} <code className="font-mono">{row.referenceCode}</code></span>
+                            <span>{dateText(row.createdAt)}</span>
+                          </div>
+                        </div>
+                        <div className="text-end">
+                          <span className={`text-sm font-bold ${deltaClass}`}>
+                            {isPositive ? '+' : ''}{money(row.balanceDelta)}
+                          </span>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {master && balances.map(balance => <div key={balance.supportUid} className="rounded-2xl bg-white p-4 dark:bg-zinc-900"><BalanceCard balance={balance} rtl={rtl} />
             <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setExportingSupport(balance);
+                  setExportScope('all');
+                  setExportFromDate('');
+                  setExportToDate('');
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-700 transition-colors"
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                <span>{rtl ? 'تصدير كشف Excel' : 'Export Excel'}</span>
+              </button>
               {balance.outstanding > 0 && <><button onClick={() => settle(balance, 'receive')} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white">{rtl ? 'استلام جزئي/كامل' : 'Receive partial/full'}</button><button onClick={() => settle(balance, 'reset')} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold text-white">{rtl ? 'تصفير كتسوية' : 'Reset adjustment'}</button></>}
               {balance.outstanding < 0 && <button onClick={() => settle(balance, 'payout')} className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-bold text-white">{rtl ? 'الماستر يدفع للدعم' : 'Master pays Support'}</button>}
             </div>
@@ -928,6 +1069,187 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
                 <ReportCard label={rtl ? 'حسب المصدر' : 'By source'} value={Object.entries(reports.revenue.bySource).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} />
                 <ReportCard label={rtl ? 'حسب الخطة' : 'By plan'} value={Object.entries(reports.revenue.byPlan).map(([k, v]) => `${k}: ${money(v as number)}`).join(' · ') || '—'} />
               </div>
+
+              {/* Stage-by-Stage Analysis & Visual Diagram */}
+              {reports.stageAnalysis && reports.stageAnalysis.stages && (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4 dark:border-zinc-800">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Layers className="h-5 w-5 text-indigo-500" />
+                        <h3 className="text-base font-black text-slate-900 dark:text-white">
+                          {rtl ? 'تحليل المشتركين والإيرادات حسب المراحل الدراسية' : 'Stage Subscribers & Financial Analysis'}
+                        </h3>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {rtl
+                          ? 'إحصائيات تفصيلية لعدد المشتركين الفعليين حالياً، والإيرادات المالية المحققة لكل مرحلة خلال الفترة المحددة'
+                          : 'Live active subscribers snapshot and period revenue performance across academic stages'}
+                      </p>
+                    </div>
+
+                    {/* Metric Switcher Toggle */}
+                    <div className="inline-flex rounded-xl bg-slate-100 p-1 dark:bg-zinc-800">
+                      <button
+                        type="button"
+                        onClick={() => setStageMetric('subscribers')}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
+                          stageMetric === 'subscribers'
+                            ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-900 dark:text-white'
+                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                        }`}
+                      >
+                        <Users className="h-3.5 w-3.5 text-sky-500" />
+                        <span>{rtl ? 'المشتركين الحاليين' : 'Active Subscribers'}</span>
+                        <span className="ms-1 rounded-full bg-slate-200/80 px-1.5 py-0.5 text-[10px] font-extrabold text-slate-700 dark:bg-zinc-700 dark:text-slate-200">
+                          {reports.stageAnalysis.totalActiveSubscribers.toLocaleString()}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setStageMetric('revenue')}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
+                          stageMetric === 'revenue'
+                            ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-900 dark:text-white'
+                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                        }`}
+                      >
+                        <Wallet className="h-3.5 w-3.5 text-emerald-500" />
+                        <span>{rtl ? 'إيرادات الفترة' : 'Period Revenue'}</span>
+                        <span className="ms-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                          {money(reports.stageAnalysis.totalPeriodRevenue)}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Comparative Visual Bar Chart */}
+                  {(() => {
+                    const stages = reports.stageAnalysis.stages;
+                    const maxVal = Math.max(
+                      1,
+                      ...stages.map(s => stageMetric === 'subscribers' ? s.activeSubscribers : s.periodRevenue)
+                    );
+
+                    const STAGE_COLORS: Record<string, { bar: string; badge: string; text: string; lightBg: string }> = {
+                      stage_1: { bar: 'bg-emerald-500 hover:bg-emerald-600', badge: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', lightBg: 'bg-emerald-50 dark:bg-emerald-950/30' },
+                      stage_2: { bar: 'bg-sky-500 hover:bg-sky-600', badge: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400', lightBg: 'bg-sky-50 dark:bg-sky-950/30' },
+                      stage_3: { bar: 'bg-indigo-500 hover:bg-indigo-600', badge: 'bg-indigo-500', text: 'text-indigo-600 dark:text-indigo-400', lightBg: 'bg-indigo-50 dark:bg-indigo-950/30' },
+                      stage_4: { bar: 'bg-violet-500 hover:bg-violet-600', badge: 'bg-violet-500', text: 'text-violet-600 dark:text-violet-400', lightBg: 'bg-violet-50 dark:bg-violet-950/30' },
+                      stage_5: { bar: 'bg-amber-500 hover:bg-amber-600', badge: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', lightBg: 'bg-amber-50 dark:bg-amber-950/30' },
+                      unassigned: { bar: 'bg-slate-400 hover:bg-slate-500', badge: 'bg-slate-400', text: 'text-slate-600 dark:text-slate-400', lightBg: 'bg-slate-50 dark:bg-zinc-800/40' },
+                    };
+
+                    return (
+                      <div className="pt-2">
+                        {/* Bar chart area */}
+                        <div className={`grid gap-2 sm:gap-4 items-end h-48 sm:h-56 pb-2 border-b border-slate-100 dark:border-zinc-800 ${
+                          stages.length === 6 ? 'grid-cols-6' : 'grid-cols-5'
+                        }`}>
+                          {stages.map((st) => {
+                            const val = stageMetric === 'subscribers' ? st.activeSubscribers : st.periodRevenue;
+                            const pct = stageMetric === 'subscribers' ? st.activePercentage : st.periodRevenuePercentage;
+                            const heightPct = val > 0 ? Math.max(6, Math.round((val / maxVal) * 100)) : 2;
+                            const colors = STAGE_COLORS[st.stageId] || STAGE_COLORS.unassigned;
+
+                            return (
+                              <div key={st.stageId} className="group flex flex-col items-center justify-end h-full gap-1.5">
+                                {/* Values label above bar */}
+                                <div className="text-center opacity-85 group-hover:opacity-100 transition-opacity">
+                                  <span className="block font-mono text-[11px] sm:text-xs font-black text-slate-800 dark:text-slate-200">
+                                    {stageMetric === 'subscribers' ? val.toLocaleString() : money(val)}
+                                  </span>
+                                  <span className={`block font-mono text-[9px] sm:text-[10px] font-bold ${colors.text}`}>
+                                    {pct}%
+                                  </span>
+                                </div>
+
+                                {/* Bar track */}
+                                <div className="w-full max-w-[48px] bg-slate-100 dark:bg-zinc-800 rounded-t-xl overflow-hidden h-32 sm:h-36 flex items-end">
+                                  <div
+                                    className={`w-full rounded-t-xl transition-all duration-500 shadow-sm ${colors.bar}`}
+                                    style={{ height: `${heightPct}%` }}
+                                    title={`${rtl ? st.nameAr : st.nameEn}: ${val.toLocaleString()} (${pct}%)`}
+                                  />
+                                </div>
+
+                                {/* X-axis Stage Name */}
+                                <div className="text-center pt-1">
+                                  <span className="block text-[10px] sm:text-xs font-black text-slate-700 dark:text-slate-300 truncate max-w-[70px] sm:max-w-none">
+                                    {rtl ? st.nameAr : st.nameEn}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Detailed Stage Comparison Cards */}
+                        <div className={`mt-4 grid gap-3 ${
+                          stages.length === 6
+                            ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6'
+                            : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5'
+                        }`}>
+                          {stages.map((st) => {
+                            const colors = STAGE_COLORS[st.stageId] || STAGE_COLORS.unassigned;
+                            return (
+                              <div
+                                key={st.stageId}
+                                className={`rounded-xl border border-slate-200/80 p-3.5 shadow-sm transition-all hover:border-slate-300 dark:border-zinc-800 dark:hover:border-zinc-700 ${colors.lightBg}`}
+                              >
+                                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2 dark:border-zinc-700/60">
+                                  <span className="font-bold text-xs text-slate-900 dark:text-white">
+                                    {rtl ? st.nameAr : st.nameEn}
+                                  </span>
+                                  <span className={`h-2.5 w-2.5 rounded-full ${colors.badge}`} />
+                                </div>
+
+                                <div className="mt-2.5 space-y-2 text-xs">
+                                  <div>
+                                    <span className="block text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                      {rtl ? 'المشتركين الحاليين' : 'Active Subscribers'}
+                                    </span>
+                                    <div className="flex items-baseline justify-between gap-1">
+                                      <span className="text-sm font-black text-slate-900 dark:text-white font-mono">
+                                        {st.activeSubscribers.toLocaleString()}
+                                      </span>
+                                      <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400 font-mono">
+                                        {st.activePercentage}%
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="border-t border-slate-200/40 pt-1.5 dark:border-zinc-700/40">
+                                    <span className="block text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                      {rtl ? 'إيرادات الفترة' : 'Period Revenue'}
+                                    </span>
+                                    <div className="flex items-baseline justify-between gap-1">
+                                      <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                                        {money(st.periodRevenue)}
+                                      </span>
+                                      <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 font-mono">
+                                        {st.periodRevenuePercentage}%
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="border-t border-slate-200/40 pt-1.5 dark:border-zinc-700/40 flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                                    <span>{rtl ? 'الاشتراكات المفعلة:' : 'Activations:'}</span>
+                                    <span className="font-bold text-slate-700 dark:text-slate-300 font-mono">
+                                      {st.periodActivations.toLocaleString()}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
           )}
           {busy === 'reports' && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
@@ -1231,6 +1553,161 @@ export default function SubscriptionManagement({ user, lang, onClose }: Props) {
             {busy === 'terminate' ? '…' : (rtl ? 'تأكيد إلغاء الاشتراك' : 'Confirm cancellation')}
           </button>
         </Modal>
+      )}
+
+      {exportingSupport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-zinc-800">
+              <div className="flex items-center gap-2">
+                <FileSpreadsheet className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                <h3 className="font-black text-slate-900 dark:text-white">
+                  {rtl ? 'تصدير كشف اشتراكات الدعم' : 'Export Support Subscriptions'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportingSupport(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+                {rtl ? 'الموظف:' : 'Staff member:'}
+              </p>
+              <p className="font-bold text-sm text-slate-900 dark:text-white">
+                {exportingSupport.supportName || exportingSupport.supportEmail}
+              </p>
+              {exportingSupport.supportEmail && (
+                <p className="text-xs text-slate-400 font-mono">{exportingSupport.supportEmail}</p>
+              )}
+            </div>
+
+            <div className="mt-5 space-y-3">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                {rtl ? 'حدد نطاق الكشف المراد تحميله:' : 'Select export scope:'}
+              </label>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 p-3 cursor-pointer hover:bg-slate-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50">
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    value="all"
+                    checked={exportScope === 'all'}
+                    onChange={() => setExportScope('all')}
+                    className="text-sky-600 focus:ring-sky-500"
+                  />
+                  <div>
+                    <span className="block text-xs font-bold text-slate-900 dark:text-white">
+                      {rtl ? 'جميع الاشتراكات المفعلة' : 'All activated subscriptions'}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 dark:text-slate-400">
+                      {rtl ? 'كشف شامل لكافة الاشتراكات التي تم تفعيلها بواسطة هذا الموظف' : 'Comprehensive list of all activations by this staff'}
+                    </span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 p-3 cursor-pointer hover:bg-slate-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50">
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    value="unsettled"
+                    checked={exportScope === 'unsettled'}
+                    onChange={() => setExportScope('unsettled')}
+                    className="text-sky-600 focus:ring-sky-500"
+                  />
+                  <div>
+                    <span className="block text-xs font-bold text-slate-900 dark:text-white">
+                      {rtl ? 'الاشتراكات غير المسواة حالياً (الرصيد المتبقي)' : 'Current unsettled activations (outstanding balance)'}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 dark:text-slate-400">
+                      {rtl ? 'الاشتراكات المفعلة منذ آخر تسوية كاملة' : 'Activations recorded since the last full settlement'}
+                    </span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 p-3 cursor-pointer hover:bg-slate-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50">
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    value="range"
+                    checked={exportScope === 'range'}
+                    onChange={() => setExportScope('range')}
+                    className="text-sky-600 focus:ring-sky-500"
+                  />
+                  <div>
+                    <span className="block text-xs font-bold text-slate-900 dark:text-white">
+                      {rtl ? 'فترة زمنية محددة' : 'Custom date range'}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 dark:text-slate-400">
+                      {rtl ? 'تحديد تاريخ بداية وتاريخ نهاية للكشف' : 'Filter by specific start and end dates'}
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {exportScope === 'range' && (
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                      {rtl ? 'من تاريخ:' : 'From:'}
+                    </label>
+                    <input
+                      type="date"
+                      value={exportFromDate}
+                      onChange={e => setExportFromDate(e.target.value)}
+                      className="w-full rounded-xl border p-2 text-xs dark:border-zinc-700 dark:bg-zinc-800 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                      {rtl ? 'إلى تاريخ:' : 'To:'}
+                    </label>
+                    <input
+                      type="date"
+                      value={exportToDate}
+                      onChange={e => setExportToDate(e.target.value)}
+                      className="w-full rounded-xl border p-2 text-xs dark:border-zinc-700 dark:bg-zinc-800 font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setExportingSupport(null)}
+                disabled={isExporting}
+                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-zinc-800"
+              >
+                {rtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                disabled={isExporting}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+              >
+                {isExporting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>{rtl ? 'جارٍ التوليد...' : 'Generating...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4" />
+                    <span>{rtl ? 'تحميل ملف Excel' : 'Download Excel'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -267,6 +267,45 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
     }
   }, [showTabsModal]);
 
+// One matcher for both call sites. subjectId is authoritative; the category
+  // clauses are the legacy fallback for content that predates the migration.
+  const lecturesForSubject = (subj: any) => lectures.filter(l =>
+    l.subjectId === subj?.id ||
+    l.category === subj?.id ||
+    l.category === subj?.nameEn?.toLowerCase() ||
+    l.category === subj?.nameEn?.toLowerCase().replace(' ', '_')
+  );
+
+  // Fallback: derive active subjects from loaded lectures if the curriculum query is still loading or failed.
+  // This guarantees students always see their own stage's subjects, never the obsolete Stage 3 categories.
+  const derivedSubjectsFromLectures = useMemo<Subject[]>(() => {
+    if (subjects.length > 0 || !lectures.length) return [];
+    const map = new Map<string, Subject>();
+    for (const lec of lectures) {
+      const slug = (lec as any).subjectId || lec.category;
+      if (!slug || map.has(slug)) continue;
+      map.set(slug, {
+        id: slug,
+        stageId: lec.stageId || effectiveStageId || '',
+        courseId: (lec as any).courseId || DEFAULT_COURSE_ID,
+        nameEn: (lec as any).subjectName || slug,
+        nameAr: (lec as any).subjectNameAr || (lec as any).subjectName || slug,
+        types: ['theoretical', 'practical'],
+        isActive: true,
+        order: 0,
+      });
+    }
+    return Array.from(map.values());
+  }, [subjects.length, lectures, effectiveStageId]);
+
+  const effectiveSubjects = subjects.length > 0 ? subjects : derivedSubjectsFromLectures;
+  const courseSubjects = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === activeCourseId);
+  const courseCounts = COURSE_IDS.reduce((acc, id) => {
+    acc[id] = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === id).length;
+    return acc;
+  }, {} as Record<string, number>);
+
+
   // A cached curriculum can arrive before the protected lecture query. Do not
   // turn that unknown state into a row of convincing-but-false zero counters.
   const lecturePresentation = resolveLecturePresentationState(lectureLoadState);
@@ -381,44 +420,6 @@ export default function SubjectBrowser({ lectures, lang, user, onEdit, onOpenMCQ
       </div>
     );
   }
-
-  // One matcher for both call sites. subjectId is authoritative; the category
-  // clauses are the legacy fallback for content that predates the migration.
-  const lecturesForSubject = (subj: any) => lectures.filter(l =>
-    l.subjectId === subj?.id ||
-    l.category === subj?.id ||
-    l.category === subj?.nameEn?.toLowerCase() ||
-    l.category === subj?.nameEn?.toLowerCase().replace(' ', '_')
-  );
-
-  // Fallback: derive active subjects from loaded lectures if the curriculum query is still loading or failed.
-  // This guarantees students always see their own stage's subjects, never the obsolete Stage 3 categories.
-  const derivedSubjectsFromLectures = useMemo<Subject[]>(() => {
-    if (subjects.length > 0 || !lectures.length) return [];
-    const map = new Map<string, Subject>();
-    for (const lec of lectures) {
-      const slug = (lec as any).subjectId || lec.category;
-      if (!slug || map.has(slug)) continue;
-      map.set(slug, {
-        id: slug,
-        stageId: lec.stageId || effectiveStageId || '',
-        courseId: (lec as any).courseId || DEFAULT_COURSE_ID,
-        nameEn: (lec as any).subjectName || slug,
-        nameAr: (lec as any).subjectNameAr || (lec as any).subjectName || slug,
-        types: ['theoretical', 'practical'],
-        isActive: true,
-        order: 0,
-      });
-    }
-    return Array.from(map.values());
-  }, [subjects.length, lectures, effectiveStageId]);
-
-  const effectiveSubjects = subjects.length > 0 ? subjects : derivedSubjectsFromLectures;
-  const courseSubjects = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === activeCourseId);
-  const courseCounts = COURSE_IDS.reduce((acc, id) => {
-    acc[id] = effectiveSubjects.filter(sub => (sub.courseId || DEFAULT_COURSE_ID) === id).length;
-    return acc;
-  }, {} as Record<string, number>);
 
   if (selectedCategory === 'all') {
     const categoryColors: Record<string, { bg: string, text: string, progress: string }> = {

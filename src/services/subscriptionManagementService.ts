@@ -93,6 +93,54 @@ export interface SupportBalance {
   commissionRate: number;
 }
 
+export interface SupportLedgerItem {
+  id: string;
+  type: 'credit' | 'receive_partial' | 'receive_full' | 'reset' | 'void_reversal' | 'payout' | string;
+  amount: number;
+  balanceDelta: number;
+  balanceAfter: number;
+  referenceCode: string;
+  createdAt?: string;
+  recordId?: string;
+  studentName?: string;
+  studentEmail?: string;
+  plan?: SubscriptionPlan | string;
+  actor?: { name?: string; email?: string; uid?: string };
+}
+
+export interface StageReportItem {
+  stageId: string;
+  nameAr: string;
+  nameEn: string;
+  order: number;
+  activeSubscribers: number;
+  activePercentage: number;
+  periodRevenue: number;
+  periodRevenuePercentage: number;
+  periodActivations: number;
+}
+
+export interface StageAnalysisReport {
+  stages: StageReportItem[];
+  totalActiveSubscribers: number;
+  totalPeriodRevenue: number;
+}
+
+export interface SubscriptionReportsData {
+  period: 'today' | 'this_month' | 'last_month' | 'this_year';
+  range: { start: string; end: string };
+  revenue: {
+    total: number;
+    bySource: Record<string, number>;
+    byPlan: Record<string, number>;
+    planBreakdown: Record<string, { count: number; revenue: number; uniqueSubscribers: number }>;
+    totalUniqueSubscribers?: number;
+  };
+  yearlyRevenue: number;
+  balances?: any[];
+  stageAnalysis?: StageAnalysisReport;
+}
+
 export interface SubscriptionStudentSearchResult {
   id: string;
   email: string;
@@ -150,16 +198,24 @@ export const getSubscriptionHistory = (filters: {
   staff?: string;
   reference?: string;
   cursor?: string | null;
+  limit?: number;
+  fromDate?: string;
+  toDate?: string;
+  unsettledOnly?: boolean;
 } = {}) => {
   const params = new URLSearchParams();
-  Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value));
+    }
+  });
   return api<{ items: HistoryItem[]; nextCursor: string | null }>(`/api/subscriptions/history?${params}`);
 };
 
 export const getSupportBalances = (supportUid?: string) => api<{
   balances?: SupportBalance[];
   balance?: SupportBalance;
-  ledger?: any[];
+  ledger?: SupportLedgerItem[];
 }>(`/api/subscriptions/balances${supportUid ? `?supportUid=${encodeURIComponent(supportUid)}` : ''}`);
 
 export const settleSupportBalance = (
@@ -251,7 +307,7 @@ export const decideCancellationRequest = (
 });
 
 export const getSubscriptionReports = (period: 'today' | 'this_month' | 'last_month' | 'this_year') =>
-  api<any>(`/api/subscriptions/reports?period=${period}`);
+  api<SubscriptionReportsData>(`/api/subscriptions/reports?period=${period}`);
 
 export const getExpiringSubscriptions = (cursor?: string | null) =>
   api<{ items: any[]; nextCursor: string | null }>(
