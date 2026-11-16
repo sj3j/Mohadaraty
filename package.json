@@ -3,6 +3,12 @@
   "private": true,
   "version": "1.4.0",
   "type": "module",
+  "allowScripts": {
+    "@firebase/util": true,
+    "core-js": true,
+    "esbuild": true,
+    "protobufjs": true
+  },
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "npm run typecheck && node scripts/copyPdfjsAssets.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
