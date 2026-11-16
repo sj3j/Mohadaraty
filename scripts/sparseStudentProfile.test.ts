@@ -125,9 +125,11 @@ try {
   assert.equal(after.stageId, 'stage_4');
   assert.ok(before.exists);
   assert.equal(await reconcileStudentProfile(db, completeId, completeId, () => FieldValue.serverTimestamp()), 'unchanged');
-  await db.doc(`users/${completeId}`).update({ stageId: 'stage_3' });
+  await db.doc(`users/${completeId}`).update({ stageId: 'stage_3', email: '' });
   assert.equal(await reconcileStudentProfile(db, completeId, completeId, () => FieldValue.serverTimestamp()), 'conflict');
-  assert.equal((await db.doc(`users/${completeId}`).get()).data()?.stageId, 'stage_3');
+  const conflicted = (await db.doc(`users/${completeId}`).get()).data() || {};
+  assert.equal(conflicted.stageId, 'stage_3');
+  assert.equal(conflicted.email, completeId);
 
   console.log('PASS sparse student profile, manual and import creation, Google and claim, stage rules, and conflict preservation');
 } finally {

@@ -18,6 +18,7 @@ import {
   ProgressionRound, ProgressionAnswer, StageLike,
   nextProgressionStep, progressionOutcome, isAnswerValid, nextStageOf,
 } from './progression.js';
+import { followMerge } from './studentLookup.js';
 
 export interface SubmitResult {
   promoted: boolean;
@@ -44,12 +45,75 @@ export class ProgressionError extends Error {
   }
 }
 
+const cleanIdentity = (value: unknown): string => String(value || '').toLowerCase().trim();
+
+/**
+ * Resolve the one canonical roster row behind an authenticated progression
+ * request.  Custom-token students historically had a blank users.email even
+ * though their token email or uid still named students/{id}; Google-linked
+ * accounts can instead be found through students.googleEmail.
+ *
+ * Collect every structural match before choosing.  Silently picking the first
+ * one would turn a duplicate identity into a cross-account stage update.
+ */
+async function resolveProgressionRoster(
+  db: FirebaseFirestore.Firestore,
+  identity: { uid: string; authenticatedEmail?: string; userEmail?: string },
+): Promise<FirebaseFirestore.DocumentSnapshot> {
+  const ids = Array.from(new Set([
+    cleanIdentity(identity.authenticatedEmail),
+    cleanIdentity(identity.userEmail),
+    cleanIdentity(identity.uid),
+  ].filter(Boolean)));
+  const canonicalIds = new Set<string>();
+
+  const addCanonical = async (doc: FirebaseFirestore.DocumentSnapshot) => {
+    if (!doc.exists) return;
+    const followed = await followMerge(db, { id: doc.id, data: doc.data() || {} });
+    canonicalIds.add(followed.id);
+  };
+
+  for (const id of ids) {
+    await addCanonical(await db.collection('students').doc(id).get());
+  }
+
+  // A linked Google address is not normally the roster document id. Query it
+  // as a fallback source, but still fold it into the same ambiguity check.
+  for (const email of ids.filter(id => id.includes('@'))) {
+    const linked = await db.collection('students')
+      .where('googleEmail', '==', email)
+      .limit(2)
+      .get();
+    for (const doc of linked.docs) await addCanonical(doc);
+  }
+
+  if (canonicalIds.size !== 1) {
+    throw new ProgressionError(
+      'Your roster identity could not be verified. Contact an admin.',
+      409,
+      'PROGRESSION_ROSTER_CONFLICT',
+    );
+  }
+
+  const studentSnap = await db.collection('students').doc([...canonicalIds][0]).get();
+  const student = studentSnap.data() || {};
+  if (!studentSnap.exists || student.isActive === false || student.mergedInto) {
+    throw new ProgressionError(
+      'Your roster identity could not be verified. Contact an admin.',
+      409,
+      'PROGRESSION_ROSTER_CONFLICT',
+    );
+  }
+  return studentSnap;
+}
+
 export async function submitProgression(
   db: FirebaseFirestore.Firestore,
   FieldValue: { serverTimestamp(): any; delete(): any },
   calendar: AcademicCalendar,
   opts: {
     uid: string;
+    authenticatedEmail?: string;
     round: ProgressionRound;
     answer: ProgressionAnswer;
     tahmeelSubjects?: string[];
@@ -66,6 +130,23 @@ export async function submitProgression(
   const userSnap = await userRef.get();
   if (!userSnap.exists) throw new ProgressionError('User not found', 404);
   const user = userSnap.data() as any;
+
+  // Resolve the roster before calculating or writing an outcome. A progression
+  // that updates only users/ is not a partial success: it is a new inconsistency.
+  const studentSnap = await resolveProgressionRoster(db, {
+    uid,
+    authenticatedEmail: opts.authenticatedEmail,
+    userEmail: user.email,
+  });
+  const studentId = studentSnap.id;
+  const student = studentSnap.data() || {};
+  if (student.stageId !== user.stageId) {
+    throw new ProgressionError(
+      'Your profile and official roster disagree. Contact an admin.',
+      409,
+      'PROGRESSION_ROSTER_CONFLICT',
+    );
+  }
 
   const gate = progressionGate(calendar, baghdadToday(calendar.timezone));
   const due = nextProgressionStep({
@@ -128,7 +209,7 @@ export async function submitProgression(
     if (!wasRepresentative || !leavingStage) {
       throw new ProgressionError('Only an outgoing stage representative may transfer the seat.', 403);
     }
-    if (replacementEmail === String(user.email || '').toLowerCase().trim()) {
+    if (replacementEmail === studentId) {
       throw new ProgressionError('Choose another student as the representative.');
     }
     const replacementRoster = await db.collection('students').doc(replacementEmail).get();
@@ -167,6 +248,7 @@ export async function submitProgression(
     lastProgressionYear: calendar.yearLabel,
     progressionAnsweredAt: FieldValue.serverTimestamp(),
   };
+  if (!cleanIdentity(user.email)) userPatch.email = studentId;
 
   // A group from the stage they are leaving may not even exist in the new one.
   // Clearing it drops them onto the existing onboarding screen to pick again.
@@ -199,27 +281,21 @@ export async function submitProgression(
 
   // The whitelist copy. Without this syncUserStage undoes the promotion at the
   // student's next login - which is why the old client-only flow never worked.
-  const email = String(user.email || '').toLowerCase().trim();
-  if (email) {
-    const studentRef = db.collection('students').doc(email);
-    if ((await studentRef.get()).exists) {
-      const studentPatch: Record<string, any> = {
-        stageId: outcome.stageId,
-        tahmeelSubjects: outcome.tahmeelSubjects,
-        tahmeelStageId: outcome.tahmeelSubjects.length > 0 ? user.stageId : FieldValue.delete(),
-      };
-      if (outcome.promoted) studentPatch.subgroup = FieldValue.delete();
-      batch.set(studentRef, studentPatch, { merge: true });
-    }
+  const studentPatch: Record<string, any> = {
+    stageId: outcome.stageId,
+    tahmeelSubjects: outcome.tahmeelSubjects,
+    tahmeelStageId: outcome.tahmeelSubjects.length > 0 ? user.stageId : FieldValue.delete(),
+  };
+  if (outcome.promoted) studentPatch.subgroup = FieldValue.delete();
+  batch.update(studentSnap.ref, studentPatch, { lastUpdateTime: studentSnap.updateTime! });
 
-    // The other half of vacating the seat. allowed_admins is the second source
-    // syncUserStage and firestore.rules read a role from, so demoting only the
-    // users doc would be undone at the next login - they would silently get the
-    // role back on a stage they no longer study in.
-    if (wasStaff && leavingStage && !user.isMasterAdmin) {
-      const allowedRef = db.collection('allowed_admins').doc(email);
-      if ((await allowedRef.get()).exists) batch.delete(allowedRef);
-    }
+  // The other half of vacating the seat. allowed_admins is the second source
+  // syncUserStage and firestore.rules read a role from, so demoting only the
+  // users doc would be undone at the next login - they would silently get the
+  // role back on a stage they no longer study in.
+  if (wasStaff && leavingStage && !user.isMasterAdmin) {
+    const allowedRef = db.collection('allowed_admins').doc(studentId);
+    if ((await allowedRef.get()).exists) batch.delete(allowedRef);
   }
 
   if (replacementUserRef && replacementAllowedRef) {
@@ -303,7 +379,7 @@ export async function submitProgression(
 
   let purged = false;
   if (outcome.graduated && lifecycle.purgeGraduatedStudent) {
-    await lifecycle.purgeGraduatedStudent({ uid, studentId: email });
+    await lifecycle.purgeGraduatedStudent({ uid, studentId });
     purged = true;
   }
 

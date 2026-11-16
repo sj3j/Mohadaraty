@@ -226,6 +226,110 @@ check('marked completed for this year',
 check('and is not asked again',
   step('resit_round', passUser) === 'none');
 
+console.log('\nCanonical roster identity with blank users.email:');
+const directBlankId = 'blank-direct@student.test';
+await db.doc(`users/${directBlankId}`).set({
+  name: 'blank direct', email: '', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+await db.doc(`students/${directBlankId}`).set({
+  name: 'blank direct', email: directBlankId, isActive: true, stageId: 'stage_3', subgroup: 'B2',
+});
+await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: directBlankId, authenticatedEmail: directBlankId, round: 'first', answer: 'passed',
+});
+check('email-as-uid custom token promotes the roster despite blank users.email',
+  (await db.doc(`students/${directBlankId}`).get()).data()?.stageId === 'stage_4');
+check('progression also repairs the canonical users.email',
+  (await db.doc(`users/${directBlankId}`).get()).data()?.email === directBlankId);
+
+const opaqueUid = 'opaque_progression_uid';
+const opaqueRoster = 'opaque-roster@student.test';
+await db.doc(`users/${opaqueUid}`).set({
+  name: 'opaque', email: '', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+await db.doc(`students/${opaqueRoster}`).set({
+  name: 'opaque', email: opaqueRoster, isActive: true, stageId: 'stage_3', subgroup: 'B2',
+});
+await submitProgression(db, FieldValue as any, firstOpen, {
+  uid: opaqueUid, authenticatedEmail: opaqueRoster, round: 'first', answer: 'passed',
+});
+check('verified token email resolves an opaque uid to its roster row',
+  (await db.doc(`students/${opaqueRoster}`).get()).data()?.stageId === 'stage_4');
+check('opaque uid profile receives the canonical roster identity',
+  (await db.doc(`users/${opaqueUid}`).get()).data()?.email === opaqueRoster);
+
+await db.doc('users/u_missing_roster').set({
+  name: 'missing', email: '', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+let missingRosterCode = '';
+try {
+  await submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_missing_roster', round: 'first', answer: 'passed',
+  });
+} catch (error) {
+  if (error instanceof ProgressionError) missingRosterCode = error.code;
+}
+check('an unresolved roster returns a stable conflict code',
+  missingRosterCode === 'PROGRESSION_ROSTER_CONFLICT', missingRosterCode);
+check('an unresolved roster leaves the user stage untouched',
+  (await db.doc('users/u_missing_roster').get()).data()?.stageId === 'stage_3');
+
+await db.doc('users/u_stage_conflict').set({
+  name: 'conflict', email: 'conflict@x.com', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+await db.doc('students/conflict@x.com').set({
+  email: 'conflict@x.com', isActive: true, stageId: 'stage_4', subgroup: 'B2',
+});
+let stageConflictCode = '';
+try {
+  await submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_stage_conflict', round: 'first', answer: 'passed',
+  });
+} catch (error) {
+  if (error instanceof ProgressionError) stageConflictCode = error.code;
+}
+check('a pre-existing user/roster stage disagreement fails closed',
+  stageConflictCode === 'PROGRESSION_ROSTER_CONFLICT', stageConflictCode);
+check('stage conflict writes no progression outcome',
+  (await db.doc('users/u_stage_conflict').get()).data()?.progressionState === undefined);
+
+await db.doc('users/u_inactive_roster').set({
+  name: 'inactive', email: 'inactive@x.com', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+await db.doc('students/inactive@x.com').set({
+  email: 'inactive@x.com', isActive: false, stageId: 'stage_3', subgroup: 'B2',
+});
+let inactiveRosterCode = '';
+try {
+  await submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_inactive_roster', round: 'first', answer: 'passed',
+  });
+} catch (error) {
+  if (error instanceof ProgressionError) inactiveRosterCode = error.code;
+}
+check('an inactive roster record fails closed',
+  inactiveRosterCode === 'PROGRESSION_ROSTER_CONFLICT', inactiveRosterCode);
+
+await db.doc('users/u_ambiguous_roster').set({
+  name: 'ambiguous', email: 'ambiguous@x.com', role: 'student', stageId: 'stage_3', group: 'B2',
+});
+await db.doc('students/ambiguous@x.com').set({
+  email: 'ambiguous@x.com', isActive: true, stageId: 'stage_3', subgroup: 'B2',
+});
+await db.doc('students/u_ambiguous_roster').set({
+  email: 'u_ambiguous_roster', isActive: true, stageId: 'stage_3', subgroup: 'B2',
+});
+let ambiguousRosterCode = '';
+try {
+  await submitProgression(db, FieldValue as any, firstOpen, {
+    uid: 'u_ambiguous_roster', round: 'first', answer: 'passed',
+  });
+} catch (error) {
+  if (error instanceof ProgressionError) ambiguousRosterCode = error.code;
+}
+check('multiple structural roster identities are never guessed',
+  ambiguousRosterCode === 'PROGRESSION_ROSTER_CONFLICT', ambiguousRosterCode);
+
 console.log('\nدور ثاني - parked until the resit results:');
 await submitProgression(db, FieldValue as any, firstOpen, {
   uid: 'u_resit', round: 'first', answer: 'resit',
@@ -305,8 +409,9 @@ check('and is not asked again', step('resit_round', failUser) === 'none');
 
 console.log('\nGraduation:');
 let graduationPurge: any = null;
+await db.doc('users/u_final').update({ email: '' });
 const gradRes = await submitProgression(db, FieldValue as any, firstOpen, {
-  uid: 'u_final', round: 'first', answer: 'passed',
+  uid: 'u_final', authenticatedEmail: 'final@x.com', round: 'first', answer: 'passed',
 }, {
   purgeGraduatedStudent: async identity => { graduationPurge = identity; },
 });
@@ -402,7 +507,7 @@ check('and that student is not marked graduated',
 // ---------------------------------------------------------------------------
 console.log('\nA promoted representative is released:');
 await db.collection('users').doc('u_rep').set({
-  name: 'rep', email: 'rep@x.com', role: 'admin', stageId: 'stage_3',
+  name: 'rep', email: '', role: 'admin', stageId: 'stage_3',
   managedStageId: 'stage_3', permissions: { manageLectures: true },
 });
 await db.collection('students').doc('rep@x.com').set({ email: 'rep@x.com', stageId: 'stage_3' });
@@ -412,7 +517,7 @@ await db.collection('allowed_admins').doc('rep@x.com').set({
 await seedStudent('u_rep_successor', 'successor@x.com', 'stage_3');
 
 const repRes = await submitProgression(db, FieldValue as any, firstOpen, {
-  uid: 'u_rep', round: 'first', answer: 'passed',
+  uid: 'u_rep', authenticatedEmail: 'rep@x.com', round: 'first', answer: 'passed',
   replacementRepresentativeEmail: 'successor@x.com',
 });
 const repDoc = (await db.doc('users/u_rep').get()).data() || {};
@@ -422,6 +527,8 @@ check('managedStageId is cleared', repDoc.managedStageId === undefined);
 check('permissions are cleared', repDoc.permissions === undefined);
 check('the allowed_admins entry is deleted, so login cannot restore the role',
   !(await db.doc('allowed_admins/rep@x.com').get()).exists);
+check('the representative profile is repaired to the canonical roster id',
+  repDoc.email === 'rep@x.com');
 const successor = (await db.doc('users/u_rep_successor').get()).data() || {};
 const successorAllowed = (await db.doc('allowed_admins/successor@x.com').get()).data() || {};
 check('outgoing representative transfers the stage seat atomically',
@@ -494,6 +601,9 @@ console.log('MCQ leaderboard stage copy:');
 await db.doc('users/u_mcq').set({
   uid: 'u_mcq', email: 'u_mcq@x.com', stageId: 'stage_3', role: 'student',
 });
+await db.doc('students/u_mcq@x.com').set({
+  email: 'u_mcq@x.com', stageId: 'stage_3', isActive: true,
+});
 await db.doc('userMCQStats/u_mcq').set({
   userId: 'u_mcq', stageId: 'stage_3', mcqRankScore: 400,
   totalFirstAttemptCorrect: 20, totalFirstAttemptAnswered: 25,
@@ -528,6 +638,9 @@ check('promotion creates an immutable year-and-stage snapshot',
 // promotion down with it.
 await db.doc('users/u_nomcq').set({
   uid: 'u_nomcq', email: 'u_nomcq@x.com', stageId: 'stage_3', role: 'student',
+});
+await db.doc('students/u_nomcq@x.com').set({
+  email: 'u_nomcq@x.com', stageId: 'stage_3', isActive: true,
 });
 const noStats = await submitProgression(db, FieldValue as any, firstOpen, {
   uid: 'u_nomcq', round: 'first', answer: 'passed',

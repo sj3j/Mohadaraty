@@ -107,6 +107,7 @@ it needs more than a line, it belongs in CLAUDE.md and this just points there.
 
 ## Data model & consistency
 
+- A progression write that cannot resolve exactly one active roster row must fail before updating `users/`; otherwise a blank profile email silently leaves `students.stageId` behind and splits student/admin stage views.
 - A unique attendance session per scheduled occurrence prevents audited cancellation followed by a clean retest. Model immutable attempts with a monotonic generation, allow only one non-cancelled attempt through a partial unique index, and revoke old QR challenges/offline grants when cancelling.
 - Voiding a cancelled attempt's record is not enough: the generic receipt-result helper can reinterpret the void as `needs_review` on retry. Make cancellation authoritative in the result RPC (`invalid_evidence/session_cancelled`) and make cancelled session rows immutable.
 - Storing MCQ leaderboard stats in a single doc per user (`userMCQStats/{uid}`) bleeds old stage scores into the new stage on promotion → partition by (user, stage) in `userStageMCQStats/{uid}_{stageId}` with `isActiveInStage` filtering so old stage scores stay permanently preserved while the new stage starts fresh.

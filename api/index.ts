@@ -1651,6 +1651,7 @@ app.post("/api/progression/submit", verifyAuth, async (req, res) => {
 
     const result = await submitProgression(db, admin.firestore.FieldValue as any, calendar, {
       uid: user.uid,
+      authenticatedEmail: user.email,
       round,
       answer,
       tahmeelSubjects: Array.isArray(tahmeelSubjects) ? tahmeelSubjects : [],

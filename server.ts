@@ -1607,6 +1607,7 @@ const verifyAdmin = async (req: express.Request, res: express.Response, next: ex
 
       const result = await submitProgression(db, admin.firestore.FieldValue as any, calendar, {
         uid: user.uid,
+        authenticatedEmail: user.email,
         round,
         answer,
         tahmeelSubjects: Array.isArray(tahmeelSubjects) ? tahmeelSubjects : [],

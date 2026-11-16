@@ -80,14 +80,28 @@ export async function reconcileStudentProfile(
       return 'conflict';
     }
     const current = userSnap.exists ? userSnap.data() || {} : null;
-    if (current?.stageId && current.stageId !== student.stageId) return 'conflict';
-    if (current?.email && String(current.email).toLowerCase() !== studentId.toLowerCase()) return 'conflict';
-    if (current?.role && current.role !== 'student') return 'conflict';
+    const currentEmail = typeof current?.email === 'string' ? current.email.toLowerCase().trim() : '';
+    const identityPatch = current && !currentEmail ? { email: studentId } : {};
+    const stageConflict = current?.stageId && current.stageId !== student.stageId;
+    const emailConflict = currentEmail && currentEmail !== studentId.toLowerCase();
+    const roleConflict = current?.role && current.role !== 'student';
+    if (stageConflict || emailConflict || roleConflict) {
+      // The login resolver has already proved which roster row this session
+      // belongs to. Filling only a blank canonical identity is safe even when
+      // the conflicting stage or role still needs manual review.
+      if (Object.keys(identityPatch).length > 0) {
+        transaction.set(userRef, identityPatch, { merge: true });
+      }
+      return 'conflict';
+    }
 
-    const patch = studentProfilePatch(
-      studentId, student, current,
-      userSnap.exists ? userSnap.createTime || serverTimestamp() : serverTimestamp(),
-    );
+    const patch = {
+      ...studentProfilePatch(
+        studentId, student, current,
+        userSnap.exists ? userSnap.createTime || serverTimestamp() : serverTimestamp(),
+      ),
+      ...identityPatch,
+    };
     if (Object.keys(patch).length === 0) return 'unchanged';
     transaction.set(userRef, patch, { merge: true });
     return userSnap.exists ? 'repaired' : 'created';
