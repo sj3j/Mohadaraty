@@ -14,5 +14,5 @@
     "verbatimModuleSyntax": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "../shared/telegramMirror.ts", "../src/types/announcement.types.ts", "../src/lib/richText.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "../shared/telegramMirror.ts", "../shared/privateKey.ts", "../src/types/announcement.types.ts", "../src/lib/richText.ts"]
 }

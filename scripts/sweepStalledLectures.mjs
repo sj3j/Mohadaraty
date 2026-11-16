@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { normalizePrivateKey } from '../bot/src/privateKey.ts';
+import { normalizePrivateKey } from '../shared/privateKey.ts';
 import { GoogleAuth } from 'google-auth-library';
 
 const pk = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY);

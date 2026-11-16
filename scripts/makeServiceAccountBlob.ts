@@ -36,7 +36,7 @@
  */
 import 'dotenv/config';
 import { writeFileSync } from 'node:fs';
-import { normalizePrivateKey, describePrivateKey } from '../bot/src/privateKey.ts';
+import { normalizePrivateKey, describePrivateKey } from '../shared/privateKey.ts';
 
 const OUT = 'serviceAccountKey.json';
 const OUT_B64 = 'serviceAccountKey.b64.txt';
